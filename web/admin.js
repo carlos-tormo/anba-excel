@@ -623,7 +623,7 @@ function closeTradeModal() {
   document.getElementById('tradeModal').classList.add('section-hidden');
 }
 
-async function openTradeModal() {
+async function openTradeModal(options = {}) {
   if (!state.teams.length) return;
 
   const allCodes = state.teams.map((t) => t.code);
@@ -634,6 +634,13 @@ async function openTradeModal() {
   }
   state.trade.selectedA.clear();
   state.trade.selectedB.clear();
+  const preselectedA = Array.isArray(options.preselectedA) ? options.preselectedA : [];
+  preselectedA.forEach((id) => {
+    const parsed = Number(id);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      state.trade.selectedA.add(parsed);
+    }
+  });
 
   const teamASelect = document.getElementById('tradeTeamA');
   const teamBSelect = document.getElementById('tradeTeamB');
@@ -1184,11 +1191,113 @@ function renderPlayers() {
 
 function syncSelectAllPlayers() {
   const selectAll = document.getElementById('selectAllPlayers');
+  const actionsBar = document.getElementById('selectedPlayerActions');
+  const selectedCountEl = document.getElementById('selectedPlayersCount');
   if (!selectAll || !state.teamData) return;
   const total = state.teamData.players.length;
   const selected = state.selectedPlayerIds.size;
   selectAll.indeterminate = selected > 0 && selected < total;
   selectAll.checked = total > 0 && selected === total;
+  if (actionsBar) actionsBar.classList.toggle('section-hidden', selected === 0);
+  if (selectedCountEl) selectedCountEl.textContent = `${selected} selected`;
+}
+
+function selectedPlayers() {
+  if (!state.teamData) return [];
+  const selected = new Set(state.selectedPlayerIds);
+  return state.teamData.players.filter((p) => selected.has(p.id));
+}
+
+async function deleteSelectedPlayersAction() {
+  const players = selectedPlayers();
+  if (players.length === 0) {
+    alert('Select at least one player.');
+    return;
+  }
+  if (!confirm(`Delete ${players.length} selected player(s)?`)) return;
+  for (const p of players) {
+    await api(`/api/players/${p.id}`, { method: 'DELETE' });
+  }
+  await loadTeam(state.teamCode);
+}
+
+async function duplicateSelectedPlayersAction() {
+  const players = selectedPlayers();
+  if (players.length === 0) {
+    alert('Select at least one player.');
+    return;
+  }
+  for (const p of players) {
+    const payload = {
+      team_code: state.teamCode,
+      name: p.name ? `${p.name} (Copy)` : 'Copy',
+      bird_rights: p.bird_rights || null,
+      rating: p.rating || null,
+      position: p.position || null,
+      years_left: p.years_left || null,
+      salary_2025_text: p.salary_2025_text || null,
+      salary_2026_text: p.salary_2026_text || null,
+      salary_2027_text: p.salary_2027_text || null,
+      salary_2028_text: p.salary_2028_text || null,
+      salary_2029_text: p.salary_2029_text || null,
+      salary_2030_text: p.salary_2030_text || null,
+      option_2025: p.option_2025 || null,
+      option_2026: p.option_2026 || null,
+      option_2027: p.option_2027 || null,
+      option_2028: p.option_2028 || null,
+      option_2029: p.option_2029 || null,
+      option_2030: p.option_2030 || null,
+      notes: p.notes || null,
+    };
+    await api('/api/players', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+  await loadTeam(state.teamCode);
+}
+
+async function tradeSelectedPlayersAction() {
+  const players = selectedPlayers();
+  if (players.length === 0) {
+    alert('Select at least one player.');
+    return;
+  }
+  state.trade.teamA = state.teamCode;
+  if (state.trade.teamB === state.teamA) state.trade.teamB = null;
+  await openTradeModal({ preselectedA: players.map((p) => p.id) });
+}
+
+async function cutSelectedPlayersAction() {
+  const players = selectedPlayers();
+  if (players.length === 0) {
+    alert('Select at least one player.');
+    return;
+  }
+  if (!confirm(`Cut ${players.length} selected player(s)? This creates dead contracts and removes the players from roster.`)) return;
+
+  const currentYear = Number(state.settings.current_year || 2025);
+  for (const p of players) {
+    const deadType = String(p.bird_rights || '').trim().toUpperCase() === 'TW' ? 'two_way' : 'normal';
+    const salaryNum = Number(p[`salary_${currentYear}_num`] || 0);
+    const salaryText = String(p[`salary_${currentYear}_text`] || '').trim();
+    const deadPayload = {
+      team_code: state.teamCode,
+      dead_type: deadType,
+      label: p.name || 'Cut Player',
+    };
+    if (Number.isFinite(salaryNum) && salaryNum > 0) {
+      deadPayload.amount_text = String(Math.round(salaryNum));
+    } else if (salaryText) {
+      deadPayload.amount_text = salaryText;
+    }
+    await api('/api/dead-contracts', {
+      method: 'POST',
+      body: JSON.stringify(deadPayload),
+    });
+    await api(`/api/players/${p.id}`, { method: 'DELETE' });
+  }
+  await loadTeam(state.teamCode);
 }
 
 function renderAssets() {
@@ -1584,6 +1693,19 @@ async function init() {
       await api(`/api/players/${id}`, { method: 'DELETE' });
     }
     await loadTeam(state.teamCode);
+  });
+
+  document.getElementById('selectedDeleteBtn').addEventListener('click', async () => {
+    await deleteSelectedPlayersAction();
+  });
+  document.getElementById('selectedDuplicateBtn').addEventListener('click', async () => {
+    await duplicateSelectedPlayersAction();
+  });
+  document.getElementById('selectedTradeBtn').addEventListener('click', async () => {
+    await tradeSelectedPlayersAction();
+  });
+  document.getElementById('selectedCutBtn').addEventListener('click', async () => {
+    await cutSelectedPlayersAction();
   });
 
   document.getElementById('logoutBtn').addEventListener('click', async () => {

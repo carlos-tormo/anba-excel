@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
-  <link rel="stylesheet" href="/styles.css?v=20260329b">
+  <link rel="stylesheet" href="/styles.css?v=20260330a">
 </head>
 <body>
   <header>
@@ -47,8 +47,18 @@
   <section id="teamMeta" class="cards"></section>
 
   <section id="rosterSection">
-    <h2>Roster</h2>
-    <div class="table-wrap">
+    <div class="section-head">
+      <h2>Roster</h2>
+      <div class="roster-view-toggle" role="group" aria-label="Roster view selector">
+        <button id="rosterViewListBtn" type="button" class="roster-view-btn" data-view="list" title="List view" aria-label="List view">
+          <span aria-hidden="true">☷</span>
+        </button>
+        <button id="rosterViewCardsBtn" type="button" class="roster-view-btn" data-view="cards" title="Card view" aria-label="Card view">
+          <span aria-hidden="true">▦</span>
+        </button>
+      </div>
+    </div>
+    <div id="rosterTableWrap" class="table-wrap">
       <table id="playersTable">
         <thead>
           <tr>
@@ -66,6 +76,7 @@
         <tbody></tbody>
       </table>
     </div>
+    <div id="playersCards" class="players-cards-grid section-hidden"></div>
   </section>
 
   <section id="deadContractsSection">
@@ -89,6 +100,6 @@
     <div id="draftAssetsBoard" class="draft-assets-board"></div>
   </section>
 
-  <script src="/guest.js?v=20260329b" defer></script>
+  <script src="/guest.js?v=20260330a" defer></script>
 </body>
 </html>

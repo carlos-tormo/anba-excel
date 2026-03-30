@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
-  <link rel="stylesheet" href="/styles.css?v=20260329b">
+  <link rel="stylesheet" href="/styles.css?v=20260330b">
 </head>
 <body>
   <header>
@@ -152,6 +152,13 @@
       <input id="bulkYears" placeholder="Years">
       <button id="applyBulkBtn">Aplicar a seleccionados</button>
       <button id="deleteBulkBtn" class="danger">Eliminar seleccionados</button>
+    </div>
+    <div id="selectedPlayerActions" class="bulk-bar section-hidden">
+      <span id="selectedPlayersCount" class="selected-actions-label">0 selected</span>
+      <button id="selectedDeleteBtn" type="button" class="danger">Delete</button>
+      <button id="selectedDuplicateBtn" type="button">Duplicate</button>
+      <button id="selectedTradeBtn" type="button">Trade</button>
+      <button id="selectedCutBtn" type="button" class="danger">Cut</button>
     </div>
     <div class="table-wrap">
       <table id="playersTable">
@@ -319,6 +326,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260329b" defer></script>
+  <script src="/admin.js?v=20260330b" defer></script>
 </body>
 </html>

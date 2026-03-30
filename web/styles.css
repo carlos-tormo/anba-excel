@@ -404,6 +404,43 @@ h1 {
   font-size: 0.8rem;
   color: var(--team-primary);
 }
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.roster-view-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.roster-view-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--team-primary-rgb), 0.38);
+  background: rgba(var(--team-secondary-rgb), 0.25);
+  color: #334155;
+  display: grid;
+  place-items: center;
+  font-size: 1rem;
+  line-height: 1;
+}
+.roster-view-btn.active {
+  background: rgba(var(--team-primary-rgb), 0.88);
+  color: #f8fafc;
+  border-color: rgba(var(--team-primary-rgb), 0.95);
+}
+.roster-view-btn:hover {
+  background: rgba(var(--team-primary-rgb), 0.72);
+  color: #f8fafc;
+}
+.roster-view-btn span {
+  text-transform: none;
+}
 section {
   padding: 14px 18px;
 }
@@ -599,6 +636,10 @@ td.salary-option--gap .salary-edit {
   flex-wrap: wrap;
   margin: 0 0 10px;
 }
+.selected-actions-label {
+  font-weight: 700;
+  color: #334e68;
+}
 .bulk-bar input,
 .bulk-bar select {
   max-width: 140px;
@@ -649,6 +690,73 @@ td.salary-option--gap .salary-edit {
   display: inline-flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+.players-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.player-card {
+  border: 1px solid rgba(var(--team-primary-rgb), 0.42);
+  border-radius: 12px;
+  background:
+    linear-gradient(
+      160deg,
+      rgba(var(--team-secondary-rgb), 0.22),
+      rgba(255, 255, 255, 0.96) 38%
+    );
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+  box-shadow:
+    0 0 0 1px rgba(var(--team-primary-rgb), 0.14),
+    0 0 15px rgba(var(--team-primary-rgb), 0.16),
+    0 8px 20px rgba(var(--team-primary-rgb), 0.15);
+}
+.player-card-head {
+  display: grid;
+  gap: 6px;
+}
+.player-card-name {
+  font-size: 1rem;
+  font-weight: 800;
+  color: #102a43;
+}
+.player-card-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.player-card-contracts {
+  display: grid;
+  gap: 6px;
+}
+.player-contract-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border: 1px solid rgba(var(--team-primary-rgb), 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 6px 7px;
+}
+.player-contract-season {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #334e68;
+}
+.player-contract-value {
+  min-width: 0;
+}
+.player-contract-value .salary-pill {
+  width: 100%;
+}
+.player-contract-empty {
+  color: #94a3b8;
+  font-weight: 700;
 }
 .meta-pill {
   display: inline-block;
@@ -752,6 +860,20 @@ button {
 }
 button:hover { background: var(--primary-dark); }
 button.danger { background: var(--danger); }
+.roster-view-toggle .roster-view-btn {
+  background: rgba(var(--team-secondary-rgb), 0.25);
+  color: #334155;
+  border: 1px solid rgba(var(--team-primary-rgb), 0.38);
+}
+.roster-view-toggle .roster-view-btn.active {
+  background: rgba(var(--team-primary-rgb), 0.88);
+  color: #f8fafc;
+  border-color: rgba(var(--team-primary-rgb), 0.95);
+}
+.roster-view-toggle .roster-view-btn:hover {
+  background: rgba(var(--team-primary-rgb), 0.72);
+  color: #f8fafc;
+}
 .ghost-link {
   color: #ffffff;
   text-decoration: none;
@@ -864,7 +986,26 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .trade-grid {
     grid-template-columns: 1fr;
   }
+  .section-head h2 {
+    margin-bottom: 0;
+  }
+  .players-cards-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .player-card {
+    padding: 9px;
+  }
   table { min-width: 780px; }
+}
+@media (max-width: 500px) {
+  .players-cards-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .player-contract-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
 }
 
 .card.card-positive {

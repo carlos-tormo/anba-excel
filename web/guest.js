@@ -14,6 +14,9 @@ const state = {
     players: { key: 'position', dir: 'asc' },
     dead_contracts: { key: 'dead_type', dir: 'asc' },
   },
+  ui: {
+    rosterView: 'list',
+  },
 };
 
 const PLAYER_SORT_CYCLE = [
@@ -479,9 +482,43 @@ function renderCapStatusPills(summary) {
   wrap.innerHTML = pills.map((txt) => `<span class="top-status-pill">${txt}</span>`).join('');
 }
 
+function preferredRosterView() {
+  return window.matchMedia('(max-width: 720px)').matches ? 'cards' : 'list';
+}
+
+function setRosterView(nextView, savePreference = true) {
+  const view = nextView === 'cards' ? 'cards' : 'list';
+  state.ui.rosterView = view;
+  const tableWrap = document.getElementById('rosterTableWrap');
+  const cardsWrap = document.getElementById('playersCards');
+  const listBtn = document.getElementById('rosterViewListBtn');
+  const cardsBtn = document.getElementById('rosterViewCardsBtn');
+  if (tableWrap) tableWrap.classList.toggle('section-hidden', view !== 'list');
+  if (cardsWrap) cardsWrap.classList.toggle('section-hidden', view !== 'cards');
+  if (listBtn) listBtn.classList.toggle('active', view === 'list');
+  if (cardsBtn) cardsBtn.classList.toggle('active', view === 'cards');
+  if (!savePreference) return;
+  try {
+    window.localStorage.setItem('anba_roster_view', view);
+  } catch {
+    // localStorage may be unavailable in private browsing modes.
+  }
+}
+
+function setupRosterViewControl() {
+  const buttons = document.querySelectorAll('.roster-view-btn[data-view]');
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setRosterView(btn.dataset.view || 'list', true);
+    });
+  });
+}
+
 function renderPlayers() {
   const tbody = document.querySelector('#playersTable tbody');
+  const cardsWrap = document.getElementById('playersCards');
   tbody.innerHTML = '';
+  if (cardsWrap) cardsWrap.innerHTML = '';
 
   const rows = sortedRows(state.teamData.players, state.sort.players);
   rows.forEach((p) => {
@@ -506,6 +543,36 @@ function renderPlayers() {
       <td>${salaryBox(p, 2030)}</td>
     `;
     tbody.appendChild(tr);
+
+    if (cardsWrap) {
+      const contractRows = [2025, 2026, 2027, 2028, 2029, 2030]
+        .map((season) => ({ season, content: salaryBox(p, season) }))
+        .filter((row) => Boolean(row.content));
+      const card = document.createElement('article');
+      card.className = 'player-card';
+      card.innerHTML = `
+        <div class="player-card-head">
+          <div class="player-card-name">${escapeHtml(p.name || '')}</div>
+          <div class="player-card-tags">
+            ${p.position ? `<span class="pos-pill">${escapeHtml(p.position)}</span>` : ''}
+            ${p.rating ? `<span class="meta-pill">${escapeHtml(p.rating)}</span>` : ''}
+            ${p.bird_rights ? `<span class="type-pill ${typeClass(p.bird_rights)}">${escapeHtml(p.bird_rights)}</span>` : ''}
+            ${p.years_left ? `<span class="meta-pill">${escapeHtml(p.years_left)} yrs</span>` : ''}
+          </div>
+        </div>
+        ${contractRows.length ? `
+          <div class="player-card-contracts">
+            ${contractRows.map((row) => `
+              <div class="player-contract-row">
+                <div class="player-contract-season">${seasonLabel(row.season)}</div>
+                <div class="player-contract-value">${row.content}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      `;
+      cardsWrap.appendChild(card);
+    }
   });
 }
 
@@ -750,6 +817,14 @@ async function init() {
   const teamsRes = await api('/api/teams');
   state.teams = teamsRes.teams;
   setupSorting();
+  setupRosterViewControl();
+  let savedRosterView = null;
+  try {
+    savedRosterView = window.localStorage.getItem('anba_roster_view');
+  } catch {
+    savedRosterView = null;
+  }
+  setRosterView(savedRosterView || preferredRosterView(), false);
   renderTeamStrip();
   renderTeamPicker();
   await loadTracker();
