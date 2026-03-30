@@ -17,7 +17,15 @@ const state = {
   ui: {
     rosterView: 'list',
   },
+  filters: {
+    guaranteedOnly: false,
+    optionsOnly: false,
+    showEmptyYears: true,
+  },
 };
+
+const ROSTER_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030];
+const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
 
 const PLAYER_SORT_CYCLE = [
   { key: 'position', dir: 'asc' },
@@ -133,30 +141,89 @@ function contractOptionClass(value) {
   return `salary-option--${v.toLowerCase()}`;
 }
 
-function salaryBox(obj, season) {
+function salaryTextTagClass(value) {
+  const v = String(value || '').trim().toUpperCase();
+  if (v === 'FB') return 'salary-text-tag--fb';
+  if (v === 'EB') return 'salary-text-tag--eb';
+  if (v === 'NB') return 'salary-text-tag--nb';
+  return '';
+}
+
+function numericSalary(obj, season) {
+  const rawNum = obj[`salary_${season}_num`];
+  if (rawNum !== null && rawNum !== undefined && Number.isFinite(Number(rawNum))) {
+    return Number(rawNum);
+  }
+  const text = String(obj[`salary_${season}_text`] || '').trim();
+  if (!text) return null;
+  const cleaned = text.replaceAll(' ', '').replaceAll('.', '').replaceAll(',', '.');
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hasSpecialTextTag(obj, season) {
+  const t = String(obj[`salary_${season}_text`] || '').trim().toUpperCase();
+  return t === 'FB' || t === 'EB' || t === 'NB';
+}
+
+function playerHasGuaranteed(p) {
+  return ROSTER_SEASONS.some((season) => {
+    if (hasSpecialTextTag(p, season)) return false;
+    const val = numericSalary(p, season);
+    const option = String(p[`option_${season}`] || '').trim();
+    return Number.isFinite(val) && val > 0 && !option;
+  });
+}
+
+function playerHasOption(p) {
+  return ROSTER_SEASONS.some((season) => Boolean(String(p[`option_${season}`] || '').trim()));
+}
+
+function filteredPlayers(players) {
+  return players.filter((p) => {
+    if (state.filters.guaranteedOnly && !playerHasGuaranteed(p)) return false;
+    if (state.filters.optionsOnly && !playerHasOption(p)) return false;
+    return true;
+  });
+}
+
+function salaryCellHtml(obj, season, showEmptyYears = true) {
   const text = obj[`salary_${season}_text`];
   const num = obj[`salary_${season}_num`];
   const option = obj[`option_${season}`];
   const optClass = contractOptionClass(option);
+  const textTagClass = salaryTextTagClass(text);
+  const textTagCode = String(text || '').trim().toUpperCase();
+  const optionCode = String(option || '').trim().toUpperCase();
+  const hideOptionTag = ['FB', 'EB', 'NB'].includes(textTagCode) || ['FB', 'EB', 'NB'].includes(optionCode);
   const cap = Number(state.settings.salary_cap_2025 || 154647000);
+
   if (num !== null && num !== undefined && Number.isFinite(Number(num))) {
     const val = Number(num);
-    const pct = cap > 0 ? ((val / cap) * 100).toFixed(1) : '0.0';
+    const pct = cap > 0 ? `${((val / cap) * 100).toFixed(1)}%` : '';
     return `
-      <div class="salary-pill ${optClass}">
-        <span class="salary-main">${formatDots(val)}</span>
-        <span class="salary-pct">${pct}%</span>
+      <div class="salary-chip ${optClass}">
+        <span class="salary-chip-main">${formatDots(val)}</span>
+        <span class="salary-chip-pct">${pct}</span>
       </div>
-      ${option ? `<span class="contract-opt-pill ${optClass}">${option}</span>` : ''}
     `;
   }
+
   if (text !== null && text !== undefined && String(text).trim() !== '') {
+    const upper = escapeHtml(String(text).trim().toUpperCase());
     return `
-      <div class="salary-pill salary-pill-text ${optClass}"><span class="salary-main">${escapeHtml(text)}</span></div>
-      ${option ? `<span class="contract-opt-pill ${optClass}">${option}</span>` : ''}
+      <div class="salary-chip salary-chip-text ${textTagClass} ${hideOptionTag ? '' : optClass}">
+        <span class="salary-chip-main">${upper}</span>
+      </div>
     `;
   }
-  return '';
+
+  if (!showEmptyYears) return '';
+  return `<div class="salary-empty-bar" aria-hidden="true"></div>`;
+}
+
+function salaryBox(obj, season) {
+  return salaryCellHtml(obj, season, false);
 }
 
 function salaryText(obj, season) {
@@ -517,10 +584,16 @@ function setupRosterViewControl() {
 function renderPlayers() {
   const tbody = document.querySelector('#playersTable tbody');
   const cardsWrap = document.getElementById('playersCards');
+  const rosterMeta = document.getElementById('rosterMeta');
   tbody.innerHTML = '';
   if (cardsWrap) cardsWrap.innerHTML = '';
 
-  const rows = sortedRows(state.teamData.players, state.sort.players);
+  const filtered = filteredPlayers(state.teamData.players);
+  const rows = sortedRows(filtered, state.sort.players);
+  if (rosterMeta) {
+    const total = state.teamData.players.length;
+    rosterMeta.textContent = `Active Roster (${rows.length}${rows.length !== total ? ` / ${total}` : ''})`;
+  }
   rows.forEach((p) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -535,12 +608,12 @@ function renderPlayers() {
       </td>
       <td>${p.bird_rights ? `<span class="type-pill ${typeClass(p.bird_rights)}">${p.bird_rights}</span>` : ''}</td>
       <td>${p.years_left || ''}</td>
-      <td>${salaryBox(p, 2025)}</td>
-      <td>${salaryBox(p, 2026)}</td>
-      <td>${salaryBox(p, 2027)}</td>
-      <td>${salaryBox(p, 2028)}</td>
-      <td>${salaryBox(p, 2029)}</td>
-      <td>${salaryBox(p, 2030)}</td>
+      <td>${salaryCellHtml(p, 2025, state.filters.showEmptyYears)}</td>
+      <td>${salaryCellHtml(p, 2026, state.filters.showEmptyYears)}</td>
+      <td>${salaryCellHtml(p, 2027, state.filters.showEmptyYears)}</td>
+      <td>${salaryCellHtml(p, 2028, state.filters.showEmptyYears)}</td>
+      <td>${salaryCellHtml(p, 2029, state.filters.showEmptyYears)}</td>
+      <td>${salaryCellHtml(p, 2030, state.filters.showEmptyYears)}</td>
     `;
     tbody.appendChild(tr);
 
@@ -574,6 +647,49 @@ function renderPlayers() {
       cardsWrap.appendChild(card);
     }
   });
+}
+
+function setupRosterFilters() {
+  const guaranteed = document.getElementById('filterGuaranteedOnly');
+  const options = document.getElementById('filterOptionsOnly');
+  const emptyYears = document.getElementById('filterShowEmptyYears');
+  if (!guaranteed || !options || !emptyYears) return;
+
+  guaranteed.checked = state.filters.guaranteedOnly;
+  options.checked = state.filters.optionsOnly;
+  emptyYears.checked = state.filters.showEmptyYears;
+
+  guaranteed.addEventListener('change', () => {
+    state.filters.guaranteedOnly = guaranteed.checked;
+    renderPlayers();
+  });
+  options.addEventListener('change', () => {
+    state.filters.optionsOnly = options.checked;
+    renderPlayers();
+  });
+  emptyYears.addEventListener('change', () => {
+    state.filters.showEmptyYears = emptyYears.checked;
+    renderPlayers();
+  });
+}
+
+function setTeamInUrl(teamCode) {
+  const url = new URL(window.location.href);
+  if (teamCode) url.searchParams.set('team', teamCode);
+  else url.searchParams.delete('team');
+  window.history.replaceState({}, '', url.toString());
+}
+
+function readInitialTeamCode() {
+  const fromQuery = new URLSearchParams(window.location.search).get('team');
+  if (fromQuery && String(fromQuery).trim()) return String(fromQuery).trim().toUpperCase();
+  try {
+    const fromStorage = window.localStorage.getItem(LAST_TEAM_STORAGE_KEY);
+    if (fromStorage && String(fromStorage).trim()) return String(fromStorage).trim().toUpperCase();
+  } catch {
+    // ignore localStorage errors
+  }
+  return null;
 }
 
 function renderAssets() {
@@ -751,6 +867,12 @@ async function loadTeam(code) {
   const data = await api(`/api/teams/${code}`);
   state.teamCode = code;
   state.teamData = data;
+  setTeamInUrl(code);
+  try {
+    window.localStorage.setItem(LAST_TEAM_STORAGE_KEY, code);
+  } catch {
+    // ignore localStorage errors
+  }
   applyTeamTheme(code);
   setViewMode('team');
   renderTeamStrip();
@@ -790,6 +912,12 @@ async function loadTracker() {
   }
   state.teamCode = null;
   state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
   applyTeamTheme('');
   setViewMode('tracker');
   document.getElementById('pageTitle').textContent = 'ANBA League Tracker';
@@ -818,6 +946,7 @@ async function init() {
   state.teams = teamsRes.teams;
   setupSorting();
   setupRosterViewControl();
+  setupRosterFilters();
   let savedRosterView = null;
   try {
     savedRosterView = window.localStorage.getItem('anba_roster_view');
@@ -827,7 +956,12 @@ async function init() {
   setRosterView(savedRosterView || preferredRosterView(), false);
   renderTeamStrip();
   renderTeamPicker();
-  await loadTracker();
+  const initialTeam = readInitialTeamCode();
+  if (initialTeam && state.teams.some((t) => t.code === initialTeam)) {
+    await loadTeam(initialTeam);
+  } else {
+    await loadTracker();
+  }
 }
 
 init().catch((err) => {

@@ -47,6 +47,14 @@ function contractOptionClass(value) {
   return `salary-option--${v.toLowerCase()}`;
 }
 
+function salaryTextTagClass(value) {
+  const v = String(value || '').trim().toUpperCase();
+  if (v === 'FB') return 'salary-text-tag--fb';
+  if (v === 'EB') return 'salary-text-tag--eb';
+  if (v === 'NB') return 'salary-text-tag--nb';
+  return '';
+}
+
 function describePlayerSort(sortCfg) {
   const key = sortCfg.key;
   const dir = sortCfg.dir === 'asc' ? 'asc' : 'desc';
@@ -1089,9 +1097,18 @@ function renderPlayers() {
           pct.textContent = parsed && Number.isFinite(parsed) && state.settings.salary_cap_2025 > 0
             ? `${((parsed / state.settings.salary_cap_2025) * 100).toFixed(1)}%`
             : '';
+          const td = fieldEl.closest('td');
+          if (td) {
+            Array.from(td.classList)
+              .filter((c) => c.startsWith('salary-text-tag--'))
+              .forEach((c) => td.classList.remove(c));
+            const tag = salaryTextTagClass(fieldEl.value);
+            if (tag) td.classList.add(tag);
+          }
         };
         fieldEl.addEventListener('input', refreshPct);
         fieldEl.addEventListener('blur', refreshPct);
+        refreshPct();
       }
       if (key === 'position') {
         wrapper.classList.add('pos-edit');
@@ -1111,6 +1128,14 @@ function renderPlayers() {
 
     tr.querySelectorAll('select[data-option-field]').forEach((optionSelect) => {
       const optionField = optionSelect.dataset.optionField;
+      const season = Number(optionField.split('_')[1] || 0);
+      optionSelect.innerHTML = `
+        <option value="">-</option>
+        <option value="TO">TO</option>
+        <option value="PO">PO</option>
+        <option value="QO">QO</option>
+        <option value="GAP">GAP</option>
+      `;
       optionSelect.value = p[optionField] || '';
       const td = optionSelect.closest('td');
       const applyOptionVisual = () => {

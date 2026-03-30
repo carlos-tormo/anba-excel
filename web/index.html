@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
-  <link rel="stylesheet" href="/styles.css?v=20260330a">
+  <link rel="stylesheet" href="/styles.css?v=20260330k">
 </head>
 <body>
   <header>
@@ -46,9 +46,12 @@
 
   <section id="teamMeta" class="cards"></section>
 
-  <section id="rosterSection">
+  <section id="rosterSection" class="guest-roster-section">
     <div class="section-head">
-      <h2>Roster</h2>
+      <div>
+        <h2>Roster</h2>
+        <div id="rosterMeta" class="section-subtitle">Active Roster (0)</div>
+      </div>
       <div class="roster-view-toggle" role="group" aria-label="Roster view selector">
         <button id="rosterViewListBtn" type="button" class="roster-view-btn" data-view="list" title="List view" aria-label="List view">
           <span aria-hidden="true">☷</span>
@@ -56,6 +59,21 @@
         <button id="rosterViewCardsBtn" type="button" class="roster-view-btn" data-view="cards" title="Card view" aria-label="Card view">
           <span aria-hidden="true">▦</span>
         </button>
+      </div>
+    </div>
+    <div class="roster-toolbar">
+      <div class="roster-legend" aria-label="Contract legend">
+        <span class="legend-item"><span class="legend-swatch legend-swatch--guaranteed"></span>Guaranteed</span>
+        <span class="legend-item"><span class="legend-swatch legend-swatch--po"></span>PO</span>
+        <span class="legend-item"><span class="legend-swatch legend-swatch--gap"></span>GAP</span>
+        <span class="legend-item"><span class="legend-swatch legend-swatch--to"></span>TO</span>
+        <span class="legend-item"><span class="legend-swatch legend-swatch--qo"></span>QO</span>
+        <span class="legend-item"><span class="legend-swatch legend-swatch--tag"></span>FB/EB/NB</span>
+      </div>
+      <div class="roster-filters">
+        <label><input type="checkbox" id="filterGuaranteedOnly"> Only guaranteed</label>
+        <label><input type="checkbox" id="filterOptionsOnly"> Only options</label>
+        <label><input type="checkbox" id="filterShowEmptyYears" checked> Show empty years</label>
       </div>
     </div>
     <div id="rosterTableWrap" class="table-wrap">
@@ -100,6 +118,6 @@
     <div id="draftAssetsBoard" class="draft-assets-board"></div>
   </section>
 
-  <script src="/guest.js?v=20260330a" defer></script>
+  <script src="/guest.js?v=20260330l" defer></script>
 </body>
 </html>

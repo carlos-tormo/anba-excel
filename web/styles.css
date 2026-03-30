@@ -411,6 +411,57 @@ h1 {
   gap: 10px;
   flex-wrap: wrap;
 }
+.section-subtitle {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: #52606d;
+  font-weight: 700;
+}
+.roster-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 6px 0 10px;
+}
+.roster-legend {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #334155;
+}
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+}
+.legend-swatch--guaranteed { background: #eef2f7; }
+.legend-swatch--po { background: #e0f2fe; }
+.legend-swatch--gap { background: #fce7f3; }
+.legend-swatch--to { background: #fee2e2; }
+.legend-swatch--qo { background: #dcfce7; }
+.legend-swatch--tag { background: #ffff00; }
+.roster-filters {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.roster-filters label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+}
 .roster-view-toggle {
   display: inline-flex;
   gap: 6px;
@@ -494,6 +545,44 @@ th {
   border-bottom: 2px solid rgba(var(--team-primary-rgb), 0.95);
   color: #f8fafc;
 }
+.guest-roster-section #playersTable th:nth-child(1),
+.guest-roster-section #playersTable td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  min-width: 280px;
+  z-index: 5;
+}
+.guest-roster-section #playersTable th:nth-child(2),
+.guest-roster-section #playersTable td:nth-child(2) {
+  position: sticky;
+  left: 280px;
+  min-width: 86px;
+  z-index: 5;
+}
+.guest-roster-section #playersTable th:nth-child(3),
+.guest-roster-section #playersTable td:nth-child(3) {
+  position: sticky;
+  left: 366px;
+  min-width: 72px;
+  z-index: 5;
+}
+.guest-roster-section #playersTable thead th:nth-child(1),
+.guest-roster-section #playersTable thead th:nth-child(2),
+.guest-roster-section #playersTable thead th:nth-child(3) {
+  z-index: 7;
+}
+.guest-roster-section #playersTable tbody tr:nth-child(odd) td:nth-child(-n+3) {
+  background: #f8fafc;
+}
+.guest-roster-section #playersTable tbody tr:nth-child(even) td:nth-child(-n+3) {
+  background: #f2f5f9;
+}
+.guest-roster-section #playersTable tbody tr:nth-child(odd) td:nth-child(n+4) {
+  background: #f4f6f8;
+}
+.guest-roster-section #playersTable tbody tr:nth-child(even) td:nth-child(n+4) {
+  background: #edf1f6;
+}
 .th-main {
   display: block;
 }
@@ -541,6 +630,81 @@ th {
 #assetsTable td:first-child {
   font-weight: 700;
   color: var(--team-primary);
+}
+
+.salary-chip {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  border: 1px solid #c6d0dd;
+  border-radius: 7px;
+  background: #eef2f7;
+  overflow: hidden;
+}
+.salary-chip.salary-option--po {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+}
+.salary-chip.salary-option--gap {
+  background: #fce7f3;
+  border-color: #f9a8d4;
+}
+.salary-chip.salary-option--to {
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+.salary-chip.salary-option--qo {
+  background: #dcfce7;
+  border-color: #86efac;
+}
+.salary-chip-main {
+  padding: 4px 8px;
+  font-weight: 800;
+  color: #1f2937;
+  font-variant-numeric: tabular-nums;
+}
+.salary-chip-pct {
+  margin-left: auto;
+  padding: 4px 8px;
+  color: #4b5563;
+  font-size: 0.73rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.55);
+}
+.salary-chip.salary-chip-text {
+  justify-content: flex-start;
+}
+.salary-chip.salary-chip-text .salary-chip-main {
+  width: 100%;
+}
+.salary-chip.salary-text-tag--fb {
+  background: #ffff00;
+  border-color: #d4b000;
+}
+.salary-chip.salary-text-tag--fb .salary-chip-main {
+  color: #000000;
+}
+.salary-chip.salary-text-tag--eb {
+  background: #ffedd5;
+  border-color: #fb923c;
+}
+.salary-chip.salary-text-tag--eb .salary-chip-main {
+  color: #9a3412;
+}
+.salary-chip.salary-text-tag--nb {
+  background: #783f04;
+  border-color: #5e3203;
+}
+.salary-chip.salary-text-tag--nb .salary-chip-main {
+  color: #ffffff;
+}
+.salary-empty-bar {
+  height: 10px;
+  width: 88%;
+  margin: 6px auto;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.3);
 }
 
 .salary-pill {
@@ -615,6 +779,60 @@ td.salary-option--gap .salary-edit {
 .contract-opt-pill.salary-option--po { background: #e0f2fe; border-color: #7dd3fc; color: #075985; }
 .contract-opt-pill.salary-option--qo { background: #dcfce7; border-color: #86efac; color: #166534; }
 .contract-opt-pill.salary-option--gap { background: #fce7f3; border-color: #f9a8d4; color: #9d174d; }
+.contract-opt-pill.salary-option--fb { background: #fef9c3; border-color: #fde047; color: #854d0e; }
+.contract-opt-pill.salary-option--eb { background: #ffedd5; border-color: #fb923c; color: #9a3412; }
+.contract-opt-pill.salary-option--nb { background: #7a5239; border-color: #5f3f2d; color: #fff7ed; }
+
+td.salary-text-tag--fb {
+  background: #ffff00 !important;
+}
+td.salary-text-tag--eb {
+  background: #ffedd5 !important;
+}
+td.salary-text-tag--nb {
+  background: #783f04 !important;
+}
+
+td.salary-option--fb {
+  background: #ffff00 !important;
+}
+td.salary-option--eb {
+  background: #ffedd5 !important;
+}
+td.salary-option--nb {
+  background: #783f04 !important;
+}
+td.salary-option--nb .inline-editor,
+td.salary-option--nb input,
+td.salary-option--nb select,
+td.salary-option--nb .salary-pct {
+  color: #ffffff !important;
+}
+
+.salary-pill.salary-pill-text.salary-text-tag--fb {
+  width: calc(100% - 6px);
+  justify-content: flex-start;
+  padding: 4px 10px;
+  background: #ffff00;
+  border-color: #d4b000;
+  color: #000000;
+}
+.salary-pill.salary-pill-text.salary-text-tag--eb {
+  width: calc(100% - 6px);
+  justify-content: flex-start;
+  padding: 4px 10px;
+  background: #ffedd5;
+  border-color: #fb923c;
+  color: #9a3412;
+}
+.salary-pill.salary-pill-text.salary-text-tag--nb {
+  width: calc(100% - 6px);
+  justify-content: flex-start;
+  padding: 4px 10px;
+  background: #783f04;
+  border-color: #5e3203;
+  color: #ffffff;
+}
 
 .settings-panel {
   margin: 0 18px;
@@ -787,13 +1005,21 @@ td.salary-option--gap .salary-edit {
 .type-pill--mid,
 .type-pill--tmid,
 .type-pill--bi,
-.type-pill--10d,
-.type-pill--r,
-.type-pill--r2,
 .type-pill--room {
-  background: #dbeafe;
-  border-color: #93c5fd;
-  color: #1e3a8a;
+  background: #fef3c7;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+.type-pill--r,
+.type-pill--r2 {
+  background: #fce7f3;
+  border-color: #f9a8d4;
+  color: #9d174d;
+}
+.type-pill--10d {
+  background: #111827;
+  border-color: #0f172a;
+  color: #f8fafc;
 }
 .inline-editor.pos-edit {
   background: #d6dde7;
@@ -822,12 +1048,21 @@ td.salary-option--gap .salary-edit {
 .inline-editor.type-edit.type-pill--mid,
 .inline-editor.type-edit.type-pill--tmid,
 .inline-editor.type-edit.type-pill--bi,
-.inline-editor.type-edit.type-pill--10d,
-.inline-editor.type-edit.type-pill--r,
-.inline-editor.type-edit.type-pill--r2,
 .inline-editor.type-edit.type-pill--room {
-  background: #dbeafe;
-  border: 1px solid #93c5fd;
+  background: #fef3c7;
+  border: 1px solid #fdba74;
+}
+.inline-editor.type-edit.type-pill--r,
+.inline-editor.type-edit.type-pill--r2 {
+  background: #fce7f3;
+  border: 1px solid #f9a8d4;
+}
+.inline-editor.type-edit.type-pill--10d {
+  background: #111827;
+  border: 1px solid #0f172a;
+}
+.inline-editor.type-edit.type-pill--10d select {
+  color: #f8fafc;
 }
 .inline-editor.pos-edit input {
   width: 34px;
@@ -996,7 +1231,37 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .player-card {
     padding: 9px;
   }
-  table { min-width: 780px; }
+  .roster-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .roster-filters {
+    gap: 8px;
+  }
+  .guest-roster-section #playersTable th:nth-child(1),
+  .guest-roster-section #playersTable td:nth-child(1) {
+    min-width: 220px;
+    left: 0;
+  }
+  .guest-roster-section #playersTable th:nth-child(2),
+  .guest-roster-section #playersTable td:nth-child(2) {
+    min-width: 74px;
+    left: 220px;
+  }
+  .guest-roster-section #playersTable th:nth-child(3),
+  .guest-roster-section #playersTable td:nth-child(3) {
+    min-width: 64px;
+    left: 294px;
+  }
+  .salary-chip-main {
+    padding: 3px 6px;
+    font-size: 0.84rem;
+  }
+  .salary-chip-pct {
+    padding: 3px 6px;
+    font-size: 0.67rem;
+  }
+  table { min-width: 980px; }
 }
 @media (max-width: 500px) {
   .players-cards-grid {
