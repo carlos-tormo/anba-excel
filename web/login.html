@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ANBA Login</title>
+  <link rel="stylesheet" href="/styles.css?v=20260329b">
+</head>
+<body>
+  <main class="login-wrap">
+    <section class="login-card">
+      <h1>Sign In</h1>
+      <p>Google users get viewer access by default. Admin access is granted to emails in <code>ADMIN_EMAILS</code>.</p>
+
+      <a id="googleLoginBtn" class="oauth-btn" href="/api/auth/google/start">Continue with Google</a>
+      <p id="googleHelp" class="login-help" hidden>Google login is not configured on this server.</p>
+
+      <hr>
+      <p>Admin fallback login (local credentials)</p>
+      <form id="loginForm">
+        <label>
+          Username
+          <input id="username" name="username" required>
+        </label>
+        <label>
+          Password
+          <input id="password" name="password" type="password" required>
+        </label>
+        <button type="submit">Login as Admin</button>
+      </form>
+
+      <p id="loginError" class="login-error" hidden></p>
+      <p><a href="/">Go to Guest View</a></p>
+    </section>
+  </main>
+  <script src="/login.js" defer></script>
+</body>
+</html>

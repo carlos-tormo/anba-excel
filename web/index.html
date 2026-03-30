@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ANBA League Viewer</title>
+  <link rel="stylesheet" href="/styles.css?v=20260329b">
+</head>
+<body>
+  <header>
+    <h1 id="pageTitle">ANBA League Viewer</h1>
+    <div class="controls">
+      <div id="capStatusPills" class="top-status-wrap"></div>
+      <button id="trackerHomeBtn" type="button">Tracker</button>
+      <span id="authBadge"></span>
+      <a id="adminLink" href="/admin" class="ghost-link">Admin</a>
+      <a id="loginLink" href="/login" class="ghost-link">Login</a>
+      <button id="logoutBtn" class="danger" hidden>Logout</button>
+    </div>
+  </header>
+  <section class="team-strip-section">
+    <label class="team-picker-mobile-label" for="teamPickerMobile">Team</label>
+    <select id="teamPickerMobile" class="team-picker-mobile" aria-label="Team selector"></select>
+    <div id="teamStrip" class="team-strip" aria-label="Team selector"></div>
+  </section>
+
+  <section id="trackerSection">
+    <h2>Tracker</h2>
+    <div class="table-wrap">
+      <table id="trackerTable">
+        <thead>
+          <tr>
+            <th data-sort="team_code">Team</th>
+            <th data-sort="cap_total">CAP total</th>
+            <th data-sort="gasto_total">GASTO total</th>
+            <th data-sort="espacio_cap">Espacio CAP</th>
+            <th data-sort="espacio_luxury">Espacio Luxury</th>
+            <th data-sort="espacio_1er_apron">Espacio 1er apron</th>
+            <th data-sort="espacio_2do_apron">Espacio 2do apron</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="teamMeta" class="cards"></section>
+
+  <section id="rosterSection">
+    <h2>Roster</h2>
+    <div class="table-wrap">
+      <table id="playersTable">
+        <thead>
+          <tr>
+            <th data-sort="name" data-sort-mode="player-cycle">Player</th>
+            <th data-sort="bird_rights">Tipo</th>
+            <th data-sort="years_left">Years</th>
+            <th data-sort="salary_2025_num">2025-26</th>
+            <th data-sort="salary_2026_num">2026-27</th>
+            <th data-sort="salary_2027_num">2027-28</th>
+            <th data-sort="salary_2028_num">2028-29</th>
+            <th data-sort="salary_2029_num">2029-30</th>
+            <th data-sort="salary_2030_num">2030-31</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="deadContractsSection">
+    <h2>Dead Contracts</h2>
+    <div class="table-wrap">
+      <table id="deadContractsTable">
+        <thead>
+          <tr>
+            <th data-sort="dead_type">Type</th>
+            <th data-sort="label">Label</th>
+            <th data-sort="amount_num">Amount</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="assetsSection">
+    <h2>Draft Assets</h2>
+    <div id="draftAssetsBoard" class="draft-assets-board"></div>
+  </section>
+
+  <script src="/guest.js?v=20260329b" defer></script>
+</body>
+</html>

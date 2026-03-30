@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ANBA Admin</title>
+  <link rel="stylesheet" href="/styles.css?v=20260329b">
+</head>
+<body>
+  <header>
+    <h1 id="pageTitle">ANBA Admin Panel</h1>
+    <div class="controls">
+      <div id="capStatusPills" class="top-status-wrap"></div>
+      <a href="/" class="ghost-link">Guest View</a>
+      <button id="trackerHomeBtn" type="button">Tracker</button>
+      <button id="adminMenuBtn" type="button">Admin Menu</button>
+      <button id="reloadBtn">Reload</button>
+      <button id="processTradeBtn" type="button">Process Trade</button>
+      <button id="addEntryBtn" class="add-entry-btn" type="button" aria-label="Add entry" title="Add entry">+</button>
+      <button id="logoutBtn" class="danger">Logout</button>
+
+      <div id="adminMenuPopover" class="add-entry-popover section-hidden" role="menu" aria-label="Admin menu">
+        <button id="openAdminLogPageBtn" type="button">Admin Log</button>
+        <button id="openLeagueSettingsPageBtn" type="button">League Settings</button>
+      </div>
+
+      <div id="addEntryPopover" class="add-entry-popover section-hidden" role="dialog" aria-label="Add entry">
+        <label for="addEntryType">Add type</label>
+        <select id="addEntryType">
+          <option value="player">Player (Roster)</option>
+          <option value="dead_contract">Dead Contract</option>
+          <option value="asset">Asset</option>
+        </select>
+        <div id="addEntryFields" class="add-entry-fields"></div>
+        <div class="add-entry-actions">
+          <button id="addEntrySubmit" type="button">Add</button>
+          <button id="addEntryCancel" type="button" class="danger">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </header>
+  <section class="team-strip-section">
+    <label class="team-picker-mobile-label" for="teamPickerMobile">Team</label>
+    <select id="teamPickerMobile" class="team-picker-mobile" aria-label="Team selector"></select>
+    <div id="teamStrip" class="team-strip" aria-label="Team selector"></div>
+  </section>
+
+  <section id="adminLogsSection" class="section-hidden">
+    <h2>Admin Log</h2>
+    <div class="bulk-bar">
+      <select id="logActionFilter">
+        <option value="">All Actions</option>
+        <option value="create">create</option>
+        <option value="update">update</option>
+        <option value="delete">delete</option>
+        <option value="move">move</option>
+        <option value="trade">trade</option>
+      </select>
+      <select id="logEntityFilter">
+        <option value="">All Entities</option>
+        <option value="player">player</option>
+        <option value="asset">asset</option>
+        <option value="dead_contract">dead_contract</option>
+        <option value="team">team</option>
+        <option value="settings">settings</option>
+        <option value="trade">trade</option>
+      </select>
+      <button id="refreshLogsBtn" type="button">Refresh Logs</button>
+    </div>
+    <div class="table-wrap">
+      <table id="adminLogsTable">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Admin</th>
+            <th>Action</th>
+            <th>Entity</th>
+            <th>Entity ID</th>
+            <th>Team</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="trackerSection">
+    <h2>Tracker</h2>
+    <div class="table-wrap">
+      <table id="trackerTable">
+        <thead>
+          <tr>
+            <th data-sort="team_code">Team</th>
+            <th data-sort="cap_total">CAP total</th>
+            <th data-sort="gasto_total">GASTO total</th>
+            <th data-sort="espacio_cap">Espacio CAP</th>
+            <th data-sort="espacio_luxury">Espacio Luxury</th>
+            <th data-sort="espacio_1er_apron">Espacio 1er apron</th>
+            <th data-sort="espacio_2do_apron">Espacio 2do apron</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="teamMeta" class="cards"></section>
+  <section id="settingsSection" class="settings-panel section-hidden">
+    <h2>League Settings</h2>
+    <div class="settings-row">
+      <label for="salaryCap2025Input">Salary Cap 25/26</label>
+      <input id="salaryCap2025Input" type="text" inputmode="numeric" placeholder="154.647.000">
+      <label for="currentYearSelect">Año actual</label>
+      <select id="currentYearSelect">
+        <option value="2025">2025-26</option>
+        <option value="2026">2026-27</option>
+        <option value="2027">2027-28</option>
+        <option value="2028">2028-29</option>
+        <option value="2029">2029-30</option>
+        <option value="2030">2030-31</option>
+      </select>
+      <button id="saveSettingsBtn">Save Settings</button>
+    </div>
+    <div class="settings-row">
+      <label for="teamGmInput">Current Team GM</label>
+      <input id="teamGmInput" type="text" placeholder="GM name">
+      <button id="saveTeamGmBtn">Save GM</button>
+    </div>
+  </section>
+
+  <section id="rosterSection">
+    <h2>Roster</h2>
+    <div class="bulk-bar">
+      <label><input type="checkbox" id="selectAllPlayers"> Seleccionar todos</label>
+      <select id="bulkTipo">
+        <option value="">Tipo (sin cambio)</option>
+        <option value="Min">Min</option>
+        <option value="Max">Max</option>
+        <option value="Mid">Mid</option>
+        <option value="TMid">TMid</option>
+        <option value="Bi">Bi</option>
+        <option value="10d">10d</option>
+        <option value="R">R</option>
+        <option value="R(2)">R(2)</option>
+        <option value="TW">TW</option>
+        <option value="Room">Room</option>
+        <option value="Reg">Reg</option>
+      </select>
+      <input id="bulkPos" placeholder="Pos (ej: PG)">
+      <input id="bulkRating" placeholder="Rating">
+      <input id="bulkYears" placeholder="Years">
+      <button id="applyBulkBtn">Aplicar a seleccionados</button>
+      <button id="deleteBulkBtn" class="danger">Eliminar seleccionados</button>
+    </div>
+    <div class="table-wrap">
+      <table id="playersTable">
+        <thead>
+          <tr>
+            <th></th>
+            <th data-sort="name" data-sort-mode="player-cycle">Name</th>
+            <th data-sort="position">Pos</th>
+            <th data-sort="bird_rights">Tipo</th>
+            <th data-sort="rating">Rating</th>
+            <th data-sort="years_left">Years</th>
+            <th data-sort="salary_2025_num">2025-26</th>
+            <th data-sort="salary_2026_num">2026-27</th>
+            <th data-sort="salary_2027_num">2027-28</th>
+            <th data-sort="salary_2028_num">2028-29</th>
+            <th data-sort="salary_2029_num">2029-30</th>
+            <th data-sort="salary_2030_num">2030-31</th>
+            <th>Move</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="deadContractsSection">
+    <h2>Dead Contracts</h2>
+    <div class="table-wrap">
+      <table id="deadContractsTable">
+        <thead>
+          <tr>
+            <th data-sort="dead_type">Type</th>
+            <th data-sort="label">Label</th>
+            <th data-sort="amount_num">Amount</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="assetsSection">
+    <h2>Draft Assets</h2>
+    <div id="draftAssetsBoard" class="draft-assets-board"></div>
+  </section>
+
+  <template id="playerRowTemplate">
+    <tr>
+      <td><input type="checkbox" data-role="select-player"></td>
+      <td><input data-field="name"></td>
+      <td><input data-field="position"></td>
+      <td>
+        <select data-field="bird_rights">
+          <option value=""></option>
+          <option value="Min">Min</option>
+          <option value="Max">Max</option>
+          <option value="Mid">Mid</option>
+          <option value="TMid">TMid</option>
+          <option value="Bi">Bi</option>
+          <option value="10d">10d</option>
+          <option value="R">R</option>
+          <option value="R(2)">R(2)</option>
+          <option value="TW">TW</option>
+          <option value="Room">Room</option>
+          <option value="Reg">Reg</option>
+        </select>
+      </td>
+      <td><input data-field="rating"></td>
+      <td><input data-field="years_left"></td>
+      <td>
+        <div class="salary-cell-admin">
+          <input data-field="salary_2025_text">
+          <select data-option-field="option_2025">
+            <option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option>
+          </select>
+        </div>
+      </td>
+      <td>
+        <div class="salary-cell-admin">
+          <input data-field="salary_2026_text">
+          <select data-option-field="option_2026">
+            <option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option>
+          </select>
+        </div>
+      </td>
+      <td>
+        <div class="salary-cell-admin">
+          <input data-field="salary_2027_text">
+          <select data-option-field="option_2027">
+            <option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option>
+          </select>
+        </div>
+      </td>
+      <td>
+        <div class="salary-cell-admin">
+          <input data-field="salary_2028_text">
+          <select data-option-field="option_2028">
+            <option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option>
+          </select>
+        </div>
+      </td>
+      <td>
+        <div class="salary-cell-admin">
+          <input data-field="salary_2029_text">
+          <select data-option-field="option_2029">
+            <option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option>
+          </select>
+        </div>
+      </td>
+      <td>
+        <div class="salary-cell-admin">
+          <input data-field="salary_2030_text">
+          <select data-option-field="option_2030">
+            <option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option>
+          </select>
+        </div>
+      </td>
+      <td><select data-role="move-team"></select></td>
+      <td>
+        <button data-action="move">Move</button>
+        <button data-action="delete" class="danger">Delete</button>
+      </td>
+    </tr>
+  </template>
+
+  <template id="deadContractRowTemplate">
+    <tr>
+      <td>
+        <select data-field="dead_type">
+          <option value="normal">Normal</option>
+          <option value="two_way">Two Way</option>
+        </select>
+      </td>
+      <td><input data-field="label"></td>
+      <td><input data-field="amount_text"></td>
+      <td>
+        <button data-action="delete-dead-contract" class="danger">Delete</button>
+      </td>
+    </tr>
+  </template>
+
+  <div id="tradeModal" class="modal-backdrop section-hidden" role="dialog" aria-label="Process trade">
+    <div class="modal-card trade-modal">
+      <div class="modal-header">
+        <h2>Process Trade</h2>
+        <button id="closeTradeModalBtn" type="button" class="danger">Close</button>
+      </div>
+      <div class="trade-grid">
+        <div class="trade-team-col">
+          <label for="tradeTeamA">Team A</label>
+          <select id="tradeTeamA"></select>
+          <div id="tradePlayersA" class="trade-players-list"></div>
+        </div>
+        <div class="trade-team-col">
+          <label for="tradeTeamB">Team B</label>
+          <select id="tradeTeamB"></select>
+          <div id="tradePlayersB" class="trade-players-list"></div>
+        </div>
+      </div>
+      <div class="trade-actions">
+        <button id="confirmTradeBtn" type="button">Confirm Trade</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin.js?v=20260329b" defer></script>
+</body>
+</html>
