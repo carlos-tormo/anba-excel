@@ -145,6 +145,20 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('first_apron', '195945000', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('second_apron', '207824000', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS dead_contracts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -189,6 +203,9 @@ class LeagueDB:
                 ON sessions(expires_at)
                 """
             )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_players_team_id ON players(team_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_team_type ON assets(team_id, asset_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dead_contracts_team_id ON dead_contracts(team_id)")
             cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(players)").fetchall()
@@ -336,29 +353,74 @@ class LeagueDB:
 
     def list_tracker(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
-            settings = self.get_settings()
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            if current_year < 2025 or current_year > 2030:
+                current_year = 2025
+            salary_num_col = f"salary_{current_year}_num"
+
             team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
             teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
             rows: List[Dict[str, Any]] = []
 
+            player_aggs: Dict[int, Dict[str, float]] = {}
+            players_cur = conn.execute(
+                f"""
+                SELECT
+                    team_id,
+                    SUM(CASE WHEN COALESCE(is_two_way, 0) = 0 THEN COALESCE({salary_num_col}, 0) ELSE 0 END) AS cap_players,
+                    SUM(COALESCE({salary_num_col}, 0)) AS payroll_players
+                FROM players
+                GROUP BY team_id
+                """
+            )
+            for row in players_cur.fetchall():
+                player_aggs[int(row["team_id"])] = {
+                    "cap_players": float(row["cap_players"] or 0.0),
+                    "payroll_players": float(row["payroll_players"] or 0.0),
+                }
+
+            dead_aggs: Dict[int, Dict[str, float]] = {}
+            dead_cur = conn.execute(
+                """
+                SELECT
+                    team_id,
+                    SUM(CASE WHEN dead_type = 'two_way' THEN COALESCE(amount_num, 0) ELSE 0 END) AS dead_two_way,
+                    SUM(CASE WHEN dead_type != 'two_way' THEN COALESCE(amount_num, 0) ELSE 0 END) AS dead_normal
+                FROM dead_contracts
+                GROUP BY team_id
+                """
+            )
+            for row in dead_cur.fetchall():
+                dead_aggs[int(row["team_id"])] = {
+                    "dead_two_way": float(row["dead_two_way"] or 0.0),
+                    "dead_normal": float(row["dead_normal"] or 0.0),
+                }
+
+            salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
+            luxury_cap = salary_cap * 1.215
+            first_apron_setting = parse_float(settings.get("first_apron"))
+            second_apron_setting = parse_float(settings.get("second_apron"))
             for team in teams:
-                players_cur = conn.execute("SELECT * FROM players WHERE team_id = ?", (team["id"],))
-                players = [row_to_dict(players_cur, r) for r in players_cur.fetchall()]
-                assets_cur = conn.execute("SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap'", (team["id"],))
-                assets = [row_to_dict(assets_cur, r) for r in assets_cur.fetchall()]
-                dead_cur = conn.execute("SELECT * FROM dead_contracts WHERE team_id = ?", (team["id"],))
-                dead_contracts = [row_to_dict(dead_cur, r) for r in dead_cur.fetchall()]
-                summary = self._calc_summary(team, players, assets, dead_contracts, settings)
+                team_id = int(team["id"])
+                p = player_aggs.get(team_id, {"cap_players": 0.0, "payroll_players": 0.0})
+                d = dead_aggs.get(team_id, {"dead_two_way": 0.0, "dead_normal": 0.0})
+
+                cap_figure = float(p["cap_players"]) + float(d["dead_normal"])
+                payroll = float(p["payroll_players"]) + float(d["dead_normal"]) + float(d["dead_two_way"])
+                first_apron = float(first_apron_setting) if first_apron_setting is not None else float(team["first_apron"] or 0.0)
+                second_apron = float(second_apron_setting) if second_apron_setting is not None else float(team["second_apron"] or 0.0)
                 rows.append(
                     {
                         "team_code": team["code"],
                         "team_name": team["name"],
-                        "cap_total": summary["cap_figure"],
-                        "gasto_total": summary["payroll"],
-                        "espacio_cap": summary["room_to_cap"],
-                        "espacio_luxury": summary["room_to_luxury"],
-                        "espacio_1er_apron": summary["room_to_first_apron"],
-                        "espacio_2do_apron": summary["room_to_second_apron"],
+                        "cap_total": cap_figure,
+                        "gasto_total": payroll,
+                        "espacio_cap": salary_cap - cap_figure,
+                        "espacio_luxury": luxury_cap - cap_figure,
+                        "espacio_1er_apron": first_apron - cap_figure,
+                        "espacio_2do_apron": second_apron - cap_figure,
                     }
                 )
             return rows
@@ -406,9 +468,9 @@ class LeagueDB:
         payroll = player_payroll + dead_cap_normal + dead_cap_two_way
 
         salary_cap = parse_float(settings.get("salary_cap_2025")) or team["salary_cap"]
-        luxury = team["luxury_cap"]
-        first_apron = team["first_apron"]
-        second_apron = team["second_apron"]
+        luxury = salary_cap * 1.215
+        first_apron = parse_float(settings.get("first_apron")) or team["first_apron"]
+        second_apron = parse_float(settings.get("second_apron")) or team["second_apron"]
 
         return {
             "player_payroll": player_payroll,
@@ -869,6 +931,19 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def end_headers(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path.lower()
+        query = parsed.query
+        if path.endswith(".html") or path in {"/", "/login", "/admin"}:
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        elif path.endswith((".css", ".js", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico")):
+            if query:
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                self.send_header("Cache-Control", "public, max-age=3600")
+        super().end_headers()
+
     def _redirect(self, location: str, headers: Optional[Dict[str, str]] = None) -> None:
         self.send_response(302)
         self.send_header("Location", location)
@@ -1205,12 +1280,17 @@ class Handler(SimpleHTTPRequestHandler):
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < 2025 or current_year > 2030:
                 current_year = 2025
+            salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
             self._json(
                 200,
                 {
                     "settings": {
-                        "salary_cap_2025": parse_float(settings.get("salary_cap_2025")) or 154647000.0,
+                        "salary_cap_2025": salary_cap,
                         "current_year": current_year,
+                        "first_apron": parse_float(settings.get("first_apron")) or 195945000.0,
+                        "second_apron": parse_float(settings.get("second_apron")) or 207824000.0,
+                        "luxury_cap": salary_cap * 1.215,
+                        "minimum_cap_allowed": salary_cap * 0.9,
                     }
                 },
             )
@@ -1385,6 +1465,8 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/settings":
             next_salary_cap: Optional[float] = None
             next_current_year: Optional[int] = None
+            next_first_apron: Optional[float] = None
+            next_second_apron: Optional[float] = None
 
             if "salary_cap_2025" in payload:
                 cap = payload.get("salary_cap_2025")
@@ -1401,7 +1483,26 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 next_current_year = parsed_year
 
-            if next_salary_cap is None and next_current_year is None:
+            if "first_apron" in payload:
+                parsed_first_apron = parse_float(str(payload.get("first_apron")))
+                if parsed_first_apron is None or parsed_first_apron <= 0:
+                    self._json(400, {"error": "invalid_first_apron"})
+                    return
+                next_first_apron = parsed_first_apron
+
+            if "second_apron" in payload:
+                parsed_second_apron = parse_float(str(payload.get("second_apron")))
+                if parsed_second_apron is None or parsed_second_apron <= 0:
+                    self._json(400, {"error": "invalid_second_apron"})
+                    return
+                next_second_apron = parsed_second_apron
+
+            if (
+                next_salary_cap is None
+                and next_current_year is None
+                and next_first_apron is None
+                and next_second_apron is None
+            ):
                 self._json(400, {"error": "settings_payload_required"})
                 return
 
@@ -1409,25 +1510,39 @@ class Handler(SimpleHTTPRequestHandler):
                 self.db.update_setting("salary_cap_2025", str(int(next_salary_cap)))
             if next_current_year is not None:
                 self.db.update_setting("current_year", str(next_current_year))
+            if next_first_apron is not None:
+                self.db.update_setting("first_apron", str(int(next_first_apron)))
+            if next_second_apron is not None:
+                self.db.update_setting("second_apron", str(int(next_second_apron)))
             self._log_admin_action(
                 "update",
                 "settings",
                 None,
                 None,
-                {"salary_cap_2025": next_salary_cap, "current_year": next_current_year},
+                {
+                    "salary_cap_2025": next_salary_cap,
+                    "current_year": next_current_year,
+                    "first_apron": next_first_apron,
+                    "second_apron": next_second_apron,
+                },
             )
 
             merged = self.db.get_settings()
             merged_year = parse_int(merged.get("current_year")) or 2025
             if merged_year < 2025 or merged_year > 2030:
                 merged_year = 2025
+            merged_salary_cap = parse_float(merged.get("salary_cap_2025")) or 154647000.0
             self._json(
                 200,
                 {
                     "ok": True,
                     "settings": {
-                        "salary_cap_2025": parse_float(merged.get("salary_cap_2025")) or 154647000.0,
+                        "salary_cap_2025": merged_salary_cap,
                         "current_year": merged_year,
+                        "first_apron": parse_float(merged.get("first_apron")) or 195945000.0,
+                        "second_apron": parse_float(merged.get("second_apron")) or 207824000.0,
+                        "luxury_cap": merged_salary_cap * 1.215,
+                        "minimum_cap_allowed": merged_salary_cap * 0.9,
                     },
                 },
             )

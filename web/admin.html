@@ -4,11 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
-  <link rel="stylesheet" href="/styles.css?v=20260330k">
+  <link rel="stylesheet" href="/styles.css?v=20260330o">
 </head>
 <body>
   <header>
-    <h1 id="pageTitle">ANBA Admin Panel</h1>
+    <div class="page-title-wrap">
+      <h1 id="pageTitle">ANBA Admin Panel</h1>
+      <div id="pageSubtitle" class="page-subtitle section-hidden"></div>
+    </div>
     <div class="controls">
       <div id="capStatusPills" class="top-status-wrap"></div>
       <a href="/" class="ghost-link">Guest View</a>
@@ -111,6 +114,10 @@
     <div class="settings-row">
       <label for="salaryCap2025Input">Salary Cap 25/26</label>
       <input id="salaryCap2025Input" type="text" inputmode="numeric" placeholder="154.647.000">
+      <label for="firstApronInput">1er Apron</label>
+      <input id="firstApronInput" type="text" inputmode="numeric" placeholder="195.945.000">
+      <label for="secondApronInput">2do Apron</label>
+      <input id="secondApronInput" type="text" inputmode="numeric" placeholder="207.824.000">
       <label for="currentYearSelect">Año actual</label>
       <select id="currentYearSelect">
         <option value="2025">2025-26</option>
@@ -122,15 +129,15 @@
       </select>
       <button id="saveSettingsBtn">Save Settings</button>
     </div>
-    <div class="settings-row">
-      <label for="teamGmInput">Current Team GM</label>
-      <input id="teamGmInput" type="text" placeholder="GM name">
-      <button id="saveTeamGmBtn">Save GM</button>
-    </div>
   </section>
 
   <section id="rosterSection">
     <h2>Roster</h2>
+    <div id="teamGmInlineRow" class="settings-row">
+      <label for="teamGmInlineInput">GM</label>
+      <input id="teamGmInlineInput" type="text" placeholder="GM name">
+      <button id="saveTeamGmInlineBtn">Save GM</button>
+    </div>
     <div class="bulk-bar">
       <label><input type="checkbox" id="selectAllPlayers"> Seleccionar todos</label>
       <select id="bulkTipo">
@@ -205,6 +212,15 @@
   <section id="assetsSection">
     <h2>Draft Assets</h2>
     <div id="draftAssetsBoard" class="draft-assets-board"></div>
+  </section>
+
+  <section id="importantFiguresSection">
+    <h2>Cifras importantes</h2>
+    <div class="table-wrap important-figures-wrap">
+      <table id="importantFiguresTable">
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <template id="playerRowTemplate">
@@ -326,6 +342,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260330f" defer></script>
+  <script src="/admin.js?v=20260330o" defer></script>
 </body>
 </html>

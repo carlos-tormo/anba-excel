@@ -7,6 +7,10 @@ const state = {
   settings: {
     salary_cap_2025: 154647000,
     current_year: 2025,
+    first_apron: 195945000,
+    second_apron: 207824000,
+    luxury_cap: 187896105,
+    minimum_cap_allowed: 139182300,
   },
   selectedPlayerIds: new Set(),
   trade: {
@@ -137,6 +141,16 @@ function seasonLabel(startYear) {
   const y = Number(startYear || 2025);
   const next = String((y + 1) % 100).padStart(2, '0');
   return `${y}-${next}`;
+}
+
+function setPageHeading(title, subtitle = '') {
+  const titleEl = document.getElementById('pageTitle');
+  const subtitleEl = document.getElementById('pageSubtitle');
+  if (titleEl) titleEl.textContent = title || '';
+  if (!subtitleEl) return;
+  const value = String(subtitle || '').trim();
+  subtitleEl.textContent = value;
+  subtitleEl.classList.toggle('section-hidden', !value);
 }
 
 function parseAmount(raw) {
@@ -813,8 +827,9 @@ function setViewMode(mode) {
   document.getElementById('rosterSection').classList.toggle('section-hidden', !showTeam);
   document.getElementById('deadContractsSection').classList.toggle('section-hidden', !showTeam);
   document.getElementById('assetsSection').classList.toggle('section-hidden', !showTeam);
+  document.getElementById('importantFiguresSection').classList.toggle('section-hidden', !showTeam);
 
-  const teamButtons = ['reloadBtn', 'addEntryBtn', 'saveTeamGmBtn', 'processTradeBtn'];
+  const teamButtons = ['reloadBtn', 'addEntryBtn', 'saveTeamGmInlineBtn', 'processTradeBtn'];
   teamButtons.forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.disabled = !showTeam;
@@ -837,14 +852,14 @@ function setupAdminMenu() {
 
   openLogBtn.addEventListener('click', async () => {
     setViewMode('admin-log');
-    document.getElementById('pageTitle').textContent = 'ANBA Admin Log';
+    setPageHeading('ANBA Admin Log', '');
     renderCapStatusPills({});
     await loadAdminLogs();
   });
 
   openSettingsBtn.addEventListener('click', () => {
     setViewMode('admin-settings');
-    document.getElementById('pageTitle').textContent = 'ANBA League Settings';
+    setPageHeading('ANBA League Settings', '');
     renderCapStatusPills({});
   });
 
@@ -885,11 +900,9 @@ function renderCards() {
   const s = state.teamData.summary;
   const currentYear = Number(s.current_year || state.settings.current_year || 2025);
   const currentSeason = seasonLabel(currentYear);
-  const gmText = t.gm ? `GM: ${t.gm}` : 'GM: N/A';
-  document.getElementById('pageTitle').textContent = `${t.name} — ${gmText} (Admin)`;
+  setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
   const items = [
-    { label: 'Salary Cap 25/26', value: formatDots(state.settings.salary_cap_2025), tone: '' },
     { label: `CAP Total (${currentSeason})`, value: formatMoneyDots(s.cap_figure), tone: '' },
     { label: `GASTO Total (${currentSeason})`, value: formatMoneyDots(s.payroll), tone: '' },
     { label: 'Espacio CAP', value: formatMoneyDots(s.room_to_cap), tone: s.room_to_cap >= 0 ? 'positive' : 'negative' },
@@ -903,6 +916,28 @@ function renderCards() {
       <div class="value">${item.value}</div>
     </article>
   `).join('');
+}
+
+function renderImportantFigures() {
+  const tbody = document.querySelector('#importantFiguresTable tbody');
+  if (!tbody) return;
+  const season = seasonLabel(Number(state.settings.current_year || 2025));
+  const salaryCap = Number(state.settings.salary_cap_2025 || 0);
+  const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215);
+  const firstApron = Number(state.settings.first_apron || 0);
+  const secondApron = Number(state.settings.second_apron || 0);
+  const minCap = Number(state.settings.minimum_cap_allowed || salaryCap * 0.9);
+  const rows = [
+    ['Temporada actual', season],
+    ['Salary cap', formatDots(salaryCap)],
+    ['Luxury cap', formatDots(luxuryCap)],
+    ['1er Apron', formatDots(firstApron)],
+    ['2do Apron', formatDots(secondApron)],
+    ['Mínimo cap permitido', formatDots(minCap)],
+  ];
+  tbody.innerHTML = rows
+    .map((row) => `<tr><th>${row[0]}</th><td>${row[1]}</td></tr>`)
+    .join('');
 }
 
 function renderCapStatusPills(summary) {
@@ -1583,14 +1618,15 @@ async function loadTeam(code) {
   state.selectedPlayerIds.clear();
   applyTeamTheme(code);
   setViewMode('team');
-  const gmInput = document.getElementById('teamGmInput');
-  if (gmInput) gmInput.value = data.team.gm || '';
+  const gmInlineInput = document.getElementById('teamGmInlineInput');
+  if (gmInlineInput) gmInlineInput.value = data.team.gm || '';
   renderTeamStrip();
   renderTeamPicker();
   renderCards();
   renderPlayers();
   renderDeadContracts();
   renderAssets();
+  renderImportantFigures();
   await refreshAdminLogsSafe();
 }
 
@@ -1626,12 +1662,41 @@ async function loadTracker() {
   state.selectedPlayerIds.clear();
   applyTeamTheme('');
   setViewMode('tracker');
-  document.getElementById('pageTitle').textContent = 'ANBA Tracker (Admin)';
+  setPageHeading('ANBA Tracker (Admin)', '');
   renderCapStatusPills({});
   renderTeamStrip();
   renderTeamPicker();
   renderTracker();
+  renderImportantFigures();
   await refreshAdminLogsSafe();
+}
+
+async function saveCurrentTeamGm(inputEl, buttonEl) {
+  if (!state.teamCode) {
+    alert('No team selected.');
+    return;
+  }
+  if (!inputEl || !buttonEl) return;
+  const gm = inputEl.value.trim();
+  buttonEl.disabled = true;
+  const oldText = buttonEl.textContent;
+  buttonEl.textContent = 'Saving...';
+  try {
+    await api(`/api/teams/${state.teamCode}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ gm }),
+    });
+    await loadTeam(state.teamCode);
+    buttonEl.textContent = 'Saved';
+    setTimeout(() => {
+      buttonEl.textContent = oldText;
+    }, 900);
+  } catch (err) {
+    buttonEl.textContent = oldText;
+    alert(`GM save failed: ${err.message}`);
+  } finally {
+    buttonEl.disabled = false;
+  }
 }
 
 async function init() {
@@ -1649,8 +1714,12 @@ async function init() {
   const settingsRes = await api('/api/settings');
   state.settings = settingsRes.settings || state.settings;
   const capInput = document.getElementById('salaryCap2025Input');
+  const firstApronInput = document.getElementById('firstApronInput');
+  const secondApronInput = document.getElementById('secondApronInput');
   const currentYearSelect = document.getElementById('currentYearSelect');
   capInput.value = formatDots(state.settings.salary_cap_2025);
+  firstApronInput.value = formatDots(state.settings.first_apron);
+  secondApronInput.value = formatDots(state.settings.second_apron);
   currentYearSelect.value = String(state.settings.current_year || 2025);
 
   const teamsRes = await api('/api/teams');
@@ -1747,6 +1816,16 @@ async function init() {
       alert('Invalid salary cap value.');
       return;
     }
+    const parsedFirstApron = parseAmount(firstApronInput.value);
+    if (!parsedFirstApron || parsedFirstApron <= 0) {
+      alert('Invalid 1st apron value.');
+      return;
+    }
+    const parsedSecondApron = parseAmount(secondApronInput.value);
+    if (!parsedSecondApron || parsedSecondApron <= 0) {
+      alert('Invalid 2nd apron value.');
+      return;
+    }
     const selectedYear = Number(currentYearSelect.value);
     if (!Number.isInteger(selectedYear) || selectedYear < 2025 || selectedYear > 2030) {
       alert('Invalid current year.');
@@ -1763,10 +1842,17 @@ async function init() {
     }
     const result = await api('/api/settings', {
       method: 'PATCH',
-      body: JSON.stringify({ salary_cap_2025: parsed, current_year: selectedYear }),
+      body: JSON.stringify({
+        salary_cap_2025: parsed,
+        current_year: selectedYear,
+        first_apron: parsedFirstApron,
+        second_apron: parsedSecondApron,
+      }),
     });
     state.settings = result.settings || state.settings;
     capInput.value = formatDots(state.settings.salary_cap_2025);
+    firstApronInput.value = formatDots(state.settings.first_apron);
+    secondApronInput.value = formatDots(state.settings.second_apron);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (state.ui.viewMode === 'team' && state.teamCode) {
       await loadTeam(state.teamCode);
@@ -1777,33 +1863,10 @@ async function init() {
     }
   });
 
-  document.getElementById('saveTeamGmBtn').addEventListener('click', async () => {
-    const gmInput = document.getElementById('teamGmInput');
-    const btn = document.getElementById('saveTeamGmBtn');
-    const gm = gmInput.value.trim();
-    if (!state.teamCode) {
-      alert('No team selected.');
-      return;
-    }
-    btn.disabled = true;
-    const oldText = btn.textContent;
-    btn.textContent = 'Saving...';
-    try {
-      await api(`/api/teams/${state.teamCode}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ gm }),
-      });
-      await loadTeam(state.teamCode);
-      btn.textContent = 'Saved';
-      setTimeout(() => {
-        btn.textContent = oldText;
-      }, 900);
-    } catch (err) {
-      btn.textContent = oldText;
-      alert(`GM save failed: ${err.message}`);
-    } finally {
-      btn.disabled = false;
-    }
+  document.getElementById('saveTeamGmInlineBtn').addEventListener('click', async () => {
+    const input = document.getElementById('teamGmInlineInput');
+    const btn = document.getElementById('saveTeamGmInlineBtn');
+    await saveCurrentTeamGm(input, btn);
   });
 
   await loadTracker();

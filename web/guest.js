@@ -8,6 +8,10 @@ const state = {
   settings: {
     salary_cap_2025: 154647000,
     current_year: 2025,
+    first_apron: 195945000,
+    second_apron: 207824000,
+    luxury_cap: 187896105,
+    minimum_cap_allowed: 139182300,
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
@@ -16,6 +20,9 @@ const state = {
   },
   ui: {
     rosterView: 'list',
+    statusPills: [],
+    mobileSidebarOpen: false,
+    mobileInfoOpen: false,
   },
   filters: {
     guaranteedOnly: false,
@@ -384,6 +391,7 @@ function renderAuthControls() {
     loginLink.hidden = false;
     adminLink.hidden = false;
     logoutBtn.hidden = true;
+    syncMobileAuthControls(auth);
     return;
   }
 
@@ -392,6 +400,86 @@ function renderAuthControls() {
   loginLink.hidden = true;
   adminLink.hidden = auth.role !== 'admin';
   logoutBtn.hidden = false;
+  syncMobileAuthControls(auth);
+}
+
+function setPageHeading(title, subtitle = '') {
+  const titleEl = document.getElementById('pageTitle');
+  const subtitleEl = document.getElementById('pageSubtitle');
+  if (titleEl) titleEl.textContent = title || '';
+  if (!subtitleEl) return;
+  const value = String(subtitle || '').trim();
+  subtitleEl.textContent = value;
+  subtitleEl.classList.toggle('section-hidden', !value);
+}
+
+function ensurePlayerMetaModal() {
+  let backdrop = document.getElementById('playerMetaBackdrop');
+  if (backdrop) return backdrop;
+  backdrop = document.createElement('div');
+  backdrop.id = 'playerMetaBackdrop';
+  backdrop.className = 'player-meta-backdrop section-hidden';
+  backdrop.setAttribute('aria-hidden', 'true');
+  backdrop.innerHTML = `
+    <div class="player-meta-card" role="dialog" aria-modal="true" aria-label="Player info">
+      <div class="player-meta-head">
+        <strong id="playerMetaTitle">Player info</strong>
+        <button id="playerMetaCloseBtn" type="button" class="player-meta-close-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="playerMetaContent" class="player-meta-list"></div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const close = () => {
+    backdrop.classList.add('section-hidden');
+    backdrop.setAttribute('aria-hidden', 'true');
+  };
+  const closeBtn = backdrop.querySelector('#playerMetaCloseBtn');
+  if (closeBtn) closeBtn.addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) close();
+  });
+  return backdrop;
+}
+
+function openPlayerMetaModal(playerName, meta) {
+  const backdrop = ensurePlayerMetaModal();
+  const titleEl = document.getElementById('playerMetaTitle');
+  const contentEl = document.getElementById('playerMetaContent');
+  if (!titleEl || !contentEl) return;
+
+  const pos = String(meta.position || '').trim() || 'N/A';
+  const rating = String(meta.rating || '').trim() || 'N/A';
+  const contract = String(meta.contract || '').trim() || 'N/A';
+  const years = String(meta.years || '').trim() || 'N/A';
+  const contractCls = contract === 'N/A' ? '' : typeClass(contract);
+
+  titleEl.textContent = playerName || 'Player info';
+  contentEl.innerHTML = `
+    <div class="player-meta-row"><span class="player-meta-label">Position</span><span class="pos-pill">${escapeHtml(pos)}</span></div>
+    <div class="player-meta-row"><span class="player-meta-label">Rating</span><span class="meta-pill">${escapeHtml(rating)}</span></div>
+    <div class="player-meta-row"><span class="player-meta-label">Tipo</span><span class="${contract === 'N/A' ? 'meta-pill' : `type-pill ${contractCls}`}">${escapeHtml(contract)}</span></div>
+    <div class="player-meta-row"><span class="player-meta-label">Years</span><span class="meta-pill">${escapeHtml(years)}</span></div>
+  `;
+  backdrop.classList.remove('section-hidden');
+  backdrop.setAttribute('aria-hidden', 'false');
+}
+
+function syncMobileAuthControls(auth) {
+  const mobileAdminLink = document.getElementById('mobileAdminLink');
+  const mobileLoginLink = document.getElementById('mobileLoginLink');
+  const mobileLogoutBtn = document.getElementById('mobileLogoutBtn');
+  if (!mobileAdminLink || !mobileLoginLink || !mobileLogoutBtn) return;
+  if (!auth || !auth.authenticated) {
+    mobileAdminLink.hidden = false;
+    mobileLoginLink.hidden = false;
+    mobileLogoutBtn.hidden = true;
+    return;
+  }
+  mobileAdminLink.hidden = auth.role !== 'admin';
+  mobileLoginLink.hidden = true;
+  mobileLogoutBtn.hidden = false;
 }
 
 function teamLogoCandidates(code) {
@@ -445,33 +533,88 @@ function renderTeamStrip() {
   });
 }
 
-function renderTeamPicker() {
-  const picker = document.getElementById('teamPickerMobile');
-  if (!picker) return;
-
-  picker.innerHTML = '';
-  const trackerOpt = document.createElement('option');
-  trackerOpt.value = '';
-  trackerOpt.textContent = 'Tracker';
-  picker.appendChild(trackerOpt);
-
+function renderMobileTeamGrid() {
+  const grid = document.getElementById('mobileTeamGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
   state.teams.forEach((t) => {
-    const opt = document.createElement('option');
-    opt.value = t.code;
-    opt.textContent = `${t.code} - ${t.name}`;
-    picker.appendChild(opt);
-  });
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `team-btn${state.teamCode === t.code ? ' active' : ''}`;
+    btn.title = `${t.code} - ${t.name}`;
 
-  picker.value = state.teamCode || '';
-  picker.onchange = async (e) => {
-    const code = e.target.value;
-    if (!code) {
-      await loadTracker();
-      return;
-    }
-    if (code === state.teamCode) return;
-    await loadTeam(code);
-  };
+    const fallback = document.createElement('span');
+    fallback.className = 'team-fallback';
+    fallback.textContent = t.code;
+
+    const img = document.createElement('img');
+    img.className = 'team-logo';
+    const candidates = teamLogoCandidates(t.code);
+    let idx = 0;
+    const tryNext = () => {
+      if (idx >= candidates.length) {
+        img.style.display = 'none';
+        fallback.style.display = 'flex';
+        return;
+      }
+      img.src = candidates[idx];
+      idx += 1;
+    };
+    img.onerror = () => tryNext();
+    img.onload = () => {
+      fallback.style.display = 'none';
+      img.style.display = 'block';
+    };
+    tryNext();
+
+    btn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      if (t.code === state.teamCode) return;
+      await loadTeam(t.code);
+    });
+    btn.appendChild(fallback);
+    btn.appendChild(img);
+    grid.appendChild(btn);
+  });
+}
+
+function setMobileOverlayVisible(backdropId, isVisible) {
+  const backdrop = document.getElementById(backdropId);
+  if (!backdrop) return;
+  backdrop.classList.toggle('section-hidden', !isVisible);
+  backdrop.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
+}
+
+function openMobileSidebar() {
+  state.ui.mobileSidebarOpen = true;
+  setMobileOverlayVisible('mobileSidebarBackdrop', true);
+}
+
+function closeMobileSidebar() {
+  state.ui.mobileSidebarOpen = false;
+  setMobileOverlayVisible('mobileSidebarBackdrop', false);
+}
+
+function openMobileInfo() {
+  const list = document.getElementById('mobileInfoList');
+  if (!list) return;
+  const pills = state.ui.statusPills || [];
+  if (!pills.length) return;
+  list.innerHTML = pills.map((txt) => `<div class="mobile-info-pill">${escapeHtml(txt)}</div>`).join('');
+  state.ui.mobileInfoOpen = true;
+  setMobileOverlayVisible('mobileInfoBackdrop', true);
+}
+
+function closeMobileInfo() {
+  state.ui.mobileInfoOpen = false;
+  setMobileOverlayVisible('mobileInfoBackdrop', false);
+}
+
+function syncMobileInfoButton() {
+  const btn = document.getElementById('mobileInfoBtn');
+  if (!btn) return;
+  const show = state.teamData && Array.isArray(state.ui.statusPills) && state.ui.statusPills.length > 0;
+  btn.hidden = !show;
 }
 
 function setViewMode(mode) {
@@ -480,6 +623,7 @@ function setViewMode(mode) {
   const rosterSection = document.getElementById('rosterSection');
   const deadContractsSection = document.getElementById('deadContractsSection');
   const assetsSection = document.getElementById('assetsSection');
+  const importantFiguresSection = document.getElementById('importantFiguresSection');
   const showTeam = mode === 'team';
 
   trackerSection.classList.toggle('section-hidden', showTeam);
@@ -487,6 +631,7 @@ function setViewMode(mode) {
   rosterSection.classList.toggle('section-hidden', !showTeam);
   deadContractsSection.classList.toggle('section-hidden', !showTeam);
   assetsSection.classList.toggle('section-hidden', !showTeam);
+  importantFiguresSection.classList.toggle('section-hidden', !showTeam);
 }
 
 function renderTracker() {
@@ -519,11 +664,9 @@ function renderCards() {
   const s = state.teamData.summary;
   const currentYear = Number(s.current_year || state.settings.current_year || 2025);
   const currentSeason = seasonLabel(currentYear);
-  const gmText = t.gm ? `GM: ${t.gm}` : 'GM: N/A';
-  document.getElementById('pageTitle').textContent = `${t.name} — ${gmText}`;
+  setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
   const items = [
-    { label: 'Salary Cap 25/26', value: formatDots(state.settings.salary_cap_2025), tone: '' },
     { label: `CAP Total (${currentSeason})`, value: formatMoneyDots(s.cap_figure), tone: '' },
     { label: `GASTO Total (${currentSeason})`, value: formatMoneyDots(s.payroll), tone: '' },
     { label: 'Espacio CAP', value: formatMoneyDots(s.room_to_cap), tone: s.room_to_cap >= 0 ? 'positive' : 'negative' },
@@ -539,6 +682,28 @@ function renderCards() {
   `).join('');
 }
 
+function renderImportantFigures() {
+  const tbody = document.querySelector('#importantFiguresTable tbody');
+  if (!tbody) return;
+  const season = seasonLabel(Number(state.settings.current_year || 2025));
+  const salaryCap = Number(state.settings.salary_cap_2025 || 0);
+  const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215);
+  const firstApron = Number(state.settings.first_apron || 0);
+  const secondApron = Number(state.settings.second_apron || 0);
+  const minCap = Number(state.settings.minimum_cap_allowed || salaryCap * 0.9);
+  const rows = [
+    ['Temporada actual', season],
+    ['Salary cap', formatDots(salaryCap)],
+    ['Luxury cap', formatDots(luxuryCap)],
+    ['1er Apron', formatDots(firstApron)],
+    ['2do Apron', formatDots(secondApron)],
+    ['Mínimo cap permitido', formatDots(minCap)],
+  ];
+  tbody.innerHTML = rows
+    .map((row) => `<tr><th>${row[0]}</th><td>${row[1]}</td></tr>`)
+    .join('');
+}
+
 function renderCapStatusPills(summary) {
   const wrap = document.getElementById('capStatusPills');
   if (!wrap) return;
@@ -546,7 +711,9 @@ function renderCapStatusPills(summary) {
   if (Number(summary.room_to_luxury) < 0) pills.push('Encima del luxury');
   if (Number(summary.room_to_first_apron) < 0) pills.push('Encima del 1er apron');
   if (Number(summary.room_to_second_apron) < 0) pills.push('Encima del 2do apron');
+  state.ui.statusPills = pills;
   wrap.innerHTML = pills.map((txt) => `<span class="top-status-pill">${txt}</span>`).join('');
+  syncMobileInfoButton();
 }
 
 function preferredRosterView() {
@@ -584,25 +751,34 @@ function setupRosterViewControl() {
 function renderPlayers() {
   const tbody = document.querySelector('#playersTable tbody');
   const cardsWrap = document.getElementById('playersCards');
-  const rosterMeta = document.getElementById('rosterMeta');
   tbody.innerHTML = '';
   if (cardsWrap) cardsWrap.innerHTML = '';
 
   const filtered = filteredPlayers(state.teamData.players);
   const rows = sortedRows(filtered, state.sort.players);
-  if (rosterMeta) {
-    const total = state.teamData.players.length;
-    rosterMeta.textContent = `Active Roster (${rows.length}${rows.length !== total ? ` / ${total}` : ''})`;
-  }
+  const playerHeader = document.querySelector('#playersTable thead th[data-sort-mode="player-cycle"]');
+  if (playerHeader) playerHeader.dataset.label = `PLAYER (${rows.length})`;
+  updateSortIndicators('playersTable', state.sort.players);
   rows.forEach((p) => {
+    const metaPayload = {
+      position: p.position || '',
+      rating: p.rating || '',
+      contract: p.bird_rights || '',
+      years: p.years_left || '',
+    };
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>
         <div class="player-cell">
-          <span class="player-name">${p.name || ''}</span>
+          <div class="player-name-row">
+            <span class="player-name">${p.name || ''}</span>
+            <button type="button" class="player-meta-btn" data-player-meta='${escapeHtml(JSON.stringify(metaPayload))}' aria-label="Show player info">i</button>
+          </div>
           <span class="player-tags">
             ${p.position ? `<span class="pos-pill">${p.position}</span>` : ''}
             ${p.rating ? `<span class="meta-pill">${p.rating}</span>` : ''}
+            ${p.bird_rights ? `<span class="type-pill player-mobile-tag">${p.bird_rights}</span>` : ''}
+            ${p.years_left ? `<span class="meta-pill player-mobile-tag">${p.years_left} yrs</span>` : ''}
           </span>
         </div>
       </td>
@@ -615,12 +791,28 @@ function renderPlayers() {
       <td>${salaryCellHtml(p, 2029, state.filters.showEmptyYears)}</td>
       <td>${salaryCellHtml(p, 2030, state.filters.showEmptyYears)}</td>
     `;
+    const infoBtn = tr.querySelector('.player-meta-btn');
+    if (infoBtn) {
+      infoBtn.addEventListener('click', () => {
+        const raw = infoBtn.dataset.playerMeta || '{}';
+        let meta = {};
+        try {
+          meta = JSON.parse(raw);
+        } catch {
+          meta = {};
+        }
+        openPlayerMetaModal(p.name || 'Player info', meta);
+      });
+    }
     tbody.appendChild(tr);
 
     if (cardsWrap) {
       const contractRows = [2025, 2026, 2027, 2028, 2029, 2030]
-        .map((season) => ({ season, content: salaryBox(p, season) }))
-        .filter((row) => Boolean(row.content));
+        .map((season) => ({
+          season,
+          content: salaryCellHtml(p, season, state.filters.showEmptyYears),
+        }))
+        .filter((row) => state.filters.showEmptyYears || Boolean(salaryBox(p, row.season)));
       const card = document.createElement('article');
       card.className = 'player-card';
       card.innerHTML = `
@@ -876,11 +1068,12 @@ async function loadTeam(code) {
   applyTeamTheme(code);
   setViewMode('team');
   renderTeamStrip();
-  renderTeamPicker();
+  renderMobileTeamGrid();
   renderCards();
   renderPlayers();
   renderDeadContracts();
   renderAssets();
+  renderImportantFigures();
 }
 
 async function fetchTrackerRowsFallback() {
@@ -920,14 +1113,54 @@ async function loadTracker() {
   }
   applyTeamTheme('');
   setViewMode('tracker');
-  document.getElementById('pageTitle').textContent = 'ANBA League Tracker';
+  setPageHeading('ANBA League Tracker', '');
   renderCapStatusPills({});
   renderTeamStrip();
-  renderTeamPicker();
+  renderMobileTeamGrid();
   renderTracker();
+  renderImportantFigures();
+}
+
+function setupMobileNav() {
+  const menuBtn = document.getElementById('mobileMenuBtn');
+  const closeBtn = document.getElementById('mobileSidebarCloseBtn');
+  const backdrop = document.getElementById('mobileSidebarBackdrop');
+  const trackerBtn = document.getElementById('mobileTrackerBtn');
+  const mobileLogoutBtn = document.getElementById('mobileLogoutBtn');
+  const infoBtn = document.getElementById('mobileInfoBtn');
+  const infoCloseBtn = document.getElementById('mobileInfoCloseBtn');
+  const infoBackdrop = document.getElementById('mobileInfoBackdrop');
+
+  if (menuBtn) menuBtn.addEventListener('click', () => openMobileSidebar());
+  if (closeBtn) closeBtn.addEventListener('click', () => closeMobileSidebar());
+  if (backdrop) {
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) closeMobileSidebar();
+    });
+  }
+  if (trackerBtn) {
+    trackerBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadTracker();
+    });
+  }
+  if (mobileLogoutBtn) {
+    mobileLogoutBtn.addEventListener('click', async () => {
+      await api('/api/auth/logout', { method: 'POST', body: '{}' });
+      window.location.href = '/';
+    });
+  }
+  if (infoBtn) infoBtn.addEventListener('click', () => openMobileInfo());
+  if (infoCloseBtn) infoCloseBtn.addEventListener('click', () => closeMobileInfo());
+  if (infoBackdrop) {
+    infoBackdrop.addEventListener('click', (e) => {
+      if (e.target === infoBackdrop) closeMobileInfo();
+    });
+  }
 }
 
 async function init() {
+  ensurePlayerMetaModal();
   state.auth = await api('/api/auth/status');
   state.csrfToken = state.auth?.csrf_token || null;
   const settingsRes = await api('/api/settings');
@@ -945,6 +1178,7 @@ async function init() {
   const teamsRes = await api('/api/teams');
   state.teams = teamsRes.teams;
   setupSorting();
+  setupMobileNav();
   setupRosterViewControl();
   setupRosterFilters();
   let savedRosterView = null;
@@ -955,7 +1189,7 @@ async function init() {
   }
   setRosterView(savedRosterView || preferredRosterView(), false);
   renderTeamStrip();
-  renderTeamPicker();
+  renderMobileTeamGrid();
   const initialTeam = readInitialTeamCode();
   if (initialTeam && state.teams.some((t) => t.code === initialTeam)) {
     await loadTeam(initialTeam);
