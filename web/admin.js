@@ -22,11 +22,15 @@ const state = {
   },
   ui: {
     viewMode: 'tracker',
+    addingPlayer: false,
+    addingDeadContract: false,
+    addingDraftPick: false,
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
     players: { key: 'position', dir: 'asc' },
-    dead_contracts: { key: 'dead_type', dir: 'asc' },
+    dead_contracts: { key: 'label', dir: 'asc' },
+    exceptions: { key: 'label', dir: 'asc' },
   },
 };
 
@@ -311,6 +315,22 @@ function setupSorting() {
       };
       renderDeadContracts();
       updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
+    });
+  });
+
+  updateSortIndicators('exceptionsTable', state.sort.exceptions);
+  document.querySelectorAll('#exceptionsTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.exceptions;
+      state.sort.exceptions = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderExceptions();
+      updateSortIndicators('exceptionsTable', state.sort.exceptions);
     });
   });
 }
@@ -826,7 +846,8 @@ function setViewMode(mode) {
   document.getElementById('adminLogsSection').classList.toggle('section-hidden', !showAdminLog);
   document.getElementById('rosterSection').classList.toggle('section-hidden', !showTeam);
   document.getElementById('deadContractsSection').classList.toggle('section-hidden', !showTeam);
-  document.getElementById('assetsSection').classList.toggle('section-hidden', !showTeam);
+  document.getElementById('exceptionsSection').classList.toggle('section-hidden', !showTeam);
+  document.getElementById('draftAssetsSection').classList.toggle('section-hidden', !showTeam);
   document.getElementById('importantFiguresSection').classList.toggle('section-hidden', !showTeam);
 
   const teamButtons = ['reloadBtn', 'addEntryBtn', 'saveTeamGmInlineBtn', 'processTradeBtn'];
@@ -1071,6 +1092,153 @@ async function movePlayer(playerId, row) {
   });
 }
 
+function cancelAddPlayerRow() {
+  state.ui.addingPlayer = false;
+  renderPlayers();
+}
+
+function playerDraftPayloadFromRow(row) {
+  const payload = { team_code: state.teamCode };
+  const fields = ['name', 'position', 'bird_rights', 'rating', 'years_left'];
+  fields.forEach((key) => {
+    const el = row.querySelector(`[data-new-field="${key}"]`);
+    const value = String(el?.value || '').trim();
+    if (value) payload[key] = value;
+  });
+  for (const season of [2025, 2026, 2027, 2028, 2029, 2030]) {
+    const salary = String(row.querySelector(`[data-new-field="salary_${season}_text"]`)?.value || '').trim();
+    const option = String(row.querySelector(`[data-new-option-field="option_${season}"]`)?.value || '').trim();
+    if (salary) payload[`salary_${season}_text`] = salary;
+    if (option) payload[`option_${season}`] = option;
+  }
+  return payload;
+}
+
+function playerDraftHasContent(payload) {
+  return Object.entries(payload).some(([key, value]) => key !== 'team_code' && String(value || '').trim() !== '');
+}
+
+async function saveAddPlayerRow(row) {
+  const payload = playerDraftPayloadFromRow(row);
+  if (!playerDraftHasContent(payload)) {
+    cancelAddPlayerRow();
+    return;
+  }
+  if (!String(payload.name || '').trim()) payload.name = 'New Player';
+  state.ui.addingPlayer = false;
+  await api('/api/players', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  await loadTeam(state.teamCode);
+}
+
+function bindDraftEditor(container, saveFn, discardFn) {
+  let busy = false;
+  const guardedSave = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      await saveFn();
+    } finally {
+      busy = false;
+    }
+  };
+
+  container.addEventListener('focusout', () => {
+    setTimeout(() => {
+      if (!document.body.contains(container)) return;
+      if (container.contains(document.activeElement)) return;
+      void guardedSave().catch((err) => {
+        alert(err.message);
+      });
+    }, 0);
+  });
+
+  const saveBtn = container.querySelector('[data-action="save-draft"]');
+  const discardBtn = container.querySelector('[data-action="discard-draft"]');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      void guardedSave().catch((err) => {
+        alert(err.message);
+      });
+    });
+  }
+  if (discardBtn) {
+    discardBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      discardFn();
+    });
+  }
+}
+
+function appendAddPlayerRow(tbody) {
+  const tr = document.createElement('tr');
+  tr.className = 'table-add-editor-row';
+  tr.innerHTML = `
+    <td><span class="table-add-badge">+</span></td>
+    <td><input data-new-field="name" data-autofocus placeholder="Player name"></td>
+    <td><input data-new-field="position" placeholder="PG"></td>
+    <td>
+      <select data-new-field="bird_rights">
+        <option value=""></option>
+        <option value="Min">Min</option>
+        <option value="Max">Max</option>
+        <option value="Mid">Mid</option>
+        <option value="TMid">TMid</option>
+        <option value="Bi">Bi</option>
+        <option value="10d">10d</option>
+        <option value="R">R</option>
+        <option value="R(2)">R(2)</option>
+        <option value="TW">TW</option>
+        <option value="Room">Room</option>
+        <option value="Reg">Reg</option>
+      </select>
+    </td>
+    <td><input data-new-field="rating" placeholder="Rating"></td>
+    <td><input data-new-field="years_left" placeholder="Years"></td>
+    <td><div class="salary-cell-admin"><input data-new-field="salary_2025_text" placeholder="0"><select data-new-option-field="option_2025"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
+    <td><div class="salary-cell-admin"><input data-new-field="salary_2026_text" placeholder="0"><select data-new-option-field="option_2026"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
+    <td><div class="salary-cell-admin"><input data-new-field="salary_2027_text" placeholder="0"><select data-new-option-field="option_2027"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
+    <td><div class="salary-cell-admin"><input data-new-field="salary_2028_text" placeholder="0"><select data-new-option-field="option_2028"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
+    <td><div class="salary-cell-admin"><input data-new-field="salary_2029_text" placeholder="0"><select data-new-option-field="option_2029"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
+    <td><div class="salary-cell-admin"><input data-new-field="salary_2030_text" placeholder="0"><select data-new-option-field="option_2030"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
+    <td></td>
+    <td class="table-add-actions-cell">
+      <button type="button" class="inline-save" data-action="save-draft">✓</button>
+      <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
+    </td>
+  `;
+  tbody.appendChild(tr);
+  bindDraftEditor(
+    tr,
+    () => saveAddPlayerRow(tr),
+    () => cancelAddPlayerRow(),
+  );
+  requestAnimationFrame(() => {
+    tr.querySelector('[data-autofocus]')?.focus();
+  });
+}
+
+function appendAddPlayerTriggerRow(tbody) {
+  const tr = document.createElement('tr');
+  tr.className = 'table-add-trigger-row';
+  tr.innerHTML = `
+    <td colspan="14">
+      <button type="button" class="table-add-trigger">
+        <span class="table-add-badge">+</span>
+        <span>Add player</span>
+      </button>
+    </td>
+  `;
+  tr.querySelector('.table-add-trigger').addEventListener('click', () => {
+    state.ui.addingPlayer = true;
+    renderPlayers();
+  });
+  tbody.appendChild(tr);
+}
+
 function renderPlayers() {
   const tbody = document.querySelector('#playersTable tbody');
   const tpl = document.getElementById('playerRowTemplate');
@@ -1246,6 +1414,8 @@ function renderPlayers() {
 
     tbody.appendChild(frag);
   });
+  if (state.ui.addingPlayer) appendAddPlayerRow(tbody);
+  else appendAddPlayerTriggerRow(tbody);
   syncSelectAllPlayers();
 }
 
@@ -1410,8 +1580,122 @@ function renderAssets() {
   };
 
   const picks = (state.teamData.assets || []).filter((a) => a.asset_type === 'draft_pick');
+  const appendDraftAddCard = () => {
+    if (!state.ui.addingDraftPick) {
+      const addCard = document.createElement('button');
+      addCard.type = 'button';
+      addCard.className = 'draft-pick-card draft-pick-card--add';
+      addCard.innerHTML = `
+        <span class="table-add-badge">+</span>
+        <span class="draft-add-label">Add draft asset</span>
+      `;
+      addCard.addEventListener('click', () => {
+        state.ui.addingDraftPick = true;
+        renderAssets();
+      });
+      board.appendChild(addCard);
+      return;
+    }
+
+    const ownerOptions = state.teams
+      .filter((t) => t.code !== state.teamCode)
+      .map((t) => `<option value="${t.code}">${t.code} - ${t.name}</option>`)
+      .join('');
+    const card = document.createElement('article');
+    card.className = 'draft-pick-card admin-pick-card draft-pick-card--editor';
+    card.innerHTML = `
+      <div class="pick-card-logo-wrap pick-card-logo-wrap--placeholder">
+        <span class="pick-owner-fallback">+</span>
+      </div>
+      <div class="pick-editor-grid">
+        <label>Type
+          <select data-new-field="draft_pick_type">
+            <option value="own">Own</option>
+            <option value="acquired">Acquired</option>
+            <option value="sold">Sold</option>
+          </select>
+        </label>
+        <label>Round
+          <select data-new-field="draft_round">
+            <option value="1st">1st round</option>
+            <option value="2nd">2nd round</option>
+          </select>
+        </label>
+        <label>Year
+          <input data-new-field="year" data-autofocus type="text" value="${state.settings.current_year || 2025}">
+        </label>
+        <label data-owner-wrap>Original owner
+          <select data-new-field="original_owner">
+            <option value="">Select owner</option>
+            ${ownerOptions}
+          </select>
+        </label>
+        <label class="pick-detail-input">Details
+          <input data-new-field="detail" type="text" value="">
+        </label>
+      </div>
+      <div class="pick-card-actions">
+        <button type="button" data-action="save-draft" class="inline-save">✓</button>
+        <button type="button" data-action="discard-draft" class="inline-cancel">✕</button>
+      </div>
+    `;
+
+    const typeSelect = card.querySelector('[data-new-field="draft_pick_type"]');
+    const ownerWrap = card.querySelector('[data-owner-wrap]');
+    const ownerSelect = card.querySelector('[data-new-field="original_owner"]');
+    const syncOwnerField = () => {
+      ownerWrap.style.display = typeSelect.value === 'acquired' ? 'grid' : 'none';
+      if (typeSelect.value !== 'acquired') ownerSelect.value = '';
+    };
+    syncOwnerField();
+    typeSelect.addEventListener('change', syncOwnerField);
+
+    const discard = () => {
+      state.ui.addingDraftPick = false;
+      renderAssets();
+    };
+    const save = async () => {
+      const defaultYear = String(state.settings.current_year || 2025);
+      const payload = {
+        team_code: state.teamCode,
+        asset_type: 'draft_pick',
+        draft_pick_type: String(card.querySelector('[data-new-field="draft_pick_type"]')?.value || 'own').trim() || 'own',
+        draft_round: String(card.querySelector('[data-new-field="draft_round"]')?.value || '1st').trim() || '1st',
+        year: String(card.querySelector('[data-new-field="year"]')?.value || '').trim(),
+        detail: String(card.querySelector('[data-new-field="detail"]')?.value || '').trim(),
+        original_owner: String(card.querySelector('[data-new-field="original_owner"]')?.value || '').trim(),
+      };
+      const hasContent = (
+        payload.year !== defaultYear
+        || Boolean(payload.detail)
+        || Boolean(payload.original_owner)
+        || payload.draft_pick_type !== 'own'
+        || payload.draft_round !== '1st'
+      );
+      if (!hasContent) {
+        discard();
+        return;
+      }
+      if (!payload.year) payload.year = defaultYear;
+      payload.label = `${payload.draft_round} pick`;
+      if (payload.draft_pick_type !== 'acquired') payload.original_owner = '';
+      state.ui.addingDraftPick = false;
+      await api('/api/assets', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      await loadTeam(state.teamCode);
+    };
+
+    bindDraftEditor(card, save, discard);
+    board.appendChild(card);
+    requestAnimationFrame(() => {
+      card.querySelector('[data-autofocus]')?.focus();
+    });
+  };
+
   if (picks.length === 0) {
-    board.innerHTML = '<p>No draft picks loaded.</p>';
+    appendDraftAddCard();
     return;
   }
 
@@ -1567,6 +1851,78 @@ function renderAssets() {
     seasonWrap.appendChild(grid);
     board.appendChild(seasonWrap);
   });
+  appendDraftAddCard();
+}
+
+function renderExceptions() {
+  const tbody = document.querySelector('#exceptionsTable tbody');
+  const tpl = document.getElementById('exceptionRowTemplate');
+  if (!tbody || !tpl) return;
+  tbody.innerHTML = '';
+
+  const rows = sortedRows(
+    (state.teamData.assets || []).filter((a) => a.asset_type === 'exception'),
+    state.sort.exceptions,
+  );
+
+  rows.forEach((item) => {
+    const frag = tpl.content.cloneNode(true);
+    const tr = frag.querySelector('tr');
+    tr.dataset.id = item.id;
+
+    tr.querySelectorAll('[data-field]').forEach((el) => {
+      const key = el.dataset.field;
+      el.value = item[key] == null ? '' : item[key];
+      if (key === 'amount_text' && el.tagName === 'INPUT') {
+        const parsed = parseAmount(el.value);
+        if (parsed !== null) el.value = formatDots(parsed);
+      }
+      const wrapper = attachInlineEditor(el, async (value) => {
+        await api(`/api/assets/${item.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ [key]: value }),
+        });
+        await loadTeam(state.teamCode);
+      });
+      if (key === 'amount_text') {
+        wrapper.classList.add('salary-edit');
+      }
+    });
+
+    tr.querySelector('[data-action="delete-exception"]').addEventListener('click', async () => {
+      if (!confirm('Delete this exception?')) return;
+      await api(`/api/assets/${item.id}`, { method: 'DELETE' });
+      await loadTeam(state.teamCode);
+    });
+
+    tbody.appendChild(frag);
+  });
+
+  const addRow = document.createElement('tr');
+  addRow.className = 'table-add-trigger-row';
+  addRow.innerHTML = `
+    <td colspan="5">
+      <button type="button" class="table-add-trigger">
+        <span class="table-add-badge">+</span>
+        <span>Add exception</span>
+      </button>
+    </td>
+  `;
+  addRow.querySelector('.table-add-trigger').addEventListener('click', async () => {
+    const payload = {
+      team_code: state.teamCode,
+      asset_type: 'exception',
+      label: 'New Exception',
+      exception_type: 'Mid-Level',
+      amount_text: '0',
+    };
+    await api('/api/assets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    await loadTeam(state.teamCode);
+  });
+  tbody.appendChild(addRow);
 }
 
 function renderDeadContracts() {
@@ -1587,6 +1943,10 @@ function renderDeadContracts() {
       } else {
         el.value = d[key] == null ? '' : d[key];
       }
+      if (key.startsWith('salary_') && el.tagName === 'INPUT') {
+        const parsed = parseAmount(el.value);
+        if (parsed !== null) el.value = formatDots(parsed);
+      }
 
       const wrapper = attachInlineEditor(el, async (value) => {
         await api(`/api/dead-contracts/${d.id}`, {
@@ -1596,7 +1956,7 @@ function renderDeadContracts() {
         await refreshSummary();
       });
 
-      if (key === 'amount_text') {
+      if (key.startsWith('salary_')) {
         wrapper.classList.add('salary-edit');
       }
     });
@@ -1609,6 +1969,78 @@ function renderDeadContracts() {
 
     tbody.appendChild(frag);
   });
+  if (state.ui.addingDeadContract) {
+    const tr = document.createElement('tr');
+    tr.className = 'table-add-editor-row';
+    tr.innerHTML = `
+      <td><input data-new-field="label" data-autofocus placeholder="Dead Contract"></td>
+      <td>
+        <select data-new-field="dead_type">
+          <option value="normal">Normal</option>
+          <option value="two_way">Two Way</option>
+        </select>
+      </td>
+      <td><input data-new-field="salary_2025_text" placeholder="0"></td>
+      <td><input data-new-field="salary_2026_text" placeholder="0"></td>
+      <td><input data-new-field="salary_2027_text" placeholder="0"></td>
+      <td><input data-new-field="salary_2028_text" placeholder="0"></td>
+      <td><input data-new-field="salary_2029_text" placeholder="0"></td>
+      <td><input data-new-field="salary_2030_text" placeholder="0"></td>
+      <td class="table-add-actions-cell">
+        <button type="button" class="inline-save" data-action="save-draft">✓</button>
+        <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
+      </td>
+    `;
+    const discard = () => {
+      state.ui.addingDeadContract = false;
+      renderDeadContracts();
+    };
+    const save = async () => {
+      const payload = {
+        team_code: state.teamCode,
+        dead_type: String(tr.querySelector('[data-new-field="dead_type"]')?.value || 'normal').trim() || 'normal',
+        label: String(tr.querySelector('[data-new-field="label"]')?.value || '').trim(),
+      };
+      let hasSalary = false;
+      for (const season of [2025, 2026, 2027, 2028, 2029, 2030]) {
+        const value = String(tr.querySelector(`[data-new-field="salary_${season}_text"]`)?.value || '').trim();
+        if (value) hasSalary = true;
+        payload[`salary_${season}_text`] = value || null;
+      }
+      if (!payload.label && !hasSalary && payload.dead_type === 'normal') {
+        discard();
+        return;
+      }
+      if (!payload.label) payload.label = 'Dead Contract';
+      state.ui.addingDeadContract = false;
+      await api('/api/dead-contracts', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      await loadTeam(state.teamCode);
+    };
+    tbody.appendChild(tr);
+    bindDraftEditor(tr, save, discard);
+    requestAnimationFrame(() => {
+      tr.querySelector('[data-autofocus]')?.focus();
+    });
+  } else {
+    const tr = document.createElement('tr');
+    tr.className = 'table-add-trigger-row';
+    tr.innerHTML = `
+      <td colspan="4">
+        <button type="button" class="table-add-trigger">
+          <span class="table-add-badge">+</span>
+          <span>Add dead contract</span>
+        </button>
+      </td>
+    `;
+    tr.querySelector('.table-add-trigger').addEventListener('click', () => {
+      state.ui.addingDeadContract = true;
+      renderDeadContracts();
+    });
+    tbody.appendChild(tr);
+  }
 }
 
 async function loadTeam(code) {
@@ -1625,6 +2057,7 @@ async function loadTeam(code) {
   renderCards();
   renderPlayers();
   renderDeadContracts();
+  renderExceptions();
   renderAssets();
   renderImportantFigures();
   await refreshAdminLogsSafe();
@@ -1727,7 +2160,6 @@ async function init() {
   setupSorting();
   renderTeamStrip();
   renderTeamPicker();
-  setupAddEntryPopover();
   setupTradeModal();
   setupAdminMenu();
   document.getElementById('logActionFilter').addEventListener('change', () => { void loadAdminLogs(); });

@@ -72,6 +72,15 @@ def normalize_dead_type(value: Any) -> str:
     return "normal"
 
 
+def dead_contract_salary_num(dead_contract: Dict[str, Any], season: int) -> float:
+    value = dead_contract.get(f"salary_{season}_num")
+    if value is not None:
+        return float(value or 0.0)
+    if season == 2025:
+        return float(dead_contract.get("amount_num") or 0.0)
+    return 0.0
+
+
 def normalize_pick_type(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"acquired", "sold"}:
@@ -89,6 +98,23 @@ def normalize_pick_round(value: Any) -> str:
 def normalize_team_code(value: Any) -> Optional[str]:
     code = str(value or "").strip().upper()
     return code if code else None
+
+
+def normalize_exception_type(value: Any) -> Optional[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    if "tax" in raw:
+        return "TAXPAYER Mid"
+    if "room" in raw:
+        return "ROOM Mid"
+    if "bia" in raw:
+        return "Bianual"
+    if "traspas" in raw or "trade" in raw:
+        return "Excepción de traspaso"
+    if "mid" in raw:
+        return "Mid-Level"
+    return str(value).strip() or None
 
 
 def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
@@ -224,6 +250,63 @@ class LeagueDB:
                 conn.execute("ALTER TABLE assets ADD COLUMN draft_round TEXT")
             if "original_owner" not in asset_cols:
                 conn.execute("ALTER TABLE assets ADD COLUMN original_owner TEXT")
+            if "exception_type" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN exception_type TEXT")
+            conn.execute(
+                """
+                UPDATE assets
+                SET exception_type = COALESCE(exception_type, label)
+                WHERE asset_type = 'exception' AND COALESCE(exception_type, '') = ''
+                """
+            )
+            dead_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(dead_contracts)").fetchall()
+            }
+            for season in [2025, 2026, 2027, 2028, 2029, 2030]:
+                text_col = f"salary_{season}_text"
+                num_col = f"salary_{season}_num"
+                if text_col not in dead_cols:
+                    conn.execute(f"ALTER TABLE dead_contracts ADD COLUMN {text_col} TEXT")
+                if num_col not in dead_cols:
+                    conn.execute(f"ALTER TABLE dead_contracts ADD COLUMN {num_col} REAL")
+            conn.execute(
+                """
+                UPDATE dead_contracts
+                SET
+                    salary_2025_text = COALESCE(salary_2025_text, amount_text),
+                    salary_2025_num = COALESCE(salary_2025_num, amount_num)
+                WHERE salary_2025_text IS NULL OR salary_2025_num IS NULL
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO dead_contracts (
+                    team_id, row_order, dead_type, label, amount_text, amount_num,
+                    salary_2025_text, salary_2025_num, created_at, updated_at
+                )
+                SELECT
+                    a.team_id,
+                    a.row_order,
+                    'normal',
+                    a.label,
+                    a.amount_text,
+                    a.amount_num,
+                    a.amount_text,
+                    a.amount_num,
+                    a.created_at,
+                    a.updated_at
+                FROM assets a
+                WHERE a.asset_type = 'dead_cap'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM dead_contracts d
+                    WHERE d.team_id = a.team_id
+                      AND d.row_order = a.row_order
+                      AND COALESCE(d.label, '') = COALESCE(a.label, '')
+                  )
+                """
+            )
             conn.commit()
 
     def get_settings(self) -> Dict[str, str]:
@@ -383,11 +466,11 @@ class LeagueDB:
 
             dead_aggs: Dict[int, Dict[str, float]] = {}
             dead_cur = conn.execute(
-                """
+                f"""
                 SELECT
                     team_id,
-                    SUM(CASE WHEN dead_type = 'two_way' THEN COALESCE(amount_num, 0) ELSE 0 END) AS dead_two_way,
-                    SUM(CASE WHEN dead_type != 'two_way' THEN COALESCE(amount_num, 0) ELSE 0 END) AS dead_normal
+                    SUM(CASE WHEN dead_type = 'two_way' THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_two_way,
+                    SUM(CASE WHEN dead_type != 'two_way' THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_normal
                 FROM dead_contracts
                 GROUP BY team_id
                 """
@@ -453,12 +536,12 @@ class LeagueDB:
         player_payroll = sum((p.get(salary_num_key) or 0.0) for p in players)
 
         dead_cap_normal = sum(
-            (d.get("amount_num") or 0.0)
+            dead_contract_salary_num(d, current_year)
             for d in dead_contracts
             if normalize_dead_type(d.get("dead_type")) == "normal"
         )
         dead_cap_two_way = sum(
-            (d.get("amount_num") or 0.0)
+            dead_contract_salary_num(d, current_year)
             for d in dead_contracts
             if normalize_dead_type(d.get("dead_type")) == "two_way"
         )
@@ -642,15 +725,16 @@ class LeagueDB:
             draft_pick_type = normalize_pick_type(payload.get("draft_pick_type")) if asset_type == "draft_pick" else None
             draft_round = normalize_pick_round(payload.get("draft_round")) if asset_type == "draft_pick" else None
             original_owner = normalize_team_code(payload.get("original_owner")) if asset_type == "draft_pick" else None
+            exception_type = normalize_exception_type(payload.get("exception_type")) if asset_type == "exception" else None
             if asset_type == "draft_pick" and draft_pick_type != "acquired":
                 original_owner = None
             cur = conn.execute(
                 """
                 INSERT INTO assets (
                     team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
-                    draft_pick_type, draft_round, original_owner, created_at, updated_at
+                    draft_pick_type, draft_round, original_owner, exception_type, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -664,6 +748,7 @@ class LeagueDB:
                     draft_pick_type,
                     draft_round,
                     original_owner,
+                    exception_type,
                     now,
                     now,
                 ),
@@ -672,7 +757,7 @@ class LeagueDB:
             return int(cur.lastrowid)
 
     def update_asset(self, asset_id: int, payload: Dict[str, Any]) -> bool:
-        fields = ["asset_type", "year", "label", "detail", "amount_text", "draft_pick_type", "draft_round", "original_owner"]
+        fields = ["asset_type", "year", "label", "detail", "amount_text", "draft_pick_type", "draft_round", "original_owner", "exception_type"]
         assigns = []
         vals = []
         for f in fields:
@@ -686,6 +771,9 @@ class LeagueDB:
                 elif f == "original_owner":
                     assigns.append("original_owner = ?")
                     vals.append(normalize_team_code(payload[f]))
+                elif f == "exception_type":
+                    assigns.append("exception_type = ?")
+                    vals.append(normalize_exception_type(payload[f]))
                 else:
                     assigns.append(f"{f} = ?")
                     vals.append(payload[f])
@@ -717,11 +805,27 @@ class LeagueDB:
                 (team["id"],),
             ).fetchone()["mx"]
             now = now_iso()
-            amount_text = payload.get("amount_text")
+            salary_texts = {
+                season: payload.get(f"salary_{season}_text")
+                for season in [2025, 2026, 2027, 2028, 2029, 2030]
+            }
+            legacy_amount_text = payload.get("amount_text")
+            if legacy_amount_text is not None and salary_texts[2025] is None:
+                salary_texts[2025] = legacy_amount_text
+            amount_text = salary_texts[2025]
             cur = conn.execute(
                 """
-                INSERT INTO dead_contracts (team_id, row_order, dead_type, label, amount_text, amount_num, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO dead_contracts (
+                    team_id, row_order, dead_type, label, amount_text, amount_num,
+                    salary_2025_text, salary_2025_num,
+                    salary_2026_text, salary_2026_num,
+                    salary_2027_text, salary_2027_num,
+                    salary_2028_text, salary_2028_num,
+                    salary_2029_text, salary_2029_num,
+                    salary_2030_text, salary_2030_num,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -730,6 +834,18 @@ class LeagueDB:
                     payload.get("label", "Dead Contract"),
                     amount_text,
                     parse_float(amount_text),
+                    salary_texts[2025],
+                    parse_float(salary_texts[2025]),
+                    salary_texts[2026],
+                    parse_float(salary_texts[2026]),
+                    salary_texts[2027],
+                    parse_float(salary_texts[2027]),
+                    salary_texts[2028],
+                    parse_float(salary_texts[2028]),
+                    salary_texts[2029],
+                    parse_float(salary_texts[2029]),
+                    salary_texts[2030],
+                    parse_float(salary_texts[2030]),
                     now,
                     now,
                 ),
@@ -738,7 +854,7 @@ class LeagueDB:
             return int(cur.lastrowid)
 
     def update_dead_contract(self, dead_contract_id: int, payload: Dict[str, Any]) -> bool:
-        fields = ["label", "amount_text"]
+        fields = ["label"]
         assigns = []
         vals = []
         if "dead_type" in payload:
@@ -748,9 +864,21 @@ class LeagueDB:
             if f in payload:
                 assigns.append(f"{f} = ?")
                 vals.append(payload[f])
-        if "amount_text" in payload:
+        legacy_amount = payload.get("amount_text") if "amount_text" in payload else None
+        for season in [2025, 2026, 2027, 2028, 2029, 2030]:
+            text_field = f"salary_{season}_text"
+            if text_field in payload or (season == 2025 and legacy_amount is not None):
+                value = payload[text_field] if text_field in payload else legacy_amount
+                assigns.append(f"{text_field} = ?")
+                vals.append(value)
+                assigns.append(f"salary_{season}_num = ?")
+                vals.append(parse_float(value))
+        if "salary_2025_text" in payload or "amount_text" in payload:
+            amount_source = payload.get("salary_2025_text") if "salary_2025_text" in payload else legacy_amount
+            assigns.append("amount_text = ?")
+            vals.append(amount_source)
             assigns.append("amount_num = ?")
-            vals.append(parse_float(payload["amount_text"]))
+            vals.append(parse_float(amount_source))
         if not assigns:
             return False
         assigns.append("updated_at = ?")

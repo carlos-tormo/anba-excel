@@ -642,6 +642,18 @@ table {
   border-collapse: collapse;
   table-layout: auto;
 }
+.col-meta-name {
+  width: 280px;
+}
+.col-meta-type {
+  width: 86px;
+}
+.col-meta-years {
+  width: 72px;
+}
+.col-season {
+  width: 245px;
+}
 th, td {
   border-bottom: 1px solid var(--border);
   padding: 6px 8px;
@@ -708,6 +720,57 @@ th {
 .guest-roster-section #playersTable tbody tr:nth-child(even) td:nth-child(1) {
   background: #f2f5f9;
 }
+.guest-dead-contracts-section #deadContractsTable th:nth-child(1),
+.guest-dead-contracts-section #deadContractsTable td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  min-width: 438px;
+  z-index: 5;
+  background-clip: padding-box;
+}
+.guest-dead-contracts-section #deadContractsTable thead th:nth-child(1) {
+  z-index: 7;
+}
+.guest-dead-contracts-section #deadContractsTable thead th:nth-child(1) {
+  background: rgb(var(--team-primary-rgb));
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(odd) td:nth-child(1) {
+  background: #f8fafc;
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(even) td:nth-child(1) {
+  background: #f2f5f9;
+}
+.dead-contract-meta-cell {
+  width: 438px;
+  max-width: 438px;
+  min-width: 438px;
+}
+.dead-contract-meta {
+  width: 280px;
+  max-width: 280px;
+}
+.dead-contract-meta .player-name {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(odd) td:nth-child(n+2) {
+  background: #f4f6f8;
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(even) td:nth-child(n+2) {
+  background: #edf1f6;
+}
+.guest-dead-contracts-section #deadContractsTable td:nth-child(1) {
+  background: #f8fafc;
+  box-shadow: 12px 0 14px -14px rgba(15, 23, 42, 0.35);
+  font-weight: 700;
+  color: var(--team-primary);
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(even) td:nth-child(1) {
+  background: #f2f5f9;
+}
 .th-main {
   display: block;
 }
@@ -722,6 +785,10 @@ th {
 
 #playersTable th,
 #playersTable td,
+#deadContractsTable th,
+#deadContractsTable td,
+#exceptionsTable th,
+#exceptionsTable td,
 #assetsTable th,
 #assetsTable td {
   border-right: 1px solid rgba(var(--team-primary-rgb), 0.12);
@@ -729,6 +796,10 @@ th {
 
 #playersTable th:last-child,
 #playersTable td:last-child,
+#deadContractsTable th:last-child,
+#deadContractsTable td:last-child,
+#exceptionsTable th:last-child,
+#exceptionsTable td:last-child,
 #assetsTable th:last-child,
 #assetsTable td:last-child {
   border-right: none;
@@ -742,19 +813,81 @@ th {
 }
 
 #playersTable tbody tr:nth-child(odd) td,
+#deadContractsTable tbody tr:nth-child(odd) td,
+#exceptionsTable tbody tr:nth-child(odd) td,
 #assetsTable tbody tr:nth-child(odd) td {
   background: rgba(var(--team-secondary-rgb), 0.1);
 }
 
 #playersTable tbody tr:nth-child(even) td,
+#deadContractsTable tbody tr:nth-child(even) td,
+#exceptionsTable tbody tr:nth-child(even) td,
 #assetsTable tbody tr:nth-child(even) td {
   background: #f8fafc;
 }
 
 #playersTable td:first-child,
+#deadContractsTable td:first-child,
+#exceptionsTable td:first-child,
 #assetsTable td:first-child {
   font-weight: 700;
   color: var(--team-primary);
+}
+.col-exception-name {
+  width: 320px;
+}
+.col-exception-type {
+  width: 260px;
+}
+.col-exception-value {
+  width: 220px;
+}
+.exception-name-cell {
+  position: relative;
+  white-space: normal;
+}
+.exception-detail-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 8px;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 900;
+  vertical-align: middle;
+}
+.exception-detail-pop {
+  position: absolute;
+  left: 12px;
+  top: calc(100% + 8px);
+  z-index: 15;
+  min-width: 220px;
+  max-width: 340px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: normal;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.exception-row.has-detail:hover .exception-detail-pop,
+.exception-row.has-detail:focus-within .exception-detail-pop,
+.exception-row.has-detail.show-detail .exception-detail-pop {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.exception-type-pill {
+  white-space: nowrap;
 }
 
 .salary-chip {
@@ -1222,6 +1355,25 @@ td.salary-option--nb .salary-pct {
 .type-pill--min { background: #dcfce7; border-color: #86efac; color: #166534; }
 .type-pill--reg { background: #e5e7eb; border-color: #d1d5db; color: #374151; }
 .type-pill--tw { background: #f3e8ff; border-color: #e9d5ff; color: #a64d79; }
+.dead-type-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.75rem;
+  line-height: 1.25;
+  border: 1px solid #cbd5e1;
+}
+.dead-type-pill--normal {
+  background: #e5e7eb;
+  border-color: #d1d5db;
+  color: #374151;
+}
+.dead-type-pill--two_way {
+  background: #f3e8ff;
+  border-color: #e9d5ff;
+  color: #a64d79;
+}
 .type-pill--mid,
 .type-pill--tmid,
 .type-pill--bi,
@@ -1373,6 +1525,88 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
 }
 .inline-save:hover {
   background: #15803d;
+}
+.inline-cancel {
+  background: #dc2626;
+  border: none;
+  color: #fff;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  border-radius: 999px;
+  padding: 0;
+}
+.inline-cancel:hover {
+  background: #b91c1c;
+}
+.table-add-trigger-row td,
+.table-add-editor-row td {
+  background: rgba(255, 255, 255, 0.96) !important;
+}
+.table-add-trigger {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(var(--team-primary-rgb), 0.35);
+  border-radius: 10px;
+  background: rgba(var(--team-secondary-rgb), 0.08);
+  color: var(--team-primary);
+  font-weight: 700;
+}
+.table-add-trigger:hover {
+  background: rgba(var(--team-secondary-rgb), 0.16);
+}
+.table-add-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(var(--team-primary-rgb), 0.9);
+  color: #fff;
+  font-weight: 800;
+  line-height: 1;
+}
+.table-add-actions-cell {
+  white-space: nowrap;
+}
+.table-add-editor-row input,
+.table-add-editor-row select {
+  width: 100%;
+}
+.draft-pick-card--add {
+  min-height: 86px;
+  place-items: center;
+  justify-items: center;
+  border-style: dashed;
+  background:
+    linear-gradient(
+      160deg,
+      rgba(var(--team-secondary-rgb), 0.15),
+      rgba(255, 255, 255, 0.98) 45%
+    );
+  color: var(--team-primary);
+  font-weight: 700;
+}
+.draft-pick-card--add:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 1px rgba(var(--team-primary-rgb), 0.2),
+    0 10px 26px rgba(var(--team-primary-rgb), 0.18);
+}
+.draft-add-label {
+  font-size: 0.88rem;
+}
+.draft-pick-card--editor .pick-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.pick-card-logo-wrap--placeholder {
+  background: rgba(var(--team-primary-rgb), 0.08);
 }
 .login-wrap {
   min-height: 100vh;

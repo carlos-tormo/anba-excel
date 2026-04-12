@@ -19,7 +19,6 @@
       <button id="adminMenuBtn" type="button">Admin Menu</button>
       <button id="reloadBtn">Reload</button>
       <button id="processTradeBtn" type="button">Process Trade</button>
-      <button id="addEntryBtn" class="add-entry-btn" type="button" aria-label="Add entry" title="Add entry">+</button>
       <button id="logoutBtn" class="danger">Logout</button>
 
       <div id="adminMenuPopover" class="add-entry-popover section-hidden" role="menu" aria-label="Admin menu">
@@ -27,19 +26,6 @@
         <button id="openLeagueSettingsPageBtn" type="button">League Settings</button>
       </div>
 
-      <div id="addEntryPopover" class="add-entry-popover section-hidden" role="dialog" aria-label="Add entry">
-        <label for="addEntryType">Add type</label>
-        <select id="addEntryType">
-          <option value="player">Player (Roster)</option>
-          <option value="dead_contract">Dead Contract</option>
-          <option value="asset">Asset</option>
-        </select>
-        <div id="addEntryFields" class="add-entry-fields"></div>
-        <div class="add-entry-actions">
-          <button id="addEntrySubmit" type="button">Add</button>
-          <button id="addEntryCancel" type="button" class="danger">Cancel</button>
-        </div>
-      </div>
     </div>
   </header>
   <section class="team-strip-section">
@@ -198,9 +184,14 @@
       <table id="deadContractsTable">
         <thead>
           <tr>
+            <th data-sort="label">Names</th>
             <th data-sort="dead_type">Type</th>
-            <th data-sort="label">Label</th>
-            <th data-sort="amount_num">Amount</th>
+            <th data-sort="salary_2025_num">2025-26</th>
+            <th data-sort="salary_2026_num">2026-27</th>
+            <th data-sort="salary_2027_num">2027-28</th>
+            <th data-sort="salary_2028_num">2028-29</th>
+            <th data-sort="salary_2029_num">2029-30</th>
+            <th data-sort="salary_2030_num">2030-31</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -210,6 +201,24 @@
   </section>
 
   <section id="assetsSection">
+    <h2>Exceptions</h2>
+    <div class="table-wrap">
+      <table id="exceptionsTable">
+        <thead>
+          <tr>
+            <th data-sort="label">Name</th>
+            <th data-sort="exception_type">Type</th>
+            <th data-sort="amount_num">Value</th>
+            <th data-sort="detail">Details</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="draftAssetsSection">
     <h2>Draft Assets</h2>
     <div id="draftAssetsBoard" class="draft-assets-board"></div>
   </section>
@@ -304,16 +313,42 @@
 
   <template id="deadContractRowTemplate">
     <tr>
+      <td><input data-field="label"></td>
       <td>
         <select data-field="dead_type">
           <option value="normal">Normal</option>
           <option value="two_way">Two Way</option>
         </select>
       </td>
-      <td><input data-field="label"></td>
-      <td><input data-field="amount_text"></td>
+      <td><input data-field="salary_2025_text"></td>
+      <td><input data-field="salary_2026_text"></td>
+      <td><input data-field="salary_2027_text"></td>
+      <td><input data-field="salary_2028_text"></td>
+      <td><input data-field="salary_2029_text"></td>
+      <td><input data-field="salary_2030_text"></td>
       <td>
         <button data-action="delete-dead-contract" class="danger">Delete</button>
+      </td>
+    </tr>
+  </template>
+
+  <template id="exceptionRowTemplate">
+    <tr>
+      <td><input data-field="label"></td>
+      <td>
+        <select data-field="exception_type">
+          <option value=""></option>
+          <option value="Mid-Level">Mid-Level</option>
+          <option value="TAXPAYER Mid">TAXPAYER Mid</option>
+          <option value="ROOM Mid">ROOM Mid</option>
+          <option value="Bianual">Bianual</option>
+          <option value="Excepción de traspaso">Excepción de traspaso</option>
+        </select>
+      </td>
+      <td><input data-field="amount_text"></td>
+      <td><input data-field="detail"></td>
+      <td>
+        <button data-action="delete-exception" class="danger">Delete</button>
       </td>
     </tr>
   </template>

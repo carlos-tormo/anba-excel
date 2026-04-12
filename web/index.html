@@ -90,6 +90,17 @@
     </div>
     <div id="rosterTableWrap" class="table-wrap">
       <table id="playersTable">
+        <colgroup>
+          <col class="col-meta-name">
+          <col class="col-meta-type">
+          <col class="col-meta-years">
+          <col class="col-season">
+          <col class="col-season">
+          <col class="col-season">
+          <col class="col-season">
+          <col class="col-season">
+          <col class="col-season">
+        </colgroup>
         <thead>
           <tr>
             <th data-sort="name" data-sort-mode="player-cycle">Player</th>
@@ -124,15 +135,51 @@
     </div>
   </section>
 
-  <section id="deadContractsSection">
+  <section id="deadContractsSection" class="guest-dead-contracts-section">
     <h2>Dead Contracts</h2>
     <div class="table-wrap">
       <table id="deadContractsTable">
+        <colgroup>
+          <col class="col-meta-name">
+          <col class="col-meta-type">
+          <col class="col-meta-years">
+          <col class="col-season">
+          <col class="col-season">
+          <col class="col-season">
+          <col class="col-season">
+          <col class="col-season">
+          <col class="col-season">
+        </colgroup>
         <thead>
           <tr>
-            <th data-sort="dead_type">Type</th>
-            <th data-sort="label">Label</th>
-            <th data-sort="amount_num">Amount</th>
+            <th data-sort="label" colspan="3">Names</th>
+            <th data-sort="salary_2025_num">2025-26</th>
+            <th data-sort="salary_2026_num">2026-27</th>
+            <th data-sort="salary_2027_num">2027-28</th>
+            <th data-sort="salary_2028_num">2028-29</th>
+            <th data-sort="salary_2029_num">2029-30</th>
+            <th data-sort="salary_2030_num">2030-31</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="exceptionsSection" class="guest-exceptions-section">
+    <h2>Exceptions</h2>
+    <div class="table-wrap">
+      <table id="exceptionsTable">
+        <colgroup>
+          <col class="col-exception-name">
+          <col class="col-exception-type">
+          <col class="col-exception-value">
+        </colgroup>
+        <thead>
+          <tr>
+            <th data-sort="label">Name</th>
+            <th data-sort="exception_type">Type</th>
+            <th data-sort="amount_num">Value</th>
           </tr>
         </thead>
         <tbody></tbody>

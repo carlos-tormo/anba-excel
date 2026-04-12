@@ -62,6 +62,23 @@ def parse_salary_and_option(value: Optional[str]) -> Tuple[Optional[str], Option
     return clean_text, to_float(clean_text), option
 
 
+def infer_exception_type(label: Optional[str]) -> Optional[str]:
+    raw = str(label or "").strip().lower()
+    if not raw:
+        return None
+    if "tax" in raw:
+        return "TAXPAYER Mid"
+    if "room" in raw:
+        return "ROOM Mid"
+    if "bia" in raw:
+        return "Bianual"
+    if "traspas" in raw or "trade" in raw:
+        return "Excepción de traspaso"
+    if "mid" in raw:
+        return "Mid-Level"
+    return str(label).strip() or None
+
+
 class XlsxReader:
     def __init__(self, xlsx_path: str):
         self.xlsx_path = xlsx_path
@@ -191,6 +208,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             detail TEXT,
             amount_text TEXT,
             amount_num REAL,
+            exception_type TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -331,10 +349,10 @@ def insert_exceptions(conn: sqlite3.Connection, team_id: int, cells: Dict[str, s
             continue
         conn.execute(
             """
-            INSERT INTO assets (team_id, row_order, asset_type, year, label, detail, amount_text, amount_num, created_at, updated_at)
-            VALUES (?, ?, 'exception', NULL, ?, ?, ?, ?, ?, ?)
+            INSERT INTO assets (team_id, row_order, asset_type, year, label, detail, amount_text, amount_num, exception_type, created_at, updated_at)
+            VALUES (?, ?, 'exception', NULL, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (team_id, row, label, detail, amount_text, to_float(amount_text), now, now),
+            (team_id, row, label, detail, amount_text, to_float(amount_text), infer_exception_type(label), now, now),
         )
 
 

@@ -16,7 +16,8 @@ const state = {
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
     players: { key: 'position', dir: 'asc' },
-    dead_contracts: { key: 'dead_type', dir: 'asc' },
+    dead_contracts: { key: 'label', dir: 'asc' },
+    exceptions: { key: 'label', dir: 'asc' },
   },
   ui: {
     rosterView: 'list',
@@ -233,6 +234,13 @@ function salaryBox(obj, season) {
   return salaryCellHtml(obj, season, false);
 }
 
+function deadTypePillHtml(value) {
+  const normalized = String(value || '').trim().toLowerCase() === 'two_way' ? 'two_way' : 'normal';
+  if (normalized !== 'two_way') return '';
+  const label = normalized === 'two_way' ? 'Two Way' : 'Normal';
+  return `<span class="dead-type-pill dead-type-pill--${normalized}">${escapeHtml(label)}</span>`;
+}
+
 function salaryText(obj, season) {
   const text = obj[`salary_${season}_text`];
   const num = obj[`salary_${season}_num`];
@@ -362,6 +370,7 @@ function setupSorting() {
   updateSortIndicators('trackerTable', state.sort.tracker);
   updateSortIndicators('playersTable', state.sort.players);
   updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
+  updateSortIndicators('exceptionsTable', state.sort.exceptions);
 
   document.querySelectorAll('#deadContractsTable thead th[data-sort]').forEach((th) => {
     if (!th.dataset.label) th.dataset.label = th.textContent.trim();
@@ -375,6 +384,21 @@ function setupSorting() {
       };
       renderDeadContracts();
       updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
+    });
+  });
+
+  document.querySelectorAll('#exceptionsTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.exceptions;
+      state.sort.exceptions = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderExceptions();
+      updateSortIndicators('exceptionsTable', state.sort.exceptions);
     });
   });
 }
@@ -622,6 +646,7 @@ function setViewMode(mode) {
   const teamMeta = document.getElementById('teamMeta');
   const rosterSection = document.getElementById('rosterSection');
   const deadContractsSection = document.getElementById('deadContractsSection');
+  const exceptionsSection = document.getElementById('exceptionsSection');
   const assetsSection = document.getElementById('assetsSection');
   const importantFiguresSection = document.getElementById('importantFiguresSection');
   const showTeam = mode === 'team';
@@ -630,6 +655,7 @@ function setViewMode(mode) {
   teamMeta.classList.toggle('section-hidden', !showTeam);
   rosterSection.classList.toggle('section-hidden', !showTeam);
   deadContractsSection.classList.toggle('section-hidden', !showTeam);
+  exceptionsSection.classList.toggle('section-hidden', !showTeam);
   assetsSection.classList.toggle('section-hidden', !showTeam);
   importantFiguresSection.classList.toggle('section-hidden', !showTeam);
 }
@@ -1046,11 +1072,58 @@ function renderDeadContracts() {
   const rows = sortedRows(state.teamData.dead_contracts || [], state.sort.dead_contracts);
   rows.forEach((d) => {
     const tr = document.createElement('tr');
+    const typePill = deadTypePillHtml(d.dead_type);
     tr.innerHTML = `
-      <td>${d.dead_type === 'two_way' ? 'Two Way' : 'Normal'}</td>
-      <td>${d.label || ''}</td>
-      <td>${d.amount_num ? `<div class="salary-pill"><span class="salary-main">${formatDots(d.amount_num)}</span></div>` : (d.amount_text || '')}</td>
+      <td colspan="3" class="dead-contract-meta-cell">
+        <div class="player-cell dead-contract-meta">
+          <span class="player-name">${escapeHtml(d.label || '')}</span>
+          <span class="player-tags">
+            ${typePill}
+          </span>
+        </div>
+      </td>
+      <td>${salaryCellHtml(d, 2025, true)}</td>
+      <td>${salaryCellHtml(d, 2026, true)}</td>
+      <td>${salaryCellHtml(d, 2027, true)}</td>
+      <td>${salaryCellHtml(d, 2028, true)}</td>
+      <td>${salaryCellHtml(d, 2029, true)}</td>
+      <td>${salaryCellHtml(d, 2030, true)}</td>
     `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderExceptions() {
+  const tbody = document.querySelector('#exceptionsTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  const rows = sortedRows(
+    (state.teamData.assets || []).filter((a) => a.asset_type === 'exception'),
+    state.sort.exceptions,
+  );
+
+  rows.forEach((item) => {
+    const tr = document.createElement('tr');
+    const hasDetail = Boolean(String(item.detail || '').trim());
+    if (hasDetail) {
+      tr.classList.add('exception-row', 'has-detail');
+      tr.tabIndex = 0;
+    }
+    tr.innerHTML = `
+      <td class="exception-name-cell">
+        <span>${escapeHtml(item.label || '')}</span>
+        ${hasDetail ? '<span class="exception-detail-icon" aria-hidden="true" title="Has details">!</span>' : ''}
+        ${hasDetail ? `<div class="exception-detail-pop">${escapeHtml(item.detail || '')}</div>` : ''}
+      </td>
+      <td>${item.exception_type ? `<span class="type-pill exception-type-pill">${escapeHtml(item.exception_type)}</span>` : ''}</td>
+      <td>${item.amount_num != null ? `<div class="salary-chip"><span class="salary-chip-main">${formatDots(item.amount_num)}</span></div>` : (item.amount_text || '')}</td>
+    `;
+    if (hasDetail) {
+      tr.addEventListener('click', () => {
+        tr.classList.toggle('show-detail');
+      });
+    }
     tbody.appendChild(tr);
   });
 }
@@ -1072,6 +1145,7 @@ async function loadTeam(code) {
   renderCards();
   renderPlayers();
   renderDeadContracts();
+  renderExceptions();
   renderAssets();
   renderImportantFigures();
 }
