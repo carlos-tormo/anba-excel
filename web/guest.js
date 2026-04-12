@@ -507,7 +507,11 @@ function syncMobileAuthControls(auth) {
 }
 
 function teamLogoCandidates(code) {
-  return [`/team-icons/${code}.svg`, `/team-icons/${code}.png`];
+  const normalized = String(code || '').trim().toUpperCase();
+  const fileMap = {
+    LAL: 'lal.png',
+  };
+  return [`/team-icons/${fileMap[normalized] || `${normalized}.png`}`];
 }
 
 function renderTeamStrip() {

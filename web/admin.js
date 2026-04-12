@@ -336,7 +336,11 @@ function setupSorting() {
 }
 
 function teamLogoCandidates(code) {
-  return [`/team-icons/${code}.svg`, `/team-icons/${code}.png`];
+  const normalized = String(code || '').trim().toUpperCase();
+  const fileMap = {
+    LAL: 'lal.png',
+  };
+  return [`/team-icons/${fileMap[normalized] || `${normalized}.png`}`];
 }
 
 function renderTeamStrip() {
@@ -840,15 +844,21 @@ function setViewMode(mode) {
   const showAdminLog = mode === 'admin-log';
   const showLeagueSettings = mode === 'admin-settings';
 
-  document.getElementById('trackerSection').classList.toggle('section-hidden', !showTracker);
-  document.getElementById('teamMeta').classList.toggle('section-hidden', !showTeam);
-  document.getElementById('settingsSection').classList.toggle('section-hidden', !showLeagueSettings);
-  document.getElementById('adminLogsSection').classList.toggle('section-hidden', !showAdminLog);
-  document.getElementById('rosterSection').classList.toggle('section-hidden', !showTeam);
-  document.getElementById('deadContractsSection').classList.toggle('section-hidden', !showTeam);
-  document.getElementById('exceptionsSection').classList.toggle('section-hidden', !showTeam);
-  document.getElementById('draftAssetsSection').classList.toggle('section-hidden', !showTeam);
-  document.getElementById('importantFiguresSection').classList.toggle('section-hidden', !showTeam);
+  const toggleSection = (id, hidden) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('section-hidden', hidden);
+  };
+
+  toggleSection('trackerSection', !showTracker);
+  toggleSection('teamMeta', !showTeam);
+  toggleSection('settingsSection', !showLeagueSettings);
+  toggleSection('adminLogsSection', !showAdminLog);
+  toggleSection('rosterSection', !showTeam);
+  toggleSection('deadContractsSection', !showTeam);
+  toggleSection('exceptionsSection', !showTeam);
+  toggleSection('assetsSection', !showTeam);
+  toggleSection('draftAssetsSection', !showTeam);
+  toggleSection('importantFiguresSection', !showTeam);
 
   const teamButtons = ['reloadBtn', 'addEntryBtn', 'saveTeamGmInlineBtn', 'processTradeBtn'];
   teamButtons.forEach((id) => {
