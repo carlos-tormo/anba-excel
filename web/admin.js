@@ -386,8 +386,13 @@ function renderTeamStrip() {
       await loadTeam(t.code);
     });
 
+    const label = document.createElement('span');
+    label.className = 'team-code-label';
+    label.textContent = t.code;
+
     btn.appendChild(fallback);
     btn.appendChild(img);
+    btn.appendChild(label);
     strip.appendChild(btn);
   });
 }
@@ -933,18 +938,36 @@ function renderCards() {
   const currentSeason = seasonLabel(currentYear);
   setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
-  const items = [
-    { label: `CAP Total (${currentSeason})`, value: formatMoneyDots(s.cap_figure), tone: '' },
-    { label: `GASTO Total (${currentSeason})`, value: formatMoneyDots(s.payroll), tone: '' },
-    { label: 'Espacio CAP', value: formatMoneyDots(s.room_to_cap), tone: s.room_to_cap >= 0 ? 'positive' : 'negative' },
-    { label: 'Espacio Luxury', value: formatMoneyDots(s.room_to_luxury), tone: s.room_to_luxury >= 0 ? 'positive' : 'negative' },
-    { label: 'Espacio 1er Apron', value: formatMoneyDots(s.room_to_first_apron), tone: s.room_to_first_apron >= 0 ? 'positive' : 'negative' },
-    { label: 'Espacio 2do Apron', value: formatMoneyDots(s.room_to_second_apron), tone: s.room_to_second_apron >= 0 ? 'positive' : 'negative' },
+  const cards = [
+    {
+      label: `CAP Total (${currentSeason})`,
+      value: formatMoneyDots(s.cap_figure),
+      modifiers: [
+        { label: 'Espacio CAP', value: formatMoneyDots(s.room_to_cap), tone: s.room_to_cap >= 0 ? 'positive' : 'negative' },
+        { label: 'Espacio Luxury', value: formatMoneyDots(s.room_to_luxury), tone: s.room_to_luxury >= 0 ? 'positive' : 'negative' },
+      ],
+    },
+    {
+      label: `GASTO Total (${currentSeason})`,
+      value: formatMoneyDots(s.payroll),
+      modifiers: [
+        { label: 'Espacio 1er Apron', value: formatMoneyDots(s.room_to_first_apron), tone: s.room_to_first_apron >= 0 ? 'positive' : 'negative' },
+        { label: 'Espacio 2do Apron', value: formatMoneyDots(s.room_to_second_apron), tone: s.room_to_second_apron >= 0 ? 'positive' : 'negative' },
+      ],
+    },
   ];
-  wrap.innerHTML = items.map((item) => `
-    <article class="card ${item.tone ? `card-${item.tone}` : ''}">
-      <div class="label">${item.label}</div>
-      <div class="value">${item.value}</div>
+  wrap.innerHTML = cards.map((card) => `
+    <article class="card card-summary">
+      <div class="label">${card.label}</div>
+      <div class="value">${card.value}</div>
+      <div class="card-modifiers">
+        ${card.modifiers.map((item) => `
+          <div class="card-modifier card-modifier-${item.tone}">
+            <span class="card-modifier-label">${item.label}</span>
+            <span class="card-modifier-value">${item.value}</span>
+          </div>
+        `).join('')}
+      </div>
     </article>
   `).join('');
 }

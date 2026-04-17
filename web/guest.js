@@ -97,15 +97,25 @@ function hexToRgb(hex) {
   };
 }
 
+function darkenRgb(rgb, factor = 0.5) {
+  return {
+    r: Math.max(0, Math.round(rgb.r * factor)),
+    g: Math.max(0, Math.round(rgb.g * factor)),
+    b: Math.max(0, Math.round(rgb.b * factor)),
+  };
+}
+
 function applyTeamTheme(code) {
   const theme = TEAM_THEMES[code] || { primary: '#0f766e', secondary: '#99f6e4' };
   const primaryRgb = hexToRgb(theme.primary);
   const secondaryRgb = hexToRgb(theme.secondary);
+  const primaryDarkRgb = darkenRgb(primaryRgb, 0.42);
   const root = document.documentElement;
   root.style.setProperty('--team-primary', theme.primary);
   root.style.setProperty('--team-secondary', theme.secondary);
   root.style.setProperty('--team-primary-rgb', `${primaryRgb.r}, ${primaryRgb.g}, ${primaryRgb.b}`);
   root.style.setProperty('--team-secondary-rgb', `${secondaryRgb.r}, ${secondaryRgb.g}, ${secondaryRgb.b}`);
+  root.style.setProperty('--team-primary-dark-rgb', `${primaryDarkRgb.r}, ${primaryDarkRgb.g}, ${primaryDarkRgb.b}`);
 }
 
 function money(n) {
@@ -555,8 +565,13 @@ function renderTeamStrip() {
       await loadTeam(t.code);
     });
 
+    const label = document.createElement('span');
+    label.className = 'team-code-label';
+    label.textContent = t.code;
+
     btn.appendChild(fallback);
     btn.appendChild(img);
+    btn.appendChild(label);
     strip.appendChild(btn);
   });
 }
@@ -623,12 +638,56 @@ function closeMobileSidebar() {
   setMobileOverlayVisible('mobileSidebarBackdrop', false);
 }
 
+function buildSummaryCardsHtml(summary) {
+  const s = summary || {};
+  const currentYear = Number(s.current_year || state.settings.current_year || 2025);
+  const currentSeason = seasonLabel(currentYear);
+  const cards = [
+    {
+      label: `CAP Total (${currentSeason})`,
+      value: formatMoneyDots(s.cap_figure),
+      modifiers: [
+        { label: 'Espacio CAP', value: formatMoneyDots(s.room_to_cap), tone: s.room_to_cap >= 0 ? 'positive' : 'negative' },
+        { label: 'Espacio Luxury', value: formatMoneyDots(s.room_to_luxury), tone: s.room_to_luxury >= 0 ? 'positive' : 'negative' },
+      ],
+    },
+    {
+      label: `GASTO Total (${currentSeason})`,
+      value: formatMoneyDots(s.payroll),
+      modifiers: [
+        { label: 'Espacio 1er Apron', value: formatMoneyDots(s.room_to_first_apron), tone: s.room_to_first_apron >= 0 ? 'positive' : 'negative' },
+        { label: 'Espacio 2do Apron', value: formatMoneyDots(s.room_to_second_apron), tone: s.room_to_second_apron >= 0 ? 'positive' : 'negative' },
+      ],
+    },
+  ];
+  return cards.map((card) => `
+    <article class="card card-summary">
+      <div class="label">${card.label}</div>
+      <div class="value">${card.value}</div>
+      <div class="card-modifiers">
+        ${card.modifiers.map((item) => `
+          <div class="card-modifier card-modifier-${item.tone}">
+            <span class="card-modifier-label">${item.label}</span>
+            <span class="card-modifier-value">${item.value}</span>
+          </div>
+        `).join('')}
+      </div>
+    </article>
+  `).join('');
+}
+
 function openMobileInfo() {
   const list = document.getElementById('mobileInfoList');
   if (!list) return;
   const pills = state.ui.statusPills || [];
-  if (!pills.length) return;
-  list.innerHTML = pills.map((txt) => `<div class="mobile-info-pill">${escapeHtml(txt)}</div>`).join('');
+  const summaryHtml = state.teamData?.summary
+    ? `<div class="mobile-info-summary cards">${buildSummaryCardsHtml(state.teamData.summary)}</div>`
+    : '';
+  const pillsHtml = pills.length
+    ? `<div class="mobile-info-status">${pills.map((txt) => `<div class="mobile-info-pill">${escapeHtml(txt)}</div>`).join('')}</div>`
+    : '';
+  if (!summaryHtml && !pillsHtml) return;
+  list.innerHTML = `${summaryHtml}${pillsHtml}`;
   state.ui.mobileInfoOpen = true;
   setMobileOverlayVisible('mobileInfoBackdrop', true);
 }
@@ -641,7 +700,7 @@ function closeMobileInfo() {
 function syncMobileInfoButton() {
   const btn = document.getElementById('mobileInfoBtn');
   if (!btn) return;
-  const show = state.teamData && Array.isArray(state.ui.statusPills) && state.ui.statusPills.length > 0;
+  const show = Boolean(state.teamData);
   btn.hidden = !show;
 }
 
@@ -692,24 +751,9 @@ function renderCards() {
   const wrap = document.getElementById('teamMeta');
   const t = state.teamData.team;
   const s = state.teamData.summary;
-  const currentYear = Number(s.current_year || state.settings.current_year || 2025);
-  const currentSeason = seasonLabel(currentYear);
   setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
-  const items = [
-    { label: `CAP Total (${currentSeason})`, value: formatMoneyDots(s.cap_figure), tone: '' },
-    { label: `GASTO Total (${currentSeason})`, value: formatMoneyDots(s.payroll), tone: '' },
-    { label: 'Espacio CAP', value: formatMoneyDots(s.room_to_cap), tone: s.room_to_cap >= 0 ? 'positive' : 'negative' },
-    { label: 'Espacio Luxury', value: formatMoneyDots(s.room_to_luxury), tone: s.room_to_luxury >= 0 ? 'positive' : 'negative' },
-    { label: 'Espacio 1er Apron', value: formatMoneyDots(s.room_to_first_apron), tone: s.room_to_first_apron >= 0 ? 'positive' : 'negative' },
-    { label: 'Espacio 2do Apron', value: formatMoneyDots(s.room_to_second_apron), tone: s.room_to_second_apron >= 0 ? 'positive' : 'negative' },
-  ];
-  wrap.innerHTML = items.map((item) => `
-    <article class="card ${item.tone ? `card-${item.tone}` : ''}">
-      <div class="label">${item.label}</div>
-      <div class="value">${item.value}</div>
-    </article>
-  `).join('');
+  wrap.innerHTML = buildSummaryCardsHtml(s);
 }
 
 function renderImportantFigures() {
@@ -997,6 +1041,12 @@ function renderAssets() {
         const owner = pick.draft_pick_type === 'acquired'
           ? (pick.original_owner || '')
           : state.teamCode;
+        const title = `${pickRound.toUpperCase()} Pick`;
+        const subtitle = pickType === 'acquired'
+          ? `From ${owner || 'other team'}`
+          : pickType === 'sold'
+            ? 'Sold'
+            : 'Own pick';
         const ownerTheme = TEAM_THEMES[owner] || { primary: '#0f766e', secondary: '#99f6e4' };
         const ownerPrimaryRgb = hexToRgb(ownerTheme.primary);
         const ownerSecondaryRgb = hexToRgb(ownerTheme.secondary);
@@ -1012,32 +1062,11 @@ function renderAssets() {
             <img class="pick-owner-logo" alt="${owner || ''} logo">
           </div>
           <div class="pick-card-meta">
-            <div class="pick-year">${pick.year}</div>
-            <div class="pick-badges">
-              <span class="meta-pill pick-badge-round pick-badge-round--${pickRound === '2nd' ? '2nd' : '1st'}">${pickRound.toUpperCase()}</span>
-              <span class="type-pill pick-badge-type pick-badge-type--${pickType}">${pickType.toUpperCase()}</span>
-            </div>
+            <div class="pick-card-title">${title}</div>
+            <div class="pick-card-subtitle">${escapeHtml(subtitle)}</div>
           </div>
           <div class="pick-detail">${pick.detail || 'No details'}</div>
         `;
-        const roundBadge = card.querySelector('.pick-badge-round');
-        if (roundBadge) {
-          if (pickRound === '1st') {
-            roundBadge.style.background = '#fef3c7';
-            roundBadge.style.borderColor = '#f59e0b';
-            roundBadge.style.color = '#92400e';
-          } else {
-            roundBadge.style.background = '#e2e8f0';
-            roundBadge.style.borderColor = '#94a3b8';
-            roundBadge.style.color = '#334155';
-          }
-        }
-        const typeBadge = card.querySelector('.pick-badge-type');
-        if (typeBadge && pickType === 'acquired') {
-          typeBadge.style.background = '#dcfce7';
-          typeBadge.style.borderColor = '#86efac';
-          typeBadge.style.color = '#166534';
-        }
         const img = card.querySelector('.pick-owner-logo');
         const fallback = card.querySelector('.pick-owner-fallback');
         const candidates = owner ? teamLogoCandidates(owner) : [];
@@ -1110,17 +1139,22 @@ function renderExceptions() {
   rows.forEach((item) => {
     const tr = document.createElement('tr');
     const hasDetail = Boolean(String(item.detail || '').trim());
+    const showTypeTag = String(item.exception_type || '').trim() === 'Excepción de traspaso';
     if (hasDetail) {
       tr.classList.add('exception-row', 'has-detail');
       tr.tabIndex = 0;
     }
     tr.innerHTML = `
-      <td class="exception-name-cell">
-        <span>${escapeHtml(item.label || '')}</span>
-        ${hasDetail ? '<span class="exception-detail-icon" aria-hidden="true" title="Has details">!</span>' : ''}
+      <td colspan="3" class="dead-contract-meta-cell exception-meta-cell">
+        <div class="player-cell dead-contract-meta exception-meta">
+          <span class="player-name">${escapeHtml(item.label || '')}</span>
+          ${hasDetail ? '<span class="exception-detail-icon" aria-hidden="true" title="Has details">!</span>' : ''}
+          <span class="player-tags">
+            ${showTypeTag ? `<span class="type-pill exception-type-pill">${escapeHtml(item.exception_type)}</span>` : ''}
+          </span>
+        </div>
         ${hasDetail ? `<div class="exception-detail-pop">${escapeHtml(item.detail || '')}</div>` : ''}
       </td>
-      <td>${item.exception_type ? `<span class="type-pill exception-type-pill">${escapeHtml(item.exception_type)}</span>` : ''}</td>
       <td>${item.amount_num != null ? `<div class="salary-chip"><span class="salary-chip-main">${formatDots(item.amount_num)}</span></div>` : (item.amount_text || '')}</td>
     `;
     if (hasDetail) {
@@ -1265,7 +1299,10 @@ async function init() {
   } catch {
     savedRosterView = null;
   }
-  setRosterView(savedRosterView || preferredRosterView(), false);
+  const initialRosterView = window.matchMedia('(max-width: 720px)').matches
+    ? 'cards'
+    : (savedRosterView || preferredRosterView());
+  setRosterView(initialRosterView, false);
   renderTeamStrip();
   renderMobileTeamGrid();
   const initialTeam = readInitialTeamCode();

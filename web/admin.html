@@ -30,208 +30,211 @@
     </div>
   </header>
   <section class="team-strip-section">
-    <label class="team-picker-mobile-label" for="teamPickerMobile">Team</label>
-    <select id="teamPickerMobile" class="team-picker-mobile" aria-label="Team selector"></select>
-    <div id="teamStrip" class="team-strip" aria-label="Team selector"></div>
+    <div class="page-shell">
+      <label class="team-picker-mobile-label" for="teamPickerMobile">Team</label>
+      <select id="teamPickerMobile" class="team-picker-mobile" aria-label="Team selector"></select>
+      <div id="teamStrip" class="team-strip" aria-label="Team selector"></div>
+    </div>
   </section>
+  <main class="page-shell">
+    <section id="adminLogsSection" class="section-hidden">
+      <h2>Admin Log</h2>
+      <div class="bulk-bar">
+        <select id="logActionFilter">
+          <option value="">All Actions</option>
+          <option value="create">create</option>
+          <option value="update">update</option>
+          <option value="delete">delete</option>
+          <option value="move">move</option>
+          <option value="trade">trade</option>
+        </select>
+        <select id="logEntityFilter">
+          <option value="">All Entities</option>
+          <option value="player">player</option>
+          <option value="asset">asset</option>
+          <option value="dead_contract">dead_contract</option>
+          <option value="team">team</option>
+          <option value="settings">settings</option>
+          <option value="trade">trade</option>
+        </select>
+        <button id="refreshLogsBtn" type="button">Refresh Logs</button>
+      </div>
+      <div class="table-wrap">
+        <table id="adminLogsTable">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Admin</th>
+              <th>Action</th>
+              <th>Entity</th>
+              <th>Entity ID</th>
+              <th>Team</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="adminLogsSection" class="section-hidden">
-    <h2>Admin Log</h2>
-    <div class="bulk-bar">
-      <select id="logActionFilter">
-        <option value="">All Actions</option>
-        <option value="create">create</option>
-        <option value="update">update</option>
-        <option value="delete">delete</option>
-        <option value="move">move</option>
-        <option value="trade">trade</option>
-      </select>
-      <select id="logEntityFilter">
-        <option value="">All Entities</option>
-        <option value="player">player</option>
-        <option value="asset">asset</option>
-        <option value="dead_contract">dead_contract</option>
-        <option value="team">team</option>
-        <option value="settings">settings</option>
-        <option value="trade">trade</option>
-      </select>
-      <button id="refreshLogsBtn" type="button">Refresh Logs</button>
-    </div>
-    <div class="table-wrap">
-      <table id="adminLogsTable">
-        <thead>
-          <tr>
-            <th>When</th>
-            <th>Admin</th>
-            <th>Action</th>
-            <th>Entity</th>
-            <th>Entity ID</th>
-            <th>Team</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+    <section id="trackerSection">
+      <h2>Tracker</h2>
+      <div class="table-wrap">
+        <table id="trackerTable">
+          <thead>
+            <tr>
+              <th data-sort="team_code">Team</th>
+              <th data-sort="cap_total">CAP total</th>
+              <th data-sort="gasto_total">GASTO total</th>
+              <th data-sort="espacio_cap">Espacio CAP</th>
+              <th data-sort="espacio_luxury">Espacio Luxury</th>
+              <th data-sort="espacio_1er_apron">Espacio 1er apron</th>
+              <th data-sort="espacio_2do_apron">Espacio 2do apron</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="trackerSection">
-    <h2>Tracker</h2>
-    <div class="table-wrap">
-      <table id="trackerTable">
-        <thead>
-          <tr>
-            <th data-sort="team_code">Team</th>
-            <th data-sort="cap_total">CAP total</th>
-            <th data-sort="gasto_total">GASTO total</th>
-            <th data-sort="espacio_cap">Espacio CAP</th>
-            <th data-sort="espacio_luxury">Espacio Luxury</th>
-            <th data-sort="espacio_1er_apron">Espacio 1er apron</th>
-            <th data-sort="espacio_2do_apron">Espacio 2do apron</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+    <section id="teamMeta" class="cards"></section>
+    <section id="settingsSection" class="settings-panel section-hidden">
+      <h2>League Settings</h2>
+      <div class="settings-row">
+        <label for="salaryCap2025Input">Salary Cap 25/26</label>
+        <input id="salaryCap2025Input" type="text" inputmode="numeric" placeholder="154.647.000">
+        <label for="firstApronInput">1er Apron</label>
+        <input id="firstApronInput" type="text" inputmode="numeric" placeholder="195.945.000">
+        <label for="secondApronInput">2do Apron</label>
+        <input id="secondApronInput" type="text" inputmode="numeric" placeholder="207.824.000">
+        <label for="currentYearSelect">Año actual</label>
+        <select id="currentYearSelect">
+          <option value="2025">2025-26</option>
+          <option value="2026">2026-27</option>
+          <option value="2027">2027-28</option>
+          <option value="2028">2028-29</option>
+          <option value="2029">2029-30</option>
+          <option value="2030">2030-31</option>
+        </select>
+        <button id="saveSettingsBtn">Save Settings</button>
+      </div>
+    </section>
 
-  <section id="teamMeta" class="cards"></section>
-  <section id="settingsSection" class="settings-panel section-hidden">
-    <h2>League Settings</h2>
-    <div class="settings-row">
-      <label for="salaryCap2025Input">Salary Cap 25/26</label>
-      <input id="salaryCap2025Input" type="text" inputmode="numeric" placeholder="154.647.000">
-      <label for="firstApronInput">1er Apron</label>
-      <input id="firstApronInput" type="text" inputmode="numeric" placeholder="195.945.000">
-      <label for="secondApronInput">2do Apron</label>
-      <input id="secondApronInput" type="text" inputmode="numeric" placeholder="207.824.000">
-      <label for="currentYearSelect">Año actual</label>
-      <select id="currentYearSelect">
-        <option value="2025">2025-26</option>
-        <option value="2026">2026-27</option>
-        <option value="2027">2027-28</option>
-        <option value="2028">2028-29</option>
-        <option value="2029">2029-30</option>
-        <option value="2030">2030-31</option>
-      </select>
-      <button id="saveSettingsBtn">Save Settings</button>
-    </div>
-  </section>
+    <section id="rosterSection">
+      <h2>Roster</h2>
+      <div id="teamGmInlineRow" class="settings-row">
+        <label for="teamGmInlineInput">GM</label>
+        <input id="teamGmInlineInput" type="text" placeholder="GM name">
+        <button id="saveTeamGmInlineBtn">Save GM</button>
+      </div>
+      <div class="bulk-bar">
+        <label><input type="checkbox" id="selectAllPlayers"> Seleccionar todos</label>
+        <select id="bulkTipo">
+          <option value="">Tipo (sin cambio)</option>
+          <option value="Min">Min</option>
+          <option value="Max">Max</option>
+          <option value="Mid">Mid</option>
+          <option value="TMid">TMid</option>
+          <option value="Bi">Bi</option>
+          <option value="10d">10d</option>
+          <option value="R">R</option>
+          <option value="R(2)">R(2)</option>
+          <option value="TW">TW</option>
+          <option value="Room">Room</option>
+          <option value="Reg">Reg</option>
+        </select>
+        <input id="bulkPos" placeholder="Pos (ej: PG)">
+        <input id="bulkRating" placeholder="Rating">
+        <input id="bulkYears" placeholder="Years">
+        <button id="applyBulkBtn">Aplicar a seleccionados</button>
+        <button id="deleteBulkBtn" class="danger">Eliminar seleccionados</button>
+      </div>
+      <div id="selectedPlayerActions" class="bulk-bar section-hidden">
+        <span id="selectedPlayersCount" class="selected-actions-label">0 selected</span>
+        <button id="selectedDeleteBtn" type="button" class="danger">Delete</button>
+        <button id="selectedDuplicateBtn" type="button">Duplicate</button>
+        <button id="selectedTradeBtn" type="button">Trade</button>
+        <button id="selectedCutBtn" type="button" class="danger">Cut</button>
+      </div>
+      <div class="table-wrap">
+        <table id="playersTable">
+          <thead>
+            <tr>
+              <th></th>
+              <th data-sort="name" data-sort-mode="player-cycle">Name</th>
+              <th data-sort="position">Pos</th>
+              <th data-sort="bird_rights">Tipo</th>
+              <th data-sort="rating">Rating</th>
+              <th data-sort="years_left">Years</th>
+              <th data-sort="salary_2025_num">2025-26</th>
+              <th data-sort="salary_2026_num">2026-27</th>
+              <th data-sort="salary_2027_num">2027-28</th>
+              <th data-sort="salary_2028_num">2028-29</th>
+              <th data-sort="salary_2029_num">2029-30</th>
+              <th data-sort="salary_2030_num">2030-31</th>
+              <th>Move</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="rosterSection">
-    <h2>Roster</h2>
-    <div id="teamGmInlineRow" class="settings-row">
-      <label for="teamGmInlineInput">GM</label>
-      <input id="teamGmInlineInput" type="text" placeholder="GM name">
-      <button id="saveTeamGmInlineBtn">Save GM</button>
-    </div>
-    <div class="bulk-bar">
-      <label><input type="checkbox" id="selectAllPlayers"> Seleccionar todos</label>
-      <select id="bulkTipo">
-        <option value="">Tipo (sin cambio)</option>
-        <option value="Min">Min</option>
-        <option value="Max">Max</option>
-        <option value="Mid">Mid</option>
-        <option value="TMid">TMid</option>
-        <option value="Bi">Bi</option>
-        <option value="10d">10d</option>
-        <option value="R">R</option>
-        <option value="R(2)">R(2)</option>
-        <option value="TW">TW</option>
-        <option value="Room">Room</option>
-        <option value="Reg">Reg</option>
-      </select>
-      <input id="bulkPos" placeholder="Pos (ej: PG)">
-      <input id="bulkRating" placeholder="Rating">
-      <input id="bulkYears" placeholder="Years">
-      <button id="applyBulkBtn">Aplicar a seleccionados</button>
-      <button id="deleteBulkBtn" class="danger">Eliminar seleccionados</button>
-    </div>
-    <div id="selectedPlayerActions" class="bulk-bar section-hidden">
-      <span id="selectedPlayersCount" class="selected-actions-label">0 selected</span>
-      <button id="selectedDeleteBtn" type="button" class="danger">Delete</button>
-      <button id="selectedDuplicateBtn" type="button">Duplicate</button>
-      <button id="selectedTradeBtn" type="button">Trade</button>
-      <button id="selectedCutBtn" type="button" class="danger">Cut</button>
-    </div>
-    <div class="table-wrap">
-      <table id="playersTable">
-        <thead>
-          <tr>
-            <th></th>
-            <th data-sort="name" data-sort-mode="player-cycle">Name</th>
-            <th data-sort="position">Pos</th>
-            <th data-sort="bird_rights">Tipo</th>
-            <th data-sort="rating">Rating</th>
-            <th data-sort="years_left">Years</th>
-            <th data-sort="salary_2025_num">2025-26</th>
-            <th data-sort="salary_2026_num">2026-27</th>
-            <th data-sort="salary_2027_num">2027-28</th>
-            <th data-sort="salary_2028_num">2028-29</th>
-            <th data-sort="salary_2029_num">2029-30</th>
-            <th data-sort="salary_2030_num">2030-31</th>
-            <th>Move</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+    <section id="deadContractsSection">
+      <h2>Dead Contracts</h2>
+      <div class="table-wrap">
+        <table id="deadContractsTable">
+          <thead>
+            <tr>
+              <th data-sort="label">Names</th>
+              <th data-sort="dead_type">Type</th>
+              <th data-sort="salary_2025_num">2025-26</th>
+              <th data-sort="salary_2026_num">2026-27</th>
+              <th data-sort="salary_2027_num">2027-28</th>
+              <th data-sort="salary_2028_num">2028-29</th>
+              <th data-sort="salary_2029_num">2029-30</th>
+              <th data-sort="salary_2030_num">2030-31</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="deadContractsSection">
-    <h2>Dead Contracts</h2>
-    <div class="table-wrap">
-      <table id="deadContractsTable">
-        <thead>
-          <tr>
-            <th data-sort="label">Names</th>
-            <th data-sort="dead_type">Type</th>
-            <th data-sort="salary_2025_num">2025-26</th>
-            <th data-sort="salary_2026_num">2026-27</th>
-            <th data-sort="salary_2027_num">2027-28</th>
-            <th data-sort="salary_2028_num">2028-29</th>
-            <th data-sort="salary_2029_num">2029-30</th>
-            <th data-sort="salary_2030_num">2030-31</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+    <section id="assetsSection">
+      <h2>Exceptions</h2>
+      <div class="table-wrap">
+        <table id="exceptionsTable">
+          <thead>
+            <tr>
+              <th data-sort="label">Name</th>
+              <th data-sort="exception_type">Type</th>
+              <th data-sort="amount_num">Value</th>
+              <th data-sort="detail">Details</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="assetsSection">
-    <h2>Exceptions</h2>
-    <div class="table-wrap">
-      <table id="exceptionsTable">
-        <thead>
-          <tr>
-            <th data-sort="label">Name</th>
-            <th data-sort="exception_type">Type</th>
-            <th data-sort="amount_num">Value</th>
-            <th data-sort="detail">Details</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+    <section id="draftAssetsSection">
+      <h2>Draft Assets</h2>
+      <div id="draftAssetsBoard" class="draft-assets-board"></div>
+    </section>
 
-  <section id="draftAssetsSection">
-    <h2>Draft Assets</h2>
-    <div id="draftAssetsBoard" class="draft-assets-board"></div>
-  </section>
-
-  <section id="importantFiguresSection">
-    <h2>Cifras importantes</h2>
-    <div class="table-wrap important-figures-wrap">
-      <table id="importantFiguresTable">
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+    <section id="importantFiguresSection">
+      <h2>Cifras importantes</h2>
+      <div class="table-wrap important-figures-wrap">
+        <table id="importantFiguresTable">
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
 
   <template id="playerRowTemplate">
     <tr>
