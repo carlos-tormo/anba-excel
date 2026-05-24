@@ -157,6 +157,15 @@ function seasonLabel(startYear) {
   return `${y}-${next}`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function visibleSeasonYears() {
   const currentYear = Number(state.settings.current_year || 2025);
   return ALL_SEASONS.filter((season) => season >= currentYear);
@@ -301,6 +310,66 @@ async function api(path, opts = {}) {
     state.csrfToken = data.csrf_token;
   }
   return data;
+}
+
+function filenameFromContentDisposition(headerValue, fallback) {
+  const header = String(headerValue || '');
+  const utfMatch = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utfMatch) {
+    try {
+      return decodeURIComponent(utfMatch[1].trim());
+    } catch {
+      return fallback;
+    }
+  }
+  const plainMatch = header.match(/filename="?([^";]+)"?/i);
+  return plainMatch ? plainMatch[1].trim() : fallback;
+}
+
+async function downloadBackup(buttonEl) {
+  const originalText = buttonEl?.textContent || 'Download backup';
+  if (buttonEl) {
+    buttonEl.disabled = true;
+    buttonEl.textContent = 'Preparing...';
+  }
+  try {
+    const headers = {};
+    if (state.csrfToken) headers['X-CSRF-Token'] = state.csrfToken;
+    const res = await fetch('/api/admin/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: '{}',
+    });
+    if (!res.ok) {
+      if (res.status === 401) {
+        window.location.href = '/login';
+        throw new Error('Unauthorized');
+      }
+      if (res.status === 403) {
+        throw new Error('Security check failed. Refresh and log in again.');
+      }
+      const text = await res.text();
+      throw new Error(`Backup failed (${res.status}): ${text}`);
+    }
+    const blob = await res.blob();
+    const filename = filenameFromContentDisposition(
+      res.headers.get('Content-Disposition'),
+      `anba-league-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.db`,
+    );
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } finally {
+    if (buttonEl) {
+      buttonEl.disabled = false;
+      buttonEl.textContent = originalText;
+    }
+  }
 }
 
 function sortValue(row, key) {
@@ -2691,6 +2760,15 @@ async function init() {
       await loadTracker();
     } else {
       await refreshAdminLogsSafe();
+    }
+  });
+
+  document.getElementById('downloadBackupBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('downloadBackupBtn');
+    try {
+      await downloadBackup(btn);
+    } catch (err) {
+      alert(err.message || String(err));
     }
   });
 

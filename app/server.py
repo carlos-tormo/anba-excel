@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import sqlite3
+import tempfile
 from datetime import UTC, datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -144,6 +145,21 @@ class LeagueDB:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    def backup_bytes(self) -> bytes:
+        fd, tmp_path = tempfile.mkstemp(prefix="anba-backup-", suffix=".db")
+        os.close(fd)
+        try:
+            with self.connect() as source:
+                with sqlite3.connect(tmp_path) as target:
+                    source.backup(target)
+            with open(tmp_path, "rb") as fh:
+                return fh.read()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
 
     def ensure_auth_schema(self) -> None:
         with self.connect() as conn:
@@ -1588,6 +1604,16 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _bytes_response(self, status: int, data: bytes, content_type: str, headers: Optional[Dict[str, str]] = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        if headers:
+            for k, v in headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(data)
+
     def end_headers(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.lower()
@@ -2025,6 +2051,27 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._require_admin():
             return
         if not self._require_csrf():
+            return
+
+        if parsed.path == "/api/admin/backup":
+            try:
+                data = self.db.backup_bytes()
+            except (OSError, sqlite3.Error):
+                self._json(500, {"error": "backup_failed"})
+                return
+            timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+            filename = f"anba-league-{timestamp}.db"
+            self._log_admin_action("download", "backup", filename, None, {"bytes": len(data)})
+            self._bytes_response(
+                200,
+                data,
+                "application/vnd.sqlite3",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
             return
 
         if parsed.path == "/api/players":

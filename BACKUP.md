@@ -27,6 +27,8 @@
 scripts/backup_db.sh /absolute/path/to/data/league.db /var/backups/anba
 ```
 
+Admins can also download an on-demand SQLite backup from **Admin > League Settings > Download backup**.
+
 ## Manual prune
 ```bash
 scripts/prune_backups.sh /var/backups/anba 7
