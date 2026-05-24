@@ -1273,6 +1273,8 @@ function renderAssets() {
       .forEach((pick) => {
         const pickType = normalizedType(pick);
         const pickRound = normalizedRound(pick);
+        const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
+        const isProtected = Number(pick.draft_pick_protected || 0) !== 0;
         const owner = pick.draft_pick_type === 'acquired'
           ? (pick.original_owner || '')
           : state.teamCode;
@@ -1282,15 +1284,21 @@ function renderAssets() {
           : pickType === 'sold'
             ? 'Sold'
             : 'Own pick';
+        const badgesHtml = [
+          isRestricted ? '<span class="pick-restricted-tag">Restricted</span>' : '',
+          isProtected ? '<span class="pick-protected-tag">Protected</span>' : '',
+        ].filter(Boolean).join('');
         const ownerTheme = TEAM_THEMES[owner] || { primary: '#0f766e', secondary: '#99f6e4' };
         const ownerPrimaryRgb = hexToRgb(ownerTheme.primary);
         const ownerSecondaryRgb = hexToRgb(ownerTheme.secondary);
         const card = document.createElement('article');
         card.className = 'draft-pick-card';
+        if (isRestricted) card.classList.add('draft-pick-card--restricted');
+        if (isProtected) card.classList.add('draft-pick-card--protected');
         if (pickType === 'sold') card.classList.add('draft-pick-card--sold');
         card.style.setProperty('--pick-primary-rgb', `${ownerPrimaryRgb.r}, ${ownerPrimaryRgb.g}, ${ownerPrimaryRgb.b}`);
         card.style.setProperty('--pick-secondary-rgb', `${ownerSecondaryRgb.r}, ${ownerSecondaryRgb.g}, ${ownerSecondaryRgb.b}`);
-        card.tabIndex = 0;
+        if (isProtected) card.tabIndex = 0;
         card.innerHTML = `
           <div class="pick-card-logo-wrap">
             <span class="pick-owner-fallback">${owner || 'N/A'}</span>
@@ -1299,8 +1307,9 @@ function renderAssets() {
           <div class="pick-card-meta">
             <div class="pick-card-title">${title}</div>
             <div class="pick-card-subtitle">${escapeHtml(subtitle)}</div>
+            ${badgesHtml ? `<div class="pick-card-badges">${badgesHtml}</div>` : ''}
           </div>
-          <div class="pick-detail">${pick.detail || 'No details'}</div>
+          ${isProtected ? `<div class="pick-detail">${escapeHtml(pick.detail || 'No protection details')}</div>` : ''}
         `;
         const img = card.querySelector('.pick-owner-logo');
         const fallback = card.querySelector('.pick-owner-fallback');
@@ -1322,9 +1331,11 @@ function renderAssets() {
         };
         tryNext();
 
-        card.addEventListener('click', () => {
-          card.classList.toggle('show-detail');
-        });
+        if (isProtected) {
+          card.addEventListener('click', () => {
+            card.classList.toggle('show-detail');
+          });
+        }
         grid.appendChild(card);
       });
 

@@ -66,6 +66,14 @@ def parse_int(value: Optional[str]) -> Optional[int]:
         return None
 
 
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "checked"}
+
+
 def normalize_dead_type(value: Any) -> str:
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if raw in {"two_way", "tw"}:
@@ -346,6 +354,10 @@ class LeagueDB:
                 conn.execute("ALTER TABLE assets ADD COLUMN original_owner TEXT")
             if "exception_type" not in asset_cols:
                 conn.execute("ALTER TABLE assets ADD COLUMN exception_type TEXT")
+            if "draft_pick_restricted" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_restricted INTEGER NOT NULL DEFAULT 0")
+            if "draft_pick_protected" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_protected INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """
                 UPDATE assets
@@ -987,15 +999,18 @@ class LeagueDB:
             draft_round = normalize_pick_round(payload.get("draft_round")) if asset_type == "draft_pick" else None
             original_owner = normalize_team_code(payload.get("original_owner")) if asset_type == "draft_pick" else None
             exception_type = normalize_exception_type(payload.get("exception_type")) if asset_type == "exception" else None
+            draft_pick_restricted = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_restricted")) else 0
+            draft_pick_protected = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_protected")) else 0
             if asset_type == "draft_pick" and draft_pick_type != "acquired":
                 original_owner = None
             cur = conn.execute(
                 """
                 INSERT INTO assets (
                     team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
-                    draft_pick_type, draft_round, original_owner, exception_type, created_at, updated_at
+                    draft_pick_type, draft_round, original_owner, exception_type,
+                    draft_pick_restricted, draft_pick_protected, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -1010,6 +1025,8 @@ class LeagueDB:
                     draft_round,
                     original_owner,
                     exception_type,
+                    draft_pick_restricted,
+                    draft_pick_protected,
                     now,
                     now,
                 ),
@@ -1018,7 +1035,11 @@ class LeagueDB:
             return int(cur.lastrowid)
 
     def update_asset(self, asset_id: int, payload: Dict[str, Any]) -> bool:
-        fields = ["asset_type", "year", "label", "detail", "amount_text", "draft_pick_type", "draft_round", "original_owner", "exception_type"]
+        fields = [
+            "asset_type", "year", "label", "detail", "amount_text", "draft_pick_type",
+            "draft_round", "original_owner", "exception_type", "draft_pick_restricted",
+            "draft_pick_protected",
+        ]
         assigns = []
         vals = []
         for f in fields:
@@ -1035,6 +1056,9 @@ class LeagueDB:
                 elif f == "exception_type":
                     assigns.append("exception_type = ?")
                     vals.append(normalize_exception_type(payload[f]))
+                elif f in {"draft_pick_restricted", "draft_pick_protected"}:
+                    assigns.append(f"{f} = ?")
+                    vals.append(1 if parse_bool(payload[f]) else 0)
                 else:
                     assigns.append(f"{f} = ?")
                     vals.append(payload[f])

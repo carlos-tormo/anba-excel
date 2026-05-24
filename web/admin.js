@@ -1973,6 +1973,14 @@ function renderAssets() {
         <label class="pick-detail-input">Details
           <input data-new-field="detail" type="text" value="">
         </label>
+        <label class="pick-checkbox-field">
+          <input data-new-field="draft_pick_restricted" type="checkbox">
+          <span>Restricted?</span>
+        </label>
+        <label class="pick-checkbox-field">
+          <input data-new-field="draft_pick_protected" type="checkbox">
+          <span>Protected?</span>
+        </label>
       </div>
       <div class="pick-card-actions">
         <button type="button" data-action="save-draft" class="inline-save">✓</button>
@@ -2004,6 +2012,8 @@ function renderAssets() {
         year: String(card.querySelector('[data-new-field="year"]')?.value || '').trim(),
         detail: String(card.querySelector('[data-new-field="detail"]')?.value || '').trim(),
         original_owner: String(card.querySelector('[data-new-field="original_owner"]')?.value || '').trim(),
+        draft_pick_restricted: Boolean(card.querySelector('[data-new-field="draft_pick_restricted"]')?.checked),
+        draft_pick_protected: Boolean(card.querySelector('[data-new-field="draft_pick_protected"]')?.checked),
       };
       const hasContent = (
         payload.year !== defaultYear
@@ -2011,6 +2021,8 @@ function renderAssets() {
         || Boolean(payload.original_owner)
         || payload.draft_pick_type !== 'own'
         || payload.draft_round !== '1st'
+        || payload.draft_pick_restricted
+        || payload.draft_pick_protected
       );
       if (!hasContent) {
         discard();
@@ -2071,11 +2083,13 @@ function renderAssets() {
         const ownerCode = pick.draft_pick_type === 'acquired'
           ? (pick.original_owner || '')
           : state.teamCode;
+        const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
         const ownerTheme = TEAM_THEMES[ownerCode] || { primary: '#0f766e', secondary: '#99f6e4' };
         const ownerPrimaryRgb = hexToRgb(ownerTheme.primary);
         const ownerSecondaryRgb = hexToRgb(ownerTheme.secondary);
         const card = document.createElement('article');
         card.className = 'draft-pick-card admin-pick-card';
+        if (isRestricted) card.classList.add('draft-pick-card--restricted');
         if (pickType === 'sold') card.classList.add('draft-pick-card--sold');
         card.style.setProperty('--pick-primary-rgb', `${ownerPrimaryRgb.r}, ${ownerPrimaryRgb.g}, ${ownerPrimaryRgb.b}`);
         card.style.setProperty('--pick-secondary-rgb', `${ownerSecondaryRgb.r}, ${ownerSecondaryRgb.g}, ${ownerSecondaryRgb.b}`);
@@ -2108,7 +2122,15 @@ function renderAssets() {
               </select>
             </label>
             <label class="pick-detail-input">Details
-              <input data-field="detail" type="text" value="${pick.detail || ''}">
+              <input data-field="detail" type="text" value="${escapeHtml(pick.detail || '')}">
+            </label>
+            <label class="pick-checkbox-field">
+              <input data-field="draft_pick_restricted" type="checkbox" ${Number(pick.draft_pick_restricted || 0) ? 'checked' : ''}>
+              <span>Restricted?</span>
+            </label>
+            <label class="pick-checkbox-field">
+              <input data-field="draft_pick_protected" type="checkbox" ${Number(pick.draft_pick_protected || 0) ? 'checked' : ''}>
+              <span>Protected?</span>
             </label>
           </div>
           <div class="pick-card-actions">
@@ -2141,6 +2163,8 @@ function renderAssets() {
         const yearInput = card.querySelector('[data-field="year"]');
         const ownerSelect = card.querySelector('[data-field="original_owner"]');
         const detailInput = card.querySelector('[data-field="detail"]');
+        const restrictedInput = card.querySelector('[data-field="draft_pick_restricted"]');
+        const protectedInput = card.querySelector('[data-field="draft_pick_protected"]');
         const ownerWrap = card.querySelector('[data-owner-wrap]');
 
         typeSelect.value = pick.draft_pick_type || 'own';
@@ -2161,6 +2185,27 @@ function renderAssets() {
           await loadTeam(state.teamCode);
         };
 
+        const persistDraftFlag = async (input, field) => {
+          const previous = Number(pick[field] || 0) !== 0;
+          const next = Boolean(input.checked);
+          input.disabled = true;
+          try {
+            await api(`/api/assets/${pick.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ [field]: next }),
+            });
+            pick[field] = next ? 1 : 0;
+            if (field === 'draft_pick_restricted') {
+              card.classList.toggle('draft-pick-card--restricted', next);
+            }
+          } catch (err) {
+            input.checked = previous;
+            alert(`Draft pick flag save failed: ${err.message}`);
+          } finally {
+            input.disabled = false;
+          }
+        };
+
         typeSelect.addEventListener('change', async () => {
           syncOwnerField();
           await persist({ draft_pick_type: typeSelect.value, original_owner: ownerSelect.value || null });
@@ -2178,6 +2223,12 @@ function renderAssets() {
         });
         detailInput.addEventListener('blur', async () => {
           await persist({ detail: detailInput.value.trim() });
+        });
+        restrictedInput.addEventListener('change', () => {
+          void persistDraftFlag(restrictedInput, 'draft_pick_restricted');
+        });
+        protectedInput.addEventListener('change', () => {
+          void persistDraftFlag(protectedInput, 'draft_pick_protected');
         });
         card.querySelector('[data-action="delete-pick"]').addEventListener('click', async () => {
           if (!confirm('Delete this draft pick?')) return;

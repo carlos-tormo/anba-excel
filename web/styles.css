@@ -580,17 +580,52 @@ h1 {
     0 10px 22px rgba(15, 23, 42, 0.1);
 }
 .draft-pick-card--sold {
-  border-color: rgba(100, 116, 139, 0.5);
+  border-color: rgba(71, 85, 105, 0.72);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 163, 184, 0.16) 0,
+      rgba(148, 163, 184, 0.16) 8px,
+      rgba(241, 245, 249, 0.96) 8px,
+      rgba(241, 245, 249, 0.96) 18px
+    ),
+    linear-gradient(180deg, #f8fafc, #e2e8f0);
   box-shadow:
-    0 0 0 1px rgba(100, 116, 139, 0.08),
-    0 8px 16px rgba(100, 116, 139, 0.1);
-  filter: saturate(0.45);
+    inset 7px 0 0 rgba(71, 85, 105, 0.9),
+    0 0 0 1px rgba(100, 116, 139, 0.18),
+    0 8px 16px rgba(100, 116, 139, 0.12);
+  filter: saturate(0.2);
+}
+.draft-pick-card--sold::after {
+  content: "SOLD";
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #475569;
+  color: #f8fafc;
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
 }
 .draft-pick-card--sold .pick-card-logo-wrap,
 .draft-pick-card--sold .pick-owner-logo {
-  filter: grayscale(0.55);
+  filter: grayscale(1);
+  opacity: 0.58;
+}
+.draft-pick-card--sold .pick-card-title,
+.draft-pick-card--sold .pick-card-subtitle {
+  color: #64748b;
+}
+.draft-pick-card--restricted {
+  border-color: rgba(185, 28, 28, 0.78);
+  background:
+    radial-gradient(130px 80px at 12% 50%, rgba(254, 202, 202, 0.58), transparent 72%),
+    linear-gradient(180deg, #fff7f7, #fee2e2);
+  box-shadow:
+    0 0 0 1px rgba(185, 28, 28, 0.22),
+    0 12px 24px rgba(127, 29, 29, 0.16);
 }
 .pick-card-logo-wrap {
   width: 58px;
@@ -639,6 +674,41 @@ h1 {
   color: #64748b;
   line-height: 1.2;
 }
+.pick-card-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.pick-protected-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(217, 119, 6, 0.42);
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.pick-restricted-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(185, 28, 28, 0.42);
+  background: #fee2e2;
+  color: #991b1b;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  font-weight: 800;
+  text-transform: uppercase;
+}
 .pick-detail {
   display: none;
   position: absolute;
@@ -669,6 +739,14 @@ h1 {
   font-size: 0.74rem;
   font-weight: 700;
   color: #334e68;
+}
+.pick-editor-grid .pick-checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pick-checkbox-field input {
+  width: auto;
 }
 .pick-detail-input {
   grid-column: 1 / -1;
