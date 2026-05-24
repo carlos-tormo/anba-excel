@@ -374,6 +374,9 @@ h1 {
 .section-hidden {
   display: none !important;
 }
+.season-hidden {
+  display: none !important;
+}
 .tracker-team-btn {
   background: transparent;
   border: none;
@@ -486,24 +489,57 @@ h1 {
   font-weight: 700;
   color: #334e68;
 }
+.trade-subsection {
+  display: grid;
+  gap: 6px;
+}
+.trade-subsection-title {
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #64748b;
+}
 .trade-players-list {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #f8fafc;
-  max-height: 420px;
+  max-height: 220px;
   overflow: auto;
   padding: 8px;
   display: grid;
   gap: 6px;
 }
 .trade-player-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1.2fr) auto auto auto;
   align-items: center;
   gap: 8px;
   font-size: 0.85rem;
 }
 .trade-player-name {
   font-weight: 700;
+}
+.trade-player-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: end;
+  color: #64748b;
+}
+.trade-player-flag small {
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.trade-pick-row {
+  grid-template-columns: auto minmax(0, 1.3fr) auto auto;
+}
+.trade-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
 }
 .trade-actions {
   display: flex;
@@ -694,6 +730,31 @@ h1 {
   gap: 10px;
   flex-wrap: wrap;
 }
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.season-view-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #334155;
+}
+.season-view-control select {
+  min-width: 132px;
+  height: 34px;
+  padding: 0 30px 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--team-primary-rgb), 0.38);
+  background: #fff;
+  color: #102a43;
+  font-weight: 800;
+}
 .section-subtitle {
   margin-top: 4px;
   font-size: 0.82rem;
@@ -796,6 +857,15 @@ section {
   display: grid;
   gap: 14px;
 }
+.card-summary-split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+.card-summary-col {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
 .card .label {
   color: #7a8798;
   font-size: 0.8rem;
@@ -814,6 +884,10 @@ section {
   border-top: 1px solid rgba(226, 232, 240, 0.92);
   padding-top: 8px;
 }
+.card-modifiers-no-border {
+  border-top: none;
+  padding-top: 0;
+}
 .card-modifier {
   display: flex;
   align-items: center;
@@ -829,6 +903,9 @@ section {
   padding-bottom: 0;
 }
 .card-modifier-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: 0.9rem;
   font-weight: 600;
   color: #6b7280;
@@ -843,6 +920,92 @@ section {
 }
 .card-modifier-negative {
   color: #991b1b;
+}
+.card-modifier-editor {
+  align-items: flex-start;
+}
+.summary-inline-editor {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.summary-inline-input {
+  width: 132px;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  background: #f8fafc;
+  color: #0f172a;
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.summary-inline-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.summary-placeholder {
+  min-height: 106px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(var(--team-primary-rgb), 0.22);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.82), rgba(var(--team-secondary-rgb), 0.08));
+  color: #64748b;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.info-chip-btn {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 999px;
+  padding: 0;
+  border: 1px solid rgba(var(--team-primary-rgb), 0.28);
+  background: rgba(var(--team-primary-rgb), 0.1);
+  color: var(--team-primary);
+  font-weight: 800;
+  line-height: 1;
+}
+.info-chip-btn:hover {
+  background: rgba(var(--team-primary-rgb), 0.18);
+}
+.move-log-list {
+  display: grid;
+  gap: 10px;
+}
+.move-log-item {
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 12px 14px;
+}
+.move-log-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.move-log-subhead,
+.move-log-time,
+.move-log-meta,
+.move-log-empty {
+  color: #64748b;
+  font-size: 0.84rem;
+}
+.move-log-meta,
+.move-log-time {
+  margin-top: 6px;
+}
+.move-log-delta {
+  font-weight: 800;
+  color: #0f172a;
+}
+.move-log-modal {
+  width: min(760px, 96vw);
 }
 .table-wrap {
   overflow: auto;
@@ -1430,8 +1593,22 @@ td.salary-option--nb .salary-pct {
 #salaryCap2025Input {
   width: 180px;
 }
+#cashLimitTotalInput {
+  width: 160px;
+}
+#tradeMoveLimitPre30Input,
+#tradeMoveLimitPost30Input {
+  width: 92px;
+}
+#tradeMovePhaseSelect {
+  min-width: 140px;
+}
 #currentYearSelect {
   min-width: 116px;
+}
+#teamCashReceivedInput,
+#teamCashSentInput {
+  width: 150px;
 }
 
 .inline-editor.salary-edit {
@@ -2003,6 +2180,10 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .card-modifier {
     min-width: 0;
   }
+  .card-summary-split {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
   .card .label {
     font-size: 0.66rem;
     line-height: 1.15;
@@ -2020,6 +2201,13 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .card-modifier-label,
   .card-modifier-value {
     min-width: 0;
+  }
+  .summary-inline-editor {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .summary-inline-input {
+    width: 118px;
   }
   .card-modifier-label {
     font-size: 0.78rem;

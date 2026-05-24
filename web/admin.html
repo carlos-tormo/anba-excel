@@ -107,6 +107,17 @@
         <input id="firstApronInput" type="text" inputmode="numeric" placeholder="195.945.000">
         <label for="secondApronInput">2do Apron</label>
         <input id="secondApronInput" type="text" inputmode="numeric" placeholder="207.824.000">
+        <label for="cashLimitTotalInput">Cash total</label>
+        <input id="cashLimitTotalInput" type="text" inputmode="numeric" placeholder="0">
+        <label for="tradeMoveLimitPre30Input">Moves max (pre-30)</label>
+        <input id="tradeMoveLimitPre30Input" type="text" inputmode="numeric" placeholder="15">
+        <label for="tradeMoveLimitPost30Input">Moves max (post-30)</label>
+        <input id="tradeMoveLimitPost30Input" type="text" inputmode="numeric" placeholder="15">
+        <label for="tradeMovePhaseSelect">Move phase</label>
+        <select id="tradeMovePhaseSelect">
+          <option value="pre30">Pre-30</option>
+          <option value="post30">Post-30</option>
+        </select>
         <label for="currentYearSelect">Año actual</label>
         <select id="currentYearSelect">
           <option value="2025">2025-26</option>
@@ -117,16 +128,22 @@
           <option value="2030">2030-31</option>
         </select>
         <button id="saveSettingsBtn">Save Settings</button>
+        <button id="progressYearBtn" type="button">Progress to next year</button>
       </div>
     </section>
 
     <section id="rosterSection">
       <h2>Roster</h2>
-      <div id="teamGmInlineRow" class="settings-row">
-        <label for="teamGmInlineInput">GM</label>
-        <input id="teamGmInlineInput" type="text" placeholder="GM name">
-        <button id="saveTeamGmInlineBtn">Save GM</button>
-      </div>
+    <div id="teamGmInlineRow" class="settings-row">
+      <label for="teamGmInlineInput">GM</label>
+      <input id="teamGmInlineInput" type="text" placeholder="GM name">
+      <button id="saveTeamGmInlineBtn">Save GM</button>
+      <label for="teamCashReceivedInput">Cash recibido</label>
+      <input id="teamCashReceivedInput" type="text" inputmode="numeric" placeholder="0">
+      <label for="teamCashSentInput">Cash enviado</label>
+      <input id="teamCashSentInput" type="text" inputmode="numeric" placeholder="0">
+      <button id="saveTeamCashInlineBtn">Save balances</button>
+    </div>
       <div class="bulk-bar">
         <label><input type="checkbox" id="selectAllPlayers"> Seleccionar todos</label>
         <select id="bulkTipo">
@@ -367,17 +384,48 @@
         <div class="trade-team-col">
           <label for="tradeTeamA">Team A</label>
           <select id="tradeTeamA"></select>
-          <div id="tradePlayersA" class="trade-players-list"></div>
+          <div class="trade-subsection">
+            <div class="trade-subsection-title">Players</div>
+            <div id="tradePlayersA" class="trade-players-list"></div>
+          </div>
+          <div class="trade-subsection">
+            <div class="trade-subsection-title">Next 1st-round picks</div>
+            <div id="tradePicksA" class="trade-players-list"></div>
+          </div>
         </div>
         <div class="trade-team-col">
           <label for="tradeTeamB">Team B</label>
           <select id="tradeTeamB"></select>
-          <div id="tradePlayersB" class="trade-players-list"></div>
+          <div class="trade-subsection">
+            <div class="trade-subsection-title">Players</div>
+            <div id="tradePlayersB" class="trade-players-list"></div>
+          </div>
+          <div class="trade-subsection">
+            <div class="trade-subsection-title">Next 1st-round picks</div>
+            <div id="tradePicksB" class="trade-players-list"></div>
+          </div>
         </div>
+      </div>
+      <div class="trade-toolbar">
+        <label for="tradeBucketSelect">Counts toward</label>
+        <select id="tradeBucketSelect">
+          <option value="pre30">Movimientos restantes (pre-30)</option>
+          <option value="post30">Movimientos restantes (post-30)</option>
+        </select>
       </div>
       <div class="trade-actions">
         <button id="confirmTradeBtn" type="button">Confirm Trade</button>
       </div>
+    </div>
+  </div>
+
+  <div id="moveLogModal" class="modal-backdrop section-hidden" role="dialog" aria-label="Transfer move log">
+    <div class="modal-card move-log-modal">
+      <div class="modal-header">
+        <h2 id="moveLogModalTitle">Transfer move log</h2>
+        <button id="closeMoveLogModalBtn" type="button" class="danger">Close</button>
+      </div>
+      <div id="moveLogModalBody" class="move-log-list"></div>
     </div>
   </div>
 

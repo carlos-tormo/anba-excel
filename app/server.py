@@ -117,6 +117,20 @@ def normalize_exception_type(value: Any) -> Optional[str]:
     return str(value).strip() or None
 
 
+def normalize_move_phase(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("_", "").replace("-", "")
+    if raw in {"post30", "post"}:
+        return "post30"
+    return "pre30"
+
+
+def normalize_trade_bucket(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("_", "").replace("-", "")
+    if raw in {"post30", "post"}:
+        return "post30"
+    return "pre30"
+
+
 def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
     return {d[0]: row[idx] for idx, d in enumerate(cursor.description)}
 
@@ -185,6 +199,34 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('cash_limit_total', '0', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('trade_move_limit_pre30', '15', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('trade_move_limit_post30', '15', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('trade_move_phase', 'pre30', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS dead_contracts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -215,6 +257,33 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS season_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    season_year INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS team_move_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id INTEGER NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    bucket TEXT NOT NULL,
+                    delta INTEGER NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_ref TEXT,
+                    note TEXT,
+                    detail_json TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(team_id) REFERENCES teams(id)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_token TEXT PRIMARY KEY,
                     data_json TEXT NOT NULL,
@@ -232,10 +301,19 @@ class LeagueDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_players_team_id ON players(team_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_team_type ON assets(team_id, asset_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_dead_contracts_team_id ON dead_contracts(team_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_team_move_logs_team_season ON team_move_logs(team_id, season_year, bucket)")
             cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(players)").fetchall()
             }
+            team_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(teams)").fetchall()
+            }
+            if "cash_received" not in team_cols:
+                conn.execute("ALTER TABLE teams ADD COLUMN cash_received REAL NOT NULL DEFAULT 0")
+            if "cash_sent" not in team_cols:
+                conn.execute("ALTER TABLE teams ADD COLUMN cash_sent REAL NOT NULL DEFAULT 0")
             option_cols = [f"option_{season}" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
             for col in option_cols:
                 if col not in cols:
@@ -314,6 +392,90 @@ class LeagueDB:
             cur = conn.execute("SELECT key, value FROM app_settings")
             return {str(row["key"]): str(row["value"]) for row in cur.fetchall()}
 
+    def _snapshot_payload_for_season(self, conn: sqlite3.Connection, season_year: int, settings: Dict[str, str]) -> Dict[str, Any]:
+        team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
+        teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
+        payload_teams: List[Dict[str, Any]] = []
+        for team in teams:
+            team_id = team["id"]
+            player_cur = conn.execute("SELECT * FROM players WHERE team_id = ? ORDER BY row_order, id", (team_id,))
+            players = [row_to_dict(player_cur, row) for row in player_cur.fetchall()]
+            assets_cur = conn.execute(
+                "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
+                (team_id,),
+            )
+            assets = [row_to_dict(assets_cur, row) for row in assets_cur.fetchall()]
+            dead_cur = conn.execute(
+                "SELECT * FROM dead_contracts WHERE team_id = ? ORDER BY dead_type, row_order, id",
+                (team_id,),
+            )
+            dead_contracts = [row_to_dict(dead_cur, row) for row in dead_cur.fetchall()]
+            move_log_cur = conn.execute(
+                """
+                SELECT id, season_year, bucket, delta, source_type, source_ref, note, detail_json, created_at
+                FROM team_move_logs
+                WHERE team_id = ? AND season_year = ?
+                ORDER BY id ASC
+                """,
+                (team_id, season_year),
+            )
+            move_logs = [row_to_dict(move_log_cur, row) for row in move_log_cur.fetchall()]
+            summary = self._calc_summary(team, players, assets, dead_contracts, settings)
+            payload_teams.append(
+                {
+                    "team": team,
+                    "players": players,
+                    "assets": assets,
+                    "dead_contracts": dead_contracts,
+                    "move_logs": move_logs,
+                    "summary": summary,
+                }
+            )
+        return {
+            "season_year": season_year,
+            "season_label": f"{season_year}-{str((season_year + 1) % 100).zfill(2)}",
+            "created_at": now_iso(),
+            "settings": settings,
+            "teams": payload_teams,
+        }
+
+    def _team_move_log_rows(self, conn: sqlite3.Connection, team_id: int, season_year: int) -> List[Dict[str, Any]]:
+        cur = conn.execute(
+            """
+            SELECT id, season_year, bucket, delta, source_type, source_ref, note, detail_json, created_at
+            FROM team_move_logs
+            WHERE team_id = ? AND season_year = ?
+            ORDER BY id DESC
+            """,
+            (team_id, season_year),
+        )
+        rows = [row_to_dict(cur, row) for row in cur.fetchall()]
+        for row in rows:
+            raw = row.get("detail_json")
+            try:
+                row["details"] = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                row["details"] = {}
+        return rows
+
+    def _team_move_summary(self, conn: sqlite3.Connection, team_id: int, season_year: int, settings: Dict[str, str]) -> Dict[str, Any]:
+        limit_pre30 = max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0)
+        limit_post30 = max(0, parse_int(settings.get("trade_move_limit_post30")) or 0)
+        phase = normalize_move_phase(settings.get("trade_move_phase"))
+        rows = self._team_move_log_rows(conn, team_id, season_year)
+        used_pre30 = sum(int(row.get("delta") or 0) for row in rows if normalize_trade_bucket(row.get("bucket")) == "pre30")
+        used_post30 = sum(int(row.get("delta") or 0) for row in rows if normalize_trade_bucket(row.get("bucket")) == "post30")
+        return {
+            "phase": phase,
+            "limit_pre30": limit_pre30,
+            "limit_post30": limit_post30,
+            "used_pre30": used_pre30,
+            "used_post30": used_post30,
+            "remaining_pre30": limit_pre30 - used_pre30,
+            "remaining_post30": limit_post30 - used_post30,
+            "log": rows,
+        }
+
     def update_setting(self, key: str, value: str) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -326,6 +488,58 @@ class LeagueDB:
                 (key, value, now_iso()),
             )
             conn.commit()
+
+    def progress_to_next_year(self) -> Dict[str, Any]:
+        with self.connect() as conn:
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            if current_year < 2025 or current_year > 2030:
+                current_year = 2025
+            if current_year >= 2030:
+                raise ValueError("cannot_progress_beyond_2030")
+
+            snapshot_payload = self._snapshot_payload_for_season(conn, current_year, settings)
+            conn.execute(
+                "INSERT INTO season_snapshots (season_year, payload_json, created_at) VALUES (?, ?, ?)",
+                (current_year, json.dumps(snapshot_payload), now_iso()),
+            )
+
+            deleted_draft_assets = conn.execute(
+                "DELETE FROM assets WHERE asset_type = 'draft_pick' AND CAST(COALESCE(year, '') AS INTEGER) = ?",
+                (current_year,),
+            ).rowcount or 0
+
+            next_year = current_year + 1
+            timestamp = now_iso()
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('current_year', ?, ?)
+                ON CONFLICT(key)
+                DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (str(next_year), timestamp),
+            )
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('trade_move_phase', 'pre30', ?)
+                ON CONFLICT(key)
+                DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (timestamp,),
+            )
+            conn.execute(
+                "UPDATE teams SET cash_received = 0, cash_sent = 0, updated_at = ?",
+                (timestamp,),
+            )
+            conn.commit()
+            return {
+                "previous_year": current_year,
+                "current_year": next_year,
+                "deleted_draft_assets": int(deleted_draft_assets),
+            }
 
     def upsert_google_user(self, google_sub: str, email: str, display_name: Optional[str], avatar_url: Optional[str]) -> Dict[str, Any]:
         now = now_iso()
@@ -432,7 +646,15 @@ class LeagueDB:
 
             settings = self.get_settings()
             summary = self._calc_summary(team, players, assets, dead_contracts, settings)
-            return {"team": team, "players": players, "assets": assets, "dead_contracts": dead_contracts, "summary": summary}
+            move_summary = self._team_move_summary(conn, int(team["id"]), int(summary["current_year"]), settings)
+            return {
+                "team": team,
+                "players": players,
+                "assets": assets,
+                "dead_contracts": dead_contracts,
+                "summary": summary,
+                "move_summary": move_summary,
+            }
 
     def list_tracker(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
@@ -508,11 +730,25 @@ class LeagueDB:
                 )
             return rows
 
-    def update_team_gm(self, code: str, gm: Optional[str]) -> bool:
+    def update_team_fields(self, code: str, payload: Dict[str, Any]) -> bool:
+        assignments = []
+        values: List[Any] = []
+        if "gm" in payload:
+            gm_raw = payload.get("gm")
+            assignments.append("gm = ?")
+            values.append(None if gm_raw is None else str(gm_raw).strip() or None)
+        if "cash_received" in payload:
+            assignments.append("cash_received = ?")
+            values.append(float(payload.get("cash_received") or 0.0))
+        if "cash_sent" in payload:
+            assignments.append("cash_sent = ?")
+            values.append(float(payload.get("cash_sent") or 0.0))
+        if not assignments:
+            return False
         with self.connect() as conn:
             cur = conn.execute(
-                "UPDATE teams SET gm = ?, updated_at = ? WHERE code = ?",
-                (gm, now_iso(), code.upper()),
+                f"UPDATE teams SET {', '.join(assignments)}, updated_at = ? WHERE code = ?",
+                (*values, now_iso(), code.upper()),
             )
             conn.commit()
             return cur.rowcount > 0
@@ -554,6 +790,9 @@ class LeagueDB:
         luxury = salary_cap * 1.215
         first_apron = parse_float(settings.get("first_apron")) or team["first_apron"]
         second_apron = parse_float(settings.get("second_apron")) or team["second_apron"]
+        cash_limit_total = parse_float(settings.get("cash_limit_total")) or 0.0
+        cash_received = float(team.get("cash_received") or 0.0)
+        cash_sent = float(team.get("cash_sent") or 0.0)
 
         return {
             "player_payroll": player_payroll,
@@ -569,6 +808,12 @@ class LeagueDB:
             "room_to_luxury": luxury - cap_figure,
             "room_to_first_apron": first_apron - cap_figure,
             "room_to_second_apron": second_apron - cap_figure,
+            "cash_received": cash_received,
+            "cash_sent": cash_sent,
+            "cash_limit_total": cash_limit_total,
+            "trade_move_phase": normalize_move_phase(settings.get("trade_move_phase")),
+            "trade_move_limit_pre30": max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0),
+            "trade_move_limit_post30": max(0, parse_int(settings.get("trade_move_limit_post30")) or 0),
         }
 
     def update_player(self, player_id: int, payload: Dict[str, Any]) -> bool:
@@ -901,7 +1146,104 @@ class LeagueDB:
             conn.commit()
             return cur.rowcount > 0
 
-    def process_trade(self, team_a_code: str, team_b_code: str, players_a: List[int], players_b: List[int]) -> bool:
+    def _pick_actual_owner(self, asset_row: Dict[str, Any], source_team_code: str) -> str:
+        if normalize_pick_type(asset_row.get("draft_pick_type")) == "acquired":
+            return normalize_team_code(asset_row.get("original_owner")) or source_team_code
+        return source_team_code
+
+    def _upsert_team_move_log(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        team_id: int,
+        season_year: int,
+        bucket: str,
+        delta: int,
+        source_type: str,
+        source_ref: Optional[str],
+        note: Optional[str],
+        details: Optional[Dict[str, Any]],
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO team_move_logs (
+                team_id, season_year, bucket, delta, source_type, source_ref, note, detail_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                season_year,
+                normalize_trade_bucket(bucket),
+                int(delta),
+                source_type,
+                source_ref,
+                note,
+                json.dumps(details or {}, ensure_ascii=True),
+                now_iso(),
+            ),
+        )
+
+    def adjust_team_move_remaining(
+        self,
+        team_code: str,
+        season_year: int,
+        bucket: str,
+        target_remaining: int,
+        actor_note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        bucket_key = normalize_trade_bucket(bucket)
+        target_remaining = max(0, int(target_remaining))
+        with self.connect() as conn:
+            team = conn.execute("SELECT id, code FROM teams WHERE code = ?", (team_code.upper(),)).fetchone()
+            if not team:
+                return None
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            move_summary = self._team_move_summary(conn, int(team["id"]), int(season_year), settings)
+            limit = int(move_summary[f"limit_{bucket_key}"])
+            current_remaining = int(move_summary[f"remaining_{bucket_key}"])
+            target_used = limit - target_remaining
+            current_used = limit - current_remaining
+            delta = target_used - current_used
+            if delta == 0:
+                return {
+                    "team_code": team["code"],
+                    "bucket": bucket_key,
+                    "remaining": current_remaining,
+                    "delta": 0,
+                }
+            self._upsert_team_move_log(
+                conn,
+                team_id=int(team["id"]),
+                season_year=int(season_year),
+                bucket=bucket_key,
+                delta=int(delta),
+                source_type="manual_adjustment",
+                source_ref=None,
+                note=actor_note or "Manual adjustment",
+                details={"target_remaining": target_remaining},
+            )
+            conn.commit()
+            refreshed = self._team_move_summary(conn, int(team["id"]), int(season_year), settings)
+            return {
+                "team_code": team["code"],
+                "bucket": bucket_key,
+                "remaining": int(refreshed[f"remaining_{bucket_key}"]),
+                "delta": int(delta),
+            }
+
+    def process_trade(
+        self,
+        team_a_code: str,
+        team_b_code: str,
+        players_a: List[int],
+        players_b: List[int],
+        pick_ids_a: Optional[List[int]] = None,
+        pick_ids_b: Optional[List[int]] = None,
+        no_count_players_a: Optional[List[int]] = None,
+        no_count_players_b: Optional[List[int]] = None,
+        trade_bucket: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         def clean_ids(values: Any) -> List[int]:
             if not isinstance(values, list):
                 return []
@@ -917,23 +1259,78 @@ class LeagueDB:
 
         ids_a = clean_ids(players_a)
         ids_b = clean_ids(players_b)
-        if not ids_a or not ids_b:
-            return False
+        pick_a = clean_ids(pick_ids_a or [])
+        pick_b = clean_ids(pick_ids_b or [])
+        no_count_a = set(clean_ids(no_count_players_a or []))
+        no_count_b = set(clean_ids(no_count_players_b or []))
+        if not ids_a and not pick_a:
+            return None
+        if not ids_b and not pick_b:
+            return None
 
         with self.connect() as conn:
-            team_a = conn.execute("SELECT id FROM teams WHERE code = ?", (team_a_code.upper(),)).fetchone()
-            team_b = conn.execute("SELECT id FROM teams WHERE code = ?", (team_b_code.upper(),)).fetchone()
+            team_a = conn.execute("SELECT id, code FROM teams WHERE code = ?", (team_a_code.upper(),)).fetchone()
+            team_b = conn.execute("SELECT id, code FROM teams WHERE code = ?", (team_b_code.upper(),)).fetchone()
             if not team_a or not team_b or team_a["id"] == team_b["id"]:
-                return False
+                return None
 
+            current_year = parse_int(self.get_settings().get("current_year")) or 2025
+            if current_year < 2025 or current_year > 2030:
+                current_year = 2025
+            next_pick_year = current_year + 1
+
+            players_a_rows: List[Dict[str, Any]] = []
             for player_id in ids_a:
-                row = conn.execute("SELECT team_id FROM players WHERE id = ?", (player_id,)).fetchone()
+                row = conn.execute("SELECT id, team_id, name FROM players WHERE id = ?", (player_id,)).fetchone()
                 if not row or int(row["team_id"]) != int(team_a["id"]):
-                    return False
+                    return None
+                players_a_rows.append(dict(row))
+            players_b_rows: List[Dict[str, Any]] = []
             for player_id in ids_b:
-                row = conn.execute("SELECT team_id FROM players WHERE id = ?", (player_id,)).fetchone()
+                row = conn.execute("SELECT id, team_id, name FROM players WHERE id = ?", (player_id,)).fetchone()
                 if not row or int(row["team_id"]) != int(team_b["id"]):
-                    return False
+                    return None
+                players_b_rows.append(dict(row))
+
+            picks_a_rows: List[Dict[str, Any]] = []
+            for asset_id in pick_a:
+                row = conn.execute(
+                    """
+                    SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner, detail, row_order
+                    FROM assets
+                    WHERE id = ? AND asset_type = 'draft_pick'
+                    """,
+                    (asset_id,),
+                ).fetchone()
+                if not row or int(row["team_id"]) != int(team_a["id"]):
+                    return None
+                if normalize_pick_type(row["draft_pick_type"]) == "sold":
+                    return None
+                if normalize_pick_round(row["draft_round"]) != "1st":
+                    return None
+                if parse_int(row["year"]) != next_pick_year:
+                    return None
+                picks_a_rows.append(dict(row))
+
+            picks_b_rows: List[Dict[str, Any]] = []
+            for asset_id in pick_b:
+                row = conn.execute(
+                    """
+                    SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner, detail, row_order
+                    FROM assets
+                    WHERE id = ? AND asset_type = 'draft_pick'
+                    """,
+                    (asset_id,),
+                ).fetchone()
+                if not row or int(row["team_id"]) != int(team_b["id"]):
+                    return None
+                if normalize_pick_type(row["draft_pick_type"]) == "sold":
+                    return None
+                if normalize_pick_round(row["draft_round"]) != "1st":
+                    return None
+                if parse_int(row["year"]) != next_pick_year:
+                    return None
+                picks_b_rows.append(dict(row))
 
             timestamp = now_iso()
             for player_id in ids_a:
@@ -955,8 +1352,140 @@ class LeagueDB:
                     "UPDATE players SET team_id = ?, row_order = ?, updated_at = ? WHERE id = ?",
                     (team_a["id"], int(mx) + 1, timestamp, player_id),
                 )
+
+            def move_pick(source_team: sqlite3.Row, target_team: sqlite3.Row, pick_row: Dict[str, Any]) -> None:
+                actual_owner = self._pick_actual_owner(pick_row, str(source_team["code"]))
+                target_pick_type = "own" if actual_owner == str(target_team["code"]) else "acquired"
+                target_original_owner = None if target_pick_type == "own" else actual_owner
+
+                recipient_rows_cur = conn.execute(
+                    """
+                    SELECT id, draft_pick_type, original_owner, year, draft_round
+                    FROM assets
+                    WHERE team_id = ? AND asset_type = 'draft_pick' AND CAST(COALESCE(year, '') AS INTEGER) = ?
+                    """,
+                    (target_team["id"], next_pick_year),
+                )
+                recipient_rows = [row_to_dict(recipient_rows_cur, row) for row in recipient_rows_cur.fetchall()]
+                recipient_match = None
+                for candidate in recipient_rows:
+                    candidate_actual_owner = self._pick_actual_owner(candidate, str(target_team["code"]))
+                    if candidate_actual_owner == actual_owner and normalize_pick_round(candidate.get("draft_round")) == "1st":
+                        recipient_match = candidate
+                        break
+
+                sold_label = pick_row.get("label") or "1st pick"
+                sold_detail = pick_row.get("detail")
+                conn.execute(
+                    """
+                    UPDATE assets
+                    SET draft_pick_type = 'sold', original_owner = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (actual_owner, timestamp, pick_row["id"]),
+                )
+
+                if recipient_match:
+                    conn.execute(
+                        """
+                        UPDATE assets
+                        SET draft_pick_type = ?, original_owner = ?, label = ?, detail = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            target_pick_type,
+                            target_original_owner,
+                            sold_label,
+                            sold_detail,
+                            timestamp,
+                            recipient_match["id"],
+                        ),
+                    )
+                    return
+
+                mx = conn.execute(
+                    "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                    (target_team["id"],),
+                ).fetchone()["mx"]
+                conn.execute(
+                    """
+                    INSERT INTO assets (
+                        team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
+                        draft_pick_type, draft_round, original_owner, exception_type, created_at, updated_at
+                    ) VALUES (?, ?, 'draft_pick', ?, ?, ?, NULL, NULL, ?, '1st', ?, NULL, ?, ?)
+                    """,
+                    (
+                        target_team["id"],
+                        int(mx) + 1,
+                        pick_row.get("year"),
+                        sold_label,
+                        sold_detail,
+                        target_pick_type,
+                        target_original_owner,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+
+            for pick_row in picks_a_rows:
+                move_pick(team_a, team_b, pick_row)
+            for pick_row in picks_b_rows:
+                move_pick(team_b, team_a, pick_row)
+
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            bucket = normalize_trade_bucket(trade_bucket or settings.get("trade_move_phase"))
+            move_count_a = len([row for row in players_a_rows if int(row["id"]) not in no_count_a]) + len(picks_a_rows)
+            move_count_b = len([row for row in players_b_rows if int(row["id"]) not in no_count_b]) + len(picks_b_rows)
+
+            if move_count_a:
+                self._upsert_team_move_log(
+                    conn,
+                    team_id=int(team_a["id"]),
+                    season_year=current_year,
+                    bucket=bucket,
+                    delta=move_count_a,
+                    source_type="trade",
+                    source_ref=f"{team_a['code']}-{team_b['code']}-{timestamp}",
+                    note=f"Trade vs {team_b['code']}",
+                    details={
+                        "opponent": team_b["code"],
+                        "players": [row["name"] for row in players_a_rows if int(row["id"]) not in no_count_a],
+                        "players_excluded": [row["name"] for row in players_a_rows if int(row["id"]) in no_count_a],
+                        "pick_count": len(picks_a_rows),
+                        "pick_refs": [f"{next_pick_year} 1st ({self._pick_actual_owner(row, str(team_a['code']))})" for row in picks_a_rows],
+                    },
+                )
+            if move_count_b:
+                self._upsert_team_move_log(
+                    conn,
+                    team_id=int(team_b["id"]),
+                    season_year=current_year,
+                    bucket=bucket,
+                    delta=move_count_b,
+                    source_type="trade",
+                    source_ref=f"{team_b['code']}-{team_a['code']}-{timestamp}",
+                    note=f"Trade vs {team_a['code']}",
+                    details={
+                        "opponent": team_a["code"],
+                        "players": [row["name"] for row in players_b_rows if int(row["id"]) not in no_count_b],
+                        "players_excluded": [row["name"] for row in players_b_rows if int(row["id"]) in no_count_b],
+                        "pick_count": len(picks_b_rows),
+                        "pick_refs": [f"{next_pick_year} 1st ({self._pick_actual_owner(row, str(team_b['code']))})" for row in picks_b_rows],
+                    },
+                )
+
             conn.commit()
-            return True
+            return {
+                "ok": True,
+                "trade_bucket": bucket,
+                "team_a": {"code": team_a["code"], "move_count": move_count_a},
+                "team_b": {"code": team_b["code"], "move_count": move_count_b},
+                "players_a": [row["name"] for row in players_a_rows],
+                "players_b": [row["name"] for row in players_b_rows],
+                "pick_count_a": len(picks_a_rows),
+                "pick_count_b": len(picks_b_rows),
+            }
 
     def log_admin_action(
         self,
@@ -1409,6 +1938,10 @@ class Handler(SimpleHTTPRequestHandler):
             if current_year < 2025 or current_year > 2030:
                 current_year = 2025
             salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
+            cash_limit_total = parse_float(settings.get("cash_limit_total")) or 0.0
+            trade_move_limit_pre30 = max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0)
+            trade_move_limit_post30 = max(0, parse_int(settings.get("trade_move_limit_post30")) or 0)
+            trade_move_phase = normalize_move_phase(settings.get("trade_move_phase"))
             self._json(
                 200,
                 {
@@ -1417,6 +1950,10 @@ class Handler(SimpleHTTPRequestHandler):
                         "current_year": current_year,
                         "first_apron": parse_float(settings.get("first_apron")) or 195945000.0,
                         "second_apron": parse_float(settings.get("second_apron")) or 207824000.0,
+                        "cash_limit_total": cash_limit_total,
+                        "trade_move_limit_pre30": trade_move_limit_pre30,
+                        "trade_move_limit_post30": trade_move_limit_post30,
+                        "trade_move_phase": trade_move_phase,
                         "luxury_cap": salary_cap * 1.215,
                         "minimum_cap_allowed": salary_cap * 0.9,
                     }
@@ -1526,8 +2063,23 @@ class Handler(SimpleHTTPRequestHandler):
             team_b = str(payload.get("team_b") or "").strip().upper()
             players_a = payload.get("players_a")
             players_b = payload.get("players_b")
-            ok = self.db.process_trade(team_a, team_b, players_a, players_b)
-            if ok:
+            pick_ids_a = payload.get("pick_ids_a")
+            pick_ids_b = payload.get("pick_ids_b")
+            no_count_players_a = payload.get("no_count_players_a")
+            no_count_players_b = payload.get("no_count_players_b")
+            trade_bucket = payload.get("trade_bucket")
+            result = self.db.process_trade(
+                team_a,
+                team_b,
+                players_a,
+                players_b,
+                pick_ids_a=pick_ids_a,
+                pick_ids_b=pick_ids_b,
+                no_count_players_a=no_count_players_a,
+                no_count_players_b=no_count_players_b,
+                trade_bucket=trade_bucket,
+            )
+            if result:
                 self._log_admin_action(
                     "trade",
                     "trade",
@@ -1540,9 +2092,38 @@ class Handler(SimpleHTTPRequestHandler):
                         "players_b_count": len(players_b or []),
                         "players_a": players_a or [],
                         "players_b": players_b or [],
+                        "pick_ids_a": pick_ids_a or [],
+                        "pick_ids_b": pick_ids_b or [],
+                        "no_count_players_a": no_count_players_a or [],
+                        "no_count_players_b": no_count_players_b or [],
+                        "trade_bucket": result.get("trade_bucket"),
+                        "move_count_a": result.get("team_a", {}).get("move_count"),
+                        "move_count_b": result.get("team_b", {}).get("move_count"),
                     },
                 )
-            self._json(200 if ok else 400, {"ok": ok})
+            self._json(200 if result else 400, {"ok": bool(result), "result": result})
+            return
+
+        if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/move-adjustment"):
+            parts = parsed.path.split("/")
+            if len(parts) < 5:
+                self._json(404, {"error": "not_found"})
+                return
+            code = parts[3]
+            season_year = parse_int(payload.get("season_year"))
+            target_remaining = parse_int(payload.get("target_remaining"))
+            bucket = payload.get("bucket")
+            note = str(payload.get("note") or "").strip() or None
+            if season_year is None or season_year < 2025 or season_year > 2030:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            if target_remaining is None or target_remaining < 0:
+                self._json(400, {"error": "invalid_target_remaining"})
+                return
+            result = self.db.adjust_team_move_remaining(code, season_year, bucket, target_remaining, note)
+            if result:
+                self._log_admin_action("update", "team_move", code.upper(), code.upper(), result)
+            self._json(200 if result else 404, {"ok": bool(result), "result": result})
             return
 
         if parsed.path == "/api/assets":
@@ -1580,6 +2161,45 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(201, {"dead_contract_id": dead_contract_id})
             return
 
+        if parsed.path == "/api/settings/progress-year":
+            try:
+                result = self.db.progress_to_next_year()
+            except ValueError as err:
+                if str(err) == "cannot_progress_beyond_2030":
+                    self._json(400, {"error": "cannot_progress_beyond_2030"})
+                    return
+                raise
+            merged = self.db.get_settings()
+            merged_year = parse_int(merged.get("current_year")) or 2025
+            if merged_year < 2025 or merged_year > 2030:
+                merged_year = 2025
+            merged_salary_cap = parse_float(merged.get("salary_cap_2025")) or 154647000.0
+            merged_cash_limit_total = parse_float(merged.get("cash_limit_total")) or 0.0
+            merged_trade_move_limit_pre30 = max(0, parse_int(merged.get("trade_move_limit_pre30")) or 0)
+            merged_trade_move_limit_post30 = max(0, parse_int(merged.get("trade_move_limit_post30")) or 0)
+            merged_trade_move_phase = normalize_move_phase(merged.get("trade_move_phase"))
+            self._log_admin_action("update", "settings", None, None, {"progress_year": result})
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "result": result,
+                    "settings": {
+                        "salary_cap_2025": merged_salary_cap,
+                        "current_year": merged_year,
+                        "first_apron": parse_float(merged.get("first_apron")) or 195945000.0,
+                        "second_apron": parse_float(merged.get("second_apron")) or 207824000.0,
+                        "cash_limit_total": merged_cash_limit_total,
+                        "trade_move_limit_pre30": merged_trade_move_limit_pre30,
+                        "trade_move_limit_post30": merged_trade_move_limit_post30,
+                        "trade_move_phase": merged_trade_move_phase,
+                        "luxury_cap": merged_salary_cap * 1.215,
+                        "minimum_cap_allowed": merged_salary_cap * 0.9,
+                    },
+                },
+            )
+            return
+
         self._json(404, {"error": "not_found"})
 
     def do_PATCH(self) -> None:
@@ -1595,6 +2215,10 @@ class Handler(SimpleHTTPRequestHandler):
             next_current_year: Optional[int] = None
             next_first_apron: Optional[float] = None
             next_second_apron: Optional[float] = None
+            next_cash_limit_total: Optional[float] = None
+            next_trade_move_limit_pre30: Optional[int] = None
+            next_trade_move_limit_post30: Optional[int] = None
+            next_trade_move_phase: Optional[str] = None
 
             if "salary_cap_2025" in payload:
                 cap = payload.get("salary_cap_2025")
@@ -1625,11 +2249,39 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 next_second_apron = parsed_second_apron
 
+            if "cash_limit_total" in payload:
+                parsed_cash_limit_total = parse_float(str(payload.get("cash_limit_total")))
+                if parsed_cash_limit_total is None or parsed_cash_limit_total < 0:
+                    self._json(400, {"error": "invalid_cash_limit_total"})
+                    return
+                next_cash_limit_total = parsed_cash_limit_total
+
+            if "trade_move_limit_pre30" in payload:
+                parsed_trade_move_limit_pre30 = parse_int(str(payload.get("trade_move_limit_pre30")))
+                if parsed_trade_move_limit_pre30 is None or parsed_trade_move_limit_pre30 < 0:
+                    self._json(400, {"error": "invalid_trade_move_limit_pre30"})
+                    return
+                next_trade_move_limit_pre30 = parsed_trade_move_limit_pre30
+
+            if "trade_move_limit_post30" in payload:
+                parsed_trade_move_limit_post30 = parse_int(str(payload.get("trade_move_limit_post30")))
+                if parsed_trade_move_limit_post30 is None or parsed_trade_move_limit_post30 < 0:
+                    self._json(400, {"error": "invalid_trade_move_limit_post30"})
+                    return
+                next_trade_move_limit_post30 = parsed_trade_move_limit_post30
+
+            if "trade_move_phase" in payload:
+                next_trade_move_phase = normalize_move_phase(payload.get("trade_move_phase"))
+
             if (
                 next_salary_cap is None
                 and next_current_year is None
                 and next_first_apron is None
                 and next_second_apron is None
+                and next_cash_limit_total is None
+                and next_trade_move_limit_pre30 is None
+                and next_trade_move_limit_post30 is None
+                and next_trade_move_phase is None
             ):
                 self._json(400, {"error": "settings_payload_required"})
                 return
@@ -1642,6 +2294,14 @@ class Handler(SimpleHTTPRequestHandler):
                 self.db.update_setting("first_apron", str(int(next_first_apron)))
             if next_second_apron is not None:
                 self.db.update_setting("second_apron", str(int(next_second_apron)))
+            if next_cash_limit_total is not None:
+                self.db.update_setting("cash_limit_total", str(int(next_cash_limit_total)))
+            if next_trade_move_limit_pre30 is not None:
+                self.db.update_setting("trade_move_limit_pre30", str(int(next_trade_move_limit_pre30)))
+            if next_trade_move_limit_post30 is not None:
+                self.db.update_setting("trade_move_limit_post30", str(int(next_trade_move_limit_post30)))
+            if next_trade_move_phase is not None:
+                self.db.update_setting("trade_move_phase", next_trade_move_phase)
             self._log_admin_action(
                 "update",
                 "settings",
@@ -1652,6 +2312,10 @@ class Handler(SimpleHTTPRequestHandler):
                     "current_year": next_current_year,
                     "first_apron": next_first_apron,
                     "second_apron": next_second_apron,
+                    "cash_limit_total": next_cash_limit_total,
+                    "trade_move_limit_pre30": next_trade_move_limit_pre30,
+                    "trade_move_limit_post30": next_trade_move_limit_post30,
+                    "trade_move_phase": next_trade_move_phase,
                 },
             )
 
@@ -1660,6 +2324,10 @@ class Handler(SimpleHTTPRequestHandler):
             if merged_year < 2025 or merged_year > 2030:
                 merged_year = 2025
             merged_salary_cap = parse_float(merged.get("salary_cap_2025")) or 154647000.0
+            merged_cash_limit_total = parse_float(merged.get("cash_limit_total")) or 0.0
+            merged_trade_move_limit_pre30 = max(0, parse_int(merged.get("trade_move_limit_pre30")) or 0)
+            merged_trade_move_limit_post30 = max(0, parse_int(merged.get("trade_move_limit_post30")) or 0)
+            merged_trade_move_phase = normalize_move_phase(merged.get("trade_move_phase"))
             self._json(
                 200,
                 {
@@ -1669,6 +2337,10 @@ class Handler(SimpleHTTPRequestHandler):
                         "current_year": merged_year,
                         "first_apron": parse_float(merged.get("first_apron")) or 195945000.0,
                         "second_apron": parse_float(merged.get("second_apron")) or 207824000.0,
+                        "cash_limit_total": merged_cash_limit_total,
+                        "trade_move_limit_pre30": merged_trade_move_limit_pre30,
+                        "trade_move_limit_post30": merged_trade_move_limit_post30,
+                        "trade_move_phase": merged_trade_move_phase,
                         "luxury_cap": merged_salary_cap * 1.215,
                         "minimum_cap_allowed": merged_salary_cap * 0.9,
                     },
@@ -1686,14 +2358,28 @@ class Handler(SimpleHTTPRequestHandler):
 
         if parsed.path.startswith("/api/teams/"):
             code = parsed.path.split("/")[-1]
-            if "gm" not in payload:
-                self._json(400, {"error": "gm_required"})
+            update_payload: Dict[str, Any] = {}
+            if "gm" in payload:
+                gm_raw = payload.get("gm")
+                update_payload["gm"] = None if gm_raw is None else str(gm_raw).strip() or None
+            if "cash_received" in payload:
+                parsed_cash_received = parse_float(str(payload.get("cash_received")))
+                if parsed_cash_received is None or parsed_cash_received < 0:
+                    self._json(400, {"error": "invalid_cash_received"})
+                    return
+                update_payload["cash_received"] = parsed_cash_received
+            if "cash_sent" in payload:
+                parsed_cash_sent = parse_float(str(payload.get("cash_sent")))
+                if parsed_cash_sent is None or parsed_cash_sent < 0:
+                    self._json(400, {"error": "invalid_cash_sent"})
+                    return
+                update_payload["cash_sent"] = parsed_cash_sent
+            if not update_payload:
+                self._json(400, {"error": "team_update_required"})
                 return
-            gm_raw = payload.get("gm")
-            gm_val = None if gm_raw is None else str(gm_raw).strip()
-            ok = self.db.update_team_gm(code, gm_val or None)
+            ok = self.db.update_team_fields(code, update_payload)
             if ok:
-                self._log_admin_action("update", "team", code.upper(), code.upper(), {"gm": gm_val or None})
+                self._log_admin_action("update", "team", code.upper(), code.upper(), update_payload)
             self._json(200 if ok else 404, {"ok": ok})
             return
 

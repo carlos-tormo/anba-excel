@@ -9,6 +9,10 @@ const state = {
     current_year: 2025,
     first_apron: 195945000,
     second_apron: 207824000,
+    cash_limit_total: 0,
+    trade_move_limit_pre30: 15,
+    trade_move_limit_post30: 15,
+    trade_move_phase: 'pre30',
     luxury_cap: 187896105,
     minimum_cap_allowed: 139182300,
   },
@@ -17,8 +21,13 @@ const state = {
     teamA: null,
     teamB: null,
     playersByTeam: {},
+    picksByTeam: {},
     selectedA: new Set(),
     selectedB: new Set(),
+    selectedPicksA: new Set(),
+    selectedPicksB: new Set(),
+    noCountA: new Set(),
+    noCountB: new Set(),
   },
   ui: {
     viewMode: 'tracker',
@@ -43,6 +52,7 @@ const PLAYER_SORT_CYCLE = [
   { key: 'rating', dir: 'asc' },
 ];
 const POSITION_ORDER = { PG: 1, SG: 2, SF: 3, PF: 4, C: 5 };
+const ALL_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030];
 
 function typeClass(value) {
   const v = String(value || '').toLowerCase().replaceAll('(', '').replaceAll(')', '').replaceAll('/', '').replaceAll(' ', '');
@@ -145,6 +155,86 @@ function seasonLabel(startYear) {
   const y = Number(startYear || 2025);
   const next = String((y + 1) % 100).padStart(2, '0');
   return `${y}-${next}`;
+}
+
+function visibleSeasonYears() {
+  const currentYear = Number(state.settings.current_year || 2025);
+  return ALL_SEASONS.filter((season) => season >= currentYear);
+}
+
+function applySeasonColumnVisibility() {
+  const currentYear = Number(state.settings.current_year || 2025);
+  const tableConfigs = [
+    { selector: '#playersTable', seasonOffset: 6 },
+    { selector: '#deadContractsTable', seasonOffset: 2 },
+  ];
+  tableConfigs.forEach(({ selector, seasonOffset }) => {
+    const table = document.querySelector(selector);
+    if (!table) return;
+    ALL_SEASONS.forEach((season, idx) => {
+      const columnIndex = seasonOffset + idx + 1;
+      table.querySelectorAll(`tr > *:nth-child(${columnIndex})`).forEach((cell) => {
+        cell.classList.toggle('season-hidden', season < currentYear);
+        if (cell.tagName === 'TH') {
+          const label = seasonLabel(season);
+          cell.textContent = label;
+          cell.dataset.label = label;
+        }
+      });
+    });
+  });
+}
+
+function moveBucketLabel(bucket) {
+  return normalizeMoveBucket(bucket) === 'post30' ? 'Movimientos restantes (post-30)' : 'Movimientos restantes (pre-30)';
+}
+
+function normalizeMoveBucket(bucket) {
+  return String(bucket || '').trim().toLowerCase() === 'post30' ? 'post30' : 'pre30';
+}
+
+function formatMoveLogItem(item) {
+  const details = item?.details && typeof item.details === 'object' ? item.details : {};
+  const delta = Number(item?.delta || 0);
+  const sign = delta > 0 ? '+' : '';
+  const players = Array.isArray(details.players) ? details.players : [];
+  const playersExcluded = Array.isArray(details.players_excluded) ? details.players_excluded : [];
+  const pickRefs = Array.isArray(details.pick_refs) ? details.pick_refs : [];
+  const bits = [];
+  if (players.length) bits.push(`Players: ${players.join(', ')}`);
+  if (pickRefs.length) bits.push(`Picks: ${pickRefs.join(', ')}`);
+  if (playersExcluded.length) bits.push(`Excluded: ${playersExcluded.join(', ')}`);
+  if (details.target_remaining != null) bits.push(`Target remaining: ${details.target_remaining}`);
+  const meta = bits.length ? `<div class="move-log-meta">${escapeHtml(bits.join(' · '))}</div>` : '';
+  return `
+    <article class="move-log-item">
+      <div class="move-log-head">
+        <div>
+          <strong>${escapeHtml(item.note || item.source_type || 'Move entry')}</strong>
+          <div class="move-log-subhead">${escapeHtml(moveBucketLabel(item.bucket))}</div>
+        </div>
+        <span class="move-log-delta">${sign}${delta}</span>
+      </div>
+      ${meta}
+      <div class="move-log-time">${escapeHtml(String(item.created_at || ''))}</div>
+    </article>
+  `;
+}
+
+function openMoveLogModal(title, rows) {
+  const modal = document.getElementById('moveLogModal');
+  const titleEl = document.getElementById('moveLogModalTitle');
+  const body = document.getElementById('moveLogModalBody');
+  if (!modal || !titleEl || !body) return;
+  titleEl.textContent = title;
+  body.innerHTML = rows.length
+    ? rows.map((row) => formatMoveLogItem(row)).join('')
+    : '<div class="move-log-empty">No transfer-move entries yet.</div>';
+  modal.classList.remove('section-hidden');
+}
+
+function closeMoveLogModal() {
+  document.getElementById('moveLogModal')?.classList.add('section-hidden');
 }
 
 function setPageHeading(title, subtitle = '') {
@@ -622,6 +712,13 @@ async function loadTradeTeamPlayers(teamCode) {
   if (state.trade.playersByTeam[teamCode]) return state.trade.playersByTeam[teamCode];
   const data = await api(`/api/teams/${teamCode}`);
   state.trade.playersByTeam[teamCode] = data.players || [];
+  const currentYear = Number(state.settings.current_year || 2025);
+  state.trade.picksByTeam[teamCode] = (data.assets || []).filter((asset) => {
+    return asset.asset_type === 'draft_pick'
+      && Number(asset.year) === currentYear + 1
+      && String(asset.draft_round || '').trim().toLowerCase().includes('1')
+      && String(asset.draft_pick_type || '').trim().toLowerCase() !== 'sold';
+  });
   return state.trade.playersByTeam[teamCode];
 }
 
@@ -630,6 +727,7 @@ function renderTradePlayers(side) {
   const teamCode = isA ? state.trade.teamA : state.trade.teamB;
   const list = document.getElementById(isA ? 'tradePlayersA' : 'tradePlayersB');
   const selected = isA ? state.trade.selectedA : state.trade.selectedB;
+  const noCount = isA ? state.trade.noCountA : state.trade.noCountB;
 
   if (!teamCode) {
     list.innerHTML = '<div>Select a team</div>';
@@ -644,18 +742,66 @@ function renderTradePlayers(side) {
 
   list.innerHTML = '';
   players.forEach((p) => {
-    const row = document.createElement('label');
+    const row = document.createElement('div');
     row.className = 'trade-player-row';
     row.innerHTML = `
-      <input type="checkbox" data-player-id="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>
+      <input type="checkbox" data-player-id="${p.id}" ${selected.has(p.id) ? 'checked' : ''} aria-label="Include ${escapeHtml(p.name || 'Unnamed')} in trade">
       <span class="trade-player-name">${p.name || 'Unnamed'}</span>
       <span>${p.position || ''}</span>
       <span>${p.bird_rights || ''}</span>
+      <label class="trade-player-flag">
+        <input type="checkbox" data-no-count-player-id="${p.id}" ${noCount.has(p.id) ? 'checked' : ''} aria-label="Exclude ${escapeHtml(p.name || 'Unnamed')} from move count">
+        <small>No count</small>
+      </label>
     `;
     const cb = row.querySelector('input[type="checkbox"]');
+    const noCountCb = row.querySelector('[data-no-count-player-id]');
     cb.addEventListener('change', () => {
       if (cb.checked) selected.add(p.id);
       else selected.delete(p.id);
+    });
+    noCountCb.addEventListener('change', () => {
+      if (noCountCb.checked) noCount.add(p.id);
+      else noCount.delete(p.id);
+    });
+    list.appendChild(row);
+  });
+}
+
+function renderTradePicks(side) {
+  const isA = side === 'A';
+  const teamCode = isA ? state.trade.teamA : state.trade.teamB;
+  const list = document.getElementById(isA ? 'tradePicksA' : 'tradePicksB');
+  const selected = isA ? state.trade.selectedPicksA : state.trade.selectedPicksB;
+
+  if (!teamCode) {
+    list.innerHTML = '<div>Select a team</div>';
+    return;
+  }
+
+  const picks = state.trade.picksByTeam[teamCode] || [];
+  if (picks.length === 0) {
+    list.innerHTML = '<div>No eligible next-year 1st-round picks.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  picks.forEach((pick) => {
+    const ownerCode = String(pick.draft_pick_type || '').trim().toLowerCase() === 'acquired'
+      ? (pick.original_owner || 'Other')
+      : teamCode;
+    const row = document.createElement('div');
+    row.className = 'trade-player-row trade-pick-row';
+    row.innerHTML = `
+      <input type="checkbox" data-pick-id="${pick.id}" ${selected.has(pick.id) ? 'checked' : ''} aria-label="Include pick in trade">
+      <span class="trade-player-name">${escapeHtml(String(pick.label || '1st pick'))}</span>
+      <span>${escapeHtml(String(pick.year || ''))}</span>
+      <span>${escapeHtml(String(ownerCode || ''))}</span>
+    `;
+    const cb = row.querySelector('[data-pick-id]');
+    cb.addEventListener('change', () => {
+      if (cb.checked) selected.add(pick.id);
+      else selected.delete(pick.id);
     });
     list.appendChild(row);
   });
@@ -668,6 +814,8 @@ async function refreshTradeModalPlayers() {
   ]);
   renderTradePlayers('A');
   renderTradePlayers('B');
+  renderTradePicks('A');
+  renderTradePicks('B');
 }
 
 function closeTradeModal() {
@@ -685,6 +833,10 @@ async function openTradeModal(options = {}) {
   }
   state.trade.selectedA.clear();
   state.trade.selectedB.clear();
+  state.trade.selectedPicksA.clear();
+  state.trade.selectedPicksB.clear();
+  state.trade.noCountA.clear();
+  state.trade.noCountB.clear();
   const preselectedA = Array.isArray(options.preselectedA) ? options.preselectedA : [];
   preselectedA.forEach((id) => {
     const parsed = Number(id);
@@ -700,6 +852,8 @@ async function openTradeModal(options = {}) {
   teamBSelect.innerHTML = optionsHtml;
   teamASelect.value = state.trade.teamA || '';
   teamBSelect.value = state.trade.teamB || '';
+  const tradeBucketSelect = document.getElementById('tradeBucketSelect');
+  if (tradeBucketSelect) tradeBucketSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
 
   await refreshTradeModalPlayers();
   document.getElementById('tradeModal').classList.remove('section-hidden');
@@ -719,12 +873,17 @@ async function confirmTrade() {
 
   const fromA = Array.from(state.trade.selectedA);
   const fromB = Array.from(state.trade.selectedB);
-  if (fromA.length === 0 || fromB.length === 0) {
-    alert('Select at least one player from each team.');
+  const pickIdsA = Array.from(state.trade.selectedPicksA);
+  const pickIdsB = Array.from(state.trade.selectedPicksB);
+  if ((fromA.length + pickIdsA.length) === 0 || (fromB.length + pickIdsB.length) === 0) {
+    alert('Select at least one outgoing asset from each team.');
     return;
   }
+  const tradeBucket = normalizeMoveBucket(document.getElementById('tradeBucketSelect')?.value || state.settings.trade_move_phase);
 
-  const ok = confirm(`Confirm trade: ${fromA.length} player(s) from ${teamA} and ${fromB.length} player(s) from ${teamB}?`);
+  const ok = confirm(
+    `Confirm trade:\n- ${teamA}: ${fromA.length} player(s), ${pickIdsA.length} pick(s)\n- ${teamB}: ${fromB.length} player(s), ${pickIdsB.length} pick(s)\n- Bucket: ${moveBucketLabel(tradeBucket)}`
+  );
   if (!ok) return;
 
   const btn = document.getElementById('confirmTradeBtn');
@@ -737,12 +896,18 @@ async function confirmTrade() {
         team_b: teamB,
         players_a: fromA,
         players_b: fromB,
+        pick_ids_a: pickIdsA,
+        pick_ids_b: pickIdsB,
+        no_count_players_a: Array.from(state.trade.noCountA),
+        no_count_players_b: Array.from(state.trade.noCountB),
+        trade_bucket: tradeBucket,
       }),
     });
     if (!result.ok) {
       throw new Error('Trade validation failed.');
     }
     state.trade.playersByTeam = {};
+    state.trade.picksByTeam = {};
     closeTradeModal();
     if (state.teamCode) await loadTeam(state.teamCode);
     else await loadTracker();
@@ -777,8 +942,11 @@ function setupTradeModal() {
     }
     state.trade.teamA = next;
     state.trade.selectedA.clear();
+    state.trade.selectedPicksA.clear();
+    state.trade.noCountA.clear();
     await loadTradeTeamPlayers(next);
     renderTradePlayers('A');
+    renderTradePicks('A');
   });
 
   teamBSelect.addEventListener('change', async () => {
@@ -790,8 +958,11 @@ function setupTradeModal() {
     }
     state.trade.teamB = next;
     state.trade.selectedB.clear();
+    state.trade.selectedPicksB.clear();
+    state.trade.noCountB.clear();
     await loadTradeTeamPlayers(next);
     renderTradePlayers('B');
+    renderTradePicks('B');
   });
 
   modal.addEventListener('click', (e) => {
@@ -934,42 +1105,116 @@ function renderCards() {
   const wrap = document.getElementById('teamMeta');
   const t = state.teamData.team;
   const s = state.teamData.summary;
+  const m = state.teamData.move_summary || {};
   const currentYear = Number(s.current_year || state.settings.current_year || 2025);
   const currentSeason = seasonLabel(currentYear);
+  const cashLimitTotal = Number(s.cash_limit_total || state.settings.cash_limit_total || 0);
   setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
-  const cards = [
-    {
-      label: `CAP Total (${currentSeason})`,
-      value: formatMoneyDots(s.cap_figure),
-      modifiers: [
-        { label: 'Espacio CAP', value: formatMoneyDots(s.room_to_cap), tone: s.room_to_cap >= 0 ? 'positive' : 'negative' },
-        { label: 'Espacio Luxury', value: formatMoneyDots(s.room_to_luxury), tone: s.room_to_luxury >= 0 ? 'positive' : 'negative' },
-      ],
-    },
-    {
-      label: `GASTO Total (${currentSeason})`,
-      value: formatMoneyDots(s.payroll),
-      modifiers: [
-        { label: 'Espacio 1er Apron', value: formatMoneyDots(s.room_to_first_apron), tone: s.room_to_first_apron >= 0 ? 'positive' : 'negative' },
-        { label: 'Espacio 2do Apron', value: formatMoneyDots(s.room_to_second_apron), tone: s.room_to_second_apron >= 0 ? 'positive' : 'negative' },
-      ],
-    },
-  ];
-  wrap.innerHTML = cards.map((card) => `
-    <article class="card card-summary">
-      <div class="label">${card.label}</div>
-      <div class="value">${card.value}</div>
-      <div class="card-modifiers">
-        ${card.modifiers.map((item) => `
-          <div class="card-modifier card-modifier-${item.tone}">
-            <span class="card-modifier-label">${item.label}</span>
-            <span class="card-modifier-value">${item.value}</span>
+  wrap.innerHTML = `
+    <article class="card card-summary card-summary-split">
+      <div class="card-summary-col">
+        <div class="label">CAP Total (${currentSeason})</div>
+        <div class="value">${formatMoneyDots(s.cap_figure)}</div>
+        <div class="card-modifiers">
+          <div class="card-modifier card-modifier-${s.room_to_cap >= 0 ? 'positive' : 'negative'}">
+            <span class="card-modifier-label">Espacio CAP</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_cap)}</span>
           </div>
-        `).join('')}
+        </div>
+      </div>
+      <div class="card-summary-col">
+        <div class="label">GASTO Total (${currentSeason})</div>
+        <div class="value">${formatMoneyDots(s.payroll)}</div>
+        <div class="card-modifiers">
+          <div class="card-modifier card-modifier-${s.room_to_first_apron >= 0 ? 'positive' : 'negative'}">
+            <span class="card-modifier-label">Espacio 1er Apron</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_first_apron)}</span>
+          </div>
+          <div class="card-modifier card-modifier-${s.room_to_second_apron >= 0 ? 'positive' : 'negative'}">
+            <span class="card-modifier-label">Espacio 2do Apron</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_second_apron)}</span>
+          </div>
+        </div>
       </div>
     </article>
-  `).join('');
+    <article class="card card-summary card-summary-split">
+      <div class="card-summary-col">
+        <div class="label">Cash</div>
+        <div class="card-modifiers card-modifiers-no-border">
+          <div class="card-modifier card-modifier-editor">
+            <span class="card-modifier-label">Cash recibido / total</span>
+            <div class="summary-inline-editor">
+              <input id="summaryCashReceivedInput" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(s.cash_received))}">
+              <span class="card-modifier-value">${formatMoneyDots(cashLimitTotal)}</span>
+            </div>
+          </div>
+          <div class="card-modifier card-modifier-editor">
+            <span class="card-modifier-label">Cash enviado / total</span>
+            <div class="summary-inline-editor">
+              <input id="summaryCashSentInput" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(s.cash_sent))}">
+              <span class="card-modifier-value">${formatMoneyDots(cashLimitTotal)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="summary-inline-actions">
+          <button id="summaryCashSaveBtn" type="button">Save balances</button>
+        </div>
+      </div>
+      <div class="card-summary-col">
+        <div class="label">Transfer moves</div>
+        <div class="card-modifiers card-modifiers-no-border">
+          <div class="card-modifier card-modifier-editor">
+            <span class="card-modifier-label">
+              Movimientos restantes (pre-30)
+              <button id="moveLogPre30Btn" type="button" class="info-chip-btn" aria-label="Open pre-30 move log">i</button>
+            </span>
+            <div class="summary-inline-editor">
+              <input id="summaryMovePre30Input" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(m.remaining_pre30 ?? 0))}">
+              <span class="card-modifier-value">${formatDots(m.limit_pre30 ?? 0)}</span>
+            </div>
+          </div>
+          <div class="card-modifier card-modifier-editor">
+            <span class="card-modifier-label">
+              Movimientos restantes (post-30)
+              <button id="moveLogPost30Btn" type="button" class="info-chip-btn" aria-label="Open post-30 move log">i</button>
+            </span>
+            <div class="summary-inline-editor">
+              <input id="summaryMovePost30Input" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(m.remaining_post30 ?? 0))}">
+              <span class="card-modifier-value">${formatDots(m.limit_post30 ?? 0)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="summary-inline-actions">
+          <button id="summaryMovesSaveBtn" type="button">Save moves</button>
+        </div>
+      </div>
+    </article>
+  `;
+  const summaryCashReceivedInput = document.getElementById('summaryCashReceivedInput');
+  const summaryCashSentInput = document.getElementById('summaryCashSentInput');
+  const summaryCashSaveBtn = document.getElementById('summaryCashSaveBtn');
+  if (summaryCashReceivedInput && summaryCashSentInput && summaryCashSaveBtn) {
+    summaryCashSaveBtn.addEventListener('click', async () => {
+      await saveCurrentTeamCash(summaryCashReceivedInput, summaryCashSentInput, summaryCashSaveBtn);
+    });
+  }
+  const summaryMovePre30Input = document.getElementById('summaryMovePre30Input');
+  const summaryMovePost30Input = document.getElementById('summaryMovePost30Input');
+  const summaryMovesSaveBtn = document.getElementById('summaryMovesSaveBtn');
+  if (summaryMovePre30Input && summaryMovePost30Input && summaryMovesSaveBtn) {
+    summaryMovesSaveBtn.addEventListener('click', async () => {
+      await saveCurrentTeamMoves(summaryMovePre30Input, summaryMovePost30Input, summaryMovesSaveBtn);
+    });
+  }
+  document.getElementById('moveLogPre30Btn')?.addEventListener('click', () => {
+    const rows = (state.teamData.move_summary?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === 'pre30');
+    openMoveLogModal(`${t.code} · ${moveBucketLabel('pre30')}`, rows);
+  });
+  document.getElementById('moveLogPost30Btn')?.addEventListener('click', () => {
+    const rows = (state.teamData.move_summary?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === 'post30');
+    openMoveLogModal(`${t.code} · ${moveBucketLabel('post30')}`, rows);
+  });
 }
 
 function renderImportantFigures() {
@@ -1138,7 +1383,7 @@ function playerDraftPayloadFromRow(row) {
     const value = String(el?.value || '').trim();
     if (value) payload[key] = value;
   });
-  for (const season of [2025, 2026, 2027, 2028, 2029, 2030]) {
+  for (const season of ALL_SEASONS) {
     const salary = String(row.querySelector(`[data-new-field="salary_${season}_text"]`)?.value || '').trim();
     const option = String(row.querySelector(`[data-new-option-field="option_${season}"]`)?.value || '').trim();
     if (salary) payload[`salary_${season}_text`] = salary;
@@ -1450,6 +1695,7 @@ function renderPlayers() {
   if (state.ui.addingPlayer) appendAddPlayerRow(tbody);
   else appendAddPlayerTriggerRow(tbody);
   syncSelectAllPlayers();
+  applySeasonColumnVisibility();
 }
 
 function syncSelectAllPlayers() {
@@ -1498,20 +1744,12 @@ async function duplicateSelectedPlayersAction() {
       rating: p.rating || null,
       position: p.position || null,
       years_left: p.years_left || null,
-      salary_2025_text: p.salary_2025_text || null,
-      salary_2026_text: p.salary_2026_text || null,
-      salary_2027_text: p.salary_2027_text || null,
-      salary_2028_text: p.salary_2028_text || null,
-      salary_2029_text: p.salary_2029_text || null,
-      salary_2030_text: p.salary_2030_text || null,
-      option_2025: p.option_2025 || null,
-      option_2026: p.option_2026 || null,
-      option_2027: p.option_2027 || null,
-      option_2028: p.option_2028 || null,
-      option_2029: p.option_2029 || null,
-      option_2030: p.option_2030 || null,
       notes: p.notes || null,
     };
+    ALL_SEASONS.forEach((season) => {
+      payload[`salary_${season}_text`] = p[`salary_${season}_text`] || null;
+      payload[`option_${season}`] = p[`option_${season}`] || null;
+    });
     await api('/api/players', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -2035,7 +2273,7 @@ function renderDeadContracts() {
         label: String(tr.querySelector('[data-new-field="label"]')?.value || '').trim(),
       };
       let hasSalary = false;
-      for (const season of [2025, 2026, 2027, 2028, 2029, 2030]) {
+      for (const season of ALL_SEASONS) {
         const value = String(tr.querySelector(`[data-new-field="salary_${season}_text"]`)?.value || '').trim();
         if (value) hasSalary = true;
         payload[`salary_${season}_text`] = value || null;
@@ -2074,6 +2312,7 @@ function renderDeadContracts() {
     });
     tbody.appendChild(tr);
   }
+  applySeasonColumnVisibility();
 }
 
 async function loadTeam(code) {
@@ -2085,6 +2324,10 @@ async function loadTeam(code) {
   setViewMode('team');
   const gmInlineInput = document.getElementById('teamGmInlineInput');
   if (gmInlineInput) gmInlineInput.value = data.team.gm || '';
+  const cashReceivedInput = document.getElementById('teamCashReceivedInput');
+  if (cashReceivedInput) cashReceivedInput.value = formatDots(data.team.cash_received || 0);
+  const cashSentInput = document.getElementById('teamCashSentInput');
+  if (cashSentInput) cashSentInput.value = formatDots(data.team.cash_sent || 0);
   renderTeamStrip();
   renderTeamPicker();
   renderCards();
@@ -2093,6 +2336,7 @@ async function loadTeam(code) {
   renderExceptions();
   renderAssets();
   renderImportantFigures();
+  applySeasonColumnVisibility();
   await refreshAdminLogsSafe();
 }
 
@@ -2165,6 +2409,92 @@ async function saveCurrentTeamGm(inputEl, buttonEl) {
   }
 }
 
+async function saveCurrentTeamCash(receivedInputEl, sentInputEl, buttonEl) {
+  if (!state.teamCode) {
+    alert('No team selected.');
+    return;
+  }
+  if (!receivedInputEl || !sentInputEl || !buttonEl) return;
+  const cashReceived = parseAmount(receivedInputEl.value);
+  const cashSent = parseAmount(sentInputEl.value);
+  if (cashReceived == null || cashReceived < 0) {
+    alert('Invalid cash recibido value.');
+    return;
+  }
+  if (cashSent == null || cashSent < 0) {
+    alert('Invalid cash enviado value.');
+    return;
+  }
+  buttonEl.disabled = true;
+  const oldText = buttonEl.textContent;
+  buttonEl.textContent = 'Saving...';
+  try {
+    await api(`/api/teams/${state.teamCode}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ cash_received: cashReceived, cash_sent: cashSent }),
+    });
+    await loadTeam(state.teamCode);
+    buttonEl.textContent = 'Saved';
+    setTimeout(() => {
+      buttonEl.textContent = oldText;
+    }, 900);
+  } catch (err) {
+    buttonEl.textContent = oldText;
+    alert(`Cash save failed: ${err.message}`);
+  } finally {
+    buttonEl.disabled = false;
+  }
+}
+
+async function saveCurrentTeamMoves(pre30InputEl, post30InputEl, buttonEl) {
+  if (!state.teamCode || !state.teamData?.summary) {
+    alert('No team selected.');
+    return;
+  }
+  const pre30Remaining = parseAmount(pre30InputEl?.value);
+  const post30Remaining = parseAmount(post30InputEl?.value);
+  if (pre30Remaining == null || pre30Remaining < 0) {
+    alert('Invalid pre-30 remaining value.');
+    return;
+  }
+  if (post30Remaining == null || post30Remaining < 0) {
+    alert('Invalid post-30 remaining value.');
+    return;
+  }
+  buttonEl.disabled = true;
+  const oldText = buttonEl.textContent;
+  buttonEl.textContent = 'Saving...';
+  try {
+    const seasonYear = Number(state.teamData.summary.current_year || state.settings.current_year || 2025);
+    await api(`/api/teams/${state.teamCode}/move-adjustment`, {
+      method: 'POST',
+      body: JSON.stringify({
+        season_year: seasonYear,
+        bucket: 'pre30',
+        target_remaining: pre30Remaining,
+      }),
+    });
+    await api(`/api/teams/${state.teamCode}/move-adjustment`, {
+      method: 'POST',
+      body: JSON.stringify({
+        season_year: seasonYear,
+        bucket: 'post30',
+        target_remaining: post30Remaining,
+      }),
+    });
+    await loadTeam(state.teamCode);
+    buttonEl.textContent = 'Saved';
+    setTimeout(() => {
+      buttonEl.textContent = oldText;
+    }, 900);
+  } catch (err) {
+    buttonEl.textContent = oldText;
+    alert(`Move save failed: ${err.message}`);
+  } finally {
+    buttonEl.disabled = false;
+  }
+}
+
 async function init() {
   const auth = await api('/api/auth/status');
   state.csrfToken = auth.csrf_token || null;
@@ -2178,14 +2508,22 @@ async function init() {
   }
 
   const settingsRes = await api('/api/settings');
-  state.settings = settingsRes.settings || state.settings;
+  state.settings = { ...state.settings, ...(settingsRes.settings || {}) };
   const capInput = document.getElementById('salaryCap2025Input');
   const firstApronInput = document.getElementById('firstApronInput');
   const secondApronInput = document.getElementById('secondApronInput');
+  const cashLimitTotalInput = document.getElementById('cashLimitTotalInput');
+  const tradeMoveLimitPre30Input = document.getElementById('tradeMoveLimitPre30Input');
+  const tradeMoveLimitPost30Input = document.getElementById('tradeMoveLimitPost30Input');
+  const tradeMovePhaseSelect = document.getElementById('tradeMovePhaseSelect');
   const currentYearSelect = document.getElementById('currentYearSelect');
   capInput.value = formatDots(state.settings.salary_cap_2025);
   firstApronInput.value = formatDots(state.settings.first_apron);
   secondApronInput.value = formatDots(state.settings.second_apron);
+  cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
+  tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
+  tradeMoveLimitPost30Input.value = formatDots(state.settings.trade_move_limit_post30);
+  tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
   currentYearSelect.value = String(state.settings.current_year || 2025);
 
   const teamsRes = await api('/api/teams');
@@ -2291,11 +2629,27 @@ async function init() {
       alert('Invalid 2nd apron value.');
       return;
     }
+    const parsedCashLimitTotal = parseAmount(cashLimitTotalInput.value);
+    if (parsedCashLimitTotal == null || parsedCashLimitTotal < 0) {
+      alert('Invalid cash total value.');
+      return;
+    }
+    const parsedTradeMoveLimitPre30 = parseAmount(tradeMoveLimitPre30Input.value);
+    if (parsedTradeMoveLimitPre30 == null || parsedTradeMoveLimitPre30 < 0) {
+      alert('Invalid pre-30 move limit.');
+      return;
+    }
+    const parsedTradeMoveLimitPost30 = parseAmount(tradeMoveLimitPost30Input.value);
+    if (parsedTradeMoveLimitPost30 == null || parsedTradeMoveLimitPost30 < 0) {
+      alert('Invalid post-30 move limit.');
+      return;
+    }
     const selectedYear = Number(currentYearSelect.value);
     if (!Number.isInteger(selectedYear) || selectedYear < 2025 || selectedYear > 2030) {
       alert('Invalid current year.');
       return;
     }
+    const selectedTradeMovePhase = normalizeMoveBucket(tradeMovePhaseSelect.value);
     const previousYear = Number(state.settings.current_year || 2025);
     if (selectedYear !== previousYear) {
       const fromLabel = seasonLabel(previousYear);
@@ -2312,12 +2666,24 @@ async function init() {
         current_year: selectedYear,
         first_apron: parsedFirstApron,
         second_apron: parsedSecondApron,
+        cash_limit_total: parsedCashLimitTotal,
+        trade_move_limit_pre30: parsedTradeMoveLimitPre30,
+        trade_move_limit_post30: parsedTradeMoveLimitPost30,
+        trade_move_phase: selectedTradeMovePhase,
       }),
     });
-    state.settings = result.settings || state.settings;
+    state.settings = {
+      ...state.settings,
+      ...(result.settings || {}),
+      cash_limit_total: result.settings?.cash_limit_total ?? parsedCashLimitTotal,
+    };
     capInput.value = formatDots(state.settings.salary_cap_2025);
     firstApronInput.value = formatDots(state.settings.first_apron);
     secondApronInput.value = formatDots(state.settings.second_apron);
+    cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
+    tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
+    tradeMoveLimitPost30Input.value = formatDots(state.settings.trade_move_limit_post30);
+    tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (state.ui.viewMode === 'team' && state.teamCode) {
       await loadTeam(state.teamCode);
@@ -2328,10 +2694,55 @@ async function init() {
     }
   });
 
+  document.getElementById('progressYearBtn').addEventListener('click', async () => {
+    const previousYear = Number(state.settings.current_year || 2025);
+    if (previousYear >= 2030) {
+      alert('Cannot progress beyond 2030-31 with the current data model.');
+      return;
+    }
+    const fromLabel = seasonLabel(previousYear);
+    const toLabel = seasonLabel(previousYear + 1);
+    const confirmed = confirm(
+      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- reset cash balances\n- delete ${fromLabel} draft assets\n- hide ${fromLabel} salary columns across the site`
+    );
+    if (!confirmed) return;
+
+    const result = await api('/api/settings/progress-year', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    state.settings = { ...state.settings, ...(result.settings || {}) };
+    capInput.value = formatDots(state.settings.salary_cap_2025);
+    firstApronInput.value = formatDots(state.settings.first_apron);
+    secondApronInput.value = formatDots(state.settings.second_apron);
+    cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
+    tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
+    tradeMoveLimitPost30Input.value = formatDots(state.settings.trade_move_limit_post30);
+    tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
+    currentYearSelect.value = String(state.settings.current_year || 2025);
+
+    if (state.ui.viewMode === 'team' && state.teamCode) {
+      await loadTeam(state.teamCode);
+    } else {
+      await loadTracker();
+    }
+    alert(`Season progressed to ${seasonLabel(state.settings.current_year || 2025)}.`);
+  });
+
   document.getElementById('saveTeamGmInlineBtn').addEventListener('click', async () => {
     const input = document.getElementById('teamGmInlineInput');
     const btn = document.getElementById('saveTeamGmInlineBtn');
     await saveCurrentTeamGm(input, btn);
+  });
+  document.getElementById('saveTeamCashInlineBtn').addEventListener('click', async () => {
+    const receivedInput = document.getElementById('teamCashReceivedInput');
+    const sentInput = document.getElementById('teamCashSentInput');
+    const btn = document.getElementById('saveTeamCashInlineBtn');
+    await saveCurrentTeamCash(receivedInput, sentInput, btn);
+  });
+  document.getElementById('closeMoveLogModalBtn')?.addEventListener('click', closeMoveLogModal);
+  document.getElementById('moveLogModal')?.addEventListener('click', (e) => {
+    if (e.target?.id === 'moveLogModal') closeMoveLogModal();
   });
 
   await loadTracker();

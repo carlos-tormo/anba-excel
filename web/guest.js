@@ -8,6 +8,7 @@ const state = {
   settings: {
     salary_cap_2025: 154647000,
     current_year: 2025,
+    cash_limit_total: 0,
     first_apron: 195945000,
     second_apron: 207824000,
     luxury_cap: 187896105,
@@ -21,6 +22,7 @@ const state = {
   },
   ui: {
     rosterView: 'list',
+    seasonViewStart: null,
     statusPills: [],
     mobileSidebarOpen: false,
     mobileInfoOpen: false,
@@ -32,7 +34,7 @@ const state = {
   },
 };
 
-const ROSTER_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030];
+const SEASON_WINDOW_SIZE = 6;
 const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
 
 const PLAYER_SORT_CYCLE = [
@@ -139,6 +141,117 @@ function seasonLabel(startYear) {
   return `${y}-${next}`;
 }
 
+function currentSeasonStart() {
+  const currentYear = Number(state.settings.current_year || 2025);
+  return Number.isInteger(currentYear) ? currentYear : 2025;
+}
+
+function availableSeasonViewStarts() {
+  const currentYear = currentSeasonStart();
+  return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => currentYear + idx);
+}
+
+function normalizeSeasonViewStart(value) {
+  const requested = Number(value);
+  const starts = availableSeasonViewStarts();
+  return starts.includes(requested) ? requested : starts[0];
+}
+
+function selectedSeasonStart() {
+  const normalized = normalizeSeasonViewStart(state.ui.seasonViewStart);
+  state.ui.seasonViewStart = normalized;
+  return normalized;
+}
+
+function visibleSeasonYears() {
+  const start = selectedSeasonStart();
+  return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => start + idx);
+}
+
+function syncSeasonSortsToVisibleWindow() {
+  const visibleSortKeys = new Set(visibleSeasonYears().map((season) => `salary_${season}_num`));
+  ['players', 'dead_contracts'].forEach((scope) => {
+    const sortCfg = state.sort[scope];
+    if (!sortCfg || !String(sortCfg.key || '').startsWith('salary_')) return;
+    if (!visibleSortKeys.has(sortCfg.key)) {
+      sortCfg.key = `salary_${selectedSeasonStart()}_num`;
+    }
+  });
+}
+
+function applySeasonColumnVisibility() {
+  syncSeasonSortsToVisibleWindow();
+  const seasons = visibleSeasonYears();
+  const tableConfigs = [
+    { selector: '#playersTable', seasonOffset: 3 },
+    { selector: '#deadContractsTable', seasonOffset: 1 },
+  ];
+  tableConfigs.forEach(({ selector, seasonOffset }) => {
+    const table = document.querySelector(selector);
+    if (!table) return;
+    seasons.forEach((season, idx) => {
+      const columnIndex = seasonOffset + idx + 1;
+      table.querySelectorAll(`tr > *:nth-child(${columnIndex})`).forEach((cell) => {
+        cell.classList.remove('season-hidden');
+        if (cell.tagName === 'TH') {
+          const label = seasonLabel(season);
+          cell.textContent = label;
+          cell.dataset.label = label;
+          cell.dataset.sort = `salary_${season}_num`;
+        }
+      });
+    });
+  });
+}
+
+function normalizeMoveBucket(bucket) {
+  return String(bucket || '').trim().toLowerCase() === 'post30' ? 'post30' : 'pre30';
+}
+
+function moveBucketLabel(bucket) {
+  return normalizeMoveBucket(bucket) === 'post30' ? 'Movimientos restantes (post-30)' : 'Movimientos restantes (pre-30)';
+}
+
+function formatMoveLogItem(item) {
+  const details = item?.details && typeof item.details === 'object' ? item.details : {};
+  const delta = Number(item?.delta || 0);
+  const sign = delta > 0 ? '+' : '';
+  const bits = [];
+  if (Array.isArray(details.players) && details.players.length) bits.push(`Players: ${details.players.join(', ')}`);
+  if (Array.isArray(details.pick_refs) && details.pick_refs.length) bits.push(`Picks: ${details.pick_refs.join(', ')}`);
+  if (Array.isArray(details.players_excluded) && details.players_excluded.length) bits.push(`Excluded: ${details.players_excluded.join(', ')}`);
+  if (details.target_remaining != null) bits.push(`Target remaining: ${details.target_remaining}`);
+  return `
+    <article class="move-log-item">
+      <div class="move-log-head">
+        <div>
+          <strong>${escapeHtml(item.note || item.source_type || 'Move entry')}</strong>
+          <div class="move-log-subhead">${escapeHtml(moveBucketLabel(item.bucket))}</div>
+        </div>
+        <span class="move-log-delta">${sign}${delta}</span>
+      </div>
+      ${bits.length ? `<div class="move-log-meta">${escapeHtml(bits.join(' · '))}</div>` : ''}
+      <div class="move-log-time">${escapeHtml(String(item.created_at || ''))}</div>
+    </article>
+  `;
+}
+
+function openMoveLog(title, rows) {
+  const backdrop = document.getElementById('moveLogBackdrop');
+  const titleEl = document.getElementById('moveLogTitle');
+  const list = document.getElementById('moveLogList');
+  if (!backdrop || !titleEl || !list) return;
+  titleEl.textContent = title;
+  list.innerHTML = rows.length
+    ? rows.map((row) => formatMoveLogItem(row)).join('')
+    : '<div class="move-log-empty">No transfer-move entries yet.</div>';
+  setMobileOverlayVisible('moveLogBackdrop', true);
+}
+
+function closeMoveLog() {
+  setMobileOverlayVisible('moveLogBackdrop', false);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -184,8 +297,19 @@ function hasSpecialTextTag(obj, season) {
   return t === 'FB' || t === 'EB' || t === 'NB';
 }
 
+function hasSeasonCellValue(obj, season) {
+  const text = String(obj[`salary_${season}_text`] ?? '').trim();
+  if (text) return true;
+  const rawNum = obj[`salary_${season}_num`];
+  return rawNum !== null && rawNum !== undefined && Number.isFinite(Number(rawNum));
+}
+
+function selectedSeasonFiltersActiveRows() {
+  return selectedSeasonStart() > currentSeasonStart();
+}
+
 function playerHasGuaranteed(p) {
-  return ROSTER_SEASONS.some((season) => {
+  return visibleSeasonYears().some((season) => {
     if (hasSpecialTextTag(p, season)) return false;
     const val = numericSalary(p, season);
     const option = String(p[`option_${season}`] || '').trim();
@@ -194,11 +318,12 @@ function playerHasGuaranteed(p) {
 }
 
 function playerHasOption(p) {
-  return ROSTER_SEASONS.some((season) => Boolean(String(p[`option_${season}`] || '').trim()));
+  return visibleSeasonYears().some((season) => Boolean(String(p[`option_${season}`] || '').trim()));
 }
 
 function filteredPlayers(players) {
   return players.filter((p) => {
+    if (selectedSeasonFiltersActiveRows() && !hasSeasonCellValue(p, selectedSeasonStart())) return false;
     if (state.filters.guaranteedOnly && !playerHasGuaranteed(p)) return false;
     if (state.filters.optionsOnly && !playerHasOption(p)) return false;
     return true;
@@ -640,40 +765,72 @@ function closeMobileSidebar() {
 
 function buildSummaryCardsHtml(summary) {
   const s = summary || {};
+  const m = state.teamData?.move_summary || {};
   const currentYear = Number(s.current_year || state.settings.current_year || 2025);
   const currentSeason = seasonLabel(currentYear);
-  const cards = [
-    {
-      label: `CAP Total (${currentSeason})`,
-      value: formatMoneyDots(s.cap_figure),
-      modifiers: [
-        { label: 'Espacio CAP', value: formatMoneyDots(s.room_to_cap), tone: s.room_to_cap >= 0 ? 'positive' : 'negative' },
-        { label: 'Espacio Luxury', value: formatMoneyDots(s.room_to_luxury), tone: s.room_to_luxury >= 0 ? 'positive' : 'negative' },
-      ],
-    },
-    {
-      label: `GASTO Total (${currentSeason})`,
-      value: formatMoneyDots(s.payroll),
-      modifiers: [
-        { label: 'Espacio 1er Apron', value: formatMoneyDots(s.room_to_first_apron), tone: s.room_to_first_apron >= 0 ? 'positive' : 'negative' },
-        { label: 'Espacio 2do Apron', value: formatMoneyDots(s.room_to_second_apron), tone: s.room_to_second_apron >= 0 ? 'positive' : 'negative' },
-      ],
-    },
-  ];
-  return cards.map((card) => `
-    <article class="card card-summary">
-      <div class="label">${card.label}</div>
-      <div class="value">${card.value}</div>
-      <div class="card-modifiers">
-        ${card.modifiers.map((item) => `
-          <div class="card-modifier card-modifier-${item.tone}">
-            <span class="card-modifier-label">${item.label}</span>
-            <span class="card-modifier-value">${item.value}</span>
+  const cashLimitTotal = Number(s.cash_limit_total || state.settings.cash_limit_total || 0);
+  return `
+    <article class="card card-summary card-summary-split">
+      <div class="card-summary-col">
+        <div class="label">CAP Total (${currentSeason})</div>
+        <div class="value">${formatMoneyDots(s.cap_figure)}</div>
+        <div class="card-modifiers">
+          <div class="card-modifier card-modifier-${s.room_to_cap >= 0 ? 'positive' : 'negative'}">
+            <span class="card-modifier-label">Espacio CAP</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_cap)}</span>
           </div>
-        `).join('')}
+        </div>
+      </div>
+      <div class="card-summary-col">
+        <div class="label">GASTO Total (${currentSeason})</div>
+        <div class="value">${formatMoneyDots(s.payroll)}</div>
+        <div class="card-modifiers">
+          <div class="card-modifier card-modifier-${s.room_to_first_apron >= 0 ? 'positive' : 'negative'}">
+            <span class="card-modifier-label">Espacio 1er Apron</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_first_apron)}</span>
+          </div>
+          <div class="card-modifier card-modifier-${s.room_to_second_apron >= 0 ? 'positive' : 'negative'}">
+            <span class="card-modifier-label">Espacio 2do Apron</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_second_apron)}</span>
+          </div>
+        </div>
       </div>
     </article>
-  `).join('');
+    <article class="card card-summary card-summary-split">
+      <div class="card-summary-col">
+        <div class="label">Cash</div>
+        <div class="card-modifiers card-modifiers-no-border">
+          <div class="card-modifier">
+            <span class="card-modifier-label">Cash recibido / total</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.cash_received)} / ${formatMoneyDots(cashLimitTotal)}</span>
+          </div>
+          <div class="card-modifier">
+            <span class="card-modifier-label">Cash enviado / total</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.cash_sent)} / ${formatMoneyDots(cashLimitTotal)}</span>
+          </div>
+        </div>
+      </div>
+      <div class="card-summary-col">
+        <div class="label">Transfer moves</div>
+        <div class="card-modifiers card-modifiers-no-border">
+          <div class="card-modifier">
+            <span class="card-modifier-label">
+              Movimientos restantes (pre-30)
+              <button type="button" class="info-chip-btn" data-move-log-bucket="pre30" aria-label="Open pre-30 transfer move log">i</button>
+            </span>
+            <span class="card-modifier-value">${formatDots(m.remaining_pre30 ?? 0)} / ${formatDots(m.limit_pre30 ?? 0)}</span>
+          </div>
+          <div class="card-modifier">
+            <span class="card-modifier-label">
+              Movimientos restantes (post-30)
+              <button type="button" class="info-chip-btn" data-move-log-bucket="post30" aria-label="Open post-30 transfer move log">i</button>
+            </span>
+            <span class="card-modifier-value">${formatDots(m.remaining_post30 ?? 0)} / ${formatDots(m.limit_post30 ?? 0)}</span>
+          </div>
+        </div>
+      </div>
+    </article>
+  `;
 }
 
 function openMobileInfo() {
@@ -688,6 +845,15 @@ function openMobileInfo() {
     : '';
   if (!summaryHtml && !pillsHtml) return;
   list.innerHTML = `${summaryHtml}${pillsHtml}`;
+  list.querySelectorAll('[data-move-log-bucket]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const bucket = normalizeMoveBucket(btn.dataset.moveLogBucket);
+      const rows = (state.teamData?.move_summary?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === bucket);
+      openMoveLog(`${state.teamCode || ''} · ${moveBucketLabel(bucket)}`, rows);
+    });
+  });
   state.ui.mobileInfoOpen = true;
   setMobileOverlayVisible('mobileInfoBackdrop', true);
 }
@@ -754,6 +920,15 @@ function renderCards() {
   setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
   wrap.innerHTML = buildSummaryCardsHtml(s);
+  wrap.querySelectorAll('[data-move-log-bucket]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const bucket = normalizeMoveBucket(btn.dataset.moveLogBucket);
+      const rows = (state.teamData?.move_summary?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === bucket);
+      openMoveLog(`${t.code} · ${moveBucketLabel(bucket)}`, rows);
+    });
+  });
 }
 
 function renderImportantFigures() {
@@ -822,12 +997,48 @@ function setupRosterViewControl() {
   });
 }
 
+function renderSeasonViewControl() {
+  const select = document.getElementById('seasonViewSelect');
+  if (!select) return;
+  const currentYear = currentSeasonStart();
+  const selected = selectedSeasonStart();
+  select.innerHTML = availableSeasonViewStarts()
+    .map((season) => {
+      const suffix = season === currentYear ? ' (current)' : '';
+      return `<option value="${season}">${seasonLabel(season)}${suffix}</option>`;
+    })
+    .join('');
+  select.value = String(selected);
+}
+
+function setSeasonViewStart(startYear) {
+  state.ui.seasonViewStart = normalizeSeasonViewStart(startYear);
+  renderSeasonViewControl();
+  if (state.teamCode) setTeamInUrl(state.teamCode);
+  if (!state.teamData) return;
+  renderPlayers();
+  renderDeadContracts();
+  renderExceptions();
+  renderAssets();
+}
+
+function setupSeasonViewControl() {
+  const select = document.getElementById('seasonViewSelect');
+  if (!select) return;
+  renderSeasonViewControl();
+  select.addEventListener('change', () => {
+    setSeasonViewStart(select.value);
+  });
+}
+
 function renderPlayers() {
   const tbody = document.querySelector('#playersTable tbody');
   const cardsWrap = document.getElementById('playersCards');
   tbody.innerHTML = '';
   if (cardsWrap) cardsWrap.innerHTML = '';
 
+  applySeasonColumnVisibility();
+  const seasons = visibleSeasonYears();
   const filtered = filteredPlayers(state.teamData.players);
   const rows = sortedRows(filtered, state.sort.players);
   const playerHeader = document.querySelector('#playersTable thead th[data-sort-mode="player-cycle"]');
@@ -858,12 +1069,7 @@ function renderPlayers() {
       </td>
       <td>${p.bird_rights ? `<span class="type-pill ${typeClass(p.bird_rights)}">${p.bird_rights}</span>` : ''}</td>
       <td>${p.years_left || ''}</td>
-      <td>${salaryCellHtml(p, 2025, state.filters.showEmptyYears)}</td>
-      <td>${salaryCellHtml(p, 2026, state.filters.showEmptyYears)}</td>
-      <td>${salaryCellHtml(p, 2027, state.filters.showEmptyYears)}</td>
-      <td>${salaryCellHtml(p, 2028, state.filters.showEmptyYears)}</td>
-      <td>${salaryCellHtml(p, 2029, state.filters.showEmptyYears)}</td>
-      <td>${salaryCellHtml(p, 2030, state.filters.showEmptyYears)}</td>
+      ${seasons.map((season) => `<td>${salaryCellHtml(p, season, state.filters.showEmptyYears)}</td>`).join('')}
     `;
     const infoBtn = tr.querySelector('.player-meta-btn');
     if (infoBtn) {
@@ -881,7 +1087,7 @@ function renderPlayers() {
     tbody.appendChild(tr);
 
     if (cardsWrap) {
-      const contractRows = [2025, 2026, 2027, 2028, 2029, 2030]
+      const contractRows = visibleSeasonYears()
         .map((season) => ({
           season,
           content: salaryCellHtml(p, season, state.filters.showEmptyYears),
@@ -941,8 +1147,15 @@ function setupRosterFilters() {
 
 function setTeamInUrl(teamCode) {
   const url = new URL(window.location.href);
-  if (teamCode) url.searchParams.set('team', teamCode);
-  else url.searchParams.delete('team');
+  if (teamCode) {
+    url.searchParams.set('team', teamCode);
+    const selected = selectedSeasonStart();
+    if (selected !== currentSeasonStart()) url.searchParams.set('season', String(selected));
+    else url.searchParams.delete('season');
+  } else {
+    url.searchParams.delete('team');
+    url.searchParams.delete('season');
+  }
   window.history.replaceState({}, '', url.toString());
 }
 
@@ -956,6 +1169,27 @@ function readInitialTeamCode() {
     // ignore localStorage errors
   }
   return null;
+}
+
+function readInitialSeasonStart() {
+  const fromQuery = new URLSearchParams(window.location.search).get('season');
+  const parsed = Number(fromQuery);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function assetSeasonYear(asset) {
+  const year = Number(asset?.year);
+  if (Number.isFinite(year)) return year;
+  if (asset?.asset_type === 'exception') return currentSeasonStart();
+  return null;
+}
+
+function isAssetBeforeSelectedSeason(asset) {
+  const year = assetSeasonYear(asset);
+  const selectedAssetYear = asset?.asset_type === 'draft_pick'
+    ? selectedSeasonStart() + 1
+    : selectedSeasonStart();
+  return Number.isFinite(year) && year < selectedAssetYear;
 }
 
 function renderAssets() {
@@ -1007,9 +1241,10 @@ function renderAssets() {
     return [...own1, ...own2, ...acq1, ...acq2, ...sold];
   };
 
-  const picks = (state.teamData.assets || []).filter((a) => a.asset_type === 'draft_pick');
+  const picks = (state.teamData.assets || [])
+    .filter((a) => a.asset_type === 'draft_pick' && !isAssetBeforeSelectedSeason(a));
   if (picks.length === 0) {
-    board.innerHTML = '<p>No draft picks loaded.</p>';
+    board.innerHTML = '<p>No draft picks loaded for this season view.</p>';
     return;
   }
 
@@ -1102,7 +1337,12 @@ function renderDeadContracts() {
   const tbody = document.querySelector('#deadContractsTable tbody');
   tbody.innerHTML = '';
 
-  const rows = sortedRows(state.teamData.dead_contracts || [], state.sort.dead_contracts);
+  applySeasonColumnVisibility();
+  const seasons = visibleSeasonYears();
+  const rows = sortedRows(
+    (state.teamData.dead_contracts || []).filter((d) => seasons.some((season) => hasSeasonCellValue(d, season))),
+    state.sort.dead_contracts,
+  );
   rows.forEach((d) => {
     const tr = document.createElement('tr');
     const typePill = deadTypePillHtml(d.dead_type);
@@ -1115,12 +1355,7 @@ function renderDeadContracts() {
           </span>
         </div>
       </td>
-      <td>${salaryCellHtml(d, 2025, true)}</td>
-      <td>${salaryCellHtml(d, 2026, true)}</td>
-      <td>${salaryCellHtml(d, 2027, true)}</td>
-      <td>${salaryCellHtml(d, 2028, true)}</td>
-      <td>${salaryCellHtml(d, 2029, true)}</td>
-      <td>${salaryCellHtml(d, 2030, true)}</td>
+      ${seasons.map((season) => `<td>${salaryCellHtml(d, season, true)}</td>`).join('')}
     `;
     tbody.appendChild(tr);
   });
@@ -1132,7 +1367,7 @@ function renderExceptions() {
   tbody.innerHTML = '';
 
   const rows = sortedRows(
-    (state.teamData.assets || []).filter((a) => a.asset_type === 'exception'),
+    (state.teamData.assets || []).filter((a) => a.asset_type === 'exception' && !isAssetBeforeSelectedSeason(a)),
     state.sort.exceptions,
   );
 
@@ -1178,6 +1413,7 @@ async function loadTeam(code) {
   }
   applyTeamTheme(code);
   setViewMode('team');
+  renderSeasonViewControl();
   renderTeamStrip();
   renderMobileTeamGrid();
   renderCards();
@@ -1242,6 +1478,8 @@ function setupMobileNav() {
   const infoBtn = document.getElementById('mobileInfoBtn');
   const infoCloseBtn = document.getElementById('mobileInfoCloseBtn');
   const infoBackdrop = document.getElementById('mobileInfoBackdrop');
+  const moveLogCloseBtn = document.getElementById('moveLogCloseBtn');
+  const moveLogBackdrop = document.getElementById('moveLogBackdrop');
 
   if (menuBtn) menuBtn.addEventListener('click', () => openMobileSidebar());
   if (closeBtn) closeBtn.addEventListener('click', () => closeMobileSidebar());
@@ -1269,6 +1507,12 @@ function setupMobileNav() {
       if (e.target === infoBackdrop) closeMobileInfo();
     });
   }
+  if (moveLogCloseBtn) moveLogCloseBtn.addEventListener('click', () => closeMoveLog());
+  if (moveLogBackdrop) {
+    moveLogBackdrop.addEventListener('click', (e) => {
+      if (e.target === moveLogBackdrop) closeMoveLog();
+    });
+  }
 }
 
 async function init() {
@@ -1277,6 +1521,7 @@ async function init() {
   state.csrfToken = state.auth?.csrf_token || null;
   const settingsRes = await api('/api/settings');
   state.settings = settingsRes.settings || state.settings;
+  state.ui.seasonViewStart = normalizeSeasonViewStart(readInitialSeasonStart());
   renderAuthControls();
 
   document.getElementById('logoutBtn').addEventListener('click', async () => {
@@ -1292,6 +1537,7 @@ async function init() {
   setupSorting();
   setupMobileNav();
   setupRosterViewControl();
+  setupSeasonViewControl();
   setupRosterFilters();
   let savedRosterView = null;
   try {
