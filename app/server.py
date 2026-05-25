@@ -1280,6 +1280,8 @@ class LeagueDB:
         players_b: List[int],
         pick_ids_a: Optional[List[int]] = None,
         pick_ids_b: Optional[List[int]] = None,
+        right_ids_a: Optional[List[int]] = None,
+        right_ids_b: Optional[List[int]] = None,
         no_count_players_a: Optional[List[int]] = None,
         no_count_players_b: Optional[List[int]] = None,
         trade_bucket: Optional[str] = None,
@@ -1301,11 +1303,13 @@ class LeagueDB:
         ids_b = clean_ids(players_b)
         pick_a = clean_ids(pick_ids_a or [])
         pick_b = clean_ids(pick_ids_b or [])
+        right_a = clean_ids(right_ids_a or [])
+        right_b = clean_ids(right_ids_b or [])
         no_count_a = set(clean_ids(no_count_players_a or []))
         no_count_b = set(clean_ids(no_count_players_b or []))
-        if not ids_a and not pick_a:
+        if not ids_a and not pick_a and not right_a:
             return None
-        if not ids_b and not pick_b:
+        if not ids_b and not pick_b and not right_b:
             return None
 
         with self.connect() as conn:
@@ -1371,6 +1375,34 @@ class LeagueDB:
                 if parse_int(row["year"]) != next_pick_year:
                     return None
                 picks_b_rows.append(dict(row))
+
+            rights_a_rows: List[Dict[str, Any]] = []
+            for asset_id in right_a:
+                row = conn.execute(
+                    """
+                    SELECT id, team_id, label, detail, row_order
+                    FROM assets
+                    WHERE id = ? AND asset_type = 'player_right'
+                    """,
+                    (asset_id,),
+                ).fetchone()
+                if not row or int(row["team_id"]) != int(team_a["id"]):
+                    return None
+                rights_a_rows.append(dict(row))
+
+            rights_b_rows: List[Dict[str, Any]] = []
+            for asset_id in right_b:
+                row = conn.execute(
+                    """
+                    SELECT id, team_id, label, detail, row_order
+                    FROM assets
+                    WHERE id = ? AND asset_type = 'player_right'
+                    """,
+                    (asset_id,),
+                ).fetchone()
+                if not row or int(row["team_id"]) != int(team_b["id"]):
+                    return None
+                rights_b_rows.append(dict(row))
 
             timestamp = now_iso()
             for player_id in ids_a:
@@ -1472,11 +1504,29 @@ class LeagueDB:
             for pick_row in picks_b_rows:
                 move_pick(team_b, team_a, pick_row)
 
+            def move_player_rights(target_team: sqlite3.Row, right_rows: List[Dict[str, Any]]) -> None:
+                for right_row in right_rows:
+                    mx = conn.execute(
+                        "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                        (target_team["id"],),
+                    ).fetchone()["mx"]
+                    conn.execute(
+                        """
+                        UPDATE assets
+                        SET team_id = ?, row_order = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (target_team["id"], int(mx) + 1, timestamp, right_row["id"]),
+                    )
+
+            move_player_rights(team_b, rights_a_rows)
+            move_player_rights(team_a, rights_b_rows)
+
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
             bucket = normalize_trade_bucket(trade_bucket or settings.get("trade_move_phase"))
-            move_count_a = len([row for row in players_a_rows if int(row["id"]) not in no_count_a]) + len(picks_a_rows)
-            move_count_b = len([row for row in players_b_rows if int(row["id"]) not in no_count_b]) + len(picks_b_rows)
+            move_count_a = len([row for row in players_a_rows if int(row["id"]) not in no_count_a]) + len(picks_a_rows) + len(rights_a_rows)
+            move_count_b = len([row for row in players_b_rows if int(row["id"]) not in no_count_b]) + len(picks_b_rows) + len(rights_b_rows)
 
             if move_count_a:
                 self._upsert_team_move_log(
@@ -1494,6 +1544,7 @@ class LeagueDB:
                         "players_excluded": [row["name"] for row in players_a_rows if int(row["id"]) in no_count_a],
                         "pick_count": len(picks_a_rows),
                         "pick_refs": [f"{next_pick_year} 1st ({self._pick_actual_owner(row, str(team_a['code']))})" for row in picks_a_rows],
+                        "rights": [row.get("label") for row in rights_a_rows],
                     },
                 )
             if move_count_b:
@@ -1512,6 +1563,7 @@ class LeagueDB:
                         "players_excluded": [row["name"] for row in players_b_rows if int(row["id"]) in no_count_b],
                         "pick_count": len(picks_b_rows),
                         "pick_refs": [f"{next_pick_year} 1st ({self._pick_actual_owner(row, str(team_b['code']))})" for row in picks_b_rows],
+                        "rights": [row.get("label") for row in rights_b_rows],
                     },
                 )
 
@@ -1525,6 +1577,8 @@ class LeagueDB:
                 "players_b": [row["name"] for row in players_b_rows],
                 "pick_count_a": len(picks_a_rows),
                 "pick_count_b": len(picks_b_rows),
+                "right_count_a": len(rights_a_rows),
+                "right_count_b": len(rights_b_rows),
             }
 
     def log_admin_action(
@@ -2136,6 +2190,8 @@ class Handler(SimpleHTTPRequestHandler):
             players_b = payload.get("players_b")
             pick_ids_a = payload.get("pick_ids_a")
             pick_ids_b = payload.get("pick_ids_b")
+            right_ids_a = payload.get("right_ids_a")
+            right_ids_b = payload.get("right_ids_b")
             no_count_players_a = payload.get("no_count_players_a")
             no_count_players_b = payload.get("no_count_players_b")
             trade_bucket = payload.get("trade_bucket")
@@ -2146,6 +2202,8 @@ class Handler(SimpleHTTPRequestHandler):
                 players_b,
                 pick_ids_a=pick_ids_a,
                 pick_ids_b=pick_ids_b,
+                right_ids_a=right_ids_a,
+                right_ids_b=right_ids_b,
                 no_count_players_a=no_count_players_a,
                 no_count_players_b=no_count_players_b,
                 trade_bucket=trade_bucket,
@@ -2161,10 +2219,14 @@ class Handler(SimpleHTTPRequestHandler):
                         "team_b": team_b,
                         "players_a_count": len(players_a or []),
                         "players_b_count": len(players_b or []),
+                        "rights_a_count": len(right_ids_a or []),
+                        "rights_b_count": len(right_ids_b or []),
                         "players_a": players_a or [],
                         "players_b": players_b or [],
                         "pick_ids_a": pick_ids_a or [],
                         "pick_ids_b": pick_ids_b or [],
+                        "right_ids_a": right_ids_a or [],
+                        "right_ids_b": right_ids_b or [],
                         "no_count_players_a": no_count_players_a or [],
                         "no_count_players_b": no_count_players_b or [],
                         "trade_bucket": result.get("trade_bucket"),

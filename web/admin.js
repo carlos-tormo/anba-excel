@@ -22,10 +22,13 @@ const state = {
     teamB: null,
     playersByTeam: {},
     picksByTeam: {},
+    rightsByTeam: {},
     selectedA: new Set(),
     selectedB: new Set(),
     selectedPicksA: new Set(),
     selectedPicksB: new Set(),
+    selectedRightsA: new Set(),
+    selectedRightsB: new Set(),
     noCountA: new Set(),
     noCountB: new Set(),
   },
@@ -34,12 +37,14 @@ const state = {
     addingPlayer: false,
     addingDeadContract: false,
     addingDraftPick: false,
+    addingPlayerRight: false,
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
     players: { key: 'position', dir: 'asc' },
     dead_contracts: { key: 'label', dir: 'asc' },
     exceptions: { key: 'label', dir: 'asc' },
+    player_rights: { key: 'label', dir: 'asc' },
   },
 };
 
@@ -461,6 +466,7 @@ function setupSorting() {
   updateSortIndicators('trackerTable', state.sort.tracker);
   updateSortIndicators('playersTable', state.sort.players);
   updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
+  updateSortIndicators('playerRightsTable', state.sort.player_rights);
 
   document.querySelectorAll('#deadContractsTable thead th[data-sort]').forEach((th) => {
     if (!th.dataset.label) th.dataset.label = th.textContent.trim();
@@ -490,6 +496,21 @@ function setupSorting() {
       };
       renderExceptions();
       updateSortIndicators('exceptionsTable', state.sort.exceptions);
+    });
+  });
+
+  document.querySelectorAll('#playerRightsTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.player_rights;
+      state.sort.player_rights = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderPlayerRights();
+      updateSortIndicators('playerRightsTable', state.sort.player_rights);
     });
   });
 }
@@ -788,6 +809,8 @@ async function loadTradeTeamPlayers(teamCode) {
       && String(asset.draft_round || '').trim().toLowerCase().includes('1')
       && String(asset.draft_pick_type || '').trim().toLowerCase() !== 'sold';
   });
+  state.trade.rightsByTeam[teamCode] = (data.assets || [])
+    .filter((asset) => asset.asset_type === 'player_right');
   return state.trade.playersByTeam[teamCode];
 }
 
@@ -876,6 +899,41 @@ function renderTradePicks(side) {
   });
 }
 
+function renderTradeRights(side) {
+  const isA = side === 'A';
+  const teamCode = isA ? state.trade.teamA : state.trade.teamB;
+  const list = document.getElementById(isA ? 'tradeRightsA' : 'tradeRightsB');
+  const selected = isA ? state.trade.selectedRightsA : state.trade.selectedRightsB;
+
+  if (!teamCode) {
+    list.innerHTML = '<div>Select a team</div>';
+    return;
+  }
+
+  const rights = state.trade.rightsByTeam[teamCode] || [];
+  if (rights.length === 0) {
+    list.innerHTML = '<div>No player rights.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  rights.forEach((right) => {
+    const row = document.createElement('div');
+    row.className = 'trade-player-row trade-right-row';
+    row.innerHTML = `
+      <input type="checkbox" data-right-id="${right.id}" ${selected.has(right.id) ? 'checked' : ''} aria-label="Include ${escapeHtml(right.label || 'player right')} rights in trade">
+      <span class="trade-player-name">${escapeHtml(String(right.label || 'Player right'))}</span>
+      <span>${escapeHtml(String(right.detail || ''))}</span>
+    `;
+    const cb = row.querySelector('[data-right-id]');
+    cb.addEventListener('change', () => {
+      if (cb.checked) selected.add(right.id);
+      else selected.delete(right.id);
+    });
+    list.appendChild(row);
+  });
+}
+
 async function refreshTradeModalPlayers() {
   await Promise.all([
     loadTradeTeamPlayers(state.trade.teamA),
@@ -885,6 +943,8 @@ async function refreshTradeModalPlayers() {
   renderTradePlayers('B');
   renderTradePicks('A');
   renderTradePicks('B');
+  renderTradeRights('A');
+  renderTradeRights('B');
 }
 
 function closeTradeModal() {
@@ -904,6 +964,8 @@ async function openTradeModal(options = {}) {
   state.trade.selectedB.clear();
   state.trade.selectedPicksA.clear();
   state.trade.selectedPicksB.clear();
+  state.trade.selectedRightsA.clear();
+  state.trade.selectedRightsB.clear();
   state.trade.noCountA.clear();
   state.trade.noCountB.clear();
   const preselectedA = Array.isArray(options.preselectedA) ? options.preselectedA : [];
@@ -944,14 +1006,16 @@ async function confirmTrade() {
   const fromB = Array.from(state.trade.selectedB);
   const pickIdsA = Array.from(state.trade.selectedPicksA);
   const pickIdsB = Array.from(state.trade.selectedPicksB);
-  if ((fromA.length + pickIdsA.length) === 0 || (fromB.length + pickIdsB.length) === 0) {
+  const rightIdsA = Array.from(state.trade.selectedRightsA);
+  const rightIdsB = Array.from(state.trade.selectedRightsB);
+  if ((fromA.length + pickIdsA.length + rightIdsA.length) === 0 || (fromB.length + pickIdsB.length + rightIdsB.length) === 0) {
     alert('Select at least one outgoing asset from each team.');
     return;
   }
   const tradeBucket = normalizeMoveBucket(document.getElementById('tradeBucketSelect')?.value || state.settings.trade_move_phase);
 
   const ok = confirm(
-    `Confirm trade:\n- ${teamA}: ${fromA.length} player(s), ${pickIdsA.length} pick(s)\n- ${teamB}: ${fromB.length} player(s), ${pickIdsB.length} pick(s)\n- Bucket: ${moveBucketLabel(tradeBucket)}`
+    `Confirm trade:\n- ${teamA}: ${fromA.length} player(s), ${pickIdsA.length} pick(s), ${rightIdsA.length} right(s)\n- ${teamB}: ${fromB.length} player(s), ${pickIdsB.length} pick(s), ${rightIdsB.length} right(s)\n- Bucket: ${moveBucketLabel(tradeBucket)}`
   );
   if (!ok) return;
 
@@ -967,6 +1031,8 @@ async function confirmTrade() {
         players_b: fromB,
         pick_ids_a: pickIdsA,
         pick_ids_b: pickIdsB,
+        right_ids_a: rightIdsA,
+        right_ids_b: rightIdsB,
         no_count_players_a: Array.from(state.trade.noCountA),
         no_count_players_b: Array.from(state.trade.noCountB),
         trade_bucket: tradeBucket,
@@ -977,6 +1043,7 @@ async function confirmTrade() {
     }
     state.trade.playersByTeam = {};
     state.trade.picksByTeam = {};
+    state.trade.rightsByTeam = {};
     closeTradeModal();
     if (state.teamCode) await loadTeam(state.teamCode);
     else await loadTracker();
@@ -1012,10 +1079,12 @@ function setupTradeModal() {
     state.trade.teamA = next;
     state.trade.selectedA.clear();
     state.trade.selectedPicksA.clear();
+    state.trade.selectedRightsA.clear();
     state.trade.noCountA.clear();
     await loadTradeTeamPlayers(next);
     renderTradePlayers('A');
     renderTradePicks('A');
+    renderTradeRights('A');
   });
 
   teamBSelect.addEventListener('change', async () => {
@@ -1028,10 +1097,12 @@ function setupTradeModal() {
     state.trade.teamB = next;
     state.trade.selectedB.clear();
     state.trade.selectedPicksB.clear();
+    state.trade.selectedRightsB.clear();
     state.trade.noCountB.clear();
     await loadTradeTeamPlayers(next);
     renderTradePlayers('B');
     renderTradePicks('B');
+    renderTradeRights('B');
   });
 
   modal.addEventListener('click', (e) => {
@@ -1103,7 +1174,9 @@ function setViewMode(mode) {
   toggleSection('exceptionsSection', !showTeam);
   toggleSection('assetsSection', !showTeam);
   toggleSection('draftAssetsSection', !showTeam);
+  toggleSection('playerRightsSection', !showTeam);
   toggleSection('importantFiguresSection', !showTeam);
+  syncAdminMobileInfoButton();
 
   const teamButtons = ['reloadBtn', 'addEntryBtn', 'saveTeamGmInlineBtn', 'processTradeBtn'];
   teamButtons.forEach((id) => {
@@ -1144,6 +1217,153 @@ function setupAdminMenu() {
     if (menu.contains(e.target) || menuBtn.contains(e.target)) return;
     closeAdminMenuPopover();
   });
+}
+
+function setAdminMobileOverlayVisible(backdropId, isVisible) {
+  const backdrop = document.getElementById(backdropId);
+  if (!backdrop) return;
+  backdrop.classList.toggle('section-hidden', !isVisible);
+  backdrop.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
+}
+
+function closeAdminMobileSidebar() {
+  setAdminMobileOverlayVisible('adminMobileSidebarBackdrop', false);
+}
+
+function openAdminMobileSidebar() {
+  setAdminMobileOverlayVisible('adminMobileSidebarBackdrop', true);
+}
+
+function closeAdminMobileInfo() {
+  setAdminMobileOverlayVisible('adminMobileInfoBackdrop', false);
+}
+
+function syncAdminMobileInfoButton() {
+  const btn = document.getElementById('mobileInfoBtn');
+  if (!btn) return;
+  btn.hidden = !(state.teamData && state.ui.viewMode === 'team');
+}
+
+function openAdminMobileInfo() {
+  const list = document.getElementById('adminMobileInfoList');
+  if (!list || !state.teamData?.summary) return;
+  const s = state.teamData.summary;
+  const m = state.teamData.move_summary || {};
+  const cashLimitTotal = Number(s.cash_limit_total || state.settings.cash_limit_total || 0);
+  const pills = [];
+  if (Number(s.room_to_luxury) < 0) pills.push('Encima del luxury');
+  if (Number(s.room_to_first_apron) < 0) pills.push('Encima del 1er apron');
+  if (Number(s.room_to_second_apron) < 0) pills.push('Encima del 2do apron');
+  const pillsHtml = pills.length
+    ? `<div class="mobile-info-status">${pills.map((txt) => `<div class="mobile-info-pill">${escapeHtml(txt)}</div>`).join('')}</div>`
+    : '';
+  list.innerHTML = `
+    ${pillsHtml}
+    <div class="mobile-info-summary cards">
+      <article class="card card-summary">
+        <div class="label">CAP Total</div>
+        <div class="value">${formatMoneyDots(s.cap_figure)}</div>
+        <div class="card-modifiers">
+          <div class="card-modifier">
+            <span class="card-modifier-label">Espacio CAP</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_cap)}</span>
+          </div>
+          <div class="card-modifier">
+            <span class="card-modifier-label">Espacio 1er Apron</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_first_apron)}</span>
+          </div>
+          <div class="card-modifier">
+            <span class="card-modifier-label">Espacio 2do Apron</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.room_to_second_apron)}</span>
+          </div>
+        </div>
+      </article>
+      <article class="card card-summary">
+        <div class="label">Cash</div>
+        <div class="card-modifiers card-modifiers-no-border">
+          <div class="card-modifier">
+            <span class="card-modifier-label">Recibido / total</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.cash_received)} / ${formatMoneyDots(cashLimitTotal)}</span>
+          </div>
+          <div class="card-modifier">
+            <span class="card-modifier-label">Enviado / total</span>
+            <span class="card-modifier-value">${formatMoneyDots(s.cash_sent)} / ${formatMoneyDots(cashLimitTotal)}</span>
+          </div>
+        </div>
+      </article>
+      <article class="card card-summary">
+        <div class="label">Transfer moves</div>
+        <div class="card-modifiers card-modifiers-no-border">
+          <div class="card-modifier">
+            <span class="card-modifier-label">Pre-30</span>
+            <span class="card-modifier-value">${formatDots(m.remaining_pre30 ?? 0)} / ${formatDots(m.limit_pre30 ?? 0)}</span>
+          </div>
+          <div class="card-modifier">
+            <span class="card-modifier-label">Post-30</span>
+            <span class="card-modifier-value">${formatDots(m.remaining_post30 ?? 0)} / ${formatDots(m.limit_post30 ?? 0)}</span>
+          </div>
+        </div>
+      </article>
+    </div>
+  `;
+  setAdminMobileOverlayVisible('adminMobileInfoBackdrop', true);
+}
+
+function setupAdminMobileNav() {
+  const menuBtn = document.getElementById('mobileMenuBtn');
+  const closeBtn = document.getElementById('adminMobileSidebarCloseBtn');
+  const backdrop = document.getElementById('adminMobileSidebarBackdrop');
+  const trackerBtn = document.getElementById('adminMobileTrackerBtn');
+  const logBtn = document.getElementById('adminMobileLogBtn');
+  const settingsBtn = document.getElementById('adminMobileSettingsBtn');
+  const logoutBtn = document.getElementById('adminMobileLogoutBtn');
+  const infoBtn = document.getElementById('mobileInfoBtn');
+  const infoCloseBtn = document.getElementById('adminMobileInfoCloseBtn');
+  const infoBackdrop = document.getElementById('adminMobileInfoBackdrop');
+
+  if (menuBtn) menuBtn.addEventListener('click', () => openAdminMobileSidebar());
+  if (closeBtn) closeBtn.addEventListener('click', () => closeAdminMobileSidebar());
+  if (backdrop) {
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) closeAdminMobileSidebar();
+    });
+  }
+  if (trackerBtn) {
+    trackerBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      await loadTracker();
+    });
+  }
+  if (logBtn) {
+    logBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      setViewMode('admin-log');
+      setPageHeading('ANBA Admin Log', '');
+      renderCapStatusPills({});
+      await loadAdminLogs();
+    });
+  }
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', () => {
+      closeAdminMobileSidebar();
+      setViewMode('admin-settings');
+      setPageHeading('ANBA League Settings', '');
+      renderCapStatusPills({});
+    });
+  }
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      await api('/api/auth/logout', { method: 'POST', body: '{}' });
+      window.location.href = '/login';
+    });
+  }
+  if (infoBtn) infoBtn.addEventListener('click', () => openAdminMobileInfo());
+  if (infoCloseBtn) infoCloseBtn.addEventListener('click', () => closeAdminMobileInfo());
+  if (infoBackdrop) {
+    infoBackdrop.addEventListener('click', (e) => {
+      if (e.target === infoBackdrop) closeAdminMobileInfo();
+    });
+  }
 }
 
 function renderTracker() {
@@ -2245,6 +2465,106 @@ function renderAssets() {
   appendDraftAddCard();
 }
 
+function renderPlayerRights() {
+  const tbody = document.querySelector('#playerRightsTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  const rows = sortedRows(
+    (state.teamData.assets || []).filter((a) => a.asset_type === 'player_right'),
+    state.sort.player_rights,
+  );
+
+  rows.forEach((item) => {
+    const tr = document.createElement('tr');
+    tr.dataset.id = item.id;
+    tr.innerHTML = `
+      <td><input data-field="label"></td>
+      <td><input data-field="detail"></td>
+      <td>
+        <button data-action="delete-player-right" class="danger" type="button">Delete</button>
+      </td>
+    `;
+
+    tr.querySelectorAll('[data-field]').forEach((el) => {
+      const key = el.dataset.field;
+      el.value = item[key] == null ? '' : item[key];
+      attachInlineEditor(el, async (value) => {
+        await api(`/api/assets/${item.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ [key]: value }),
+        });
+        await loadTeam(state.teamCode);
+      });
+    });
+
+    tr.querySelector('[data-action="delete-player-right"]').addEventListener('click', async () => {
+      if (!confirm('Delete this player right?')) return;
+      await api(`/api/assets/${item.id}`, { method: 'DELETE' });
+      await loadTeam(state.teamCode);
+    });
+
+    tbody.appendChild(tr);
+  });
+
+  if (state.ui.addingPlayerRight) {
+    const tr = document.createElement('tr');
+    tr.className = 'table-add-editor-row';
+    tr.innerHTML = `
+      <td><input data-new-field="label" data-autofocus placeholder="Player name"></td>
+      <td><input data-new-field="detail" placeholder="Details"></td>
+      <td class="table-add-actions-cell">
+        <button type="button" class="inline-save" data-action="save-draft">✓</button>
+        <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
+      </td>
+    `;
+    const discard = () => {
+      state.ui.addingPlayerRight = false;
+      renderPlayerRights();
+    };
+    const save = async () => {
+      const payload = {
+        team_code: state.teamCode,
+        asset_type: 'player_right',
+        label: String(tr.querySelector('[data-new-field="label"]')?.value || '').trim(),
+        detail: String(tr.querySelector('[data-new-field="detail"]')?.value || '').trim(),
+      };
+      if (!payload.label && !payload.detail) {
+        discard();
+        return;
+      }
+      if (!payload.label) payload.label = 'Player right';
+      state.ui.addingPlayerRight = false;
+      await api('/api/assets', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      await loadTeam(state.teamCode);
+    };
+    tbody.appendChild(tr);
+    bindDraftEditor(tr, save, discard);
+    requestAnimationFrame(() => {
+      tr.querySelector('[data-autofocus]')?.focus();
+    });
+  } else {
+    const tr = document.createElement('tr');
+    tr.className = 'table-add-trigger-row';
+    tr.innerHTML = `
+      <td colspan="3">
+        <button type="button" class="table-add-trigger">
+          <span class="table-add-badge">+</span>
+          <span>Add player right</span>
+        </button>
+      </td>
+    `;
+    tr.querySelector('.table-add-trigger').addEventListener('click', () => {
+      state.ui.addingPlayerRight = true;
+      renderPlayerRights();
+    });
+    tbody.appendChild(tr);
+  }
+}
+
 function renderExceptions() {
   const tbody = document.querySelector('#exceptionsTable tbody');
   const tpl = document.getElementById('exceptionRowTemplate');
@@ -2455,6 +2775,7 @@ async function loadTeam(code) {
   renderDeadContracts();
   renderExceptions();
   renderAssets();
+  renderPlayerRights();
   renderImportantFigures();
   applySeasonColumnVisibility();
   await refreshAdminLogsSafe();
@@ -2653,6 +2974,7 @@ async function init() {
   renderTeamPicker();
   setupTradeModal();
   setupAdminMenu();
+  setupAdminMobileNav();
   document.getElementById('logActionFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('logEntityFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('refreshLogsBtn').addEventListener('click', () => { void loadAdminLogs(); });

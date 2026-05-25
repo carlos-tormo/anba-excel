@@ -19,6 +19,7 @@ const state = {
     players: { key: 'position', dir: 'asc' },
     dead_contracts: { key: 'label', dir: 'asc' },
     exceptions: { key: 'label', dir: 'asc' },
+    player_rights: { key: 'label', dir: 'asc' },
   },
   ui: {
     rosterView: 'list',
@@ -26,6 +27,10 @@ const state = {
     statusPills: [],
     mobileSidebarOpen: false,
     mobileInfoOpen: false,
+  },
+  locator: {
+    index: null,
+    loading: false,
   },
   filters: {
     guaranteedOnly: false,
@@ -166,6 +171,13 @@ function selectedSeasonStart() {
 function visibleSeasonYears() {
   const start = selectedSeasonStart();
   return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => start + idx);
+}
+
+function scrollToTeamSection(sectionId) {
+  requestAnimationFrame(() => {
+    const section = document.getElementById(sectionId);
+    if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function syncSeasonSortsToVisibleWindow() {
@@ -506,6 +518,7 @@ function setupSorting() {
   updateSortIndicators('playersTable', state.sort.players);
   updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
   updateSortIndicators('exceptionsTable', state.sort.exceptions);
+  updateSortIndicators('playerRightsTable', state.sort.player_rights);
 
   document.querySelectorAll('#deadContractsTable thead th[data-sort]').forEach((th) => {
     if (!th.dataset.label) th.dataset.label = th.textContent.trim();
@@ -534,6 +547,21 @@ function setupSorting() {
       };
       renderExceptions();
       updateSortIndicators('exceptionsTable', state.sort.exceptions);
+    });
+  });
+
+  document.querySelectorAll('#playerRightsTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.player_rights;
+      state.sort.player_rights = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderPlayerRights();
+      updateSortIndicators('playerRightsTable', state.sort.player_rights);
     });
   });
 }
@@ -877,6 +905,7 @@ function setViewMode(mode) {
   const deadContractsSection = document.getElementById('deadContractsSection');
   const exceptionsSection = document.getElementById('exceptionsSection');
   const assetsSection = document.getElementById('assetsSection');
+  const playerRightsSection = document.getElementById('playerRightsSection');
   const importantFiguresSection = document.getElementById('importantFiguresSection');
   const showTeam = mode === 'team';
 
@@ -886,6 +915,7 @@ function setViewMode(mode) {
   deadContractsSection.classList.toggle('section-hidden', !showTeam);
   exceptionsSection.classList.toggle('section-hidden', !showTeam);
   assetsSection.classList.toggle('section-hidden', !showTeam);
+  playerRightsSection.classList.toggle('section-hidden', !showTeam);
   importantFiguresSection.classList.toggle('section-hidden', !showTeam);
 }
 
@@ -1412,6 +1442,30 @@ function renderExceptions() {
   });
 }
 
+function renderPlayerRights() {
+  const tbody = document.querySelector('#playerRightsTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  const rows = sortedRows(
+    (state.teamData.assets || []).filter((a) => a.asset_type === 'player_right'),
+    state.sort.player_rights,
+  );
+
+  rows.forEach((item) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>
+        <div class="player-cell">
+          <span class="player-name">${escapeHtml(item.label || '')}</span>
+        </div>
+      </td>
+      <td class="details-cell">${escapeHtml(item.detail || '')}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
 async function loadTeam(code) {
   const data = await api(`/api/teams/${code}`);
   state.teamCode = code;
@@ -1432,6 +1486,7 @@ async function loadTeam(code) {
   renderDeadContracts();
   renderExceptions();
   renderAssets();
+  renderPlayerRights();
   renderImportantFigures();
 }
 
@@ -1478,6 +1533,300 @@ async function loadTracker() {
   renderMobileTeamGrid();
   renderTracker();
   renderImportantFigures();
+}
+
+function normalizeLocatorText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function draftPickSearchRound(asset) {
+  const roundRaw = String(asset?.draft_round || '').trim().toLowerCase();
+  if (roundRaw.includes('2')) return '2nd';
+  if (roundRaw.includes('1')) return '1st';
+  const label = String(asset?.label || '').toLowerCase();
+  return label.includes('2') ? '2nd' : '1st';
+}
+
+function teamCodeFromAssetLabel(label) {
+  const upper = String(label || '').toUpperCase();
+  return (state.teams || []).map((team) => team.code).find((code) => {
+    return new RegExp(`\\b${code}\\b`).test(upper);
+  }) || null;
+}
+
+function draftPickOriginalOwner(asset, teamCode) {
+  const type = String(asset?.draft_pick_type || '').trim().toLowerCase();
+  if (type === 'acquired') {
+    return String(asset?.original_owner || teamCodeFromAssetLabel(asset?.label) || teamCode || '').toUpperCase();
+  }
+  return String(teamCodeFromAssetLabel(asset?.label) || teamCode || '').toUpperCase();
+}
+
+function locatorFallbackDraftYears() {
+  const start = currentSeasonStart() + 1;
+  return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => start + idx);
+}
+
+function populateLocatorDraftControls() {
+  const ownerSelect = document.getElementById('locatorDraftOwner');
+  const yearSelect = document.getElementById('locatorDraftYear');
+  if (!ownerSelect || !yearSelect) return;
+  const selectedOwner = ownerSelect.value;
+  const selectedYear = yearSelect.value;
+  ownerSelect.innerHTML = [
+    '<option value="">Original owner</option>',
+    ...state.teams.map((team) => `<option value="${team.code}">${team.code} - ${escapeHtml(team.name || team.code)}</option>`),
+  ].join('');
+  if (selectedOwner) ownerSelect.value = selectedOwner;
+  const indexedYears = state.locator.index
+    ? Array.from(new Set(state.locator.index.draftPicks.map((pick) => Number(pick.year)).filter(Number.isFinite))).sort((a, b) => a - b)
+    : [];
+  const years = indexedYears.length ? indexedYears : locatorFallbackDraftYears();
+  yearSelect.innerHTML = [
+    '<option value="">Year</option>',
+    ...years.map((year) => `<option value="${year}">${year}</option>`),
+  ].join('');
+  if (selectedYear && years.includes(Number(selectedYear))) yearSelect.value = selectedYear;
+}
+
+async function ensureLocatorIndex() {
+  if (state.locator.index) return state.locator.index;
+  if (state.locator.loading) {
+    while (state.locator.loading) {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    return state.locator.index;
+  }
+  state.locator.loading = true;
+  const results = document.getElementById('locatorResults');
+  if (results) results.innerHTML = '<div class="locator-empty">Loading...</div>';
+  try {
+    const teamDataRows = await Promise.all(state.teams.map(async (team) => {
+      const data = state.teamCode === team.code && state.teamData ? state.teamData : await api(`/api/teams/${team.code}`);
+      return { team, data };
+    }));
+    const playerEntries = [];
+    const draftPicks = [];
+    teamDataRows.forEach(({ team, data }) => {
+      const teamCode = team.code;
+      const teamName = team.name || teamCode;
+      (data.players || []).forEach((player) => {
+        if (!String(player.name || '').trim()) return;
+        playerEntries.push({
+          id: `player-${player.id}`,
+          name: player.name,
+          team_code: teamCode,
+          team_name: teamName,
+          source: 'Roster',
+          section_id: 'rosterSection',
+        });
+      });
+      (data.dead_contracts || []).forEach((item) => {
+        if (!String(item.label || '').trim()) return;
+        playerEntries.push({
+          id: `dead-${item.id}`,
+          name: item.label,
+          team_code: teamCode,
+          team_name: teamName,
+          source: 'Dead contract',
+          section_id: 'deadContractsSection',
+        });
+      });
+      (data.assets || []).forEach((asset) => {
+        if (asset.asset_type === 'player_right' && String(asset.label || '').trim()) {
+          playerEntries.push({
+            id: `right-${asset.id}`,
+            name: asset.label,
+            team_code: teamCode,
+            team_name: teamName,
+            source: 'Player right',
+            section_id: 'playerRightsSection',
+          });
+        }
+        if (asset.asset_type === 'exception' && String(asset.label || '').trim()) {
+          playerEntries.push({
+            id: `exception-${asset.id}`,
+            name: asset.label,
+            team_code: teamCode,
+            team_name: teamName,
+            source: 'Exception',
+            section_id: 'exceptionsSection',
+          });
+        }
+        if (asset.asset_type === 'draft_pick') {
+          const year = Number(asset.year);
+          if (!Number.isFinite(year)) return;
+          draftPicks.push({
+            id: asset.id,
+            team_code: teamCode,
+            team_name: teamName,
+            label: asset.label || `${draftPickSearchRound(asset)} pick`,
+            owner: draftPickOriginalOwner(asset, teamCode),
+            round: draftPickSearchRound(asset),
+            year,
+            pick_type: String(asset.draft_pick_type || 'own').trim().toLowerCase() || 'own',
+          });
+        }
+      });
+    });
+    state.locator.index = { playerEntries, draftPicks };
+    populateLocatorDraftControls();
+    renderLocatorPlayerResults();
+    return state.locator.index;
+  } finally {
+    state.locator.loading = false;
+  }
+}
+
+function renderLocatorPlayerResults() {
+  const input = document.getElementById('locatorSearchInput');
+  const results = document.getElementById('locatorResults');
+  if (!input || !results) return;
+  const query = normalizeLocatorText(input.value);
+  if (!query) {
+    results.innerHTML = '';
+    return;
+  }
+  if (!state.locator.index) {
+    results.innerHTML = '<div class="locator-empty">Loading...</div>';
+    return;
+  }
+  const matches = state.locator.index.playerEntries
+    .filter((entry) => normalizeLocatorText(entry.name).includes(query))
+    .sort((a, b) => {
+      const aName = normalizeLocatorText(a.name);
+      const bName = normalizeLocatorText(b.name);
+      const aStarts = aName.startsWith(query) ? 0 : 1;
+      const bStarts = bName.startsWith(query) ? 0 : 1;
+      if (aStarts !== bStarts) return aStarts - bStarts;
+      return aName.localeCompare(bName);
+    })
+    .slice(0, 24);
+  if (!matches.length) {
+    results.innerHTML = '<div class="locator-empty">No matches</div>';
+    return;
+  }
+  results.innerHTML = matches.map((entry, idx) => `
+    <button type="button" class="locator-result" data-result-index="${idx}">
+      <span class="locator-result-name">${escapeHtml(entry.name)}</span>
+      <span class="locator-result-meta">${escapeHtml(entry.team_code)} · ${escapeHtml(entry.source)}</span>
+    </button>
+  `).join('');
+  results.querySelectorAll('[data-result-index]').forEach((btn) => {
+    const entry = matches[Number(btn.dataset.resultIndex)];
+    btn.addEventListener('click', () => {
+      void goToLocatorEntry(entry);
+    });
+  });
+}
+
+function closeLocatorModal() {
+  const modal = document.getElementById('locatorModal');
+  if (!modal) return;
+  modal.classList.add('section-hidden');
+}
+
+function openLocatorModal() {
+  const modal = document.getElementById('locatorModal');
+  const input = document.getElementById('locatorSearchInput');
+  if (!modal || !input) return;
+  populateLocatorDraftControls();
+  modal.classList.remove('section-hidden');
+  renderLocatorPlayerResults();
+  requestAnimationFrame(() => input.focus());
+  void ensureLocatorIndex().catch((err) => {
+    const results = document.getElementById('locatorResults');
+    if (results) results.innerHTML = `<div class="locator-empty">${escapeHtml(err.message || 'Search failed')}</div>`;
+  });
+}
+
+async function goToLocatorEntry(entry) {
+  if (!entry) return;
+  closeLocatorModal();
+  await loadTeam(entry.team_code);
+  scrollToTeamSection(entry.section_id || 'rosterSection');
+}
+
+function findDraftPickLocatorMatch(owner, round, year) {
+  const index = state.locator.index;
+  if (!index) return null;
+  const matches = index.draftPicks
+    .filter((pick) => pick.owner === owner && pick.round === round && Number(pick.year) === Number(year))
+    .sort((a, b) => {
+      const aSold = a.pick_type === 'sold' ? 1 : 0;
+      const bSold = b.pick_type === 'sold' ? 1 : 0;
+      if (aSold !== bSold) return aSold - bSold;
+      return String(a.team_code).localeCompare(String(b.team_code));
+    });
+  return matches[0] || null;
+}
+
+async function goToDraftPickLocatorMatch(match) {
+  if (!match) return;
+  state.ui.seasonViewStart = normalizeSeasonViewStart(Number(match.year) - 1);
+  closeLocatorModal();
+  await loadTeam(match.team_code);
+  scrollToTeamSection('assetsSection');
+}
+
+async function submitDraftPickLocator() {
+  const owner = String(document.getElementById('locatorDraftOwner')?.value || '').trim().toUpperCase();
+  const round = String(document.getElementById('locatorDraftRound')?.value || '1st').trim();
+  const year = Number(document.getElementById('locatorDraftYear')?.value || 0);
+  const status = document.getElementById('locatorDraftStatus');
+  if (!owner || !round || !Number.isFinite(year) || year <= 0) {
+    if (status) status.textContent = 'Select owner, round, and year.';
+    return;
+  }
+  if (status) status.textContent = state.locator.index ? '' : 'Loading...';
+  await ensureLocatorIndex();
+  const match = findDraftPickLocatorMatch(owner, round, year);
+  if (!match) {
+    if (status) status.textContent = 'No matching pick found.';
+    return;
+  }
+  if (status) status.textContent = '';
+  await goToDraftPickLocatorMatch(match);
+}
+
+function setupLocatorModal() {
+  const openBtn = document.getElementById('openLocatorBtn');
+  const mobileBtn = document.getElementById('mobileLocatorBtn');
+  const closeBtn = document.getElementById('locatorCloseBtn');
+  const modal = document.getElementById('locatorModal');
+  const input = document.getElementById('locatorSearchInput');
+  const draftGoBtn = document.getElementById('locatorDraftGoBtn');
+  if (openBtn) openBtn.addEventListener('click', () => openLocatorModal());
+  if (mobileBtn) {
+    mobileBtn.addEventListener('click', () => {
+      closeMobileSidebar();
+      openLocatorModal();
+    });
+  }
+  if (closeBtn) closeBtn.addEventListener('click', () => closeLocatorModal());
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeLocatorModal();
+    });
+  }
+  if (input) {
+    input.addEventListener('input', () => {
+      renderLocatorPlayerResults();
+      if (!state.locator.index) void ensureLocatorIndex();
+    });
+  }
+  if (draftGoBtn) {
+    draftGoBtn.addEventListener('click', () => {
+      void submitDraftPickLocator().catch((err) => {
+        const status = document.getElementById('locatorDraftStatus');
+        if (status) status.textContent = err.message || 'Draft pick search failed.';
+      });
+    });
+  }
 }
 
 function setupMobileNav() {
@@ -1546,6 +1895,7 @@ async function init() {
   const teamsRes = await api('/api/teams');
   state.teams = teamsRes.teams;
   setupSorting();
+  setupLocatorModal();
   setupMobileNav();
   setupRosterViewControl();
   setupSeasonViewControl();

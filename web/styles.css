@@ -100,7 +100,8 @@ h1 {
   gap: 10px;
   overflow: auto;
 }
-#mobileSidebar {
+#mobileSidebar,
+#adminMobileSidebar {
   background:
     radial-gradient(260px 160px at 78% 0%, rgba(var(--team-secondary-rgb), 0.14), transparent 58%),
     linear-gradient(180deg, rgba(var(--team-primary-dark-rgb), 0.98), rgba(9, 12, 18, 0.98));
@@ -144,10 +145,12 @@ h1 {
   align-items: center;
   justify-content: space-between;
 }
-#mobileSidebar .mobile-sidebar-head {
+#mobileSidebar .mobile-sidebar-head,
+#adminMobileSidebar .mobile-sidebar-head {
   padding-top: 2px;
 }
-#mobileSidebar .mobile-sidebar-head strong {
+#mobileSidebar .mobile-sidebar-head strong,
+#adminMobileSidebar .mobile-sidebar-head strong {
   color: #94a3b8;
   font-size: 0.84rem;
   letter-spacing: 0.04em;
@@ -160,7 +163,8 @@ h1 {
   border-color: #cbd5e1;
   background: #f8fafc;
 }
-#mobileSidebar .mobile-sidebar-head .mobile-icon-btn {
+#mobileSidebar .mobile-sidebar-head .mobile-icon-btn,
+#adminMobileSidebar .mobile-sidebar-head .mobile-icon-btn {
   color: #e2e8f0;
   border-color: rgba(148, 163, 184, 0.24);
   background: rgba(255, 255, 255, 0.04);
@@ -185,7 +189,9 @@ h1 {
   border-radius: 7px;
 }
 #mobileSidebar .mobile-nav-link,
-#mobileSidebar .mobile-nav-btn {
+#mobileSidebar .mobile-nav-btn,
+#adminMobileSidebar .mobile-nav-link,
+#adminMobileSidebar .mobile-nav-btn {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
   align-items: center;
@@ -201,7 +207,9 @@ h1 {
   box-shadow: none;
 }
 #mobileSidebar .mobile-nav-link::before,
-#mobileSidebar .mobile-nav-btn::before {
+#mobileSidebar .mobile-nav-btn::before,
+#adminMobileSidebar .mobile-nav-link::before,
+#adminMobileSidebar .mobile-nav-btn::before {
   content: attr(data-icon);
   display: inline-grid;
   place-items: center;
@@ -214,7 +222,12 @@ h1 {
 #mobileSidebar .mobile-nav-btn:hover,
 #mobileSidebar .mobile-nav-link:focus-visible,
 #mobileSidebar .mobile-nav-btn:focus-visible,
-#mobileSidebar .mobile-nav-btn:first-child {
+#mobileSidebar .mobile-nav-btn:first-child,
+#adminMobileSidebar .mobile-nav-link:hover,
+#adminMobileSidebar .mobile-nav-btn:hover,
+#adminMobileSidebar .mobile-nav-link:focus-visible,
+#adminMobileSidebar .mobile-nav-btn:focus-visible,
+#adminMobileSidebar .mobile-nav-btn:first-child {
   color: #f8fafc;
   background: linear-gradient(90deg, rgba(var(--team-primary-rgb), 0.96), rgba(var(--team-secondary-rgb), 0.72));
   border-color: rgba(var(--team-secondary-rgb), 0.56);
@@ -226,19 +239,26 @@ h1 {
 #mobileSidebar .mobile-nav-btn:hover::before,
 #mobileSidebar .mobile-nav-link:focus-visible::before,
 #mobileSidebar .mobile-nav-btn:focus-visible::before,
-#mobileSidebar .mobile-nav-btn:first-child::before {
+#mobileSidebar .mobile-nav-btn:first-child::before,
+#adminMobileSidebar .mobile-nav-link:hover::before,
+#adminMobileSidebar .mobile-nav-btn:hover::before,
+#adminMobileSidebar .mobile-nav-link:focus-visible::before,
+#adminMobileSidebar .mobile-nav-btn:focus-visible::before,
+#adminMobileSidebar .mobile-nav-btn:first-child::before {
   color: #ffffff;
 }
 .mobile-nav-btn.danger {
   background: #b42318;
   border-color: #b42318;
 }
-#mobileSidebar .mobile-nav-btn.danger {
+#mobileSidebar .mobile-nav-btn.danger,
+#adminMobileSidebar .mobile-nav-btn.danger {
   color: #fecaca;
   background: rgba(127, 29, 29, 0.22);
   border-color: rgba(248, 113, 113, 0.22);
 }
-#mobileSidebar .mobile-nav-btn.danger::before {
+#mobileSidebar .mobile-nav-btn.danger::before,
+#adminMobileSidebar .mobile-nav-btn.danger::before {
   color: #fca5a5;
 }
 .mobile-sidebar-team-title {
@@ -325,6 +345,15 @@ h1 {
   gap: 8px;
   flex-wrap: wrap;
   position: relative;
+}
+.icon-only-btn {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  font-size: 1.18rem;
+  line-height: 1;
 }
 .top-status-wrap {
   display: inline-flex;
@@ -476,6 +505,84 @@ h1 {
   margin: 0;
   color: #102a43;
 }
+.locator-modal {
+  width: min(720px, 94vw);
+}
+.locator-content {
+  display: grid;
+  gap: 14px;
+}
+.locator-search-label,
+.locator-draft-grid label {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #334155;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.locator-search-input {
+  width: 100%;
+  font-size: 1rem;
+}
+.locator-results {
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow: auto;
+}
+.locator-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  text-align: left;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: #f8fafc;
+  color: #0f172a;
+  box-shadow: none;
+}
+.locator-result-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 800;
+}
+.locator-result-meta {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.locator-empty,
+.locator-status {
+  color: #64748b;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+.locator-draft-panel {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.locator-draft-panel h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+.locator-draft-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+}
+.locator-draft-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .trade-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(260px, 1fr));
@@ -533,6 +640,13 @@ h1 {
 }
 .trade-pick-row {
   grid-template-columns: auto minmax(0, 1.3fr) auto auto;
+}
+.trade-right-row {
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.4fr);
+}
+.details-cell {
+  white-space: normal;
+  color: #475569;
 }
 .trade-toolbar {
   display: flex;
@@ -2299,6 +2413,17 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   }
   .trade-grid {
     grid-template-columns: 1fr;
+  }
+  .locator-modal {
+    width: min(96vw, 520px);
+  }
+  .locator-result {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .locator-draft-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
   .section-head h2 {
     margin-bottom: 0;

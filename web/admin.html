@@ -5,14 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260524g">
+  <link rel="stylesheet" href="/styles.css?v=20260525a">
 </head>
 <body>
   <header>
+    <button id="mobileMenuBtn" class="mobile-icon-btn" type="button" aria-label="Open navigation menu" title="Menu">☰</button>
     <div class="page-title-wrap">
       <h1 id="pageTitle">ANBA Admin Panel</h1>
       <div id="pageSubtitle" class="page-subtitle section-hidden"></div>
     </div>
+    <button id="mobileInfoBtn" class="mobile-icon-btn" type="button" aria-label="Team status information" title="Info" hidden>i</button>
     <div class="controls">
       <div id="capStatusPills" class="top-status-wrap"></div>
       <a href="/" class="ghost-link">Guest View</a>
@@ -29,6 +31,36 @@
 
     </div>
   </header>
+  <div id="adminMobileSidebarBackdrop" class="mobile-sidebar-backdrop section-hidden" aria-hidden="true">
+    <aside id="adminMobileSidebar" class="mobile-sidebar" aria-label="Navigation menu">
+      <div class="mobile-sidebar-brand">
+        <div class="mobile-sidebar-brand-mark" aria-hidden="true">AN</div>
+        <div class="mobile-sidebar-brand-text">
+          <strong>Admin<span>2K</span></strong>
+        </div>
+      </div>
+      <div class="mobile-sidebar-head">
+        <strong>Navegación</strong>
+        <button id="adminMobileSidebarCloseBtn" class="mobile-icon-btn" type="button" aria-label="Close menu" title="Close">✕</button>
+      </div>
+      <div class="mobile-sidebar-links">
+        <button id="adminMobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Tracker</button>
+        <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡">Admin Log</button>
+        <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙">League Settings</button>
+        <a href="/" class="mobile-nav-link" data-icon="↗">Guest View</a>
+        <button id="adminMobileLogoutBtn" type="button" class="danger mobile-nav-btn" data-icon="↗">Logout</button>
+      </div>
+    </aside>
+  </div>
+  <div id="adminMobileInfoBackdrop" class="mobile-sidebar-backdrop section-hidden" aria-hidden="true">
+    <aside class="mobile-sidebar mobile-info-panel" aria-label="Team status information">
+      <div class="mobile-sidebar-head">
+        <strong>Información</strong>
+        <button id="adminMobileInfoCloseBtn" class="mobile-icon-btn" type="button" aria-label="Close information" title="Close">✕</button>
+      </div>
+      <div id="adminMobileInfoList" class="mobile-info-list"></div>
+    </aside>
+  </div>
   <section class="team-strip-section">
     <div class="page-shell">
       <label class="team-picker-mobile-label" for="teamPickerMobile">Team</label>
@@ -244,6 +276,22 @@
       <div id="draftAssetsBoard" class="draft-assets-board"></div>
     </section>
 
+    <section id="playerRightsSection">
+      <h2>Player Rights</h2>
+      <div class="table-wrap">
+        <table id="playerRightsTable">
+          <thead>
+            <tr>
+              <th data-sort="label">Player</th>
+              <th data-sort="detail">Details</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="importantFiguresSection">
       <h2>Cifras importantes</h2>
       <div class="table-wrap important-figures-wrap">
@@ -393,6 +441,10 @@
             <div class="trade-subsection-title">Next 1st-round picks</div>
             <div id="tradePicksA" class="trade-players-list"></div>
           </div>
+          <div class="trade-subsection">
+            <div class="trade-subsection-title">Player rights</div>
+            <div id="tradeRightsA" class="trade-players-list"></div>
+          </div>
         </div>
         <div class="trade-team-col">
           <label for="tradeTeamB">Team B</label>
@@ -404,6 +456,10 @@
           <div class="trade-subsection">
             <div class="trade-subsection-title">Next 1st-round picks</div>
             <div id="tradePicksB" class="trade-players-list"></div>
+          </div>
+          <div class="trade-subsection">
+            <div class="trade-subsection-title">Player rights</div>
+            <div id="tradeRightsB" class="trade-players-list"></div>
           </div>
         </div>
       </div>
@@ -430,6 +486,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260524g" defer></script>
+  <script src="/admin.js?v=20260525a" defer></script>
 </body>
 </html>

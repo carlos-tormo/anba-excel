@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260524g">
+  <link rel="stylesheet" href="/styles.css?v=20260525a">
 </head>
 <body>
   <header>
@@ -17,6 +17,7 @@
     <button id="mobileInfoBtn" class="mobile-icon-btn" type="button" aria-label="Team status information" title="Info" hidden>i</button>
     <div class="controls">
       <div id="capStatusPills" class="top-status-wrap"></div>
+      <button id="openLocatorBtn" class="icon-only-btn" type="button" aria-label="Search players and draft picks" title="Search">⌕</button>
       <button id="trackerHomeBtn" type="button">Tracker</button>
       <span id="authBadge"></span>
       <a id="adminLink" href="/admin" class="ghost-link">Admin</a>
@@ -38,6 +39,7 @@
       </div>
       <div class="mobile-sidebar-links">
         <button id="mobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Clasificación</button>
+        <button id="mobileLocatorBtn" type="button" class="mobile-nav-btn" data-icon="⌕">Buscar</button>
         <a id="mobileAdminLink" href="/admin" class="mobile-nav-link" data-icon="⚙">Admin</a>
       </div>
       <div class="mobile-sidebar-team-title">Equipos</div>
@@ -65,6 +67,37 @@
       </div>
       <div id="moveLogList" class="mobile-info-list move-log-list"></div>
     </aside>
+  </div>
+  <div id="locatorModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="locatorModalTitle">
+    <div class="modal-card locator-modal">
+      <div class="modal-header">
+        <h2 id="locatorModalTitle">Search</h2>
+        <button id="locatorCloseBtn" type="button" class="danger">Close</button>
+      </div>
+      <div class="locator-content">
+        <label class="locator-search-label" for="locatorSearchInput">Player search</label>
+        <input id="locatorSearchInput" class="locator-search-input" type="search" autocomplete="off" placeholder="Player name">
+        <div id="locatorResults" class="locator-results"></div>
+        <div class="locator-draft-panel">
+          <h3>Draft pick search</h3>
+          <div class="locator-draft-grid">
+            <label for="locatorDraftOwner">Original owner</label>
+            <select id="locatorDraftOwner"></select>
+            <label for="locatorDraftRound">Round</label>
+            <select id="locatorDraftRound">
+              <option value="1st">1st round</option>
+              <option value="2nd">2nd round</option>
+            </select>
+            <label for="locatorDraftYear">Year</label>
+            <select id="locatorDraftYear"></select>
+          </div>
+          <div class="locator-draft-actions">
+            <button id="locatorDraftGoBtn" type="button">Go to pick</button>
+            <div id="locatorDraftStatus" class="locator-status" aria-live="polite"></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
   <section class="team-strip-section">
     <div class="page-shell">
@@ -218,6 +251,25 @@
       <div id="draftAssetsBoard" class="draft-assets-board"></div>
     </section>
 
+    <section id="playerRightsSection">
+      <h2>Player Rights</h2>
+      <div class="table-wrap">
+        <table id="playerRightsTable">
+          <colgroup>
+            <col class="col-meta-name">
+            <col>
+          </colgroup>
+          <thead>
+            <tr>
+              <th data-sort="label">Player</th>
+              <th data-sort="detail">Details</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="importantFiguresSection">
       <h2>Cifras importantes</h2>
       <div class="table-wrap important-figures-wrap">
@@ -228,6 +280,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260524f" defer></script>
+  <script src="/guest.js?v=20260525a" defer></script>
 </body>
 </html>
