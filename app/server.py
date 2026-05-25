@@ -342,6 +342,12 @@ class LeagueDB:
             for col in option_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
+            if "provisional_amounts" not in cols:
+                conn.execute("ALTER TABLE players ADD COLUMN provisional_amounts INTEGER NOT NULL DEFAULT 0")
+            provisional_cols = [f"salary_{season}_provisional" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
+            for col in provisional_cols:
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
             asset_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(assets)").fetchall()
@@ -852,6 +858,11 @@ class LeagueDB:
             "option_2025", "option_2026", "option_2027", "option_2028", "option_2029", "option_2030",
             "notes",
         ]
+        bool_fields = [
+            "provisional_amounts",
+            "salary_2025_provisional", "salary_2026_provisional", "salary_2027_provisional",
+            "salary_2028_provisional", "salary_2029_provisional", "salary_2030_provisional",
+        ]
         assignments = []
         values: List[Any] = []
 
@@ -859,6 +870,11 @@ class LeagueDB:
             if f in payload:
                 assignments.append(f"{f} = ?")
                 values.append(payload[f])
+
+        for f in bool_fields:
+            if f in payload:
+                assignments.append(f"{f} = ?")
+                values.append(1 if parse_bool(payload[f]) else 0)
 
         for season in [2025, 2026, 2027, 2028, 2029, 2030]:
             text_field = f"salary_{season}_text"
@@ -926,6 +942,13 @@ class LeagueDB:
                 "option_2028": payload.get("option_2028"),
                 "option_2029": payload.get("option_2029"),
                 "option_2030": payload.get("option_2030"),
+                "provisional_amounts": 1 if parse_bool(payload.get("provisional_amounts")) else 0,
+                "salary_2025_provisional": 1 if parse_bool(payload.get("salary_2025_provisional")) else 0,
+                "salary_2026_provisional": 1 if parse_bool(payload.get("salary_2026_provisional")) else 0,
+                "salary_2027_provisional": 1 if parse_bool(payload.get("salary_2027_provisional")) else 0,
+                "salary_2028_provisional": 1 if parse_bool(payload.get("salary_2028_provisional")) else 0,
+                "salary_2029_provisional": 1 if parse_bool(payload.get("salary_2029_provisional")) else 0,
+                "salary_2030_provisional": 1 if parse_bool(payload.get("salary_2030_provisional")) else 0,
                 "notes": payload.get("notes"),
             }
             cur = conn.execute(
@@ -939,8 +962,11 @@ class LeagueDB:
                     salary_2029_text, salary_2029_num,
                     salary_2030_text, salary_2030_num,
                     option_2025, option_2026, option_2027, option_2028, option_2029, option_2030,
+                    provisional_amounts,
+                    salary_2025_provisional, salary_2026_provisional, salary_2027_provisional,
+                    salary_2028_provisional, salary_2029_provisional, salary_2030_provisional,
                     notes, is_two_way, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -968,6 +994,13 @@ class LeagueDB:
                     values["option_2028"],
                     values["option_2029"],
                     values["option_2030"],
+                    values["provisional_amounts"],
+                    values["salary_2025_provisional"],
+                    values["salary_2026_provisional"],
+                    values["salary_2027_provisional"],
+                    values["salary_2028_provisional"],
+                    values["salary_2029_provisional"],
+                    values["salary_2030_provisional"],
                     values["notes"],
                     1 if str(values["bird_rights"] or "").upper() == "TW" else 0,
                     now,

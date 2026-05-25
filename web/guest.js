@@ -52,6 +52,44 @@ const PLAYER_SORT_CYCLE = [
 ];
 const POSITION_ORDER = { PG: 1, SG: 2, SF: 3, PF: 4, C: 5 };
 
+function boolValue(value) {
+  if (value === true) return true;
+  if (typeof value === 'number') return value !== 0;
+  return ['1', 'true', 'yes', 'on', 'checked'].includes(String(value || '').trim().toLowerCase());
+}
+
+function salaryProvisionalField(season) {
+  return `salary_${season}_provisional`;
+}
+
+function playerUsesProvisionalAmounts(player) {
+  return boolValue(player?.provisional_amounts);
+}
+
+function playerSeasonIsProvisional(player, season) {
+  return playerUsesProvisionalAmounts(player) && boolValue(player?.[salaryProvisionalField(season)]);
+}
+
+function provisionalInfoHtml() {
+  return `
+    <button type="button" class="salary-provisional-info" aria-label="Cifra provisional" title="Cifra provisional">
+      i
+      <span class="salary-provisional-pop">Cifra provisional</span>
+    </button>
+  `;
+}
+
+function bindProvisionalInfoToggles(root) {
+  if (!root) return;
+  root.querySelectorAll('.salary-provisional-info').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      btn.classList.toggle('show-detail');
+    });
+  });
+}
+
 function describePlayerSort(sortCfg) {
   const key = sortCfg.key;
   const dir = sortCfg.dir === 'asc' ? 'asc' : 'desc';
@@ -352,14 +390,18 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   const optionCode = String(option || '').trim().toUpperCase();
   const hideOptionTag = ['FB', 'EB', 'NB'].includes(textTagCode) || ['FB', 'EB', 'NB'].includes(optionCode);
   const cap = Number(state.settings.salary_cap_2025 || 154647000);
+  const isProvisional = playerSeasonIsProvisional(obj, season);
+  const provisionalClass = isProvisional ? 'salary-chip--provisional' : '';
+  const provisionalInfo = isProvisional ? provisionalInfoHtml() : '';
 
   if (num !== null && num !== undefined && Number.isFinite(Number(num))) {
     const val = Number(num);
     const pct = cap > 0 ? `${((val / cap) * 100).toFixed(1)}%` : '';
     return `
-      <div class="salary-chip ${optClass}">
+      <div class="salary-chip ${optClass} ${provisionalClass}">
         <span class="salary-chip-main">${formatDots(val)}</span>
         <span class="salary-chip-pct">${pct}</span>
+        ${provisionalInfo}
       </div>
     `;
   }
@@ -367,14 +409,20 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   if (text !== null && text !== undefined && String(text).trim() !== '') {
     const upper = escapeHtml(String(text).trim().toUpperCase());
     return `
-      <div class="salary-chip salary-chip-text ${textTagClass} ${hideOptionTag ? '' : optClass}">
+      <div class="salary-chip salary-chip-text ${textTagClass} ${hideOptionTag ? '' : optClass} ${provisionalClass}">
         <span class="salary-chip-main">${upper}</span>
+        ${provisionalInfo}
       </div>
     `;
   }
 
   if (!showEmptyYears) return '';
-  return `<div class="salary-empty-bar" aria-hidden="true"></div>`;
+  return `
+    <div class="salary-empty-wrap ${isProvisional ? 'salary-empty-wrap--provisional' : ''}">
+      <div class="salary-empty-bar" aria-hidden="true"></div>
+      ${provisionalInfo}
+    </div>
+  `;
 }
 
 function salaryBox(obj, season) {
@@ -1149,6 +1197,8 @@ function renderPlayers() {
       cardsWrap.appendChild(card);
     }
   });
+  bindProvisionalInfoToggles(tbody);
+  bindProvisionalInfoToggles(cardsWrap);
 }
 
 function setupRosterFilters() {

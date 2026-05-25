@@ -1533,6 +1533,11 @@ th {
   background: #eef2f7;
   overflow: hidden;
 }
+.salary-chip--provisional {
+  border-color: #f59e0b;
+  box-shadow: inset 3px 0 0 #f59e0b;
+  overflow: visible;
+}
 .salary-chip.salary-option--po {
   background: #e0f2fe;
   border-color: #7dd3fc;
@@ -1597,6 +1602,61 @@ th {
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.3);
 }
+.salary-empty-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+.salary-empty-wrap .salary-empty-bar {
+  flex: 1;
+}
+.salary-empty-wrap--provisional .salary-empty-bar {
+  background: rgba(245, 158, 11, 0.34);
+}
+.salary-provisional-info {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 5px;
+  border: 1px solid rgba(180, 83, 9, 0.45);
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+}
+.salary-provisional-pop {
+  position: absolute;
+  right: -8px;
+  top: calc(100% + 8px);
+  z-index: 30;
+  width: max-content;
+  max-width: 180px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.25;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.salary-provisional-info:hover .salary-provisional-pop,
+.salary-provisional-info:focus-visible .salary-provisional-pop,
+.salary-provisional-info.show-detail .salary-provisional-pop {
+  opacity: 1;
+  transform: translateY(0);
+}
 
 .salary-pill {
   display: inline-flex;
@@ -1614,12 +1674,46 @@ th {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 .salary-cell-admin select[data-option-field] {
   font-size: 0.72rem;
   padding: 2px 6px;
   border-radius: 6px;
   min-width: 54px;
+}
+.salary-cell-admin > .salary-provisional-info {
+  margin-right: 0;
+}
+.salary-provisional-toggle,
+.provisional-master-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #334155;
+  font-size: 0.74rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.salary-provisional-toggle {
+  padding: 2px 6px;
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #9a3412;
+}
+.salary-provisional-toggle input,
+.provisional-master-toggle input {
+  width: auto;
+  margin: 0;
+}
+.provisional-master-toggle {
+  margin-left: 4px;
+  padding-top: 6px;
+}
+td.salary-provisional-cell .salary-edit {
+  border-color: #f59e0b;
+  box-shadow: inset 3px 0 0 #f59e0b;
 }
 .salary-pill .salary-main {
   font-variant-numeric: tabular-nums;

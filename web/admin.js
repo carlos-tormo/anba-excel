@@ -78,6 +78,44 @@ function salaryTextTagClass(value) {
   return '';
 }
 
+function boolValue(value) {
+  if (value === true) return true;
+  if (typeof value === 'number') return value !== 0;
+  return ['1', 'true', 'yes', 'on', 'checked'].includes(String(value || '').trim().toLowerCase());
+}
+
+function salaryProvisionalField(season) {
+  return `salary_${season}_provisional`;
+}
+
+function playerUsesProvisionalAmounts(player) {
+  return boolValue(player?.provisional_amounts);
+}
+
+function playerSeasonIsProvisional(player, season) {
+  return playerUsesProvisionalAmounts(player) && boolValue(player?.[salaryProvisionalField(season)]);
+}
+
+function provisionalInfoHtml() {
+  return `
+    <button type="button" class="salary-provisional-info" aria-label="Cifra provisional" title="Cifra provisional">
+      i
+      <span class="salary-provisional-pop">Cifra provisional</span>
+    </button>
+  `;
+}
+
+function bindProvisionalInfoToggles(root) {
+  if (!root) return;
+  root.querySelectorAll('.salary-provisional-info').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      btn.classList.toggle('show-detail');
+    });
+  });
+}
+
 function describePlayerSort(sortCfg) {
   const key = sortCfg.key;
   const dir = sortCfg.dir === 'asc' ? 'asc' : 'desc';
@@ -1659,6 +1697,59 @@ async function movePlayer(playerId, row) {
   });
 }
 
+function syncAdminSalaryProvisionalCell(cellWrap, player, season) {
+  if (!cellWrap) return;
+  const td = cellWrap.closest('td');
+  const show = playerSeasonIsProvisional(player, season);
+  if (td) td.classList.toggle('salary-provisional-cell', show);
+  const existing = Array.from(cellWrap.children).find((child) => child.classList?.contains('salary-provisional-info'));
+  if (show && !existing) {
+    cellWrap.insertAdjacentHTML('beforeend', provisionalInfoHtml());
+    bindProvisionalInfoToggles(cellWrap);
+  } else if (!show && existing) {
+    existing.remove();
+  }
+}
+
+function appendSalaryProvisionalControl(cellWrap, player, season) {
+  if (!cellWrap || !playerUsesProvisionalAmounts(player)) {
+    syncAdminSalaryProvisionalCell(cellWrap, player, season);
+    return;
+  }
+  const field = salaryProvisionalField(season);
+  const label = document.createElement('label');
+  label.className = 'salary-provisional-toggle';
+  label.title = 'Cifra provisional';
+  label.innerHTML = `
+    <input type="checkbox" data-role="salary-provisional" data-season="${season}">
+    <span>Prov.</span>
+  `;
+  const checkbox = label.querySelector('input');
+  checkbox.checked = boolValue(player[field]);
+  checkbox.addEventListener('change', async () => {
+    const previous = boolValue(player[field]);
+    const next = Boolean(checkbox.checked);
+    player[field] = next ? 1 : 0;
+    syncAdminSalaryProvisionalCell(cellWrap, player, season);
+    checkbox.disabled = true;
+    try {
+      await api(`/api/players/${player.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [field]: next }),
+      });
+    } catch (err) {
+      player[field] = previous ? 1 : 0;
+      checkbox.checked = previous;
+      syncAdminSalaryProvisionalCell(cellWrap, player, season);
+      alert(`Provisional amount save failed: ${err.message}`);
+    } finally {
+      checkbox.disabled = false;
+    }
+  });
+  cellWrap.appendChild(label);
+  syncAdminSalaryProvisionalCell(cellWrap, player, season);
+}
+
 function cancelAddPlayerRow() {
   state.ui.addingPlayer = false;
   renderPlayers();
@@ -1879,6 +1970,10 @@ function renderPlayers() {
         fieldEl.addEventListener('input', refreshPct);
         fieldEl.addEventListener('blur', refreshPct);
         refreshPct();
+        const season = Number(key.split('_')[1] || 0);
+        if (Number.isFinite(season)) {
+          appendSalaryProvisionalControl(fieldEl.closest('.salary-cell-admin'), p, season);
+        }
       }
       if (key === 'position') {
         wrapper.classList.add('pos-edit');
@@ -1979,6 +2074,30 @@ function renderPlayers() {
       await loadTeam(state.teamCode);
     });
 
+    const provisionalMaster = tr.querySelector('[data-role="provisional-amounts"]');
+    if (provisionalMaster) {
+      provisionalMaster.checked = playerUsesProvisionalAmounts(p);
+      provisionalMaster.addEventListener('change', async () => {
+        const previous = playerUsesProvisionalAmounts(p);
+        const next = Boolean(provisionalMaster.checked);
+        p.provisional_amounts = next ? 1 : 0;
+        provisionalMaster.disabled = true;
+        try {
+          await api(`/api/players/${p.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ provisional_amounts: next }),
+          });
+          renderPlayers();
+        } catch (err) {
+          p.provisional_amounts = previous ? 1 : 0;
+          provisionalMaster.checked = previous;
+          alert(`Provisional amounts save failed: ${err.message}`);
+        } finally {
+          provisionalMaster.disabled = false;
+        }
+      });
+    }
+
     tbody.appendChild(frag);
   });
   if (state.ui.addingPlayer) appendAddPlayerRow(tbody);
@@ -2034,10 +2153,12 @@ async function duplicateSelectedPlayersAction() {
       position: p.position || null,
       years_left: p.years_left || null,
       notes: p.notes || null,
+      provisional_amounts: playerUsesProvisionalAmounts(p),
     };
     ALL_SEASONS.forEach((season) => {
       payload[`salary_${season}_text`] = p[`salary_${season}_text`] || null;
       payload[`option_${season}`] = p[`option_${season}`] || null;
+      payload[salaryProvisionalField(season)] = boolValue(p[salaryProvisionalField(season)]);
     });
     await api('/api/players', {
       method: 'POST',
