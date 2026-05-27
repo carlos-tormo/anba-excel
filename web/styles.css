@@ -381,6 +381,195 @@ h1 {
     );
   border-bottom: 1px solid rgba(var(--team-primary-rgb), 0.22);
 }
+
+@media (min-width: 721px) {
+  body.app-layout {
+    padding-left: 238px;
+  }
+
+  header {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    width: 238px;
+    min-height: 100vh;
+    align-items: stretch;
+    justify-content: flex-start;
+    flex-direction: column;
+    gap: 24px;
+    padding: 24px 18px 18px;
+    overflow-y: auto;
+    background:
+      radial-gradient(220px 160px at 18% 8%, rgba(255, 255, 255, 0.14), transparent 64%),
+      radial-gradient(260px 220px at 94% 104%, rgba(var(--team-secondary-rgb), 0.16), transparent 68%),
+      linear-gradient(180deg, rgba(var(--team-primary-dark-rgb), 0.98), rgba(3, 26, 23, 0.98));
+    border-right: 1px solid rgba(var(--team-secondary-rgb), 0.18);
+    box-shadow: 16px 0 36px rgba(15, 23, 42, 0.18);
+  }
+
+  .page-title-wrap {
+    justify-items: start;
+    text-align: left;
+    gap: 6px;
+    padding: 0 4px 18px;
+    border-bottom: 1px solid rgba(var(--team-secondary-rgb), 0.18);
+  }
+
+  .page-title-wrap::before {
+    content: "AN";
+    display: grid;
+    place-items: center;
+    width: 64px;
+    height: 64px;
+    margin-bottom: 8px;
+    border-radius: 50%;
+    color: #ffffff;
+    background:
+      linear-gradient(180deg, rgba(var(--team-secondary-rgb), 0.24), rgba(var(--team-primary-rgb), 0.9));
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    box-shadow:
+      0 14px 28px rgba(0, 0, 0, 0.24),
+      0 0 0 5px rgba(255, 255, 255, 0.08);
+    font-size: 1.3rem;
+    font-weight: 900;
+    line-height: 1;
+  }
+
+  .page-title-wrap h1 {
+    font-size: 1.32rem;
+    line-height: 1.08;
+    max-width: 180px;
+  }
+
+  .page-subtitle {
+    text-align: left;
+    color: rgba(var(--team-secondary-rgb), 0.98);
+    font-size: 0.92rem;
+  }
+
+  .controls {
+    display: flex;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+    flex-wrap: nowrap;
+    min-height: 0;
+  }
+
+  .controls > button,
+  .controls > .ghost-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    width: 100%;
+    padding: 0 13px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #dbeafe;
+    box-shadow: none;
+    text-align: left;
+    text-decoration: none;
+    text-shadow: none;
+    font-size: 0.94rem;
+    font-weight: 700;
+  }
+
+  .controls > button:hover,
+  .controls > .ghost-link:hover,
+  .controls > button:focus-visible,
+  .controls > .ghost-link:focus-visible {
+    color: #ffffff;
+    background: rgba(var(--team-secondary-rgb), 0.12);
+    border-color: rgba(var(--team-secondary-rgb), 0.26);
+  }
+
+  .controls > button::before,
+  .controls > .ghost-link::before {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    flex: 0 0 28px;
+    color: rgba(var(--team-secondary-rgb), 0.96);
+    font-size: 1.08rem;
+    line-height: 1;
+  }
+
+  #openLocatorBtn::before {
+    content: "⌕";
+    font-size: 1.22rem;
+  }
+
+  #trackerHomeBtn::before { content: "▦"; }
+  #freeAgentsHomeBtn::before { content: "○"; }
+  #adminMenuBtn::before { content: "⚙"; }
+  #reloadBtn::before { content: "↻"; }
+  #processTradeBtn::before { content: "⇄"; }
+  #adminLink::before,
+  a[href="/admin"].ghost-link::before { content: "⚙"; }
+  #loginLink::before { content: "→"; }
+  a[href="/"].ghost-link::before { content: "↗"; }
+
+  .controls > button.danger {
+    margin-top: auto;
+    color: #fecaca;
+    background: rgba(127, 29, 29, 0.22);
+    border-color: rgba(248, 113, 113, 0.2);
+  }
+
+  .controls > button.danger::before {
+    content: "↗";
+    color: #fca5a5;
+  }
+
+  .top-status-wrap {
+    display: grid;
+    gap: 8px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(var(--team-secondary-rgb), 0.14);
+  }
+
+  .top-status-wrap:empty {
+    display: none;
+  }
+
+  .top-status-pill {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 9px;
+    background: rgba(127, 29, 29, 0.9);
+    font-size: 0.78rem;
+    text-align: center;
+  }
+
+  #authBadge {
+    order: 20;
+    color: rgba(226, 232, 240, 0.76);
+    font-size: 0.78rem;
+    line-height: 1.35;
+    padding: 8px 4px 0;
+    text-shadow: none;
+  }
+
+  header .add-entry-popover[role="menu"] {
+    position: static;
+    width: 100%;
+    margin-top: -4px;
+    background: rgba(15, 23, 42, 0.34);
+    border-color: rgba(var(--team-secondary-rgb), 0.16);
+    box-shadow: none;
+  }
+
+  header .add-entry-popover[role="menu"] button {
+    min-height: 38px;
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+  }
+}
+
 .team-strip {
   display: flex;
   align-items: flex-start;
@@ -660,6 +849,46 @@ h1 {
   justify-content: flex-end;
   margin-top: 12px;
 }
+.sign-free-agent-modal {
+  width: min(980px, 96vw);
+}
+.sign-free-agent-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(150px, 1fr) max-content minmax(150px, 1fr);
+  align-items: center;
+  gap: 10px 12px;
+  margin-bottom: 12px;
+}
+.sign-free-agent-grid label,
+.sign-free-agent-toggles label {
+  font-weight: 800;
+  color: #334155;
+}
+.sign-free-agent-grid input,
+.sign-free-agent-grid select,
+#signFreeAgentYearsTable input,
+#signFreeAgentYearsTable select {
+  width: 100%;
+}
+.sign-free-agent-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.sign-free-agent-toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sign-free-agent-years-wrap {
+  max-width: 100%;
+}
+#freeAgentsTable .details-cell,
+#freeAgentsTable td:nth-child(6) {
+  white-space: normal;
+  min-width: 220px;
+}
 .draft-assets-board {
   display: grid;
   gap: 14px;
@@ -731,6 +960,15 @@ h1 {
 .draft-pick-card--sold .pick-card-title,
 .draft-pick-card--sold .pick-card-subtitle {
   color: #64748b;
+}
+.draft-pick-card--conditional {
+  border-color: rgba(30, 64, 175, 0.62);
+  background:
+    radial-gradient(130px 80px at 12% 50%, rgba(191, 219, 254, 0.5), transparent 72%),
+    linear-gradient(180deg, #eff6ff, #f8fafc);
+  box-shadow:
+    0 0 0 1px rgba(30, 64, 175, 0.16),
+    0 12px 24px rgba(30, 64, 175, 0.12);
 }
 .draft-pick-card--restricted {
   border-color: rgba(185, 28, 28, 0.78);
@@ -823,6 +1061,20 @@ h1 {
   font-weight: 800;
   text-transform: uppercase;
 }
+.pick-conditional-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(30, 64, 175, 0.35);
+  background: #dbeafe;
+  color: #1e3a8a;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  font-weight: 800;
+  text-transform: uppercase;
+}
 .pick-detail {
   display: none;
   position: absolute;
@@ -854,6 +1106,10 @@ h1 {
   font-weight: 700;
   color: #334e68;
 }
+.pick-editor-grid textarea {
+  min-height: 58px;
+  resize: vertical;
+}
 .pick-editor-grid .pick-checkbox-field {
   display: flex;
   align-items: center;
@@ -864,6 +1120,25 @@ h1 {
 }
 .pick-detail-input {
   grid-column: 1 / -1;
+}
+.pick-conditional-editor {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #334e68;
+}
+.pick-conditional-team-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+.pick-conditional-team-row .tiny {
+  padding: 4px 7px;
+  font-size: 0.68rem;
 }
 .pick-card-actions {
   display: flex;
@@ -1036,6 +1311,80 @@ section {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 14px;
 }
+.team-summary-grid {
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+.team-balance-panel {
+  display: grid;
+  gap: 10px;
+}
+.team-balance-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.team-balance-card {
+  min-height: 112px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+  border: 1px solid rgba(203, 213, 225, 0.92);
+  border-radius: 8px;
+  background: #eef2f7;
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+.team-balance-label {
+  padding: 11px 12px;
+  background: #969696;
+  color: #ffffff;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 800;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+.team-balance-value {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  padding: 20px 10px;
+  color: #020617;
+  font-size: 1.8rem;
+  line-height: 1;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.team-balance-card.is-warning {
+  border-color: rgba(185, 28, 28, 0.48);
+  box-shadow:
+    0 0 0 1px rgba(185, 28, 28, 0.1),
+    0 12px 26px rgba(127, 29, 29, 0.1);
+}
+.team-balance-card.is-warning .team-balance-label {
+  background: #b42318;
+}
+.team-balance-card.is-warning .team-balance-value {
+  background: #fff1f2;
+  color: #991b1b;
+  font-weight: 700;
+}
+.team-balance-notices {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(185, 28, 28, 0.18);
+  border-radius: 8px;
+  background: #fff7f7;
+}
+.team-balance-notice {
+  color: #991b1b;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
 .card {
   background: var(--panel);
   border: 1px solid rgba(203, 213, 225, 0.72);
@@ -1112,6 +1461,122 @@ section {
 }
 .card-modifier-negative {
   color: #991b1b;
+}
+.usage-gauge-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.usage-gauge-card {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(203, 213, 225, 0.86);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.06),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+.usage-gauge-title {
+  min-width: 0;
+  color: #334155;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+.usage-gauge-visual {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 118px;
+}
+.usage-gauge-svg {
+  width: min(100%, 220px);
+  height: auto;
+  overflow: visible;
+}
+.usage-gauge-track,
+.usage-gauge-progress {
+  fill: none;
+  stroke-width: 14;
+  stroke-linecap: round;
+}
+.usage-gauge-track {
+  stroke: #d5dde7;
+  stroke-dasharray: 4 4;
+}
+.usage-gauge-progress {
+  stroke: var(--gauge-color, #15803d);
+}
+.usage-gauge-card--moves .usage-gauge-progress {
+  stroke: var(--gauge-color, #0f766e);
+}
+.usage-gauge-card.is-over .usage-gauge-progress {
+  stroke: #b42318;
+}
+.usage-gauge-card.is-over .usage-gauge-center strong,
+.usage-gauge-card.is-over .usage-gauge-meta strong {
+  color: #991b1b;
+}
+.usage-gauge-center {
+  position: absolute;
+  left: 50%;
+  top: 56%;
+  display: grid;
+  justify-items: center;
+  transform: translate(-50%, -50%);
+  line-height: 1;
+  pointer-events: none;
+}
+.usage-gauge-center strong {
+  color: var(--gauge-color, #020617);
+  font-size: 1.95rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.usage-gauge-center span {
+  margin-top: 4px;
+  color: var(--gauge-color, #15803d);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.usage-gauge-card--moves .usage-gauge-center span {
+  color: var(--gauge-color, #0f766e);
+}
+.usage-gauge-meta {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
+}
+.usage-gauge-meta strong {
+  color: var(--gauge-color, #0f172a);
+  font-size: 1rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.usage-gauge-edit {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+.usage-gauge-edit .summary-inline-input {
+  width: 100%;
+}
+.usage-gauge-info {
+  position: absolute;
+  top: 10px;
+  right: 10px;
 }
 .card-modifier-editor {
   align-items: flex-start;
@@ -1538,6 +2003,11 @@ th {
   box-shadow: inset 3px 0 0 #f59e0b;
   overflow: visible;
 }
+.salary-chip--partial-guarantee {
+  border-color: #0ea5e9;
+  box-shadow: inset 3px 0 0 #0ea5e9;
+  overflow: visible;
+}
 .salary-chip.salary-option--po {
   background: #e0f2fe;
   border-color: #7dd3fc;
@@ -1614,7 +2084,10 @@ th {
 .salary-empty-wrap--provisional .salary-empty-bar {
   background: rgba(245, 158, 11, 0.34);
 }
-.salary-provisional-info {
+.salary-empty-wrap--partial-guarantee .salary-empty-bar {
+  background: rgba(14, 165, 233, 0.28);
+}
+.salary-info-button {
   position: relative;
   flex: 0 0 auto;
   display: inline-grid;
@@ -1631,7 +2104,7 @@ th {
   line-height: 1;
   cursor: pointer;
 }
-.salary-provisional-pop {
+.salary-info-pop {
   position: absolute;
   right: -8px;
   top: calc(100% + 8px);
@@ -1651,9 +2124,17 @@ th {
   transform: translateY(4px);
   transition: opacity 120ms ease, transform 120ms ease;
 }
-.salary-provisional-info:hover .salary-provisional-pop,
-.salary-provisional-info:focus-visible .salary-provisional-pop,
-.salary-provisional-info.show-detail .salary-provisional-pop {
+.salary-info-pop span {
+  display: block;
+}
+.salary-info-pop span + span {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(248, 250, 252, 0.18);
+}
+.salary-info-button:hover .salary-info-pop,
+.salary-info-button:focus-visible .salary-info-pop,
+.salary-info-button.show-detail .salary-info-pop {
   opacity: 1;
   transform: translateY(0);
 }
@@ -1682,10 +2163,11 @@ th {
   border-radius: 6px;
   min-width: 54px;
 }
-.salary-cell-admin > .salary-provisional-info {
+.salary-cell-admin > .salary-info-button {
   margin-right: 0;
 }
 .salary-provisional-toggle,
+.salary-partial-toggle,
 .provisional-master-toggle {
   display: inline-flex;
   align-items: center;
@@ -1695,17 +2177,36 @@ th {
   font-weight: 800;
   white-space: nowrap;
 }
-.salary-provisional-toggle {
+.salary-provisional-toggle,
+.salary-partial-toggle {
   padding: 2px 6px;
   border: 1px solid rgba(245, 158, 11, 0.42);
   border-radius: 999px;
   background: #fff7ed;
   color: #9a3412;
 }
+.salary-partial-toggle {
+  border-color: rgba(14, 165, 233, 0.42);
+  background: #e0f2fe;
+  color: #075985;
+}
 .salary-provisional-toggle input,
+.salary-partial-toggle input,
 .provisional-master-toggle input {
   width: auto;
   margin: 0;
+}
+.salary-partial-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.salary-partial-amount {
+  width: 108px;
+  min-width: 92px;
+  font-size: 0.72rem;
+  padding: 3px 6px;
 }
 .provisional-master-toggle {
   margin-left: 4px;
@@ -1714,6 +2215,10 @@ th {
 td.salary-provisional-cell .salary-edit {
   border-color: #f59e0b;
   box-shadow: inset 3px 0 0 #f59e0b;
+}
+td.salary-partial-guarantee-cell .salary-edit {
+  border-color: #0ea5e9;
+  box-shadow: inset 3px 0 0 #0ea5e9;
 }
 .salary-pill .salary-main {
   font-variant-numeric: tabular-nums;
@@ -1831,6 +2336,23 @@ td.salary-option--nb .salary-pct {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+.team-apron-cap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 5px 9px;
+  border: 1px solid rgba(var(--team-primary-rgb), 0.22);
+  border-radius: 8px;
+  background: rgba(var(--team-secondary-rgb), 0.14);
+  color: #334155;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+.team-apron-cap-toggle input {
+  width: auto;
+  margin: 0;
 }
 .important-figures-wrap {
   max-width: 760px;
@@ -2193,7 +2715,7 @@ td.salary-option--nb .salary-pct {
 .sortable:hover {
   background: #8a99b7;
 }
-input, select, button {
+input, select, textarea, button {
   font: inherit;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -2208,6 +2730,14 @@ button {
 }
 button:hover { background: var(--primary-dark); }
 button.danger { background: var(--danger); }
+button.ghost {
+  background: #f8fafc;
+  color: #334155;
+  border-color: var(--border);
+}
+button.ghost:hover {
+  background: #e2e8f0;
+}
 .roster-view-toggle .roster-view-btn {
   background: rgba(var(--team-secondary-rgb), 0.25);
   color: #334155;
@@ -2393,6 +2923,13 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
 .login-error {
   color: #b42318;
 }
+
+@media (max-width: 1180px) {
+  .team-balance-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 720px) {
   .page-shell {
     width: 100%;
@@ -2452,6 +2989,30 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
     grid-template-columns: 1fr;
     gap: 8px;
   }
+  .team-summary-grid {
+    gap: 10px;
+  }
+  .team-balance-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .team-balance-card {
+    min-height: 92px;
+  }
+  .team-balance-label {
+    padding: 8px 10px;
+    font-size: 0.82rem;
+  }
+  .team-balance-value {
+    padding: 16px 8px;
+    font-size: 1.32rem;
+  }
+  .sign-free-agent-grid {
+    grid-template-columns: 1fr;
+  }
+  .sign-free-agent-grid label {
+    margin-bottom: -6px;
+  }
   .mobile-info-summary.cards {
     display: grid;
     grid-template-columns: 1fr;
@@ -2469,6 +3030,25 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .card-summary-split {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+  .usage-gauge-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .usage-gauge-card {
+    padding: 10px;
+  }
+  .usage-gauge-visual {
+    min-height: 96px;
+  }
+  .usage-gauge-svg {
+    width: min(100%, 188px);
+  }
+  .usage-gauge-center strong {
+    font-size: 1.55rem;
+  }
+  .usage-gauge-meta strong {
+    font-size: 0.9rem;
   }
   .card .label {
     font-size: 0.66rem;

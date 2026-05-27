@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260525b">
+  <link rel="stylesheet" href="/styles.css?v=20260527f">
 </head>
-<body>
+<body class="app-layout">
   <header>
     <button id="mobileMenuBtn" class="mobile-icon-btn" type="button" aria-label="Open navigation menu" title="Menu">☰</button>
     <div class="page-title-wrap">
@@ -19,6 +19,7 @@
       <div id="capStatusPills" class="top-status-wrap"></div>
       <a href="/" class="ghost-link">Guest View</a>
       <button id="trackerHomeBtn" type="button">Tracker</button>
+      <button id="freeAgentsHomeBtn" type="button">Free agents</button>
       <button id="adminMenuBtn" type="button">Admin Menu</button>
       <button id="reloadBtn">Reload</button>
       <button id="processTradeBtn" type="button">Process Trade</button>
@@ -45,6 +46,7 @@
       </div>
       <div class="mobile-sidebar-links">
         <button id="adminMobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Tracker</button>
+        <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡">Admin Log</button>
         <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙">League Settings</button>
         <a href="/" class="mobile-nav-link" data-icon="↗">Guest View</a>
@@ -83,6 +85,7 @@
         <select id="logEntityFilter">
           <option value="">All Entities</option>
           <option value="player">player</option>
+          <option value="free_agent">free_agent</option>
           <option value="asset">asset</option>
           <option value="dead_contract">dead_contract</option>
           <option value="team">team</option>
@@ -129,7 +132,30 @@
       </div>
     </section>
 
-    <section id="teamMeta" class="cards"></section>
+    <section id="freeAgentsSection" class="section-hidden">
+      <h2>Free agents</h2>
+      <div class="bulk-bar">
+        <button id="addFreeAgentBtn" type="button">Add free agent</button>
+      </div>
+      <div class="table-wrap">
+        <table id="freeAgentsTable">
+          <thead>
+            <tr>
+              <th data-sort="name">Name</th>
+              <th data-sort="position">Pos</th>
+              <th data-sort="bird_rights">Type</th>
+              <th data-sort="rating">Rating</th>
+              <th data-sort="years_left">Years</th>
+              <th data-sort="notes">Notes</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="teamMeta" class="cards team-summary-grid"></section>
     <section id="settingsSection" class="settings-panel section-hidden">
       <h2>League Settings</h2>
       <div class="settings-row">
@@ -176,6 +202,14 @@
       <label for="teamCashSentInput">Cash enviado</label>
       <input id="teamCashSentInput" type="text" inputmode="numeric" placeholder="0">
       <button id="saveTeamCashInlineBtn">Save balances</button>
+      <label class="team-apron-cap-toggle">
+        <input id="teamFirstApronCapInput" type="checkbox">
+        <span>Capped at 1st apron</span>
+      </label>
+      <label class="team-apron-cap-toggle">
+        <input id="teamSecondApronCapInput" type="checkbox">
+        <span>Capped at 2nd apron</span>
+      </label>
     </div>
       <div class="bulk-bar">
         <label><input type="checkbox" id="selectAllPlayers"> Seleccionar todos</label>
@@ -222,7 +256,7 @@
               <th data-sort="salary_2028_num">2028-29</th>
               <th data-sort="salary_2029_num">2029-30</th>
               <th data-sort="salary_2030_num">2030-31</th>
-              <th>Move</th>
+              <th>Cut</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -373,13 +407,16 @@
           </select>
         </div>
       </td>
-      <td><select data-role="move-team"></select></td>
+      <td><button data-action="cut" class="danger" type="button">Cut</button></td>
       <td>
-        <button data-action="move">Move</button>
         <button data-action="delete" class="danger">Delete</button>
         <label class="provisional-master-toggle">
           <input data-role="provisional-amounts" type="checkbox">
           <span>Provisional amounts</span>
+        </label>
+        <label class="provisional-master-toggle">
+          <input data-role="partially-guaranteed" type="checkbox">
+          <span>Partially guaranteed</span>
         </label>
       </td>
     </tr>
@@ -490,6 +527,72 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260525b" defer></script>
+  <div id="signFreeAgentModal" class="modal-backdrop section-hidden" role="dialog" aria-label="Sign free agent">
+    <div class="modal-card sign-free-agent-modal">
+      <div class="modal-header">
+        <h2>Sign free agent</h2>
+        <button id="closeSignFreeAgentModalBtn" type="button" class="danger">Close</button>
+      </div>
+      <div class="sign-free-agent-grid">
+        <label for="signFreeAgentTeam">Team</label>
+        <select id="signFreeAgentTeam"></select>
+        <label for="signFreeAgentName">Name</label>
+        <input id="signFreeAgentName" type="text" placeholder="Player name">
+        <label for="signFreeAgentPosition">Pos</label>
+        <input id="signFreeAgentPosition" type="text" placeholder="PG / SG / SF / PF / C">
+        <label for="signFreeAgentType">Type</label>
+        <select id="signFreeAgentType">
+          <option value=""></option>
+          <option value="Min">Min</option>
+          <option value="Max">Max</option>
+          <option value="Mid">Mid</option>
+          <option value="TMid">TMid</option>
+          <option value="Bi">Bi</option>
+          <option value="10d">10d</option>
+          <option value="R">R</option>
+          <option value="R(2)">R(2)</option>
+          <option value="TW">TW</option>
+          <option value="Room">Room</option>
+          <option value="Reg">Reg</option>
+        </select>
+        <label for="signFreeAgentRating">Rating</label>
+        <input id="signFreeAgentRating" type="text" placeholder="Rating">
+        <label for="signFreeAgentYears">Years</label>
+        <input id="signFreeAgentYears" type="text" placeholder="Years">
+        <label for="signFreeAgentNotes">Notes</label>
+        <input id="signFreeAgentNotes" type="text" placeholder="Notes">
+      </div>
+      <div class="sign-free-agent-toggles">
+        <label>
+          <input id="signFreeAgentProvisional" type="checkbox">
+          <span>Provisional amounts</span>
+        </label>
+        <label>
+          <input id="signFreeAgentPartial" type="checkbox">
+          <span>Partially guaranteed</span>
+        </label>
+      </div>
+      <div class="table-wrap sign-free-agent-years-wrap">
+        <table id="signFreeAgentYearsTable">
+          <thead>
+            <tr>
+              <th>Season</th>
+              <th>Amount</th>
+              <th>Option</th>
+              <th>Provisional</th>
+              <th>Partially guaranteed</th>
+              <th>Guaranteed amount</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="trade-actions">
+        <button id="confirmSignFreeAgentBtn" type="button">Sign player</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin.js?v=20260527f" defer></script>
 </body>
 </html>

@@ -149,6 +149,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
 
         DROP TABLE IF EXISTS assets;
         DROP TABLE IF EXISTS players;
+        DROP TABLE IF EXISTS free_agents;
         DROP TABLE IF EXISTS teams;
 
         CREATE TABLE teams (
@@ -157,6 +158,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             gm TEXT,
             cash_note TEXT,
+            apron_hard_cap TEXT,
             salary_cap REAL NOT NULL,
             luxury_cap REAL NOT NULL,
             first_apron REAL NOT NULL,
@@ -208,7 +210,26 @@ def create_schema(conn: sqlite3.Connection) -> None:
             detail TEXT,
             amount_text TEXT,
             amount_num REAL,
+            draft_pick_type TEXT,
+            draft_round TEXT,
+            original_owner TEXT,
             exception_type TEXT,
+            draft_pick_restricted INTEGER NOT NULL DEFAULT 0,
+            draft_pick_protected INTEGER NOT NULL DEFAULT 0,
+            draft_pick_sold_to TEXT,
+            draft_pick_conditional_teams TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE free_agents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            position TEXT,
+            bird_rights TEXT,
+            rating TEXT,
+            years_left REAL,
+            notes TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -368,8 +389,11 @@ def insert_picks(conn: sqlite3.Connection, team_id: int, cells: Dict[str, str]) 
         extra = detail if label and detail else None
         conn.execute(
             """
-            INSERT INTO assets (team_id, row_order, asset_type, year, label, detail, amount_text, amount_num, created_at, updated_at)
-            VALUES (?, ?, 'draft_pick', ?, ?, ?, NULL, NULL, ?, ?)
+            INSERT INTO assets (
+                team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
+                draft_pick_type, draft_round, created_at, updated_at
+            )
+            VALUES (?, ?, 'draft_pick', ?, ?, ?, NULL, NULL, 'own', '1st', ?, ?)
             """,
             (team_id, row, int(year) if year else None, merged_label, extra, now, now),
         )

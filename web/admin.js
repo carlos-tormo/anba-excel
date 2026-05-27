@@ -1,6 +1,10 @@
+const MOVE_LIMIT_PRE30 = 20;
+const MOVE_LIMIT_POST30 = 4;
+
 const state = {
   teams: [],
   trackerRows: [],
+  freeAgents: [],
   teamCode: null,
   teamData: null,
   csrfToken: null,
@@ -10,8 +14,8 @@ const state = {
     first_apron: 195945000,
     second_apron: 207824000,
     cash_limit_total: 0,
-    trade_move_limit_pre30: 15,
-    trade_move_limit_post30: 15,
+    trade_move_limit_pre30: MOVE_LIMIT_PRE30,
+    trade_move_limit_post30: MOVE_LIMIT_POST30,
     trade_move_phase: 'pre30',
     luxury_cap: 187896105,
     minimum_cap_allowed: 139182300,
@@ -38,6 +42,8 @@ const state = {
     addingDeadContract: false,
     addingDraftPick: false,
     addingPlayerRight: false,
+    addingFreeAgent: false,
+    signingFreeAgentId: null,
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
@@ -45,6 +51,7 @@ const state = {
     dead_contracts: { key: 'label', dir: 'asc' },
     exceptions: { key: 'label', dir: 'asc' },
     player_rights: { key: 'label', dir: 'asc' },
+    free_agents: { key: 'name', dir: 'asc' },
   },
 };
 
@@ -88,26 +95,56 @@ function salaryProvisionalField(season) {
   return `salary_${season}_provisional`;
 }
 
+function salaryPartialGuaranteeField(season) {
+  return `salary_${season}_partially_guaranteed`;
+}
+
+function salaryGuaranteedTextField(season) {
+  return `salary_${season}_guaranteed_text`;
+}
+
 function playerUsesProvisionalAmounts(player) {
   return boolValue(player?.provisional_amounts);
+}
+
+function playerUsesPartialGuarantees(player) {
+  return boolValue(player?.partially_guaranteed);
 }
 
 function playerSeasonIsProvisional(player, season) {
   return playerUsesProvisionalAmounts(player) && boolValue(player?.[salaryProvisionalField(season)]);
 }
 
-function provisionalInfoHtml() {
+function playerSeasonIsPartiallyGuaranteed(player, season) {
+  return playerUsesPartialGuarantees(player) && boolValue(player?.[salaryPartialGuaranteeField(season)]);
+}
+
+function salaryInfoMessages(player, season) {
+  const messages = [];
+  if (playerSeasonIsProvisional(player, season)) {
+    messages.push('Cifra provisional');
+  }
+  if (playerSeasonIsPartiallyGuaranteed(player, season)) {
+    const amount = String(player?.[salaryGuaranteedTextField(season)] || '').trim();
+    messages.push(amount ? `${amount} guaranteed` : 'Guaranteed amount pending');
+  }
+  return messages;
+}
+
+function salaryInfoHtml(messages) {
+  if (!messages.length) return '';
+  const label = messages.join(' · ');
   return `
-    <button type="button" class="salary-provisional-info" aria-label="Cifra provisional" title="Cifra provisional">
+    <button type="button" class="salary-info-button" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
       i
-      <span class="salary-provisional-pop">Cifra provisional</span>
+      <span class="salary-info-pop">${messages.map((message) => `<span>${escapeHtml(message)}</span>`).join('')}</span>
     </button>
   `;
 }
 
-function bindProvisionalInfoToggles(root) {
+function bindSalaryInfoToggles(root) {
   if (!root) return;
-  root.querySelectorAll('.salary-provisional-info').forEach((btn) => {
+  root.querySelectorAll('.salary-info-button').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -505,6 +542,7 @@ function setupSorting() {
   updateSortIndicators('playersTable', state.sort.players);
   updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
   updateSortIndicators('playerRightsTable', state.sort.player_rights);
+  updateSortIndicators('freeAgentsTable', state.sort.free_agents);
 
   document.querySelectorAll('#deadContractsTable thead th[data-sort]').forEach((th) => {
     if (!th.dataset.label) th.dataset.label = th.textContent.trim();
@@ -549,6 +587,21 @@ function setupSorting() {
       };
       renderPlayerRights();
       updateSortIndicators('playerRightsTable', state.sort.player_rights);
+    });
+  });
+
+  document.querySelectorAll('#freeAgentsTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.free_agents;
+      state.sort.free_agents = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderFreeAgents();
+      updateSortIndicators('freeAgentsTable', state.sort.free_agents);
     });
   });
 }
@@ -624,6 +677,10 @@ function renderTeamPicker() {
   trackerOpt.value = '';
   trackerOpt.textContent = 'Tracker';
   picker.appendChild(trackerOpt);
+  const freeAgentsOpt = document.createElement('option');
+  freeAgentsOpt.value = '__free_agents';
+  freeAgentsOpt.textContent = 'Free agents';
+  picker.appendChild(freeAgentsOpt);
 
   state.teams.forEach((t) => {
     const opt = document.createElement('option');
@@ -632,11 +689,15 @@ function renderTeamPicker() {
     picker.appendChild(opt);
   });
 
-  picker.value = state.teamCode || '';
+  picker.value = state.ui.viewMode === 'free-agents' ? '__free_agents' : (state.teamCode || '');
   picker.onchange = async (e) => {
     const code = e.target.value;
     if (!code) {
       await loadTracker();
+      return;
+    }
+    if (code === '__free_agents') {
+      await loadFreeAgents();
       return;
     }
     if (code === state.teamCode) return;
@@ -691,10 +752,7 @@ function renderAddEntryFields() {
     return;
   }
 
-  const ownerOptions = state.teams
-    .filter((t) => t.code !== state.teamCode)
-    .map((t) => `<option value="${t.code}">${t.code} - ${t.name}</option>`)
-    .join('');
+  const ownerOptions = teamOptionsHtml('', { includeCurrent: false });
   wrap.innerHTML = `
     <label for="addPickType">Type</label>
     <select id="addPickType">
@@ -1195,6 +1253,7 @@ function setViewMode(mode) {
   state.ui.viewMode = mode;
   const showTeam = mode === 'team';
   const showTracker = mode === 'tracker';
+  const showFreeAgents = mode === 'free-agents';
   const showAdminLog = mode === 'admin-log';
   const showLeagueSettings = mode === 'admin-settings';
 
@@ -1204,6 +1263,7 @@ function setViewMode(mode) {
   };
 
   toggleSection('trackerSection', !showTracker);
+  toggleSection('freeAgentsSection', !showFreeAgents);
   toggleSection('teamMeta', !showTeam);
   toggleSection('settingsSection', !showLeagueSettings);
   toggleSection('adminLogsSection', !showAdminLog);
@@ -1216,8 +1276,15 @@ function setViewMode(mode) {
   toggleSection('importantFiguresSection', !showTeam);
   syncAdminMobileInfoButton();
 
-  const teamButtons = ['reloadBtn', 'addEntryBtn', 'saveTeamGmInlineBtn', 'processTradeBtn'];
-  teamButtons.forEach((id) => {
+  const teamControls = [
+    'reloadBtn',
+    'addEntryBtn',
+    'saveTeamGmInlineBtn',
+    'processTradeBtn',
+    'teamFirstApronCapInput',
+    'teamSecondApronCapInput',
+  ];
+  teamControls.forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.disabled = !showTeam;
   });
@@ -1287,64 +1354,198 @@ function openAdminMobileInfo() {
   if (!list || !state.teamData?.summary) return;
   const s = state.teamData.summary;
   const m = state.teamData.move_summary || {};
-  const cashLimitTotal = Number(s.cash_limit_total || state.settings.cash_limit_total || 0);
-  const pills = [];
-  if (Number(s.room_to_luxury) < 0) pills.push('Encima del luxury');
-  if (Number(s.room_to_first_apron) < 0) pills.push('Encima del 1er apron');
-  if (Number(s.room_to_second_apron) < 0) pills.push('Encima del 2do apron');
-  const pillsHtml = pills.length
-    ? `<div class="mobile-info-status">${pills.map((txt) => `<div class="mobile-info-pill">${escapeHtml(txt)}</div>`).join('')}</div>`
-    : '';
   list.innerHTML = `
-    ${pillsHtml}
-    <div class="mobile-info-summary cards">
-      <article class="card card-summary">
-        <div class="label">CAP Total</div>
-        <div class="value">${formatMoneyDots(s.cap_figure)}</div>
-        <div class="card-modifiers">
-          <div class="card-modifier">
-            <span class="card-modifier-label">Espacio CAP</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_cap)}</span>
-          </div>
-          <div class="card-modifier">
-            <span class="card-modifier-label">Espacio 1er Apron</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_first_apron)}</span>
-          </div>
-          <div class="card-modifier">
-            <span class="card-modifier-label">Espacio 2do Apron</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_second_apron)}</span>
-          </div>
-        </div>
-      </article>
+    <div class="mobile-info-summary cards team-summary-grid">
+      ${buildBalancePanelHtml(s)}
       <article class="card card-summary">
         <div class="label">Cash</div>
-        <div class="card-modifiers card-modifiers-no-border">
-          <div class="card-modifier">
-            <span class="card-modifier-label">Recibido / total</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.cash_received)} / ${formatMoneyDots(cashLimitTotal)}</span>
-          </div>
-          <div class="card-modifier">
-            <span class="card-modifier-label">Enviado / total</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.cash_sent)} / ${formatMoneyDots(cashLimitTotal)}</span>
-          </div>
-        </div>
+        ${buildCashGaugePanel(s, false)}
       </article>
       <article class="card card-summary">
         <div class="label">Transfer moves</div>
-        <div class="card-modifiers card-modifiers-no-border">
-          <div class="card-modifier">
-            <span class="card-modifier-label">Pre-30</span>
-            <span class="card-modifier-value">${formatDots(m.remaining_pre30 ?? 0)} / ${formatDots(m.limit_pre30 ?? 0)}</span>
-          </div>
-          <div class="card-modifier">
-            <span class="card-modifier-label">Post-30</span>
-            <span class="card-modifier-value">${formatDots(m.remaining_post30 ?? 0)} / ${formatDots(m.limit_post30 ?? 0)}</span>
-          </div>
-        </div>
+        ${buildMoveGaugePanel(m, false)}
       </article>
     </div>
   `;
   setAdminMobileOverlayVisible('adminMobileInfoBackdrop', true);
+}
+
+function formatBalanceMoney(n) {
+  const value = Math.round(Number(n || 0));
+  const sign = value < 0 ? '-' : '';
+  return `$${sign}${formatDots(Math.abs(value))}`;
+}
+
+function balanceNoticeItems(summary) {
+  const s = summary || {};
+  const notices = [];
+  const hardCap = String(s.apron_hard_cap || '').trim().toLowerCase();
+  if (hardCap === 'first') notices.push('Capped at 1st apron');
+  if (hardCap === 'second') notices.push('Capped at 2nd apron');
+  return notices;
+}
+
+function buildBalanceCard(label, value, isWarning = false) {
+  return `
+    <div class="team-balance-card${isWarning ? ' is-warning' : ''}">
+      <div class="team-balance-label">${escapeHtml(label)}</div>
+      <div class="team-balance-value">${formatBalanceMoney(value)}</div>
+    </div>
+  `;
+}
+
+function buildBalancePanelHtml(summary) {
+  const s = summary || {};
+  const notices = balanceNoticeItems(s);
+  const noticesHtml = notices.length
+    ? `<div class="team-balance-notices">${notices.map((txt) => `<div class="team-balance-notice">${escapeHtml(txt)}</div>`).join('')}</div>`
+    : '';
+  return `
+    <div class="team-balance-panel" aria-label="Team balances">
+      <div class="team-balance-grid">
+        ${buildBalanceCard('CAP SPACE', s.room_to_cap, false)}
+        ${buildBalanceCard('1ST APRON SPACE', s.room_to_first_apron, Number(s.room_to_first_apron) < 0)}
+        ${buildBalanceCard('2ND APRON SPACE', s.room_to_second_apron, Number(s.room_to_second_apron) < 0)}
+        ${buildBalanceCard('TAX SPACE', s.room_to_luxury, Number(s.room_to_luxury) < 0)}
+      </div>
+      ${noticesHtml}
+    </div>
+  `;
+}
+
+function usagePercent(available, limit) {
+  const availableNum = Math.max(0, Number(available || 0));
+  const limitNum = Math.max(0, Number(limit || 0));
+  if (!limitNum) return { raw: 0, clamped: 0 };
+  const raw = (availableNum / limitNum) * 100;
+  return { raw, clamped: Math.max(0, Math.min(100, raw)) };
+}
+
+function gaugeColor(percent) {
+  const clamped = Math.max(0, Math.min(100, Number(percent || 0)));
+  const hue = Math.round((clamped / 100) * 145);
+  return `hsl(${hue} 70% 34%)`;
+}
+
+function availableAmount(used, limit) {
+  const limitNum = Math.max(0, Number(limit || 0));
+  const available = limitNum - Math.max(0, Number(used || 0));
+  return Math.max(0, Math.min(limitNum, available));
+}
+
+function availableMoves(moveSummary, bucket, limit) {
+  const m = moveSummary || {};
+  const used = Number(m[`used_${bucket}`]);
+  if (Number.isFinite(used)) return availableAmount(used, limit);
+  return Math.max(0, Math.min(Number(limit || 0), Number(m[`remaining_${bucket}`] || 0)));
+}
+
+function buildUsageGaugeCard({ label, available, limit, valueText, limitText, unitText = 'Available', tone = 'cash', detailHtml = '', controlHtml = '' }) {
+  const pct = usagePercent(available, limit);
+  const displayPct = Math.round(pct.raw);
+  const isOver = pct.raw > 100;
+  const color = gaugeColor(pct.clamped);
+  const progressPath = pct.clamped > 0
+    ? `<path class="usage-gauge-progress" pathLength="100" stroke-dasharray="${pct.clamped} 100" d="M18 58 A42 42 0 0 1 102 58"></path>`
+    : '';
+  return `
+    <article class="usage-gauge-card usage-gauge-card--${tone}${isOver ? ' is-over' : ''}" style="--gauge-color: ${color};">
+      <div class="usage-gauge-title">${escapeHtml(label)}</div>
+      <div class="usage-gauge-visual" aria-label="${escapeHtml(`${label}: ${displayPct}% ${unitText}`)}">
+        <svg class="usage-gauge-svg" viewBox="0 0 120 72" role="img" aria-hidden="true">
+          <path class="usage-gauge-track" pathLength="100" d="M18 58 A42 42 0 0 1 102 58"></path>
+          ${progressPath}
+        </svg>
+        <div class="usage-gauge-center">
+          <strong>${displayPct}%</strong>
+          <span>${escapeHtml(unitText)}</span>
+        </div>
+      </div>
+      <div class="usage-gauge-meta">
+        <strong>${escapeHtml(valueText)}</strong>
+        <span>of ${escapeHtml(limitText)}</span>
+      </div>
+      ${controlHtml}
+      ${detailHtml}
+    </article>
+  `;
+}
+
+function buildCashGaugePanel(summary, editable = false) {
+  const s = summary || {};
+  const limit = Number(s.cash_limit_total || state.settings.cash_limit_total || 0);
+  const receivedAvailable = availableAmount(s.cash_received, limit);
+  const sentAvailable = availableAmount(s.cash_sent, limit);
+  const receivedControl = editable
+    ? `<label class="usage-gauge-edit"><span>Available</span><input id="summaryCashReceivedInput" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(receivedAvailable))}"></label>`
+    : '';
+  const sentControl = editable
+    ? `<label class="usage-gauge-edit"><span>Available</span><input id="summaryCashSentInput" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(sentAvailable))}"></label>`
+    : '';
+  return `
+    <div class="usage-gauge-grid">
+      ${buildUsageGaugeCard({
+        label: 'Cash recibido',
+        available: receivedAvailable,
+        limit,
+        valueText: formatMoneyDots(receivedAvailable),
+        limitText: formatMoneyDots(limit),
+        unitText: 'Available',
+        tone: 'cash',
+        controlHtml: receivedControl,
+      })}
+      ${buildUsageGaugeCard({
+        label: 'Cash enviado',
+        available: sentAvailable,
+        limit,
+        valueText: formatMoneyDots(sentAvailable),
+        limitText: formatMoneyDots(limit),
+        unitText: 'Available',
+        tone: 'cash',
+        controlHtml: sentControl,
+      })}
+    </div>
+  `;
+}
+
+function buildMoveGaugePanel(moveSummary, editable = false) {
+  const m = moveSummary || {};
+  const preLimit = MOVE_LIMIT_PRE30;
+  const postLimit = MOVE_LIMIT_POST30;
+  const preAvailable = availableMoves(m, 'pre30', preLimit);
+  const postAvailable = availableMoves(m, 'post30', postLimit);
+  const preControl = editable
+    ? `<label class="usage-gauge-edit"><span>Available</span><input id="summaryMovePre30AvailableInput" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(preAvailable))}"></label>`
+    : '';
+  const postControl = editable
+    ? `<label class="usage-gauge-edit"><span>Available</span><input id="summaryMovePost30AvailableInput" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(postAvailable))}"></label>`
+    : '';
+  return `
+    <div class="usage-gauge-grid">
+      ${buildUsageGaugeCard({
+        label: 'Pre-30 moves',
+        available: preAvailable,
+        limit: preLimit,
+        valueText: formatDots(preAvailable),
+        limitText: formatDots(preLimit),
+        unitText: 'Available',
+        tone: 'moves',
+        controlHtml: preControl,
+        detailHtml: editable ? '<button id="moveLogPre30Btn" type="button" class="info-chip-btn usage-gauge-info" aria-label="Open pre-30 move log">i</button>' : '',
+      })}
+      ${buildUsageGaugeCard({
+        label: 'Post-30 moves',
+        available: postAvailable,
+        limit: postLimit,
+        valueText: formatDots(postAvailable),
+        limitText: formatDots(postLimit),
+        unitText: 'Available',
+        tone: 'moves',
+        controlHtml: postControl,
+        detailHtml: editable ? '<button id="moveLogPost30Btn" type="button" class="info-chip-btn usage-gauge-info" aria-label="Open post-30 move log">i</button>' : '',
+      })}
+    </div>
+  `;
 }
 
 function setupAdminMobileNav() {
@@ -1352,6 +1553,7 @@ function setupAdminMobileNav() {
   const closeBtn = document.getElementById('adminMobileSidebarCloseBtn');
   const backdrop = document.getElementById('adminMobileSidebarBackdrop');
   const trackerBtn = document.getElementById('adminMobileTrackerBtn');
+  const freeAgentsBtn = document.getElementById('adminMobileFreeAgentsBtn');
   const logBtn = document.getElementById('adminMobileLogBtn');
   const settingsBtn = document.getElementById('adminMobileSettingsBtn');
   const logoutBtn = document.getElementById('adminMobileLogoutBtn');
@@ -1370,6 +1572,12 @@ function setupAdminMobileNav() {
     trackerBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
       await loadTracker();
+    });
+  }
+  if (freeAgentsBtn) {
+    freeAgentsBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      await loadFreeAgents();
     });
   }
   if (logBtn) {
@@ -1428,90 +1636,248 @@ function renderTracker() {
   });
 }
 
+function birdRightsOptions(selected = '') {
+  const values = ['', 'Min', 'Max', 'Mid', 'TMid', 'Bi', '10d', 'R', 'R(2)', 'TW', 'Room', 'Reg'];
+  const normalized = String(selected || '');
+  if (normalized && !values.includes(normalized)) values.push(normalized);
+  return values
+    .map((value) => `<option value="${escapeHtml(value)}"${value === normalized ? ' selected' : ''}>${escapeHtml(value)}</option>`)
+    .join('');
+}
+
+function optionSelectHtml(fieldName, selected = '', attrName = 'data-sign-option-field') {
+  const options = ['', 'TO', 'PO', 'QO', 'GAP'];
+  const normalized = String(selected || '');
+  return `
+    <select ${attrName}="${fieldName}">
+      ${options.map((value) => `<option value="${value}"${value === normalized ? ' selected' : ''}>${value || '-'}</option>`).join('')}
+    </select>
+  `;
+}
+
+function freeAgentPayloadFromRow(row, attrName) {
+  const payload = {};
+  row.querySelectorAll(`[${attrName}]`).forEach((el) => {
+    const key = el.getAttribute(attrName);
+    const value = String(el.value || '').trim();
+    payload[key] = value || null;
+  });
+  return payload;
+}
+
+function renderFreeAgents() {
+  const tbody = document.querySelector('#freeAgentsTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const rows = sortedRows(state.freeAgents || [], state.sort.free_agents);
+  rows.forEach((agent) => {
+    const tr = document.createElement('tr');
+    tr.dataset.id = agent.id;
+    tr.innerHTML = `
+      <td><input data-field="name" value="${escapeHtml(agent.name || '')}"></td>
+      <td><input data-field="position" value="${escapeHtml(agent.position || '')}"></td>
+      <td><select data-field="bird_rights">${birdRightsOptions(agent.bird_rights || '')}</select></td>
+      <td><input data-field="rating" value="${escapeHtml(agent.rating || '')}"></td>
+      <td><input data-field="years_left" value="${agent.years_left == null ? '' : escapeHtml(agent.years_left)}"></td>
+      <td><input data-field="notes" value="${escapeHtml(agent.notes || '')}"></td>
+      <td>
+        <button data-action="sign-free-agent" type="button">Sign</button>
+        <button data-action="delete-free-agent" type="button" class="danger">Delete</button>
+      </td>
+    `;
+    tr.querySelectorAll('[data-field]').forEach((el) => {
+      const key = el.dataset.field;
+      attachInlineEditor(el, async (value) => {
+        await api(`/api/free-agents/${agent.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ [key]: value || null }),
+        });
+        agent[key] = value || null;
+      });
+    });
+    tr.querySelector('[data-action="sign-free-agent"]').addEventListener('click', () => {
+      openSignFreeAgentModal(agent);
+    });
+    tr.querySelector('[data-action="delete-free-agent"]').addEventListener('click', async () => {
+      if (!confirm(`Delete ${agent.name || 'this free agent'}?`)) return;
+      await api(`/api/free-agents/${agent.id}`, { method: 'DELETE' });
+      await loadFreeAgents();
+    });
+    tbody.appendChild(tr);
+  });
+
+  if (state.ui.addingFreeAgent) {
+    const tr = document.createElement('tr');
+    tr.className = 'table-add-editor-row';
+    tr.innerHTML = `
+      <td><input data-new-field="name" data-autofocus placeholder="Player name"></td>
+      <td><input data-new-field="position" placeholder="PG"></td>
+      <td><select data-new-field="bird_rights">${birdRightsOptions('')}</select></td>
+      <td><input data-new-field="rating" placeholder="Rating"></td>
+      <td><input data-new-field="years_left" placeholder="Years"></td>
+      <td><input data-new-field="notes" placeholder="Notes"></td>
+      <td class="table-add-actions-cell">
+        <button type="button" class="inline-save" data-action="save-draft">✓</button>
+        <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
+      </td>
+    `;
+    const discard = () => {
+      state.ui.addingFreeAgent = false;
+      renderFreeAgents();
+    };
+    const save = async () => {
+      const payload = freeAgentPayloadFromRow(tr, 'data-new-field');
+      if (!String(payload.name || '').trim()) {
+        discard();
+        return;
+      }
+      state.ui.addingFreeAgent = false;
+      await api('/api/free-agents', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      await loadFreeAgents();
+    };
+    tbody.appendChild(tr);
+    bindDraftEditor(tr, save, discard);
+    requestAnimationFrame(() => {
+      tr.querySelector('[data-autofocus]')?.focus();
+    });
+  } else if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="7">No free agents listed.</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+function populateSignFreeAgentTeams(selectedCode = '') {
+  const select = document.getElementById('signFreeAgentTeam');
+  if (!select) return;
+  select.innerHTML = state.teams
+    .map((team) => `<option value="${team.code}">${team.code} - ${escapeHtml(team.name || team.code)}</option>`)
+    .join('');
+  const fallback = selectedCode || state.teamCode || state.teams[0]?.code || '';
+  select.value = fallback;
+}
+
+function renderSignFreeAgentYearsTable() {
+  const tbody = document.querySelector('#signFreeAgentYearsTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  ALL_SEASONS.forEach((season) => {
+    const tr = document.createElement('tr');
+    tr.dataset.season = String(season);
+    tr.innerHTML = `
+      <td>${seasonLabel(season)}</td>
+      <td><input data-sign-field="salary_${season}_text" type="text" placeholder="0"></td>
+      <td>${optionSelectHtml(`option_${season}`)}</td>
+      <td><input data-sign-bool-field="salary_${season}_provisional" type="checkbox"></td>
+      <td><input data-sign-bool-field="salary_${season}_partially_guaranteed" type="checkbox"></td>
+      <td><input data-sign-field="salary_${season}_guaranteed_text" type="text" placeholder="Guaranteed amount"></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function openSignFreeAgentModal(agent) {
+  if (!agent) return;
+  state.ui.signingFreeAgentId = agent.id;
+  populateSignFreeAgentTeams(state.teamCode || '');
+  document.getElementById('signFreeAgentName').value = agent.name || '';
+  document.getElementById('signFreeAgentPosition').value = agent.position || '';
+  document.getElementById('signFreeAgentType').innerHTML = birdRightsOptions(agent.bird_rights || '');
+  document.getElementById('signFreeAgentRating').value = agent.rating || '';
+  document.getElementById('signFreeAgentYears').value = agent.years_left == null ? '' : agent.years_left;
+  document.getElementById('signFreeAgentNotes').value = agent.notes || '';
+  document.getElementById('signFreeAgentProvisional').checked = false;
+  document.getElementById('signFreeAgentPartial').checked = false;
+  renderSignFreeAgentYearsTable();
+  document.getElementById('signFreeAgentModal').classList.remove('section-hidden');
+}
+
+function closeSignFreeAgentModal() {
+  state.ui.signingFreeAgentId = null;
+  document.getElementById('signFreeAgentModal')?.classList.add('section-hidden');
+}
+
+function signFreeAgentPayload() {
+  const payload = {
+    team_code: document.getElementById('signFreeAgentTeam')?.value || '',
+    name: document.getElementById('signFreeAgentName')?.value.trim() || '',
+    position: document.getElementById('signFreeAgentPosition')?.value.trim() || null,
+    bird_rights: document.getElementById('signFreeAgentType')?.value.trim() || null,
+    rating: document.getElementById('signFreeAgentRating')?.value.trim() || null,
+    years_left: document.getElementById('signFreeAgentYears')?.value.trim() || null,
+    notes: document.getElementById('signFreeAgentNotes')?.value.trim() || null,
+    provisional_amounts: Boolean(document.getElementById('signFreeAgentProvisional')?.checked),
+    partially_guaranteed: Boolean(document.getElementById('signFreeAgentPartial')?.checked),
+  };
+  document.querySelectorAll('#signFreeAgentYearsTable [data-sign-field]').forEach((el) => {
+    const key = el.dataset.signField;
+    payload[key] = String(el.value || '').trim() || null;
+  });
+  document.querySelectorAll('#signFreeAgentYearsTable [data-sign-option-field]').forEach((el) => {
+    const key = el.dataset.signOptionField;
+    payload[key] = String(el.value || '').trim() || null;
+  });
+  document.querySelectorAll('#signFreeAgentYearsTable [data-sign-bool-field]').forEach((el) => {
+    payload[el.dataset.signBoolField] = Boolean(el.checked);
+  });
+  return payload;
+}
+
+async function confirmSignFreeAgent() {
+  const freeAgentId = state.ui.signingFreeAgentId;
+  if (!freeAgentId) return;
+  const payload = signFreeAgentPayload();
+  if (!payload.team_code) {
+    alert('Select a team.');
+    return;
+  }
+  if (!payload.name) {
+    alert('Player name is required.');
+    return;
+  }
+  const btn = document.getElementById('confirmSignFreeAgentBtn');
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Signing...';
+  try {
+    await api(`/api/free-agents/${freeAgentId}/sign`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    closeSignFreeAgentModal();
+    await loadFreeAgents();
+    await refreshAdminLogsSafe();
+  } catch (err) {
+    alert(`Free agent sign failed: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
 function renderCards() {
   const wrap = document.getElementById('teamMeta');
   const t = state.teamData.team;
   const s = state.teamData.summary;
   const m = state.teamData.move_summary || {};
-  const currentYear = Number(s.current_year || state.settings.current_year || 2025);
-  const currentSeason = seasonLabel(currentYear);
-  const cashLimitTotal = Number(s.cash_limit_total || state.settings.cash_limit_total || 0);
   setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
   wrap.innerHTML = `
-    <article class="card card-summary card-summary-split">
-      <div class="card-summary-col">
-        <div class="label">CAP Total (${currentSeason})</div>
-        <div class="value">${formatMoneyDots(s.cap_figure)}</div>
-        <div class="card-modifiers">
-          <div class="card-modifier card-modifier-${s.room_to_cap >= 0 ? 'positive' : 'negative'}">
-            <span class="card-modifier-label">Espacio CAP</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_cap)}</span>
-          </div>
-        </div>
-      </div>
-      <div class="card-summary-col">
-        <div class="label">GASTO Total (${currentSeason})</div>
-        <div class="value">${formatMoneyDots(s.payroll)}</div>
-        <div class="card-modifiers">
-          <div class="card-modifier card-modifier-${s.room_to_first_apron >= 0 ? 'positive' : 'negative'}">
-            <span class="card-modifier-label">Espacio 1er Apron</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_first_apron)}</span>
-          </div>
-          <div class="card-modifier card-modifier-${s.room_to_second_apron >= 0 ? 'positive' : 'negative'}">
-            <span class="card-modifier-label">Espacio 2do Apron</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_second_apron)}</span>
-          </div>
-        </div>
-      </div>
-    </article>
-    <article class="card card-summary card-summary-split">
+    ${buildBalancePanelHtml(s)}
+    <article class="card card-summary card-summary-split team-operations-card">
       <div class="card-summary-col">
         <div class="label">Cash</div>
-        <div class="card-modifiers card-modifiers-no-border">
-          <div class="card-modifier card-modifier-editor">
-            <span class="card-modifier-label">Cash recibido / total</span>
-            <div class="summary-inline-editor">
-              <input id="summaryCashReceivedInput" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(s.cash_received))}">
-              <span class="card-modifier-value">${formatMoneyDots(cashLimitTotal)}</span>
-            </div>
-          </div>
-          <div class="card-modifier card-modifier-editor">
-            <span class="card-modifier-label">Cash enviado / total</span>
-            <div class="summary-inline-editor">
-              <input id="summaryCashSentInput" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(s.cash_sent))}">
-              <span class="card-modifier-value">${formatMoneyDots(cashLimitTotal)}</span>
-            </div>
-          </div>
-        </div>
+        ${buildCashGaugePanel(s, true)}
         <div class="summary-inline-actions">
           <button id="summaryCashSaveBtn" type="button">Save balances</button>
         </div>
       </div>
       <div class="card-summary-col">
         <div class="label">Transfer moves</div>
-        <div class="card-modifiers card-modifiers-no-border">
-          <div class="card-modifier card-modifier-editor">
-            <span class="card-modifier-label">
-              Movimientos restantes (pre-30)
-              <button id="moveLogPre30Btn" type="button" class="info-chip-btn" aria-label="Open pre-30 move log">i</button>
-            </span>
-            <div class="summary-inline-editor">
-              <input id="summaryMovePre30Input" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(m.remaining_pre30 ?? 0))}">
-              <span class="card-modifier-value">${formatDots(m.limit_pre30 ?? 0)}</span>
-            </div>
-          </div>
-          <div class="card-modifier card-modifier-editor">
-            <span class="card-modifier-label">
-              Movimientos restantes (post-30)
-              <button id="moveLogPost30Btn" type="button" class="info-chip-btn" aria-label="Open post-30 move log">i</button>
-            </span>
-            <div class="summary-inline-editor">
-              <input id="summaryMovePost30Input" class="summary-inline-input" type="text" inputmode="numeric" value="${escapeHtml(formatDots(m.remaining_post30 ?? 0))}">
-              <span class="card-modifier-value">${formatDots(m.limit_post30 ?? 0)}</span>
-            </div>
-          </div>
-        </div>
+        ${buildMoveGaugePanel(m, true)}
         <div class="summary-inline-actions">
           <button id="summaryMovesSaveBtn" type="button">Save moves</button>
         </div>
@@ -1526,12 +1892,26 @@ function renderCards() {
       await saveCurrentTeamCash(summaryCashReceivedInput, summaryCashSentInput, summaryCashSaveBtn);
     });
   }
-  const summaryMovePre30Input = document.getElementById('summaryMovePre30Input');
-  const summaryMovePost30Input = document.getElementById('summaryMovePost30Input');
+  const summaryMovePre30AvailableInput = document.getElementById('summaryMovePre30AvailableInput');
+  const summaryMovePost30AvailableInput = document.getElementById('summaryMovePost30AvailableInput');
   const summaryMovesSaveBtn = document.getElementById('summaryMovesSaveBtn');
-  if (summaryMovePre30Input && summaryMovePost30Input && summaryMovesSaveBtn) {
+  if (summaryMovePre30AvailableInput && summaryMovePost30AvailableInput && summaryMovesSaveBtn) {
     summaryMovesSaveBtn.addEventListener('click', async () => {
-      await saveCurrentTeamMoves(summaryMovePre30Input, summaryMovePost30Input, summaryMovesSaveBtn);
+      const preAvailable = parseAmount(summaryMovePre30AvailableInput.value);
+      const postAvailable = parseAmount(summaryMovePost30AvailableInput.value);
+      if (preAvailable == null || preAvailable < 0 || preAvailable > MOVE_LIMIT_PRE30) {
+        alert('Invalid pre-30 available value.');
+        return;
+      }
+      if (postAvailable == null || postAvailable < 0 || postAvailable > MOVE_LIMIT_POST30) {
+        alert('Invalid post-30 available value.');
+        return;
+      }
+      await saveCurrentTeamMoves(
+        { value: String(preAvailable) },
+        { value: String(postAvailable) },
+        summaryMovesSaveBtn,
+      );
     });
   }
   document.getElementById('moveLogPre30Btn')?.addEventListener('click', () => {
@@ -1569,27 +1949,13 @@ function renderImportantFigures() {
 function renderCapStatusPills(summary) {
   const wrap = document.getElementById('capStatusPills');
   if (!wrap) return;
-  const pills = [];
-  if (Number(summary.room_to_luxury) < 0) pills.push('Encima del luxury');
-  if (Number(summary.room_to_first_apron) < 0) pills.push('Encima del 1er apron');
-  if (Number(summary.room_to_second_apron) < 0) pills.push('Encima del 2do apron');
-  wrap.innerHTML = pills.map((txt) => `<span class="top-status-pill">${txt}</span>`).join('');
+  wrap.innerHTML = '';
 }
 
 function salaryPctHtml(value) {
   const cap = Number(state.settings.salary_cap_2025 || 154647000);
   if (!Number.isFinite(value) || cap <= 0) return '';
   return `<span class="salary-pct">${((value / cap) * 100).toFixed(1)}%</span>`;
-}
-
-function buildMoveSelect(el) {
-  el.innerHTML = '';
-  state.teams.forEach((t) => {
-    const opt = document.createElement('option');
-    opt.value = t.code;
-    opt.textContent = t.code;
-    el.appendChild(opt);
-  });
 }
 
 async function refreshSummary() {
@@ -1689,31 +2055,27 @@ function attachInlineEditor(fieldEl, onSaveField) {
   return wrapper;
 }
 
-async function movePlayer(playerId, row) {
-  const select = row.querySelector('select[data-role="move-team"]');
-  await api('/api/players/move', {
-    method: 'POST',
-    body: JSON.stringify({ player_id: playerId, to_team_code: select.value }),
-  });
-}
-
-function syncAdminSalaryProvisionalCell(cellWrap, player, season) {
+function syncAdminSalaryInfoCell(cellWrap, player, season) {
   if (!cellWrap) return;
   const td = cellWrap.closest('td');
-  const show = playerSeasonIsProvisional(player, season);
-  if (td) td.classList.toggle('salary-provisional-cell', show);
-  const existing = Array.from(cellWrap.children).find((child) => child.classList?.contains('salary-provisional-info'));
-  if (show && !existing) {
-    cellWrap.insertAdjacentHTML('beforeend', provisionalInfoHtml());
-    bindProvisionalInfoToggles(cellWrap);
-  } else if (!show && existing) {
+  const messages = salaryInfoMessages(player, season);
+  const existing = Array.from(cellWrap.children).find((child) => child.classList?.contains('salary-info-button'));
+  if (td) {
+    td.classList.toggle('salary-provisional-cell', playerSeasonIsProvisional(player, season));
+    td.classList.toggle('salary-partial-guarantee-cell', playerSeasonIsPartiallyGuaranteed(player, season));
+  }
+  if (existing) {
     existing.remove();
+  }
+  if (messages.length) {
+    cellWrap.insertAdjacentHTML('beforeend', salaryInfoHtml(messages));
+    bindSalaryInfoToggles(cellWrap);
   }
 }
 
 function appendSalaryProvisionalControl(cellWrap, player, season) {
   if (!cellWrap || !playerUsesProvisionalAmounts(player)) {
-    syncAdminSalaryProvisionalCell(cellWrap, player, season);
+    syncAdminSalaryInfoCell(cellWrap, player, season);
     return;
   }
   const field = salaryProvisionalField(season);
@@ -1730,7 +2092,7 @@ function appendSalaryProvisionalControl(cellWrap, player, season) {
     const previous = boolValue(player[field]);
     const next = Boolean(checkbox.checked);
     player[field] = next ? 1 : 0;
-    syncAdminSalaryProvisionalCell(cellWrap, player, season);
+    syncAdminSalaryInfoCell(cellWrap, player, season);
     checkbox.disabled = true;
     try {
       await api(`/api/players/${player.id}`, {
@@ -1740,14 +2102,99 @@ function appendSalaryProvisionalControl(cellWrap, player, season) {
     } catch (err) {
       player[field] = previous ? 1 : 0;
       checkbox.checked = previous;
-      syncAdminSalaryProvisionalCell(cellWrap, player, season);
+      syncAdminSalaryInfoCell(cellWrap, player, season);
       alert(`Provisional amount save failed: ${err.message}`);
     } finally {
       checkbox.disabled = false;
     }
   });
   cellWrap.appendChild(label);
-  syncAdminSalaryProvisionalCell(cellWrap, player, season);
+  syncAdminSalaryInfoCell(cellWrap, player, season);
+}
+
+function appendSalaryPartialGuaranteeControl(cellWrap, player, season) {
+  if (!cellWrap || !playerUsesPartialGuarantees(player)) {
+    syncAdminSalaryInfoCell(cellWrap, player, season);
+    return;
+  }
+  const checkedField = salaryPartialGuaranteeField(season);
+  const amountField = salaryGuaranteedTextField(season);
+  const wrap = document.createElement('div');
+  wrap.className = 'salary-partial-control';
+  wrap.innerHTML = `
+    <label class="salary-partial-toggle" title="Partially guaranteed">
+      <input type="checkbox" data-role="salary-partial-guarantee" data-season="${season}">
+      <span>Partial</span>
+    </label>
+    <input class="salary-partial-amount" data-role="salary-guaranteed-amount" data-season="${season}" type="text" placeholder="Guaranteed">
+  `;
+  const checkbox = wrap.querySelector('[data-role="salary-partial-guarantee"]');
+  const amountInput = wrap.querySelector('[data-role="salary-guaranteed-amount"]');
+  const syncAmountInput = () => {
+    amountInput.disabled = !checkbox.checked;
+    amountInput.classList.toggle('section-hidden', !checkbox.checked);
+  };
+  checkbox.checked = boolValue(player[checkedField]);
+  amountInput.value = player[amountField] == null ? '' : player[amountField];
+  syncAmountInput();
+
+  checkbox.addEventListener('change', async () => {
+    const previous = boolValue(player[checkedField]);
+    const next = Boolean(checkbox.checked);
+    player[checkedField] = next ? 1 : 0;
+    syncAmountInput();
+    syncAdminSalaryInfoCell(cellWrap, player, season);
+    checkbox.disabled = true;
+    try {
+      await api(`/api/players/${player.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [checkedField]: next }),
+      });
+    } catch (err) {
+      player[checkedField] = previous ? 1 : 0;
+      checkbox.checked = previous;
+      syncAmountInput();
+      syncAdminSalaryInfoCell(cellWrap, player, season);
+      alert(`Partially guaranteed save failed: ${err.message}`);
+    } finally {
+      checkbox.disabled = false;
+    }
+  });
+
+  let savingAmount = false;
+  const persistAmount = async () => {
+    if (savingAmount) return;
+    const previous = String(player[amountField] || '');
+    const next = amountInput.value.trim();
+    if (next === previous) return;
+    player[amountField] = next;
+    syncAdminSalaryInfoCell(cellWrap, player, season);
+    savingAmount = true;
+    amountInput.disabled = true;
+    try {
+      await api(`/api/players/${player.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [amountField]: next || null }),
+      });
+    } catch (err) {
+      player[amountField] = previous;
+      amountInput.value = previous;
+      syncAdminSalaryInfoCell(cellWrap, player, season);
+      alert(`Guaranteed amount save failed: ${err.message}`);
+    } finally {
+      savingAmount = false;
+      syncAmountInput();
+    }
+  };
+  amountInput.addEventListener('blur', () => { void persistAmount(); });
+  amountInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      amountInput.blur();
+    }
+  });
+  cellWrap.appendChild(wrap);
+  syncAdminSalaryInfoCell(cellWrap, player, season);
 }
 
 function cancelAddPlayerRow() {
@@ -1972,7 +2419,9 @@ function renderPlayers() {
         refreshPct();
         const season = Number(key.split('_')[1] || 0);
         if (Number.isFinite(season)) {
-          appendSalaryProvisionalControl(fieldEl.closest('.salary-cell-admin'), p, season);
+          const cellWrap = fieldEl.closest('.salary-cell-admin');
+          appendSalaryProvisionalControl(cellWrap, p, season);
+          appendSalaryPartialGuaranteeControl(cellWrap, p, season);
         }
       }
       if (key === 'position') {
@@ -2059,12 +2508,9 @@ function renderPlayers() {
       }
     }
 
-    const moveSelect = tr.querySelector('select[data-role="move-team"]');
-    buildMoveSelect(moveSelect);
-    moveSelect.value = state.teamCode;
-
-    tr.querySelector('[data-action="move"]').addEventListener('click', async () => {
-      await movePlayer(p.id, tr);
+    tr.querySelector('[data-action="cut"]').addEventListener('click', async () => {
+      if (!confirm(`Cut ${p.name || 'this player'}? This creates a dead contract and adds him to Free agents.`)) return;
+      await api(`/api/players/${p.id}/cut`, { method: 'POST', body: '{}' });
       await loadTeam(state.teamCode);
     });
 
@@ -2094,6 +2540,30 @@ function renderPlayers() {
           alert(`Provisional amounts save failed: ${err.message}`);
         } finally {
           provisionalMaster.disabled = false;
+        }
+      });
+    }
+
+    const partialMaster = tr.querySelector('[data-role="partially-guaranteed"]');
+    if (partialMaster) {
+      partialMaster.checked = playerUsesPartialGuarantees(p);
+      partialMaster.addEventListener('change', async () => {
+        const previous = playerUsesPartialGuarantees(p);
+        const next = Boolean(partialMaster.checked);
+        p.partially_guaranteed = next ? 1 : 0;
+        partialMaster.disabled = true;
+        try {
+          await api(`/api/players/${p.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ partially_guaranteed: next }),
+          });
+          renderPlayers();
+        } catch (err) {
+          p.partially_guaranteed = previous ? 1 : 0;
+          partialMaster.checked = previous;
+          alert(`Partially guaranteed save failed: ${err.message}`);
+        } finally {
+          partialMaster.disabled = false;
         }
       });
     }
@@ -2154,11 +2624,14 @@ async function duplicateSelectedPlayersAction() {
       years_left: p.years_left || null,
       notes: p.notes || null,
       provisional_amounts: playerUsesProvisionalAmounts(p),
+      partially_guaranteed: playerUsesPartialGuarantees(p),
     };
     ALL_SEASONS.forEach((season) => {
       payload[`salary_${season}_text`] = p[`salary_${season}_text`] || null;
       payload[`option_${season}`] = p[`option_${season}`] || null;
       payload[salaryProvisionalField(season)] = boolValue(p[salaryProvisionalField(season)]);
+      payload[salaryPartialGuaranteeField(season)] = boolValue(p[salaryPartialGuaranteeField(season)]);
+      payload[salaryGuaranteedTextField(season)] = p[salaryGuaranteedTextField(season)] || null;
     });
     await api('/api/players', {
       method: 'POST',
@@ -2185,30 +2658,68 @@ async function cutSelectedPlayersAction() {
     alert('Select at least one player.');
     return;
   }
-  if (!confirm(`Cut ${players.length} selected player(s)? This creates dead contracts and removes the players from roster.`)) return;
+  if (!confirm(`Cut ${players.length} selected player(s)? This creates dead contracts, adds them to Free agents, and removes them from the roster.`)) return;
 
-  const currentYear = Number(state.settings.current_year || 2025);
   for (const p of players) {
-    const deadType = String(p.bird_rights || '').trim().toUpperCase() === 'TW' ? 'two_way' : 'normal';
-    const salaryNum = Number(p[`salary_${currentYear}_num`] || 0);
-    const salaryText = String(p[`salary_${currentYear}_text`] || '').trim();
-    const deadPayload = {
-      team_code: state.teamCode,
-      dead_type: deadType,
-      label: p.name || 'Cut Player',
-    };
-    if (Number.isFinite(salaryNum) && salaryNum > 0) {
-      deadPayload.amount_text = String(Math.round(salaryNum));
-    } else if (salaryText) {
-      deadPayload.amount_text = salaryText;
-    }
-    await api('/api/dead-contracts', {
-      method: 'POST',
-      body: JSON.stringify(deadPayload),
-    });
-    await api(`/api/players/${p.id}`, { method: 'DELETE' });
+    await api(`/api/players/${p.id}/cut`, { method: 'POST', body: '{}' });
   }
   await loadTeam(state.teamCode);
+}
+
+function parseDraftConditionalTeams(value) {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(value.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean)));
+  }
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return Array.from(new Set(parsed.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean)));
+    }
+  } catch (err) {
+    // Older/manual values may be comma-separated instead of JSON.
+  }
+  return Array.from(new Set(raw.split(/[,/|]/).map((code) => code.trim().toUpperCase()).filter(Boolean)));
+}
+
+function teamOptionsHtml(selected = '', { includeCurrent = true } = {}) {
+  const selectedCode = String(selected || '').trim().toUpperCase();
+  return state.teams
+    .filter((team) => includeCurrent || team.code !== state.teamCode)
+    .map((team) => `<option value="${team.code}" ${team.code === selectedCode ? 'selected' : ''}>${team.code} - ${escapeHtml(team.name || team.code)}</option>`)
+    .join('');
+}
+
+function appendConditionalTeamSelect(list, value = '', { removable = true } = {}) {
+  if (!list) return null;
+  const row = document.createElement('div');
+  row.className = 'pick-conditional-team-row';
+  row.innerHTML = `
+    <select data-conditional-team>
+      <option value="">Select team</option>
+      ${teamOptionsHtml(value, { includeCurrent: true })}
+    </select>
+    ${removable ? '<button type="button" class="ghost tiny" data-action="remove-conditional-team">Remove</button>' : ''}
+  `;
+  list.appendChild(row);
+  row.querySelector('[data-action="remove-conditional-team"]')?.addEventListener('click', () => row.remove());
+  return row.querySelector('select');
+}
+
+function renderConditionalTeamSelects(list, values) {
+  if (!list) return;
+  list.innerHTML = '';
+  const normalized = parseDraftConditionalTeams(values);
+  const rows = normalized.length >= 2 ? normalized : [...normalized, ...Array.from({ length: 2 - normalized.length }, () => '')];
+  rows.forEach((code, idx) => appendConditionalTeamSelect(list, code, { removable: idx >= 2 }));
+}
+
+function readConditionalTeamSelects(container) {
+  return Array.from(container.querySelectorAll('[data-conditional-team]'))
+    .map((select) => String(select.value || '').trim().toUpperCase())
+    .filter(Boolean)
+    .filter((code, idx, all) => all.indexOf(code) === idx);
 }
 
 function renderAssets() {
@@ -2226,7 +2737,7 @@ function renderAssets() {
 
   const normalizedType = (pick) => {
     const type = String(pick.draft_pick_type || 'own').trim().toLowerCase();
-    if (type === 'acquired' || type === 'sold') return type;
+    if (type === 'acquired' || type === 'sold' || type === 'conditional') return type;
     return 'own';
   };
 
@@ -2235,6 +2746,7 @@ function renderAssets() {
     const own2 = [];
     const acq1 = [];
     const acq2 = [];
+    const conditional = [];
     const sold = [];
     seasonPicks.forEach((pick) => {
       const t = normalizedType(pick);
@@ -2243,6 +2755,7 @@ function renderAssets() {
       else if (t === 'own' && r === '2nd') own2.push(pick);
       else if (t === 'acquired' && r === '1st') acq1.push(pick);
       else if (t === 'acquired' && r === '2nd') acq2.push(pick);
+      else if (t === 'conditional') conditional.push(pick);
       else sold.push(pick);
     });
     const byOwnerThenId = (a, b) => {
@@ -2256,8 +2769,9 @@ function renderAssets() {
     own2.sort(byOwnerThenId);
     acq1.sort(byOwnerThenId);
     acq2.sort(byOwnerThenId);
+    conditional.sort(byOwnerThenId);
     sold.sort(byOwnerThenId);
-    return [...own1, ...own2, ...acq1, ...acq2, ...sold];
+    return [...own1, ...own2, ...acq1, ...acq2, ...conditional, ...sold];
   };
 
   const picks = (state.teamData.assets || []).filter((a) => a.asset_type === 'draft_pick');
@@ -2278,10 +2792,8 @@ function renderAssets() {
       return;
     }
 
-    const ownerOptions = state.teams
-      .filter((t) => t.code !== state.teamCode)
-      .map((t) => `<option value="${t.code}">${t.code} - ${t.name}</option>`)
-      .join('');
+    const ownerOptions = teamOptionsHtml('', { includeCurrent: false });
+    const soldToOptions = teamOptionsHtml('', { includeCurrent: false });
     const card = document.createElement('article');
     card.className = 'draft-pick-card admin-pick-card draft-pick-card--editor';
     card.innerHTML = `
@@ -2293,6 +2805,7 @@ function renderAssets() {
           <select data-new-field="draft_pick_type">
             <option value="own">Own</option>
             <option value="acquired">Acquired</option>
+            <option value="conditional">Conditional</option>
             <option value="sold">Sold</option>
           </select>
         </label>
@@ -2311,8 +2824,19 @@ function renderAssets() {
             ${ownerOptions}
           </select>
         </label>
+        <label data-sold-to-wrap>Sold to
+          <select data-new-field="draft_pick_sold_to">
+            <option value="">Select team</option>
+            ${soldToOptions}
+          </select>
+        </label>
+        <div data-conditional-wrap class="pick-conditional-editor">
+          <span>Possible source teams</span>
+          <div data-conditional-list></div>
+          <button type="button" class="ghost tiny" data-action="add-conditional-team">Add team</button>
+        </div>
         <label class="pick-detail-input">Details
-          <input data-new-field="detail" type="text" value="">
+          <textarea data-new-field="detail" rows="2"></textarea>
         </label>
         <label class="pick-checkbox-field">
           <input data-new-field="draft_pick_restricted" type="checkbox">
@@ -2332,12 +2856,24 @@ function renderAssets() {
     const typeSelect = card.querySelector('[data-new-field="draft_pick_type"]');
     const ownerWrap = card.querySelector('[data-owner-wrap]');
     const ownerSelect = card.querySelector('[data-new-field="original_owner"]');
+    const soldToWrap = card.querySelector('[data-sold-to-wrap]');
+    const soldToSelect = card.querySelector('[data-new-field="draft_pick_sold_to"]');
+    const conditionalWrap = card.querySelector('[data-conditional-wrap]');
+    const conditionalList = card.querySelector('[data-conditional-list]');
+    renderConditionalTeamSelects(conditionalList, []);
     const syncOwnerField = () => {
-      ownerWrap.style.display = typeSelect.value === 'acquired' ? 'grid' : 'none';
-      if (typeSelect.value !== 'acquired') ownerSelect.value = '';
+      const type = typeSelect.value;
+      ownerWrap.style.display = type === 'acquired' ? 'grid' : 'none';
+      soldToWrap.style.display = type === 'sold' ? 'grid' : 'none';
+      conditionalWrap.style.display = type === 'conditional' ? 'grid' : 'none';
+      if (type !== 'acquired') ownerSelect.value = '';
+      if (type !== 'sold') soldToSelect.value = '';
     };
     syncOwnerField();
     typeSelect.addEventListener('change', syncOwnerField);
+    card.querySelector('[data-action="add-conditional-team"]')?.addEventListener('click', () => {
+      appendConditionalTeamSelect(conditionalList, '', { removable: true });
+    });
 
     const discard = () => {
       state.ui.addingDraftPick = false;
@@ -2353,6 +2889,8 @@ function renderAssets() {
         year: String(card.querySelector('[data-new-field="year"]')?.value || '').trim(),
         detail: String(card.querySelector('[data-new-field="detail"]')?.value || '').trim(),
         original_owner: String(card.querySelector('[data-new-field="original_owner"]')?.value || '').trim(),
+        draft_pick_sold_to: String(card.querySelector('[data-new-field="draft_pick_sold_to"]')?.value || '').trim(),
+        draft_pick_conditional_teams: readConditionalTeamSelects(card),
         draft_pick_restricted: Boolean(card.querySelector('[data-new-field="draft_pick_restricted"]')?.checked),
         draft_pick_protected: Boolean(card.querySelector('[data-new-field="draft_pick_protected"]')?.checked),
       };
@@ -2360,6 +2898,8 @@ function renderAssets() {
         payload.year !== defaultYear
         || Boolean(payload.detail)
         || Boolean(payload.original_owner)
+        || Boolean(payload.draft_pick_sold_to)
+        || payload.draft_pick_conditional_teams.length > 0
         || payload.draft_pick_type !== 'own'
         || payload.draft_round !== '1st'
         || payload.draft_pick_restricted
@@ -2372,6 +2912,8 @@ function renderAssets() {
       if (!payload.year) payload.year = defaultYear;
       payload.label = `${payload.draft_round} pick`;
       if (payload.draft_pick_type !== 'acquired') payload.original_owner = '';
+      if (payload.draft_pick_type !== 'sold') payload.draft_pick_sold_to = '';
+      if (payload.draft_pick_type !== 'conditional') payload.draft_pick_conditional_teams = [];
       state.ui.addingDraftPick = false;
       await api('/api/assets', {
         method: 'POST',
@@ -2421,7 +2963,10 @@ function renderAssets() {
     )
       .forEach((pick) => {
         const pickType = normalizedType(pick);
-        const ownerCode = pick.draft_pick_type === 'acquired'
+        const sourceTeams = parseDraftConditionalTeams(pick.draft_pick_conditional_teams);
+        const ownerCode = pickType === 'conditional'
+          ? (sourceTeams[0] || state.teamCode)
+          : pick.draft_pick_type === 'acquired'
           ? (pick.original_owner || '')
           : state.teamCode;
         const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
@@ -2432,6 +2977,7 @@ function renderAssets() {
         card.className = 'draft-pick-card admin-pick-card';
         if (isRestricted) card.classList.add('draft-pick-card--restricted');
         if (pickType === 'sold') card.classList.add('draft-pick-card--sold');
+        if (pickType === 'conditional') card.classList.add('draft-pick-card--conditional');
         card.style.setProperty('--pick-primary-rgb', `${ownerPrimaryRgb.r}, ${ownerPrimaryRgb.g}, ${ownerPrimaryRgb.b}`);
         card.style.setProperty('--pick-secondary-rgb', `${ownerSecondaryRgb.r}, ${ownerSecondaryRgb.g}, ${ownerSecondaryRgb.b}`);
         card.innerHTML = `
@@ -2444,6 +2990,7 @@ function renderAssets() {
               <select data-field="draft_pick_type">
                 <option value="own">Own</option>
                 <option value="acquired">Acquired</option>
+                <option value="conditional">Conditional</option>
                 <option value="sold">Sold</option>
               </select>
             </label>
@@ -2462,8 +3009,19 @@ function renderAssets() {
                 ${ownerOptions}
               </select>
             </label>
+            <label data-sold-to-wrap>Sold to
+              <select data-field="draft_pick_sold_to">
+                <option value="">Select team</option>
+                ${ownerOptions}
+              </select>
+            </label>
+            <div data-conditional-wrap class="pick-conditional-editor">
+              <span>Possible source teams</span>
+              <div data-conditional-list></div>
+              <button type="button" class="ghost tiny" data-action="add-conditional-team">Add team</button>
+            </div>
             <label class="pick-detail-input">Details
-              <input data-field="detail" type="text" value="${escapeHtml(pick.detail || '')}">
+              <textarea data-field="detail" rows="2">${escapeHtml(pick.detail || '')}</textarea>
             </label>
             <label class="pick-checkbox-field">
               <input data-field="draft_pick_restricted" type="checkbox" ${Number(pick.draft_pick_restricted || 0) ? 'checked' : ''}>
@@ -2503,18 +3061,28 @@ function renderAssets() {
         const roundSelect = card.querySelector('[data-field="draft_round"]');
         const yearInput = card.querySelector('[data-field="year"]');
         const ownerSelect = card.querySelector('[data-field="original_owner"]');
+        const soldToSelect = card.querySelector('[data-field="draft_pick_sold_to"]');
         const detailInput = card.querySelector('[data-field="detail"]');
         const restrictedInput = card.querySelector('[data-field="draft_pick_restricted"]');
         const protectedInput = card.querySelector('[data-field="draft_pick_protected"]');
         const ownerWrap = card.querySelector('[data-owner-wrap]');
+        const soldToWrap = card.querySelector('[data-sold-to-wrap]');
+        const conditionalWrap = card.querySelector('[data-conditional-wrap]');
+        const conditionalList = card.querySelector('[data-conditional-list]');
 
         typeSelect.value = pick.draft_pick_type || 'own';
         roundSelect.value = pick.draft_round || '1st';
         ownerSelect.value = pick.original_owner || '';
+        soldToSelect.value = pick.draft_pick_sold_to || '';
+        renderConditionalTeamSelects(conditionalList, pick.draft_pick_conditional_teams);
 
         const syncOwnerField = () => {
-          ownerWrap.style.display = typeSelect.value === 'acquired' ? 'grid' : 'none';
-          if (typeSelect.value !== 'acquired') ownerSelect.value = '';
+          const type = typeSelect.value;
+          ownerWrap.style.display = type === 'acquired' ? 'grid' : 'none';
+          soldToWrap.style.display = type === 'sold' ? 'grid' : 'none';
+          conditionalWrap.style.display = type === 'conditional' ? 'grid' : 'none';
+          if (type !== 'acquired') ownerSelect.value = '';
+          if (type !== 'sold') soldToSelect.value = '';
         };
         syncOwnerField();
 
@@ -2549,13 +3117,33 @@ function renderAssets() {
 
         typeSelect.addEventListener('change', async () => {
           syncOwnerField();
-          await persist({ draft_pick_type: typeSelect.value, original_owner: ownerSelect.value || null });
+          const type = typeSelect.value;
+          await persist({
+            draft_pick_type: type,
+            original_owner: type === 'acquired' ? ownerSelect.value || null : null,
+            draft_pick_sold_to: type === 'sold' ? soldToSelect.value || null : null,
+            draft_pick_conditional_teams: type === 'conditional' ? readConditionalTeamSelects(card) : [],
+          });
         });
         roundSelect.addEventListener('change', async () => {
           await persist({ draft_round: roundSelect.value });
         });
         ownerSelect.addEventListener('change', async () => {
           await persist({ original_owner: ownerSelect.value || null });
+        });
+        soldToSelect.addEventListener('change', async () => {
+          await persist({ draft_pick_sold_to: soldToSelect.value || null });
+        });
+        card.querySelector('[data-action="add-conditional-team"]')?.addEventListener('click', () => {
+          appendConditionalTeamSelect(conditionalList, '', { removable: true });
+        });
+        conditionalList.addEventListener('change', async (event) => {
+          if (!event.target?.matches?.('[data-conditional-team]')) return;
+          await persist({ draft_pick_conditional_teams: readConditionalTeamSelects(card) });
+        });
+        conditionalList.addEventListener('click', async (event) => {
+          if (!event.target?.matches?.('[data-action="remove-conditional-team"]')) return;
+          await persist({ draft_pick_conditional_teams: readConditionalTeamSelects(card) });
         });
         yearInput.addEventListener('blur', async () => {
           const val = yearInput.value.trim();
@@ -2889,6 +3477,7 @@ async function loadTeam(code) {
   if (cashReceivedInput) cashReceivedInput.value = formatDots(data.team.cash_received || 0);
   const cashSentInput = document.getElementById('teamCashSentInput');
   if (cashSentInput) cashSentInput.value = formatDots(data.team.cash_sent || 0);
+  syncTeamApronHardCapControls();
   renderTeamStrip();
   renderTeamPicker();
   renderCards();
@@ -2943,6 +3532,22 @@ async function loadTracker() {
   await refreshAdminLogsSafe();
 }
 
+async function loadFreeAgents() {
+  const res = await api('/api/free-agents');
+  state.freeAgents = res.free_agents || [];
+  state.teamCode = null;
+  state.teamData = null;
+  state.selectedPlayerIds.clear();
+  applyTeamTheme('');
+  setViewMode('free-agents');
+  setPageHeading('ANBA Free Agents', '');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderTeamPicker();
+  renderFreeAgents();
+  await refreshAdminLogsSafe();
+}
+
 async function saveCurrentTeamGm(inputEl, buttonEl) {
   if (!state.teamCode) {
     alert('No team selected.');
@@ -2977,16 +3582,19 @@ async function saveCurrentTeamCash(receivedInputEl, sentInputEl, buttonEl) {
     return;
   }
   if (!receivedInputEl || !sentInputEl || !buttonEl) return;
-  const cashReceived = parseAmount(receivedInputEl.value);
-  const cashSent = parseAmount(sentInputEl.value);
-  if (cashReceived == null || cashReceived < 0) {
-    alert('Invalid cash recibido value.');
+  const cashLimit = Number(state.teamData?.summary?.cash_limit_total || state.settings.cash_limit_total || 0);
+  const cashReceivedAvailable = parseAmount(receivedInputEl.value);
+  const cashSentAvailable = parseAmount(sentInputEl.value);
+  if (cashReceivedAvailable == null || cashReceivedAvailable < 0 || cashReceivedAvailable > cashLimit) {
+    alert('Invalid cash recibido available value.');
     return;
   }
-  if (cashSent == null || cashSent < 0) {
-    alert('Invalid cash enviado value.');
+  if (cashSentAvailable == null || cashSentAvailable < 0 || cashSentAvailable > cashLimit) {
+    alert('Invalid cash enviado available value.');
     return;
   }
+  const cashReceived = Math.max(0, cashLimit - cashReceivedAvailable);
+  const cashSent = Math.max(0, cashLimit - cashSentAvailable);
   buttonEl.disabled = true;
   const oldText = buttonEl.textContent;
   buttonEl.textContent = 'Saving...';
@@ -3006,6 +3614,61 @@ async function saveCurrentTeamCash(receivedInputEl, sentInputEl, buttonEl) {
   } finally {
     buttonEl.disabled = false;
   }
+}
+
+function syncTeamApronHardCapControls() {
+  const firstInput = document.getElementById('teamFirstApronCapInput');
+  const secondInput = document.getElementById('teamSecondApronCapInput');
+  if (!firstInput || !secondInput) return;
+  const hardCap = String(state.teamData?.team?.apron_hard_cap || '').trim().toLowerCase();
+  firstInput.checked = hardCap === 'first';
+  secondInput.checked = hardCap === 'second';
+}
+
+async function saveTeamApronHardCap(nextHardCap) {
+  if (!state.teamCode) {
+    alert('No team selected.');
+    syncTeamApronHardCapControls();
+    return;
+  }
+  const firstInput = document.getElementById('teamFirstApronCapInput');
+  const secondInput = document.getElementById('teamSecondApronCapInput');
+  const inputs = [firstInput, secondInput].filter(Boolean);
+  inputs.forEach((input) => { input.disabled = true; });
+  try {
+    await api(`/api/teams/${state.teamCode}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ apron_hard_cap: nextHardCap || '' }),
+    });
+    await loadTeam(state.teamCode);
+  } catch (err) {
+    syncTeamApronHardCapControls();
+    alert(`Apron cap save failed: ${err.message}`);
+  } finally {
+    inputs.forEach((input) => { input.disabled = false; });
+  }
+}
+
+function setupTeamApronHardCapControls() {
+  const firstInput = document.getElementById('teamFirstApronCapInput');
+  const secondInput = document.getElementById('teamSecondApronCapInput');
+  if (!firstInput || !secondInput) return;
+  firstInput.addEventListener('change', async () => {
+    if (firstInput.checked) {
+      secondInput.checked = false;
+      await saveTeamApronHardCap('first');
+    } else {
+      await saveTeamApronHardCap(secondInput.checked ? 'second' : '');
+    }
+  });
+  secondInput.addEventListener('change', async () => {
+    if (secondInput.checked) {
+      firstInput.checked = false;
+      await saveTeamApronHardCap('second');
+    } else {
+      await saveTeamApronHardCap(firstInput.checked ? 'first' : '');
+    }
+  });
 }
 
 async function saveCurrentTeamMoves(pre30InputEl, post30InputEl, buttonEl) {
@@ -3175,6 +3838,22 @@ async function init() {
   document.getElementById('trackerHomeBtn').addEventListener('click', async () => {
     await loadTracker();
   });
+  document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
+    await loadFreeAgents();
+  });
+  document.getElementById('addFreeAgentBtn').addEventListener('click', () => {
+    state.ui.addingFreeAgent = true;
+    renderFreeAgents();
+  });
+  document.getElementById('closeSignFreeAgentModalBtn').addEventListener('click', () => {
+    closeSignFreeAgentModal();
+  });
+  document.getElementById('confirmSignFreeAgentBtn').addEventListener('click', async () => {
+    await confirmSignFreeAgent();
+  });
+  document.getElementById('signFreeAgentModal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeSignFreeAgentModal();
+  });
 
   document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
     const parsed = parseAmount(capInput.value);
@@ -3312,6 +3991,7 @@ async function init() {
     const btn = document.getElementById('saveTeamCashInlineBtn');
     await saveCurrentTeamCash(receivedInput, sentInput, btn);
   });
+  setupTeamApronHardCapControls();
   document.getElementById('closeMoveLogModalBtn')?.addEventListener('click', closeMoveLogModal);
   document.getElementById('moveLogModal')?.addEventListener('click', (e) => {
     if (e.target?.id === 'moveLogModal') closeMoveLogModal();

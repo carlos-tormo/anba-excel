@@ -1,6 +1,10 @@
+const MOVE_LIMIT_PRE30 = 20;
+const MOVE_LIMIT_POST30 = 4;
+
 const state = {
   teams: [],
   trackerRows: [],
+  freeAgents: [],
   teamCode: null,
   teamData: null,
   auth: null,
@@ -20,6 +24,7 @@ const state = {
     dead_contracts: { key: 'label', dir: 'asc' },
     exceptions: { key: 'label', dir: 'asc' },
     player_rights: { key: 'label', dir: 'asc' },
+    free_agents: { key: 'name', dir: 'asc' },
   },
   ui: {
     rosterView: 'list',
@@ -62,26 +67,56 @@ function salaryProvisionalField(season) {
   return `salary_${season}_provisional`;
 }
 
+function salaryPartialGuaranteeField(season) {
+  return `salary_${season}_partially_guaranteed`;
+}
+
+function salaryGuaranteedTextField(season) {
+  return `salary_${season}_guaranteed_text`;
+}
+
 function playerUsesProvisionalAmounts(player) {
   return boolValue(player?.provisional_amounts);
+}
+
+function playerUsesPartialGuarantees(player) {
+  return boolValue(player?.partially_guaranteed);
 }
 
 function playerSeasonIsProvisional(player, season) {
   return playerUsesProvisionalAmounts(player) && boolValue(player?.[salaryProvisionalField(season)]);
 }
 
-function provisionalInfoHtml() {
+function playerSeasonIsPartiallyGuaranteed(player, season) {
+  return playerUsesPartialGuarantees(player) && boolValue(player?.[salaryPartialGuaranteeField(season)]);
+}
+
+function salaryInfoMessages(player, season) {
+  const messages = [];
+  if (playerSeasonIsProvisional(player, season)) {
+    messages.push('Cifra provisional');
+  }
+  if (playerSeasonIsPartiallyGuaranteed(player, season)) {
+    const amount = String(player?.[salaryGuaranteedTextField(season)] || '').trim();
+    messages.push(amount ? `${amount} guaranteed` : 'Guaranteed amount pending');
+  }
+  return messages;
+}
+
+function salaryInfoHtml(messages) {
+  if (!messages.length) return '';
+  const label = messages.join(' · ');
   return `
-    <button type="button" class="salary-provisional-info" aria-label="Cifra provisional" title="Cifra provisional">
+    <button type="button" class="salary-info-button" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
       i
-      <span class="salary-provisional-pop">Cifra provisional</span>
+      <span class="salary-info-pop">${messages.map((message) => `<span>${escapeHtml(message)}</span>`).join('')}</span>
     </button>
   `;
 }
 
-function bindProvisionalInfoToggles(root) {
+function bindSalaryInfoToggles(root) {
   if (!root) return;
-  root.querySelectorAll('.salary-provisional-info').forEach((btn) => {
+  root.querySelectorAll('.salary-info-button').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -391,17 +426,22 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   const hideOptionTag = ['FB', 'EB', 'NB'].includes(textTagCode) || ['FB', 'EB', 'NB'].includes(optionCode);
   const cap = Number(state.settings.salary_cap_2025 || 154647000);
   const isProvisional = playerSeasonIsProvisional(obj, season);
-  const provisionalClass = isProvisional ? 'salary-chip--provisional' : '';
-  const provisionalInfo = isProvisional ? provisionalInfoHtml() : '';
+  const isPartiallyGuaranteed = playerSeasonIsPartiallyGuaranteed(obj, season);
+  const infoMessages = salaryInfoMessages(obj, season);
+  const infoHtml = salaryInfoHtml(infoMessages);
+  const salaryStateClasses = [
+    isProvisional ? 'salary-chip--provisional' : '',
+    isPartiallyGuaranteed ? 'salary-chip--partial-guarantee' : '',
+  ].filter(Boolean).join(' ');
 
   if (num !== null && num !== undefined && Number.isFinite(Number(num))) {
     const val = Number(num);
     const pct = cap > 0 ? `${((val / cap) * 100).toFixed(1)}%` : '';
     return `
-      <div class="salary-chip ${optClass} ${provisionalClass}">
+      <div class="salary-chip ${optClass} ${salaryStateClasses}">
         <span class="salary-chip-main">${formatDots(val)}</span>
         <span class="salary-chip-pct">${pct}</span>
-        ${provisionalInfo}
+        ${infoHtml}
       </div>
     `;
   }
@@ -409,18 +449,18 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   if (text !== null && text !== undefined && String(text).trim() !== '') {
     const upper = escapeHtml(String(text).trim().toUpperCase());
     return `
-      <div class="salary-chip salary-chip-text ${textTagClass} ${hideOptionTag ? '' : optClass} ${provisionalClass}">
+      <div class="salary-chip salary-chip-text ${textTagClass} ${hideOptionTag ? '' : optClass} ${salaryStateClasses}">
         <span class="salary-chip-main">${upper}</span>
-        ${provisionalInfo}
+        ${infoHtml}
       </div>
     `;
   }
 
   if (!showEmptyYears) return '';
   return `
-    <div class="salary-empty-wrap ${isProvisional ? 'salary-empty-wrap--provisional' : ''}">
+    <div class="salary-empty-wrap ${isProvisional ? 'salary-empty-wrap--provisional' : ''} ${isPartiallyGuaranteed ? 'salary-empty-wrap--partial-guarantee' : ''}">
       <div class="salary-empty-bar" aria-hidden="true"></div>
-      ${provisionalInfo}
+      ${infoHtml}
     </div>
   `;
 }
@@ -567,6 +607,7 @@ function setupSorting() {
   updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
   updateSortIndicators('exceptionsTable', state.sort.exceptions);
   updateSortIndicators('playerRightsTable', state.sort.player_rights);
+  updateSortIndicators('freeAgentsTable', state.sort.free_agents);
 
   document.querySelectorAll('#deadContractsTable thead th[data-sort]').forEach((th) => {
     if (!th.dataset.label) th.dataset.label = th.textContent.trim();
@@ -610,6 +651,21 @@ function setupSorting() {
       };
       renderPlayerRights();
       updateSortIndicators('playerRightsTable', state.sort.player_rights);
+    });
+  });
+
+  document.querySelectorAll('#freeAgentsTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.free_agents;
+      state.sort.free_agents = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderFreeAgents();
+      updateSortIndicators('freeAgentsTable', state.sort.free_agents);
     });
   });
 }
@@ -839,71 +895,180 @@ function closeMobileSidebar() {
   setMobileOverlayVisible('mobileSidebarBackdrop', false);
 }
 
+function formatBalanceMoney(n) {
+  const value = Math.round(Number(n || 0));
+  const sign = value < 0 ? '-' : '';
+  return `$${sign}${formatDots(Math.abs(value))}`;
+}
+
+function balanceNoticeItems(summary) {
+  const s = summary || {};
+  const notices = [];
+  const hardCap = String(s.apron_hard_cap || '').trim().toLowerCase();
+  if (hardCap === 'first') notices.push('Capped at 1st apron');
+  if (hardCap === 'second') notices.push('Capped at 2nd apron');
+  return notices;
+}
+
+function buildBalanceCard(label, value, isWarning = false) {
+  return `
+    <div class="team-balance-card${isWarning ? ' is-warning' : ''}">
+      <div class="team-balance-label">${escapeHtml(label)}</div>
+      <div class="team-balance-value">${formatBalanceMoney(value)}</div>
+    </div>
+  `;
+}
+
+function buildBalancePanelHtml(summary) {
+  const s = summary || {};
+  const notices = balanceNoticeItems(s);
+  const noticesHtml = notices.length
+    ? `<div class="team-balance-notices">${notices.map((txt) => `<div class="team-balance-notice">${escapeHtml(txt)}</div>`).join('')}</div>`
+    : '';
+  return `
+    <div class="team-balance-panel" aria-label="Team balances">
+      <div class="team-balance-grid">
+        ${buildBalanceCard('CAP SPACE', s.room_to_cap, false)}
+        ${buildBalanceCard('1ST APRON SPACE', s.room_to_first_apron, Number(s.room_to_first_apron) < 0)}
+        ${buildBalanceCard('2ND APRON SPACE', s.room_to_second_apron, Number(s.room_to_second_apron) < 0)}
+        ${buildBalanceCard('TAX SPACE', s.room_to_luxury, Number(s.room_to_luxury) < 0)}
+      </div>
+      ${noticesHtml}
+    </div>
+  `;
+}
+
+function usagePercent(available, limit) {
+  const availableNum = Math.max(0, Number(available || 0));
+  const limitNum = Math.max(0, Number(limit || 0));
+  if (!limitNum) return { raw: 0, clamped: 0 };
+  const raw = (availableNum / limitNum) * 100;
+  return { raw, clamped: Math.max(0, Math.min(100, raw)) };
+}
+
+function gaugeColor(percent) {
+  const clamped = Math.max(0, Math.min(100, Number(percent || 0)));
+  const hue = Math.round((clamped / 100) * 145);
+  return `hsl(${hue} 70% 34%)`;
+}
+
+function availableAmount(used, limit) {
+  const limitNum = Math.max(0, Number(limit || 0));
+  const available = limitNum - Math.max(0, Number(used || 0));
+  return Math.max(0, Math.min(limitNum, available));
+}
+
+function availableMoves(moveSummary, bucket, limit) {
+  const m = moveSummary || {};
+  const used = Number(m[`used_${bucket}`]);
+  if (Number.isFinite(used)) return availableAmount(used, limit);
+  return Math.max(0, Math.min(Number(limit || 0), Number(m[`remaining_${bucket}`] || 0)));
+}
+
+function buildUsageGaugeCard({ label, available, limit, valueText, limitText, unitText = 'Available', tone = 'cash', detailHtml = '' }) {
+  const pct = usagePercent(available, limit);
+  const displayPct = Math.round(pct.raw);
+  const isOver = pct.raw > 100;
+  const color = gaugeColor(pct.clamped);
+  const progressPath = pct.clamped > 0
+    ? `<path class="usage-gauge-progress" pathLength="100" stroke-dasharray="${pct.clamped} 100" d="M18 58 A42 42 0 0 1 102 58"></path>`
+    : '';
+  return `
+    <article class="usage-gauge-card usage-gauge-card--${tone}${isOver ? ' is-over' : ''}" style="--gauge-color: ${color};">
+      <div class="usage-gauge-title">${escapeHtml(label)}</div>
+      <div class="usage-gauge-visual" aria-label="${escapeHtml(`${label}: ${displayPct}% ${unitText}`)}">
+        <svg class="usage-gauge-svg" viewBox="0 0 120 72" role="img" aria-hidden="true">
+          <path class="usage-gauge-track" pathLength="100" d="M18 58 A42 42 0 0 1 102 58"></path>
+          ${progressPath}
+        </svg>
+        <div class="usage-gauge-center">
+          <strong>${displayPct}%</strong>
+          <span>${escapeHtml(unitText)}</span>
+        </div>
+      </div>
+      <div class="usage-gauge-meta">
+        <strong>${escapeHtml(valueText)}</strong>
+        <span>of ${escapeHtml(limitText)}</span>
+      </div>
+      ${detailHtml}
+    </article>
+  `;
+}
+
+function buildCashGaugePanel(summary) {
+  const s = summary || {};
+  const limit = Number(s.cash_limit_total || state.settings.cash_limit_total || 0);
+  const receivedAvailable = availableAmount(s.cash_received, limit);
+  const sentAvailable = availableAmount(s.cash_sent, limit);
+  return `
+    <div class="usage-gauge-grid">
+      ${buildUsageGaugeCard({
+        label: 'Cash recibido',
+        available: receivedAvailable,
+        limit,
+        valueText: formatMoneyDots(receivedAvailable),
+        limitText: formatMoneyDots(limit),
+        unitText: 'Available',
+        tone: 'cash',
+      })}
+      ${buildUsageGaugeCard({
+        label: 'Cash enviado',
+        available: sentAvailable,
+        limit,
+        valueText: formatMoneyDots(sentAvailable),
+        limitText: formatMoneyDots(limit),
+        unitText: 'Available',
+        tone: 'cash',
+      })}
+    </div>
+  `;
+}
+
+function buildMoveGaugePanel(moveSummary) {
+  const m = moveSummary || {};
+  const preLimit = MOVE_LIMIT_PRE30;
+  const postLimit = MOVE_LIMIT_POST30;
+  const preAvailable = availableMoves(m, 'pre30', preLimit);
+  const postAvailable = availableMoves(m, 'post30', postLimit);
+  return `
+    <div class="usage-gauge-grid">
+      ${buildUsageGaugeCard({
+        label: 'Pre-30 moves',
+        available: preAvailable,
+        limit: preLimit,
+        valueText: formatDots(preAvailable),
+        limitText: formatDots(preLimit),
+        unitText: 'Available',
+        tone: 'moves',
+        detailHtml: '<button type="button" class="info-chip-btn usage-gauge-info" data-move-log-bucket="pre30" aria-label="Open pre-30 transfer move log">i</button>',
+      })}
+      ${buildUsageGaugeCard({
+        label: 'Post-30 moves',
+        available: postAvailable,
+        limit: postLimit,
+        valueText: formatDots(postAvailable),
+        limitText: formatDots(postLimit),
+        unitText: 'Available',
+        tone: 'moves',
+        detailHtml: '<button type="button" class="info-chip-btn usage-gauge-info" data-move-log-bucket="post30" aria-label="Open post-30 transfer move log">i</button>',
+      })}
+    </div>
+  `;
+}
+
 function buildSummaryCardsHtml(summary) {
   const s = summary || {};
   const m = state.teamData?.move_summary || {};
-  const currentYear = Number(s.current_year || state.settings.current_year || 2025);
-  const currentSeason = seasonLabel(currentYear);
-  const cashLimitTotal = Number(s.cash_limit_total || state.settings.cash_limit_total || 0);
   return `
-    <article class="card card-summary card-summary-split">
-      <div class="card-summary-col">
-        <div class="label">CAP Total (${currentSeason})</div>
-        <div class="value">${formatMoneyDots(s.cap_figure)}</div>
-        <div class="card-modifiers">
-          <div class="card-modifier card-modifier-${s.room_to_cap >= 0 ? 'positive' : 'negative'}">
-            <span class="card-modifier-label">Espacio CAP</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_cap)}</span>
-          </div>
-        </div>
-      </div>
-      <div class="card-summary-col">
-        <div class="label">GASTO Total (${currentSeason})</div>
-        <div class="value">${formatMoneyDots(s.payroll)}</div>
-        <div class="card-modifiers">
-          <div class="card-modifier card-modifier-${s.room_to_first_apron >= 0 ? 'positive' : 'negative'}">
-            <span class="card-modifier-label">Espacio 1er Apron</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_first_apron)}</span>
-          </div>
-          <div class="card-modifier card-modifier-${s.room_to_second_apron >= 0 ? 'positive' : 'negative'}">
-            <span class="card-modifier-label">Espacio 2do Apron</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.room_to_second_apron)}</span>
-          </div>
-        </div>
-      </div>
-    </article>
-    <article class="card card-summary card-summary-split">
+    ${buildBalancePanelHtml(s)}
+    <article class="card card-summary card-summary-split team-operations-card">
       <div class="card-summary-col">
         <div class="label">Cash</div>
-        <div class="card-modifiers card-modifiers-no-border">
-          <div class="card-modifier">
-            <span class="card-modifier-label">Cash recibido / total</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.cash_received)} / ${formatMoneyDots(cashLimitTotal)}</span>
-          </div>
-          <div class="card-modifier">
-            <span class="card-modifier-label">Cash enviado / total</span>
-            <span class="card-modifier-value">${formatMoneyDots(s.cash_sent)} / ${formatMoneyDots(cashLimitTotal)}</span>
-          </div>
-        </div>
+        ${buildCashGaugePanel(s)}
       </div>
       <div class="card-summary-col">
         <div class="label">Transfer moves</div>
-        <div class="card-modifiers card-modifiers-no-border">
-          <div class="card-modifier">
-            <span class="card-modifier-label">
-              Movimientos restantes (pre-30)
-              <button type="button" class="info-chip-btn" data-move-log-bucket="pre30" aria-label="Open pre-30 transfer move log">i</button>
-            </span>
-            <span class="card-modifier-value">${formatDots(m.remaining_pre30 ?? 0)} / ${formatDots(m.limit_pre30 ?? 0)}</span>
-          </div>
-          <div class="card-modifier">
-            <span class="card-modifier-label">
-              Movimientos restantes (post-30)
-              <button type="button" class="info-chip-btn" data-move-log-bucket="post30" aria-label="Open post-30 transfer move log">i</button>
-            </span>
-            <span class="card-modifier-value">${formatDots(m.remaining_post30 ?? 0)} / ${formatDots(m.limit_post30 ?? 0)}</span>
-          </div>
-        </div>
+        ${buildMoveGaugePanel(m)}
       </div>
     </article>
   `;
@@ -912,15 +1077,11 @@ function buildSummaryCardsHtml(summary) {
 function openMobileInfo() {
   const list = document.getElementById('mobileInfoList');
   if (!list) return;
-  const pills = state.ui.statusPills || [];
   const summaryHtml = state.teamData?.summary
-    ? `<div class="mobile-info-summary cards">${buildSummaryCardsHtml(state.teamData.summary)}</div>`
+    ? `<div class="mobile-info-summary cards team-summary-grid">${buildSummaryCardsHtml(state.teamData.summary)}</div>`
     : '';
-  const pillsHtml = pills.length
-    ? `<div class="mobile-info-status">${pills.map((txt) => `<div class="mobile-info-pill">${escapeHtml(txt)}</div>`).join('')}</div>`
-    : '';
-  if (!summaryHtml && !pillsHtml) return;
-  list.innerHTML = `${summaryHtml}${pillsHtml}`;
+  if (!summaryHtml) return;
+  list.innerHTML = summaryHtml;
   list.querySelectorAll('[data-move-log-bucket]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -948,6 +1109,7 @@ function syncMobileInfoButton() {
 
 function setViewMode(mode) {
   const trackerSection = document.getElementById('trackerSection');
+  const freeAgentsSection = document.getElementById('freeAgentsSection');
   const teamMeta = document.getElementById('teamMeta');
   const rosterSection = document.getElementById('rosterSection');
   const deadContractsSection = document.getElementById('deadContractsSection');
@@ -956,8 +1118,11 @@ function setViewMode(mode) {
   const playerRightsSection = document.getElementById('playerRightsSection');
   const importantFiguresSection = document.getElementById('importantFiguresSection');
   const showTeam = mode === 'team';
+  const showTracker = mode === 'tracker';
+  const showFreeAgents = mode === 'free-agents';
 
-  trackerSection.classList.toggle('section-hidden', showTeam);
+  trackerSection.classList.toggle('section-hidden', !showTracker);
+  freeAgentsSection.classList.toggle('section-hidden', !showFreeAgents);
   teamMeta.classList.toggle('section-hidden', !showTeam);
   rosterSection.classList.toggle('section-hidden', !showTeam);
   deadContractsSection.classList.toggle('section-hidden', !showTeam);
@@ -965,6 +1130,7 @@ function setViewMode(mode) {
   assetsSection.classList.toggle('section-hidden', !showTeam);
   playerRightsSection.classList.toggle('section-hidden', !showTeam);
   importantFiguresSection.classList.toggle('section-hidden', !showTeam);
+  syncMobileInfoButton();
 }
 
 function renderTracker() {
@@ -987,6 +1153,31 @@ function renderTracker() {
     teamBtn.addEventListener('click', async () => {
       await loadTeam(row.team_code);
     });
+    tbody.appendChild(tr);
+  });
+}
+
+function renderFreeAgents() {
+  const tbody = document.querySelector('#freeAgentsTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const rows = sortedRows(state.freeAgents || [], state.sort.free_agents);
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="6">No free agents listed.</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+  rows.forEach((agent) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(agent.name || '')}</td>
+      <td>${escapeHtml(agent.position || '')}</td>
+      <td>${escapeHtml(agent.bird_rights || '')}</td>
+      <td>${escapeHtml(agent.rating || '')}</td>
+      <td>${agent.years_left == null ? '' : escapeHtml(agent.years_left)}</td>
+      <td class="details-cell">${escapeHtml(agent.notes || '')}</td>
+    `;
     tbody.appendChild(tr);
   });
 }
@@ -1034,12 +1225,8 @@ function renderImportantFigures() {
 function renderCapStatusPills(summary) {
   const wrap = document.getElementById('capStatusPills');
   if (!wrap) return;
-  const pills = [];
-  if (Number(summary.room_to_luxury) < 0) pills.push('Encima del luxury');
-  if (Number(summary.room_to_first_apron) < 0) pills.push('Encima del 1er apron');
-  if (Number(summary.room_to_second_apron) < 0) pills.push('Encima del 2do apron');
-  state.ui.statusPills = pills;
-  wrap.innerHTML = pills.map((txt) => `<span class="top-status-pill">${txt}</span>`).join('');
+  state.ui.statusPills = balanceNoticeItems(summary);
+  wrap.innerHTML = '';
   syncMobileInfoButton();
 }
 
@@ -1197,8 +1384,8 @@ function renderPlayers() {
       cardsWrap.appendChild(card);
     }
   });
-  bindProvisionalInfoToggles(tbody);
-  bindProvisionalInfoToggles(cardsWrap);
+  bindSalaryInfoToggles(tbody);
+  bindSalaryInfoToggles(cardsWrap);
 }
 
 function setupRosterFilters() {
@@ -1272,6 +1459,23 @@ function isAssetBeforeSelectedSeason(asset) {
   return Number.isFinite(year) && year < selectedAssetYear;
 }
 
+function parseDraftConditionalTeams(value) {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(value.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean)));
+  }
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return Array.from(new Set(parsed.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean)));
+    }
+  } catch (err) {
+    // Older/manual values may be comma-separated instead of JSON.
+  }
+  return Array.from(new Set(raw.split(/[,/|]/).map((code) => code.trim().toUpperCase()).filter(Boolean)));
+}
+
 function renderAssets() {
   const board = document.getElementById('draftAssetsBoard');
   if (!board) return;
@@ -1287,15 +1491,18 @@ function renderAssets() {
 
   const normalizedType = (pick) => {
     const type = String(pick.draft_pick_type || 'own').trim().toLowerCase();
-    if (type === 'acquired' || type === 'sold') return type;
+    if (type === 'acquired' || type === 'sold' || type === 'conditional') return type;
     return 'own';
   };
+
+  const conditionalTeams = (pick) => parseDraftConditionalTeams(pick.draft_pick_conditional_teams);
 
   const orderedPicksForSeason = (seasonPicks) => {
     const own1 = [];
     const own2 = [];
     const acq1 = [];
     const acq2 = [];
+    const conditional = [];
     const sold = [];
     seasonPicks.forEach((pick) => {
       const t = normalizedType(pick);
@@ -1304,6 +1511,7 @@ function renderAssets() {
       else if (t === 'own' && r === '2nd') own2.push(pick);
       else if (t === 'acquired' && r === '1st') acq1.push(pick);
       else if (t === 'acquired' && r === '2nd') acq2.push(pick);
+      else if (t === 'conditional') conditional.push(pick);
       else sold.push(pick);
     });
     const byOwnerThenId = (a, b) => {
@@ -1317,8 +1525,9 @@ function renderAssets() {
     own2.sort(byOwnerThenId);
     acq1.sort(byOwnerThenId);
     acq2.sort(byOwnerThenId);
+    conditional.sort(byOwnerThenId);
     sold.sort(byOwnerThenId);
-    return [...own1, ...own2, ...acq1, ...acq2, ...sold];
+    return [...own1, ...own2, ...acq1, ...acq2, ...conditional, ...sold];
   };
 
   const picks = (state.teamData.assets || [])
@@ -1355,19 +1564,30 @@ function renderAssets() {
         const pickRound = normalizedRound(pick);
         const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
         const isProtected = Number(pick.draft_pick_protected || 0) !== 0;
-        const owner = pick.draft_pick_type === 'acquired'
+        const sourceTeams = conditionalTeams(pick);
+        const soldTo = String(pick.draft_pick_sold_to || '').trim().toUpperCase();
+        const owner = pickType === 'conditional'
+          ? (sourceTeams[0] || state.teamCode)
+          : pick.draft_pick_type === 'acquired'
           ? (pick.original_owner || '')
           : state.teamCode;
         const title = `${pickRound.toUpperCase()} Pick`;
         const subtitle = pickType === 'acquired'
           ? `From ${owner || 'other team'}`
           : pickType === 'sold'
-            ? 'Sold'
-            : 'Own pick';
+            ? `Sold${soldTo ? ` to ${soldTo}` : ''}`
+            : pickType === 'conditional'
+              ? `Conditional: ${sourceTeams.length ? sourceTeams.join(' / ') : 'teams TBD'}`
+              : 'Own pick';
         const badgesHtml = [
           isRestricted ? '<span class="pick-restricted-tag">Restricted</span>' : '',
           isProtected ? '<span class="pick-protected-tag">Protected</span>' : '',
+          pickType === 'conditional' ? '<span class="pick-conditional-tag">Conditional</span>' : '',
         ].filter(Boolean).join('');
+        const showDetail = isProtected || pickType === 'conditional';
+        const detailText = pickType === 'conditional'
+          ? (pick.detail || 'No condition details')
+          : (pick.detail || 'No protection details');
         const ownerTheme = TEAM_THEMES[owner] || { primary: '#0f766e', secondary: '#99f6e4' };
         const ownerPrimaryRgb = hexToRgb(ownerTheme.primary);
         const ownerSecondaryRgb = hexToRgb(ownerTheme.secondary);
@@ -1376,9 +1596,10 @@ function renderAssets() {
         if (isRestricted) card.classList.add('draft-pick-card--restricted');
         if (isProtected) card.classList.add('draft-pick-card--protected');
         if (pickType === 'sold') card.classList.add('draft-pick-card--sold');
+        if (pickType === 'conditional') card.classList.add('draft-pick-card--conditional');
         card.style.setProperty('--pick-primary-rgb', `${ownerPrimaryRgb.r}, ${ownerPrimaryRgb.g}, ${ownerPrimaryRgb.b}`);
         card.style.setProperty('--pick-secondary-rgb', `${ownerSecondaryRgb.r}, ${ownerSecondaryRgb.g}, ${ownerSecondaryRgb.b}`);
-        if (isProtected) card.tabIndex = 0;
+        if (showDetail) card.tabIndex = 0;
         card.innerHTML = `
           <div class="pick-card-logo-wrap">
             <span class="pick-owner-fallback">${owner || 'N/A'}</span>
@@ -1389,7 +1610,7 @@ function renderAssets() {
             <div class="pick-card-subtitle">${escapeHtml(subtitle)}</div>
             ${badgesHtml ? `<div class="pick-card-badges">${badgesHtml}</div>` : ''}
           </div>
-          ${isProtected ? `<div class="pick-detail">${escapeHtml(pick.detail || 'No protection details')}</div>` : ''}
+          ${showDetail ? `<div class="pick-detail">${escapeHtml(detailText)}</div>` : ''}
         `;
         const img = card.querySelector('.pick-owner-logo');
         const fallback = card.querySelector('.pick-owner-fallback');
@@ -1585,6 +1806,26 @@ async function loadTracker() {
   renderImportantFigures();
 }
 
+async function loadFreeAgents() {
+  const res = await api('/api/free-agents');
+  state.freeAgents = res.free_agents || [];
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('free-agents');
+  setPageHeading('Free agents', '');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  renderFreeAgents();
+}
+
 function normalizeLocatorText(value) {
   return String(value || '')
     .normalize('NFD')
@@ -1612,6 +1853,10 @@ function draftPickOriginalOwner(asset, teamCode) {
   const type = String(asset?.draft_pick_type || '').trim().toLowerCase();
   if (type === 'acquired') {
     return String(asset?.original_owner || teamCodeFromAssetLabel(asset?.label) || teamCode || '').toUpperCase();
+  }
+  if (type === 'conditional') {
+    return parseDraftConditionalTeams(asset?.draft_pick_conditional_teams)[0]
+      || String(teamCodeFromAssetLabel(asset?.label) || teamCode || '').toUpperCase();
   }
   return String(teamCodeFromAssetLabel(asset?.label) || teamCode || '').toUpperCase();
 }
@@ -1655,10 +1900,13 @@ async function ensureLocatorIndex() {
   const results = document.getElementById('locatorResults');
   if (results) results.innerHTML = '<div class="locator-empty">Loading...</div>';
   try {
-    const teamDataRows = await Promise.all(state.teams.map(async (team) => {
-      const data = state.teamCode === team.code && state.teamData ? state.teamData : await api(`/api/teams/${team.code}`);
-      return { team, data };
-    }));
+    const [teamDataRows, freeAgentsRes] = await Promise.all([
+      Promise.all(state.teams.map(async (team) => {
+        const data = state.teamCode === team.code && state.teamData ? state.teamData : await api(`/api/teams/${team.code}`);
+        return { team, data };
+      })),
+      api('/api/free-agents').catch(() => ({ free_agents: [] })),
+    ]);
     const playerEntries = [];
     const draftPicks = [];
     teamDataRows.forEach(({ team, data }) => {
@@ -1710,17 +1958,35 @@ async function ensureLocatorIndex() {
         if (asset.asset_type === 'draft_pick') {
           const year = Number(asset.year);
           if (!Number.isFinite(year)) return;
-          draftPicks.push({
+          const pickType = String(asset.draft_pick_type || 'own').trim().toLowerCase() || 'own';
+          const owners = pickType === 'conditional'
+            ? parseDraftConditionalTeams(asset.draft_pick_conditional_teams)
+            : [draftPickOriginalOwner(asset, teamCode)];
+          (owners.length ? owners : [draftPickOriginalOwner(asset, teamCode)]).forEach((owner) => {
+            draftPicks.push({
             id: asset.id,
             team_code: teamCode,
             team_name: teamName,
             label: asset.label || `${draftPickSearchRound(asset)} pick`,
-            owner: draftPickOriginalOwner(asset, teamCode),
+            owner,
             round: draftPickSearchRound(asset),
             year,
-            pick_type: String(asset.draft_pick_type || 'own').trim().toLowerCase() || 'own',
+            pick_type: pickType,
+          });
           });
         }
+      });
+    });
+    (freeAgentsRes.free_agents || []).forEach((agent) => {
+      if (!String(agent.name || '').trim()) return;
+      playerEntries.push({
+        id: `free-agent-${agent.id}`,
+        name: agent.name,
+        team_code: '',
+        team_name: 'Free agents',
+        source: 'Free agent',
+        section_id: 'freeAgentsSection',
+        view_mode: 'free-agents',
       });
     });
     state.locator.index = { playerEntries, draftPicks };
@@ -1763,7 +2029,7 @@ function renderLocatorPlayerResults() {
   results.innerHTML = matches.map((entry, idx) => `
     <button type="button" class="locator-result" data-result-index="${idx}">
       <span class="locator-result-name">${escapeHtml(entry.name)}</span>
-      <span class="locator-result-meta">${escapeHtml(entry.team_code)} · ${escapeHtml(entry.source)}</span>
+      <span class="locator-result-meta">${escapeHtml(entry.team_code || entry.team_name || '')} · ${escapeHtml(entry.source)}</span>
     </button>
   `).join('');
   results.querySelectorAll('[data-result-index]').forEach((btn) => {
@@ -1797,6 +2063,11 @@ function openLocatorModal() {
 async function goToLocatorEntry(entry) {
   if (!entry) return;
   closeLocatorModal();
+  if (entry.view_mode === 'free-agents') {
+    await loadFreeAgents();
+    scrollToTeamSection('freeAgentsSection');
+    return;
+  }
   await loadTeam(entry.team_code);
   scrollToTeamSection(entry.section_id || 'rosterSection');
 }
@@ -1884,6 +2155,7 @@ function setupMobileNav() {
   const closeBtn = document.getElementById('mobileSidebarCloseBtn');
   const backdrop = document.getElementById('mobileSidebarBackdrop');
   const trackerBtn = document.getElementById('mobileTrackerBtn');
+  const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
   const mobileLogoutBtn = document.getElementById('mobileLogoutBtn');
   const infoBtn = document.getElementById('mobileInfoBtn');
   const infoCloseBtn = document.getElementById('mobileInfoCloseBtn');
@@ -1902,6 +2174,12 @@ function setupMobileNav() {
     trackerBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadTracker();
+    });
+  }
+  if (freeAgentsBtn) {
+    freeAgentsBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadFreeAgents();
     });
   }
   if (mobileLogoutBtn) {
@@ -1940,6 +2218,9 @@ async function init() {
   });
   document.getElementById('trackerHomeBtn').addEventListener('click', async () => {
     await loadTracker();
+  });
+  document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
+    await loadFreeAgents();
   });
 
   const teamsRes = await api('/api/teams');

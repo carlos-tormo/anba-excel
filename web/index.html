@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260525b">
+  <link rel="stylesheet" href="/styles.css?v=20260527f">
 </head>
-<body>
+<body class="app-layout">
   <header>
     <button id="mobileMenuBtn" class="mobile-icon-btn" type="button" aria-label="Open navigation menu" title="Menu">☰</button>
     <div class="page-title-wrap">
@@ -17,8 +17,9 @@
     <button id="mobileInfoBtn" class="mobile-icon-btn" type="button" aria-label="Team status information" title="Info" hidden>i</button>
     <div class="controls">
       <div id="capStatusPills" class="top-status-wrap"></div>
-      <button id="openLocatorBtn" class="icon-only-btn" type="button" aria-label="Search players and draft picks" title="Search">⌕</button>
+      <button id="openLocatorBtn" class="icon-only-btn" type="button" aria-label="Search players and draft picks" title="Search">Search</button>
       <button id="trackerHomeBtn" type="button">Tracker</button>
+      <button id="freeAgentsHomeBtn" type="button">Free agents</button>
       <span id="authBadge"></span>
       <a id="adminLink" href="/admin" class="ghost-link">Admin</a>
       <a id="loginLink" href="/login" class="ghost-link">Login</a>
@@ -39,6 +40,7 @@
       </div>
       <div class="mobile-sidebar-links">
         <button id="mobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Clasificación</button>
+        <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="mobileLocatorBtn" type="button" class="mobile-nav-btn" data-icon="⌕">Buscar</button>
         <a id="mobileAdminLink" href="/admin" class="mobile-nav-link" data-icon="⚙">Admin</a>
       </div>
@@ -125,7 +127,26 @@
       </div>
     </section>
 
-    <section id="teamMeta" class="cards"></section>
+    <section id="freeAgentsSection" class="section-hidden">
+      <h2>Free agents</h2>
+      <div class="table-wrap">
+        <table id="freeAgentsTable">
+          <thead>
+            <tr>
+              <th data-sort="name">Name</th>
+              <th data-sort="position">Pos</th>
+              <th data-sort="bird_rights">Type</th>
+              <th data-sort="rating">Rating</th>
+              <th data-sort="years_left">Years</th>
+              <th data-sort="notes">Notes</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="teamMeta" class="cards team-summary-grid"></section>
 
     <section id="rosterSection" class="guest-roster-section">
       <div class="section-head">
@@ -280,6 +301,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260525b" defer></script>
+  <script src="/guest.js?v=20260527f" defer></script>
 </body>
 </html>

@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import secrets
 import sqlite3
 import tempfile
@@ -92,7 +93,7 @@ def dead_contract_salary_num(dead_contract: Dict[str, Any], season: int) -> floa
 
 def normalize_pick_type(value: Any) -> str:
     raw = str(value or "").strip().lower()
-    if raw in {"acquired", "sold"}:
+    if raw in {"acquired", "sold", "conditional"}:
         return raw
     return "own"
 
@@ -107,6 +108,36 @@ def normalize_pick_round(value: Any) -> str:
 def normalize_team_code(value: Any) -> Optional[str]:
     code = str(value or "").strip().upper()
     return code if code else None
+
+
+def normalize_team_codes(value: Any) -> List[str]:
+    if value is None:
+        raw_items: List[Any] = []
+    elif isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            raw_items = []
+        else:
+            try:
+                parsed = json.loads(raw)
+                raw_items = parsed if isinstance(parsed, list) else [raw]
+            except json.JSONDecodeError:
+                raw_items = re.split(r"[,/|]", raw)
+    else:
+        raw_items = [value]
+    codes: List[str] = []
+    for item in raw_items:
+        code = normalize_team_code(item)
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def serialize_team_codes(value: Any) -> Optional[str]:
+    codes = normalize_team_codes(value)
+    return json.dumps(codes, ensure_ascii=True) if codes else None
 
 
 def normalize_exception_type(value: Any) -> Optional[str]:
@@ -138,6 +169,17 @@ def normalize_trade_bucket(value: Any) -> str:
     if raw in {"post30", "post"}:
         return "post30"
     return "pre30"
+
+
+def normalize_apron_hard_cap(value: Any) -> Optional[str]:
+    raw = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    if not raw:
+        return None
+    if raw in {"1", "1st", "first", "first apron", "1st apron"}:
+        return "first"
+    if raw in {"2", "2nd", "second", "second apron", "2nd apron"}:
+        return "second"
+    return None
 
 
 def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
@@ -231,14 +273,30 @@ class LeagueDB:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO app_settings (key, value, updated_at)
-                VALUES ('trade_move_limit_pre30', '15', ?)
+                VALUES ('trade_move_limit_pre30', '20', ?)
                 """,
                 (now_iso(),),
             )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO app_settings (key, value, updated_at)
-                VALUES ('trade_move_limit_post30', '15', ?)
+                VALUES ('trade_move_limit_post30', '4', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                UPDATE app_settings
+                SET value = '20', updated_at = ?
+                WHERE key = 'trade_move_limit_pre30' AND value = '15'
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                UPDATE app_settings
+                SET value = '4', updated_at = ?
+                WHERE key = 'trade_move_limit_post30' AND value = '15'
                 """,
                 (now_iso(),),
             )
@@ -259,6 +317,21 @@ class LeagueDB:
                     label TEXT,
                     amount_text TEXT,
                     amount_num REAL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS free_agents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    position TEXT,
+                    bird_rights TEXT,
+                    rating TEXT,
+                    years_left REAL,
+                    notes TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -325,6 +398,7 @@ class LeagueDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_players_team_id ON players(team_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_team_type ON assets(team_id, asset_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_dead_contracts_team_id ON dead_contracts(team_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_name ON free_agents(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_move_logs_team_season ON team_move_logs(team_id, season_year, bucket)")
             cols = {
                 row["name"]
@@ -338,6 +412,8 @@ class LeagueDB:
                 conn.execute("ALTER TABLE teams ADD COLUMN cash_received REAL NOT NULL DEFAULT 0")
             if "cash_sent" not in team_cols:
                 conn.execute("ALTER TABLE teams ADD COLUMN cash_sent REAL NOT NULL DEFAULT 0")
+            if "apron_hard_cap" not in team_cols:
+                conn.execute("ALTER TABLE teams ADD COLUMN apron_hard_cap TEXT")
             option_cols = [f"option_{season}" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
             for col in option_cols:
                 if col not in cols:
@@ -348,6 +424,16 @@ class LeagueDB:
             for col in provisional_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            if "partially_guaranteed" not in cols:
+                conn.execute("ALTER TABLE players ADD COLUMN partially_guaranteed INTEGER NOT NULL DEFAULT 0")
+            partial_guarantee_bool_cols = [f"salary_{season}_partially_guaranteed" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
+            partial_guarantee_text_cols = [f"salary_{season}_guaranteed_text" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
+            for col in partial_guarantee_bool_cols:
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            for col in partial_guarantee_text_cols:
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
             asset_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(assets)").fetchall()
@@ -364,6 +450,10 @@ class LeagueDB:
                 conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_restricted INTEGER NOT NULL DEFAULT 0")
             if "draft_pick_protected" not in asset_cols:
                 conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_protected INTEGER NOT NULL DEFAULT 0")
+            if "draft_pick_sold_to" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_sold_to TEXT")
+            if "draft_pick_conditional_teams" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_conditional_teams TEXT")
             conn.execute(
                 """
                 UPDATE assets
@@ -652,7 +742,7 @@ class LeagueDB:
 
     def list_teams(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
-            cur = conn.execute("SELECT id, code, name, gm FROM teams ORDER BY code")
+            cur = conn.execute("SELECT id, code, name, gm, apron_hard_cap FROM teams ORDER BY code")
             return [row_to_dict(cur, row) for row in cur.fetchall()]
 
     def get_team(self, code: str) -> Optional[Dict[str, Any]]:
@@ -777,6 +867,9 @@ class LeagueDB:
         if "cash_sent" in payload:
             assignments.append("cash_sent = ?")
             values.append(float(payload.get("cash_sent") or 0.0))
+        if "apron_hard_cap" in payload:
+            assignments.append("apron_hard_cap = ?")
+            values.append(normalize_apron_hard_cap(payload.get("apron_hard_cap")))
         if not assignments:
             return False
         with self.connect() as conn:
@@ -848,6 +941,7 @@ class LeagueDB:
             "trade_move_phase": normalize_move_phase(settings.get("trade_move_phase")),
             "trade_move_limit_pre30": max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0),
             "trade_move_limit_post30": max(0, parse_int(settings.get("trade_move_limit_post30")) or 0),
+            "apron_hard_cap": normalize_apron_hard_cap(team.get("apron_hard_cap")) or "",
         }
 
     def update_player(self, player_id: int, payload: Dict[str, Any]) -> bool:
@@ -855,13 +949,17 @@ class LeagueDB:
             "name", "bird_rights", "rating", "position", "years_left",
             "salary_2025_text", "salary_2026_text", "salary_2027_text",
             "salary_2028_text", "salary_2029_text", "salary_2030_text",
+            "salary_2025_guaranteed_text", "salary_2026_guaranteed_text", "salary_2027_guaranteed_text",
+            "salary_2028_guaranteed_text", "salary_2029_guaranteed_text", "salary_2030_guaranteed_text",
             "option_2025", "option_2026", "option_2027", "option_2028", "option_2029", "option_2030",
             "notes",
         ]
         bool_fields = [
-            "provisional_amounts",
+            "provisional_amounts", "partially_guaranteed",
             "salary_2025_provisional", "salary_2026_provisional", "salary_2027_provisional",
             "salary_2028_provisional", "salary_2029_provisional", "salary_2030_provisional",
+            "salary_2025_partially_guaranteed", "salary_2026_partially_guaranteed", "salary_2027_partially_guaranteed",
+            "salary_2028_partially_guaranteed", "salary_2029_partially_guaranteed", "salary_2030_partially_guaranteed",
         ]
         assignments = []
         values: List[Any] = []
@@ -936,6 +1034,12 @@ class LeagueDB:
                 "salary_2028_text": payload.get("salary_2028_text"),
                 "salary_2029_text": payload.get("salary_2029_text"),
                 "salary_2030_text": payload.get("salary_2030_text"),
+                "salary_2025_guaranteed_text": payload.get("salary_2025_guaranteed_text"),
+                "salary_2026_guaranteed_text": payload.get("salary_2026_guaranteed_text"),
+                "salary_2027_guaranteed_text": payload.get("salary_2027_guaranteed_text"),
+                "salary_2028_guaranteed_text": payload.get("salary_2028_guaranteed_text"),
+                "salary_2029_guaranteed_text": payload.get("salary_2029_guaranteed_text"),
+                "salary_2030_guaranteed_text": payload.get("salary_2030_guaranteed_text"),
                 "option_2025": payload.get("option_2025"),
                 "option_2026": payload.get("option_2026"),
                 "option_2027": payload.get("option_2027"),
@@ -943,12 +1047,19 @@ class LeagueDB:
                 "option_2029": payload.get("option_2029"),
                 "option_2030": payload.get("option_2030"),
                 "provisional_amounts": 1 if parse_bool(payload.get("provisional_amounts")) else 0,
+                "partially_guaranteed": 1 if parse_bool(payload.get("partially_guaranteed")) else 0,
                 "salary_2025_provisional": 1 if parse_bool(payload.get("salary_2025_provisional")) else 0,
                 "salary_2026_provisional": 1 if parse_bool(payload.get("salary_2026_provisional")) else 0,
                 "salary_2027_provisional": 1 if parse_bool(payload.get("salary_2027_provisional")) else 0,
                 "salary_2028_provisional": 1 if parse_bool(payload.get("salary_2028_provisional")) else 0,
                 "salary_2029_provisional": 1 if parse_bool(payload.get("salary_2029_provisional")) else 0,
                 "salary_2030_provisional": 1 if parse_bool(payload.get("salary_2030_provisional")) else 0,
+                "salary_2025_partially_guaranteed": 1 if parse_bool(payload.get("salary_2025_partially_guaranteed")) else 0,
+                "salary_2026_partially_guaranteed": 1 if parse_bool(payload.get("salary_2026_partially_guaranteed")) else 0,
+                "salary_2027_partially_guaranteed": 1 if parse_bool(payload.get("salary_2027_partially_guaranteed")) else 0,
+                "salary_2028_partially_guaranteed": 1 if parse_bool(payload.get("salary_2028_partially_guaranteed")) else 0,
+                "salary_2029_partially_guaranteed": 1 if parse_bool(payload.get("salary_2029_partially_guaranteed")) else 0,
+                "salary_2030_partially_guaranteed": 1 if parse_bool(payload.get("salary_2030_partially_guaranteed")) else 0,
                 "notes": payload.get("notes"),
             }
             cur = conn.execute(
@@ -962,11 +1073,15 @@ class LeagueDB:
                     salary_2029_text, salary_2029_num,
                     salary_2030_text, salary_2030_num,
                     option_2025, option_2026, option_2027, option_2028, option_2029, option_2030,
-                    provisional_amounts,
+                    provisional_amounts, partially_guaranteed,
                     salary_2025_provisional, salary_2026_provisional, salary_2027_provisional,
                     salary_2028_provisional, salary_2029_provisional, salary_2030_provisional,
+                    salary_2025_partially_guaranteed, salary_2026_partially_guaranteed, salary_2027_partially_guaranteed,
+                    salary_2028_partially_guaranteed, salary_2029_partially_guaranteed, salary_2030_partially_guaranteed,
+                    salary_2025_guaranteed_text, salary_2026_guaranteed_text, salary_2027_guaranteed_text,
+                    salary_2028_guaranteed_text, salary_2029_guaranteed_text, salary_2030_guaranteed_text,
                     notes, is_two_way, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -995,12 +1110,25 @@ class LeagueDB:
                     values["option_2029"],
                     values["option_2030"],
                     values["provisional_amounts"],
+                    values["partially_guaranteed"],
                     values["salary_2025_provisional"],
                     values["salary_2026_provisional"],
                     values["salary_2027_provisional"],
                     values["salary_2028_provisional"],
                     values["salary_2029_provisional"],
                     values["salary_2030_provisional"],
+                    values["salary_2025_partially_guaranteed"],
+                    values["salary_2026_partially_guaranteed"],
+                    values["salary_2027_partially_guaranteed"],
+                    values["salary_2028_partially_guaranteed"],
+                    values["salary_2029_partially_guaranteed"],
+                    values["salary_2030_partially_guaranteed"],
+                    values["salary_2025_guaranteed_text"],
+                    values["salary_2026_guaranteed_text"],
+                    values["salary_2027_guaranteed_text"],
+                    values["salary_2028_guaranteed_text"],
+                    values["salary_2029_guaranteed_text"],
+                    values["salary_2030_guaranteed_text"],
                     values["notes"],
                     1 if str(values["bird_rights"] or "").upper() == "TW" else 0,
                     now,
@@ -1015,6 +1143,189 @@ class LeagueDB:
             cur = conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    def list_free_agents(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT id, name, position, bird_rights, rating, years_left, notes, created_at, updated_at
+                FROM free_agents
+                ORDER BY name COLLATE NOCASE, id
+                """
+            )
+            return [row_to_dict(cur, row) for row in cur.fetchall()]
+
+    def get_free_agent(self, free_agent_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute("SELECT * FROM free_agents WHERE id = ?", (free_agent_id,))
+            row = cur.fetchone()
+            return row_to_dict(cur, row) if row else None
+
+    def create_free_agent(self, payload: Dict[str, Any]) -> Optional[int]:
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return None
+        now = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO free_agents (
+                    name, position, bird_rights, rating, years_left, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    str(payload.get("position") or "").strip() or None,
+                    str(payload.get("bird_rights") or "").strip() or None,
+                    str(payload.get("rating") or "").strip() or None,
+                    parse_float(payload.get("years_left")) if payload.get("years_left") is not None else None,
+                    str(payload.get("notes") or "").strip() or None,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def update_free_agent(self, free_agent_id: int, payload: Dict[str, Any]) -> bool:
+        fields = ["name", "position", "bird_rights", "rating", "years_left", "notes"]
+        assigns = []
+        vals: List[Any] = []
+        for field in fields:
+            if field not in payload:
+                continue
+            if field == "name":
+                value = str(payload.get(field) or "").strip()
+                if not value:
+                    return False
+                assigns.append("name = ?")
+                vals.append(value)
+            elif field == "years_left":
+                assigns.append("years_left = ?")
+                vals.append(parse_float(payload.get(field)) if payload.get(field) is not None else None)
+            else:
+                assigns.append(f"{field} = ?")
+                vals.append(str(payload.get(field) or "").strip() or None)
+        if not assigns:
+            return False
+        assigns.append("updated_at = ?")
+        vals.append(now_iso())
+        vals.append(free_agent_id)
+        with self.connect() as conn:
+            cur = conn.execute(f"UPDATE free_agents SET {', '.join(assigns)} WHERE id = ?", vals)
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_free_agent(self, free_agent_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM free_agents WHERE id = ?", (free_agent_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def sign_free_agent(self, free_agent_id: int, team_code: str, payload: Dict[str, Any]) -> Optional[int]:
+        agent = self.get_free_agent(free_agent_id)
+        if not agent:
+            return None
+        player_payload = dict(payload)
+        player_payload["name"] = str(player_payload.get("name") or agent.get("name") or "").strip() or "New Player"
+        for key in ["position", "bird_rights", "rating", "years_left", "notes"]:
+            if player_payload.get(key) in (None, "") and agent.get(key) not in (None, ""):
+                player_payload[key] = agent.get(key)
+        player_id = self.create_player(team_code, player_payload)
+        if not player_id:
+            return None
+        self.delete_free_agent(free_agent_id)
+        return player_id
+
+    def cut_player(self, player_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT p.*, t.code AS team_code
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.id = ?
+                """,
+                (player_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            player = row_to_dict(cur, row)
+            now = now_iso()
+            team_id = int(player["team_id"])
+            team_code = str(player["team_code"])
+            dead_mx = conn.execute(
+                "SELECT COALESCE(MAX(row_order), 0) AS mx FROM dead_contracts WHERE team_id = ?",
+                (team_id,),
+            ).fetchone()["mx"]
+            salary_texts = {
+                season: player.get(f"salary_{season}_text")
+                for season in [2025, 2026, 2027, 2028, 2029, 2030]
+            }
+            amount_text = salary_texts[2025]
+            dead_cur = conn.execute(
+                """
+                INSERT INTO dead_contracts (
+                    team_id, row_order, dead_type, label, amount_text, amount_num,
+                    salary_2025_text, salary_2025_num,
+                    salary_2026_text, salary_2026_num,
+                    salary_2027_text, salary_2027_num,
+                    salary_2028_text, salary_2028_num,
+                    salary_2029_text, salary_2029_num,
+                    salary_2030_text, salary_2030_num,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    team_id,
+                    int(dead_mx) + 1,
+                    "two_way" if str(player.get("bird_rights") or "").upper() == "TW" else "normal",
+                    player.get("name") or "Cut Player",
+                    amount_text,
+                    parse_float(amount_text),
+                    salary_texts[2025],
+                    parse_float(salary_texts[2025]),
+                    salary_texts[2026],
+                    parse_float(salary_texts[2026]),
+                    salary_texts[2027],
+                    parse_float(salary_texts[2027]),
+                    salary_texts[2028],
+                    parse_float(salary_texts[2028]),
+                    salary_texts[2029],
+                    parse_float(salary_texts[2029]),
+                    salary_texts[2030],
+                    parse_float(salary_texts[2030]),
+                    now,
+                    now,
+                ),
+            )
+            free_cur = conn.execute(
+                """
+                INSERT INTO free_agents (
+                    name, position, bird_rights, rating, years_left, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    player.get("name") or "Cut Player",
+                    player.get("position"),
+                    player.get("bird_rights"),
+                    player.get("rating"),
+                    player.get("years_left"),
+                    player.get("notes"),
+                    now,
+                    now,
+                ),
+            )
+            conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+            conn.commit()
+            return {
+                "team_code": team_code,
+                "player_name": player.get("name"),
+                "dead_contract_id": int(dead_cur.lastrowid),
+                "free_agent_id": int(free_cur.lastrowid),
+            }
 
     def create_asset(self, team_code: str, payload: Dict[str, Any]) -> Optional[int]:
         with self.connect() as conn:
@@ -1031,19 +1342,26 @@ class LeagueDB:
             draft_pick_type = normalize_pick_type(payload.get("draft_pick_type")) if asset_type == "draft_pick" else None
             draft_round = normalize_pick_round(payload.get("draft_round")) if asset_type == "draft_pick" else None
             original_owner = normalize_team_code(payload.get("original_owner")) if asset_type == "draft_pick" else None
+            draft_pick_sold_to = normalize_team_code(payload.get("draft_pick_sold_to")) if asset_type == "draft_pick" else None
+            draft_pick_conditional_teams = serialize_team_codes(payload.get("draft_pick_conditional_teams")) if asset_type == "draft_pick" else None
             exception_type = normalize_exception_type(payload.get("exception_type")) if asset_type == "exception" else None
             draft_pick_restricted = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_restricted")) else 0
             draft_pick_protected = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_protected")) else 0
             if asset_type == "draft_pick" and draft_pick_type != "acquired":
                 original_owner = None
+            if asset_type == "draft_pick" and draft_pick_type != "sold":
+                draft_pick_sold_to = None
+            if asset_type == "draft_pick" and draft_pick_type != "conditional":
+                draft_pick_conditional_teams = None
             cur = conn.execute(
                 """
                 INSERT INTO assets (
                     team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
                     draft_pick_type, draft_round, original_owner, exception_type,
-                    draft_pick_restricted, draft_pick_protected, created_at, updated_at
+                    draft_pick_restricted, draft_pick_protected, draft_pick_sold_to,
+                    draft_pick_conditional_teams, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -1060,6 +1378,8 @@ class LeagueDB:
                     exception_type,
                     draft_pick_restricted,
                     draft_pick_protected,
+                    draft_pick_sold_to,
+                    draft_pick_conditional_teams,
                     now,
                     now,
                 ),
@@ -1071,7 +1391,7 @@ class LeagueDB:
         fields = [
             "asset_type", "year", "label", "detail", "amount_text", "draft_pick_type",
             "draft_round", "original_owner", "exception_type", "draft_pick_restricted",
-            "draft_pick_protected",
+            "draft_pick_protected", "draft_pick_sold_to", "draft_pick_conditional_teams",
         ]
         assigns = []
         vals = []
@@ -1086,6 +1406,12 @@ class LeagueDB:
                 elif f == "original_owner":
                     assigns.append("original_owner = ?")
                     vals.append(normalize_team_code(payload[f]))
+                elif f == "draft_pick_sold_to":
+                    assigns.append("draft_pick_sold_to = ?")
+                    vals.append(normalize_team_code(payload[f]))
+                elif f == "draft_pick_conditional_teams":
+                    assigns.append("draft_pick_conditional_teams = ?")
+                    vals.append(serialize_team_codes(payload[f]))
                 elif f == "exception_type":
                     assigns.append("exception_type = ?")
                     vals.append(normalize_exception_type(payload[f]))
@@ -1102,6 +1428,12 @@ class LeagueDB:
             pick_type = normalize_pick_type(payload["draft_pick_type"])
             if pick_type != "acquired":
                 assigns.append("original_owner = ?")
+                vals.append(None)
+            if pick_type != "sold":
+                assigns.append("draft_pick_sold_to = ?")
+                vals.append(None)
+            if pick_type != "conditional":
+                assigns.append("draft_pick_conditional_teams = ?")
                 vals.append(None)
         if not assigns:
             return False
@@ -1373,7 +1705,8 @@ class LeagueDB:
             for asset_id in pick_a:
                 row = conn.execute(
                     """
-                    SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner, detail, row_order
+                    SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner,
+                           draft_pick_sold_to, draft_pick_conditional_teams, detail, row_order
                     FROM assets
                     WHERE id = ? AND asset_type = 'draft_pick'
                     """,
@@ -1393,7 +1726,8 @@ class LeagueDB:
             for asset_id in pick_b:
                 row = conn.execute(
                     """
-                    SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner, detail, row_order
+                    SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner,
+                           draft_pick_sold_to, draft_pick_conditional_teams, detail, row_order
                     FROM assets
                     WHERE id = ? AND asset_type = 'draft_pick'
                     """,
@@ -1460,12 +1794,19 @@ class LeagueDB:
 
             def move_pick(source_team: sqlite3.Row, target_team: sqlite3.Row, pick_row: Dict[str, Any]) -> None:
                 actual_owner = self._pick_actual_owner(pick_row, str(source_team["code"]))
-                target_pick_type = "own" if actual_owner == str(target_team["code"]) else "acquired"
-                target_original_owner = None if target_pick_type == "own" else actual_owner
+                source_pick_type = normalize_pick_type(pick_row.get("draft_pick_type"))
+                if source_pick_type == "conditional":
+                    target_pick_type = "conditional"
+                    target_original_owner = None
+                    target_conditional_teams = pick_row.get("draft_pick_conditional_teams")
+                else:
+                    target_pick_type = "own" if actual_owner == str(target_team["code"]) else "acquired"
+                    target_original_owner = None if target_pick_type == "own" else actual_owner
+                    target_conditional_teams = None
 
                 recipient_rows_cur = conn.execute(
                     """
-                    SELECT id, draft_pick_type, original_owner, year, draft_round
+                    SELECT id, draft_pick_type, original_owner, year, draft_round, draft_pick_conditional_teams
                     FROM assets
                     WHERE team_id = ? AND asset_type = 'draft_pick' AND CAST(COALESCE(year, '') AS INTEGER) = ?
                     """,
@@ -1484,22 +1825,25 @@ class LeagueDB:
                 conn.execute(
                     """
                     UPDATE assets
-                    SET draft_pick_type = 'sold', original_owner = ?, updated_at = ?
+                    SET draft_pick_type = 'sold', original_owner = ?, draft_pick_sold_to = ?,
+                        draft_pick_conditional_teams = NULL, updated_at = ?
                     WHERE id = ?
                     """,
-                    (actual_owner, timestamp, pick_row["id"]),
+                    (actual_owner, str(target_team["code"]), timestamp, pick_row["id"]),
                 )
 
                 if recipient_match:
                     conn.execute(
                         """
                         UPDATE assets
-                        SET draft_pick_type = ?, original_owner = ?, label = ?, detail = ?, updated_at = ?
+                        SET draft_pick_type = ?, original_owner = ?, draft_pick_sold_to = NULL,
+                            draft_pick_conditional_teams = ?, label = ?, detail = ?, updated_at = ?
                         WHERE id = ?
                         """,
                         (
                             target_pick_type,
                             target_original_owner,
+                            target_conditional_teams,
                             sold_label,
                             sold_detail,
                             timestamp,
@@ -1516,8 +1860,9 @@ class LeagueDB:
                     """
                     INSERT INTO assets (
                         team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
-                        draft_pick_type, draft_round, original_owner, exception_type, created_at, updated_at
-                    ) VALUES (?, ?, 'draft_pick', ?, ?, ?, NULL, NULL, ?, '1st', ?, NULL, ?, ?)
+                        draft_pick_type, draft_round, original_owner, exception_type,
+                        draft_pick_sold_to, draft_pick_conditional_teams, created_at, updated_at
+                    ) VALUES (?, ?, 'draft_pick', ?, ?, ?, NULL, NULL, ?, '1st', ?, NULL, NULL, ?, ?, ?)
                     """,
                     (
                         target_team["id"],
@@ -1527,6 +1872,7 @@ class LeagueDB:
                         sold_detail,
                         target_pick_type,
                         target_original_owner,
+                        target_conditional_teams,
                         timestamp,
                         timestamp,
                     ),
@@ -2069,6 +2415,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(200, {"tracker": self.db.list_tracker()})
             return
 
+        if parsed.path == "/api/free-agents":
+            self._json(200, {"free_agents": self.db.list_free_agents()})
+            return
+
         if parsed.path == "/api/settings":
             settings = self.db.get_settings()
             current_year = parse_int(settings.get("current_year")) or 2025
@@ -2183,6 +2533,71 @@ class Handler(SimpleHTTPRequestHandler):
                     "X-Content-Type-Options": "nosniff",
                 },
             )
+            return
+
+        if parsed.path == "/api/free-agents":
+            free_agent_id = self.db.create_free_agent(payload)
+            if not free_agent_id:
+                self._json(400, {"error": "name_required"})
+                return
+            self._log_admin_action("create", "free_agent", str(free_agent_id), None, {"name": payload.get("name")})
+            self._json(201, {"free_agent_id": free_agent_id})
+            return
+
+        if parsed.path.startswith("/api/free-agents/") and parsed.path.endswith("/sign"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                free_agent_id = int(parts[2])
+            except ValueError:
+                self._json(400, {"error": "invalid_free_agent_id"})
+                return
+            team_code = str(payload.get("team_code") or "").strip().upper()
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            player_id = self.db.sign_free_agent(free_agent_id, team_code, payload)
+            if not player_id:
+                self._json(404, {"error": "free_agent_or_team_not_found"})
+                return
+            self._log_admin_action(
+                "sign",
+                "free_agent",
+                str(free_agent_id),
+                team_code,
+                {"player_id": player_id, "name": payload.get("name")},
+            )
+            self._json(200, {"ok": True, "player_id": player_id})
+            return
+
+        if parsed.path.startswith("/api/players/") and parsed.path.endswith("/cut"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                player_id = int(parts[2])
+            except ValueError:
+                self._json(400, {"error": "invalid_player_id"})
+                return
+            result = self.db.cut_player(player_id)
+            if not result:
+                self._json(404, {"error": "player_not_found"})
+                return
+            self._log_admin_action(
+                "cut",
+                "player",
+                str(player_id),
+                str(result.get("team_code") or ""),
+                {
+                    "player_name": result.get("player_name"),
+                    "dead_contract_id": result.get("dead_contract_id"),
+                    "free_agent_id": result.get("free_agent_id"),
+                },
+            )
+            self._json(200, {"ok": True, "result": result})
             return
 
         if parsed.path == "/api/players":
@@ -2514,6 +2929,18 @@ class Handler(SimpleHTTPRequestHandler):
             )
             return
 
+        if parsed.path.startswith("/api/free-agents/"):
+            try:
+                free_agent_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_free_agent_id"})
+                return
+            ok = self.db.update_free_agent(free_agent_id, payload)
+            if ok:
+                self._log_admin_action("update", "free_agent", str(free_agent_id), None, {"fields": sorted(payload.keys())})
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
         if parsed.path.startswith("/api/players/"):
             player_id = int(parsed.path.split("/")[-1])
             ok = self.db.update_player(player_id, payload)
@@ -2540,6 +2967,13 @@ class Handler(SimpleHTTPRequestHandler):
                     self._json(400, {"error": "invalid_cash_sent"})
                     return
                 update_payload["cash_sent"] = parsed_cash_sent
+            if "apron_hard_cap" in payload:
+                raw_hard_cap = str(payload.get("apron_hard_cap") or "").strip()
+                normalized_hard_cap = normalize_apron_hard_cap(raw_hard_cap)
+                if raw_hard_cap and normalized_hard_cap is None:
+                    self._json(400, {"error": "invalid_apron_hard_cap"})
+                    return
+                update_payload["apron_hard_cap"] = normalized_hard_cap
             if not update_payload:
                 self._json(400, {"error": "team_update_required"})
                 return
@@ -2576,6 +3010,18 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._require_csrf():
             return
         parsed = urlparse(self.path)
+
+        if parsed.path.startswith("/api/free-agents/"):
+            try:
+                free_agent_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_free_agent_id"})
+                return
+            ok = self.db.delete_free_agent(free_agent_id)
+            if ok:
+                self._log_admin_action("delete", "free_agent", str(free_agent_id))
+            self._json(200 if ok else 404, {"ok": ok})
+            return
 
         if parsed.path.startswith("/api/players/"):
             player_id = int(parsed.path.split("/")[-1])
