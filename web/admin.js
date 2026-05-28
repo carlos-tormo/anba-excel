@@ -668,6 +668,62 @@ function renderTeamStrip() {
   });
 }
 
+function renderAdminMobileTeamGrid() {
+  const grid = document.getElementById('adminMobileTeamGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  state.teams.forEach((t) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `team-btn${state.teamCode === t.code ? ' active' : ''}`;
+    btn.title = `${t.code} - ${t.name}`;
+    btn.setAttribute('aria-label', `${t.code} - ${t.name}`);
+
+    const fallback = document.createElement('span');
+    fallback.className = 'team-fallback';
+    fallback.textContent = t.code;
+
+    const img = document.createElement('img');
+    img.className = 'team-logo';
+
+    const candidates = teamLogoCandidates(t.code);
+    let idx = 0;
+    const tryNext = () => {
+      if (idx >= candidates.length) {
+        img.style.display = 'none';
+        fallback.style.display = 'flex';
+        return;
+      }
+      img.src = candidates[idx];
+      idx += 1;
+    };
+
+    img.onerror = () => tryNext();
+    img.onload = () => {
+      fallback.style.display = 'none';
+      img.style.display = 'block';
+    };
+
+    tryNext();
+
+    btn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      if (t.code === state.teamCode) return;
+      await loadTeam(t.code);
+    });
+
+    const label = document.createElement('span');
+    label.className = 'team-code-label';
+    label.textContent = t.code;
+
+    btn.appendChild(fallback);
+    btn.appendChild(img);
+    btn.appendChild(label);
+    grid.appendChild(btn);
+  });
+}
+
 function renderTeamPicker() {
   const picker = document.getElementById('teamPickerMobile');
   if (!picker) return;
@@ -2725,6 +2781,37 @@ function readConditionalTeamSelects(container) {
     .filter((code, idx, all) => all.indexOf(code) === idx);
 }
 
+function appendSoldToTeamSelect(list, value = '', { removable = true } = {}) {
+  if (!list) return null;
+  const row = document.createElement('div');
+  row.className = 'pick-conditional-team-row';
+  row.innerHTML = `
+    <select data-sold-to-team>
+      <option value="">Select team</option>
+      ${teamOptionsHtml(value, { includeCurrent: false })}
+    </select>
+    ${removable ? '<button type="button" class="ghost tiny" data-action="remove-sold-to-team">Remove</button>' : ''}
+  `;
+  list.appendChild(row);
+  row.querySelector('[data-action="remove-sold-to-team"]')?.addEventListener('click', () => row.remove());
+  return row.querySelector('select');
+}
+
+function renderSoldToTeamSelects(list, values) {
+  if (!list) return;
+  list.innerHTML = '';
+  const normalized = parseDraftConditionalTeams(values);
+  const rows = normalized.length ? normalized : [''];
+  rows.forEach((code, idx) => appendSoldToTeamSelect(list, code, { removable: idx > 0 }));
+}
+
+function readSoldToTeamSelects(container) {
+  return Array.from(container.querySelectorAll('[data-sold-to-team]'))
+    .map((select) => String(select.value || '').trim().toUpperCase())
+    .filter(Boolean)
+    .filter((code, idx, all) => all.indexOf(code) === idx);
+}
+
 function renderAssets() {
   const board = document.getElementById('draftAssetsBoard');
   if (!board) return;
@@ -2796,7 +2883,6 @@ function renderAssets() {
     }
 
     const ownerOptions = teamOptionsHtml('', { includeCurrent: false });
-    const soldToOptions = teamOptionsHtml('', { includeCurrent: false });
     const card = document.createElement('article');
     card.className = 'draft-pick-card admin-pick-card draft-pick-card--editor';
     card.innerHTML = `
@@ -2827,12 +2913,11 @@ function renderAssets() {
             ${ownerOptions}
           </select>
         </label>
-        <label data-sold-to-wrap>Sold to
-          <select data-new-field="draft_pick_sold_to">
-            <option value="">Select team</option>
-            ${soldToOptions}
-          </select>
-        </label>
+        <div data-sold-to-wrap class="pick-conditional-editor">
+          <span>Possible drafting teams</span>
+          <div data-sold-to-list></div>
+          <button type="button" class="ghost tiny" data-action="add-sold-to-team">Add team</button>
+        </div>
         <div data-conditional-wrap class="pick-conditional-editor">
           <span>Possible source teams</span>
           <div data-conditional-list></div>
@@ -2860,22 +2945,25 @@ function renderAssets() {
     const ownerWrap = card.querySelector('[data-owner-wrap]');
     const ownerSelect = card.querySelector('[data-new-field="original_owner"]');
     const soldToWrap = card.querySelector('[data-sold-to-wrap]');
-    const soldToSelect = card.querySelector('[data-new-field="draft_pick_sold_to"]');
+    const soldToList = card.querySelector('[data-sold-to-list]');
     const conditionalWrap = card.querySelector('[data-conditional-wrap]');
     const conditionalList = card.querySelector('[data-conditional-list]');
     renderConditionalTeamSelects(conditionalList, []);
+    renderSoldToTeamSelects(soldToList, []);
     const syncOwnerField = () => {
       const type = typeSelect.value;
       ownerWrap.style.display = type === 'acquired' ? 'grid' : 'none';
       soldToWrap.style.display = type === 'sold' ? 'grid' : 'none';
       conditionalWrap.style.display = type === 'conditional' ? 'grid' : 'none';
       if (type !== 'acquired') ownerSelect.value = '';
-      if (type !== 'sold') soldToSelect.value = '';
     };
     syncOwnerField();
     typeSelect.addEventListener('change', syncOwnerField);
     card.querySelector('[data-action="add-conditional-team"]')?.addEventListener('click', () => {
       appendConditionalTeamSelect(conditionalList, '', { removable: true });
+    });
+    card.querySelector('[data-action="add-sold-to-team"]')?.addEventListener('click', () => {
+      appendSoldToTeamSelect(soldToList, '', { removable: true });
     });
 
     const discard = () => {
@@ -2892,7 +2980,7 @@ function renderAssets() {
         year: String(card.querySelector('[data-new-field="year"]')?.value || '').trim(),
         detail: String(card.querySelector('[data-new-field="detail"]')?.value || '').trim(),
         original_owner: String(card.querySelector('[data-new-field="original_owner"]')?.value || '').trim(),
-        draft_pick_sold_to: String(card.querySelector('[data-new-field="draft_pick_sold_to"]')?.value || '').trim(),
+        draft_pick_sold_to: readSoldToTeamSelects(card),
         draft_pick_conditional_teams: readConditionalTeamSelects(card),
         draft_pick_restricted: Boolean(card.querySelector('[data-new-field="draft_pick_restricted"]')?.checked),
         draft_pick_protected: Boolean(card.querySelector('[data-new-field="draft_pick_protected"]')?.checked),
@@ -2901,7 +2989,7 @@ function renderAssets() {
         payload.year !== defaultYear
         || Boolean(payload.detail)
         || Boolean(payload.original_owner)
-        || Boolean(payload.draft_pick_sold_to)
+        || payload.draft_pick_sold_to.length > 0
         || payload.draft_pick_conditional_teams.length > 0
         || payload.draft_pick_type !== 'own'
         || payload.draft_round !== '1st'
@@ -2915,7 +3003,7 @@ function renderAssets() {
       if (!payload.year) payload.year = defaultYear;
       payload.label = `${payload.draft_round} pick`;
       if (payload.draft_pick_type !== 'acquired') payload.original_owner = '';
-      if (payload.draft_pick_type !== 'sold') payload.draft_pick_sold_to = '';
+      if (payload.draft_pick_type !== 'sold') payload.draft_pick_sold_to = [];
       if (payload.draft_pick_type !== 'conditional') payload.draft_pick_conditional_teams = [];
       state.ui.addingDraftPick = false;
       await api('/api/assets', {
@@ -3012,12 +3100,11 @@ function renderAssets() {
                 ${ownerOptions}
               </select>
             </label>
-            <label data-sold-to-wrap>Sold to
-              <select data-field="draft_pick_sold_to">
-                <option value="">Select team</option>
-                ${ownerOptions}
-              </select>
-            </label>
+            <div data-sold-to-wrap class="pick-conditional-editor">
+              <span>Possible drafting teams</span>
+              <div data-sold-to-list></div>
+              <button type="button" class="ghost tiny" data-action="add-sold-to-team">Add team</button>
+            </div>
             <div data-conditional-wrap class="pick-conditional-editor">
               <span>Possible source teams</span>
               <div data-conditional-list></div>
@@ -3064,19 +3151,19 @@ function renderAssets() {
         const roundSelect = card.querySelector('[data-field="draft_round"]');
         const yearInput = card.querySelector('[data-field="year"]');
         const ownerSelect = card.querySelector('[data-field="original_owner"]');
-        const soldToSelect = card.querySelector('[data-field="draft_pick_sold_to"]');
         const detailInput = card.querySelector('[data-field="detail"]');
         const restrictedInput = card.querySelector('[data-field="draft_pick_restricted"]');
         const protectedInput = card.querySelector('[data-field="draft_pick_protected"]');
         const ownerWrap = card.querySelector('[data-owner-wrap]');
         const soldToWrap = card.querySelector('[data-sold-to-wrap]');
+        const soldToList = card.querySelector('[data-sold-to-list]');
         const conditionalWrap = card.querySelector('[data-conditional-wrap]');
         const conditionalList = card.querySelector('[data-conditional-list]');
 
         typeSelect.value = pick.draft_pick_type || 'own';
         roundSelect.value = pick.draft_round || '1st';
         ownerSelect.value = pick.original_owner || '';
-        soldToSelect.value = pick.draft_pick_sold_to || '';
+        renderSoldToTeamSelects(soldToList, pick.draft_pick_sold_to);
         renderConditionalTeamSelects(conditionalList, pick.draft_pick_conditional_teams);
 
         const syncOwnerField = () => {
@@ -3085,7 +3172,6 @@ function renderAssets() {
           soldToWrap.style.display = type === 'sold' ? 'grid' : 'none';
           conditionalWrap.style.display = type === 'conditional' ? 'grid' : 'none';
           if (type !== 'acquired') ownerSelect.value = '';
-          if (type !== 'sold') soldToSelect.value = '';
         };
         syncOwnerField();
 
@@ -3124,7 +3210,7 @@ function renderAssets() {
           await persist({
             draft_pick_type: type,
             original_owner: type === 'acquired' ? ownerSelect.value || null : null,
-            draft_pick_sold_to: type === 'sold' ? soldToSelect.value || null : null,
+            draft_pick_sold_to: type === 'sold' ? readSoldToTeamSelects(card) : [],
             draft_pick_conditional_teams: type === 'conditional' ? readConditionalTeamSelects(card) : [],
           });
         });
@@ -3134,8 +3220,16 @@ function renderAssets() {
         ownerSelect.addEventListener('change', async () => {
           await persist({ original_owner: ownerSelect.value || null });
         });
-        soldToSelect.addEventListener('change', async () => {
-          await persist({ draft_pick_sold_to: soldToSelect.value || null });
+        soldToList.addEventListener('change', async (event) => {
+          if (!event.target?.matches?.('[data-sold-to-team]')) return;
+          await persist({ draft_pick_sold_to: readSoldToTeamSelects(card) });
+        });
+        soldToList.addEventListener('click', async (event) => {
+          if (!event.target?.matches?.('[data-action="remove-sold-to-team"]')) return;
+          await persist({ draft_pick_sold_to: readSoldToTeamSelects(card) });
+        });
+        card.querySelector('[data-action="add-sold-to-team"]')?.addEventListener('click', () => {
+          appendSoldToTeamSelect(soldToList, '', { removable: true });
         });
         card.querySelector('[data-action="add-conditional-team"]')?.addEventListener('click', () => {
           appendConditionalTeamSelect(conditionalList, '', { removable: true });
@@ -3483,6 +3577,7 @@ async function loadTeam(code) {
   syncTeamApronHardCapControls();
   renderTeamStrip();
   renderTeamPicker();
+  renderAdminMobileTeamGrid();
   renderCards();
   renderPlayers();
   renderDeadContracts();
@@ -3530,6 +3625,7 @@ async function loadTracker() {
   renderCapStatusPills({});
   renderTeamStrip();
   renderTeamPicker();
+  renderAdminMobileTeamGrid();
   renderTracker();
   renderImportantFigures();
   await refreshAdminLogsSafe();
@@ -3547,6 +3643,7 @@ async function loadFreeAgents() {
   renderCapStatusPills({});
   renderTeamStrip();
   renderTeamPicker();
+  renderAdminMobileTeamGrid();
   renderFreeAgents();
   await refreshAdminLogsSafe();
 }
@@ -3759,6 +3856,7 @@ async function init() {
   setupSorting();
   renderTeamStrip();
   renderTeamPicker();
+  renderAdminMobileTeamGrid();
   setupTradeModal();
   setupAdminMenu();
   setupAdminMobileNav();

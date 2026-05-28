@@ -1342,7 +1342,7 @@ class LeagueDB:
             draft_pick_type = normalize_pick_type(payload.get("draft_pick_type")) if asset_type == "draft_pick" else None
             draft_round = normalize_pick_round(payload.get("draft_round")) if asset_type == "draft_pick" else None
             original_owner = normalize_team_code(payload.get("original_owner")) if asset_type == "draft_pick" else None
-            draft_pick_sold_to = normalize_team_code(payload.get("draft_pick_sold_to")) if asset_type == "draft_pick" else None
+            draft_pick_sold_to = serialize_team_codes(payload.get("draft_pick_sold_to")) if asset_type == "draft_pick" else None
             draft_pick_conditional_teams = serialize_team_codes(payload.get("draft_pick_conditional_teams")) if asset_type == "draft_pick" else None
             exception_type = normalize_exception_type(payload.get("exception_type")) if asset_type == "exception" else None
             draft_pick_restricted = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_restricted")) else 0
@@ -1408,7 +1408,7 @@ class LeagueDB:
                     vals.append(normalize_team_code(payload[f]))
                 elif f == "draft_pick_sold_to":
                     assigns.append("draft_pick_sold_to = ?")
-                    vals.append(normalize_team_code(payload[f]))
+                    vals.append(serialize_team_codes(payload[f]))
                 elif f == "draft_pick_conditional_teams":
                     assigns.append("draft_pick_conditional_teams = ?")
                     vals.append(serialize_team_codes(payload[f]))

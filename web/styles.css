@@ -268,7 +268,8 @@ h1 {
   letter-spacing: 0.03em;
   color: #334155;
 }
-#mobileSidebar .mobile-sidebar-team-title {
+#mobileSidebar .mobile-sidebar-team-title,
+#adminMobileSidebar .mobile-sidebar-team-title {
   margin-top: 6px;
   padding-top: 14px;
   border-top: 1px solid rgba(var(--team-secondary-rgb), 0.14);
@@ -279,10 +280,12 @@ h1 {
   grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
   gap: 8px;
 }
-#mobileSidebar .mobile-team-grid {
+#mobileSidebar .mobile-team-grid,
+#adminMobileSidebar .mobile-team-grid {
   gap: 10px;
 }
-#mobileSidebar .team-btn {
+#mobileSidebar .team-btn,
+#adminMobileSidebar .team-btn {
   width: 100%;
   min-width: 0;
   padding: 8px 4px 7px;
@@ -290,15 +293,20 @@ h1 {
   background: rgba(255, 255, 255, 0.02);
 }
 #mobileSidebar .team-btn:hover,
-#mobileSidebar .team-btn.active {
+#mobileSidebar .team-btn.active,
+#adminMobileSidebar .team-btn:hover,
+#adminMobileSidebar .team-btn.active {
   background: rgba(var(--team-secondary-rgb), 0.12);
 }
-#mobileSidebar .team-code-label {
+#mobileSidebar .team-code-label,
+#adminMobileSidebar .team-code-label {
   color: #cbd5e1;
   font-size: 0.62rem;
 }
 #mobileSidebar .team-btn:hover .team-code-label,
-#mobileSidebar .team-btn.active .team-code-label {
+#mobileSidebar .team-btn.active .team-code-label,
+#adminMobileSidebar .team-btn:hover .team-code-label,
+#adminMobileSidebar .team-btn.active .team-code-label {
   color: #ffffff;
 }
 .mobile-sidebar-auth {

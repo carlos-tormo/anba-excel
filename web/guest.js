@@ -1566,7 +1566,8 @@ function renderAssets() {
         const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
         const isProtected = Number(pick.draft_pick_protected || 0) !== 0;
         const sourceTeams = conditionalTeams(pick);
-        const soldTo = String(pick.draft_pick_sold_to || '').trim().toUpperCase();
+        const soldToTeams = parseDraftConditionalTeams(pick.draft_pick_sold_to);
+        const soldToLabel = soldToTeams.join(' / ');
         const owner = pickType === 'conditional'
           ? (sourceTeams[0] || state.teamCode)
           : pick.draft_pick_type === 'acquired'
@@ -1576,7 +1577,7 @@ function renderAssets() {
         const subtitle = pickType === 'acquired'
           ? `From ${owner || 'other team'}`
           : pickType === 'sold'
-            ? `Sold${soldTo ? ` to ${soldTo}` : ''}`
+            ? `Sold${soldToLabel ? ` to ${soldToLabel}` : ''}`
             : pickType === 'conditional'
               ? `Conditional: ${sourceTeams.length ? sourceTeams.join(' / ') : 'teams TBD'}`
               : 'Own pick';
