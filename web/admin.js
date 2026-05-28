@@ -1386,8 +1386,11 @@ function balanceNoticeItems(summary) {
 }
 
 function buildBalanceCard(label, value, isWarning = false) {
+  const numeric = Number(value || 0);
+  const signClass = numeric < 0 ? ' is-negative' : numeric > 0 ? ' is-positive' : '';
+  const warningClass = isWarning || numeric < 0 ? ' is-warning' : '';
   return `
-    <div class="team-balance-card${isWarning ? ' is-warning' : ''}">
+    <div class="team-balance-card${warningClass}${signClass}">
       <div class="team-balance-label">${escapeHtml(label)}</div>
       <div class="team-balance-value">${formatBalanceMoney(value)}</div>
     </div>
@@ -1403,10 +1406,10 @@ function buildBalancePanelHtml(summary) {
   return `
     <div class="team-balance-panel" aria-label="Team balances">
       <div class="team-balance-grid">
-        ${buildBalanceCard('CAP SPACE', s.room_to_cap, false)}
+        ${buildBalanceCard('CAP SPACE', s.room_to_cap)}
+        ${buildBalanceCard('TAX SPACE', s.room_to_luxury)}
         ${buildBalanceCard('1ST APRON SPACE', s.room_to_first_apron, Number(s.room_to_first_apron) < 0)}
         ${buildBalanceCard('2ND APRON SPACE', s.room_to_second_apron, Number(s.room_to_second_apron) < 0)}
-        ${buildBalanceCard('TAX SPACE', s.room_to_luxury, Number(s.room_to_luxury) < 0)}
       </div>
       ${noticesHtml}
     </div>

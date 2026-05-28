@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260527f">
+  <link rel="stylesheet" href="/styles.css?v=20260528f">
 </head>
 <body class="app-layout">
   <header>
@@ -17,18 +17,21 @@
     <button id="mobileInfoBtn" class="mobile-icon-btn" type="button" aria-label="Team status information" title="Info" hidden>i</button>
     <div class="controls">
       <div id="capStatusPills" class="top-status-wrap"></div>
-      <a href="/" class="ghost-link">Guest View</a>
-      <button id="trackerHomeBtn" type="button">Tracker</button>
-      <button id="freeAgentsHomeBtn" type="button">Free agents</button>
-      <button id="adminMenuBtn" type="button">Admin Menu</button>
-      <button id="reloadBtn">Reload</button>
-      <button id="processTradeBtn" type="button">Process Trade</button>
-      <button id="logoutBtn" class="danger">Logout</button>
-
-      <div id="adminMenuPopover" class="add-entry-popover section-hidden" role="menu" aria-label="Admin menu">
-        <button id="openAdminLogPageBtn" type="button">Admin Log</button>
-        <button id="openLeagueSettingsPageBtn" type="button">League Settings</button>
+      <div class="admin-nav-group admin-nav-main">
+        <button id="trackerHomeBtn" class="sidebar-nav-item" type="button">Tracker</button>
+        <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button">Free agents</button>
       </div>
+      <button id="reloadBtn" class="sidebar-icon-btn" type="button" aria-label="Reload" title="Reload">↻</button>
+      <div class="admin-nav-group admin-nav-bottom">
+        <a href="/" class="ghost-link sidebar-nav-item">Guest View</a>
+        <button id="adminMenuBtn" class="sidebar-nav-item" type="button">Admin Menu</button>
+        <div id="adminMenuPopover" class="add-entry-popover section-hidden" role="menu" aria-label="Admin menu">
+          <button id="openAdminLogPageBtn" type="button">Admin Log</button>
+          <button id="openLeagueSettingsPageBtn" type="button">League Settings</button>
+        </div>
+        <button id="processTradeBtn" class="sidebar-nav-item" type="button">Process Trade</button>
+      </div>
+      <button id="logoutBtn" class="danger sidebar-nav-item" type="button">Logout</button>
 
     </div>
   </header>
@@ -593,6 +596,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260527f" defer></script>
+  <script src="/admin.js?v=20260528f" defer></script>
 </body>
 </html>

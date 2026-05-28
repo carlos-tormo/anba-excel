@@ -457,8 +457,20 @@ h1 {
     min-height: 0;
   }
 
+  .admin-nav-group {
+    display: grid;
+    gap: 8px;
+  }
+
+  .admin-nav-bottom {
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid rgba(var(--team-secondary-rgb), 0.14);
+  }
+
   .controls > button,
-  .controls > .ghost-link {
+  .controls > .ghost-link,
+  .admin-nav-group > .sidebar-nav-item {
     display: inline-flex;
     align-items: center;
     gap: 10px;
@@ -479,15 +491,18 @@ h1 {
 
   .controls > button:hover,
   .controls > .ghost-link:hover,
+  .admin-nav-group > .sidebar-nav-item:hover,
   .controls > button:focus-visible,
-  .controls > .ghost-link:focus-visible {
+  .controls > .ghost-link:focus-visible,
+  .admin-nav-group > .sidebar-nav-item:focus-visible {
     color: #ffffff;
     background: rgba(var(--team-secondary-rgb), 0.12);
     border-color: rgba(var(--team-secondary-rgb), 0.26);
   }
 
   .controls > button::before,
-  .controls > .ghost-link::before {
+  .controls > .ghost-link::before,
+  .admin-nav-group > .sidebar-nav-item::before {
     display: inline-grid;
     place-items: center;
     width: 28px;
@@ -505,7 +520,6 @@ h1 {
   #trackerHomeBtn::before { content: "▦"; }
   #freeAgentsHomeBtn::before { content: "○"; }
   #adminMenuBtn::before { content: "⚙"; }
-  #reloadBtn::before { content: "↻"; }
   #processTradeBtn::before { content: "⇄"; }
   #adminLink::before,
   a[href="/admin"].ghost-link::before { content: "⚙"; }
@@ -522,6 +536,42 @@ h1 {
   .controls > button.danger::before {
     content: "↗";
     color: #fca5a5;
+  }
+
+  .controls > #logoutBtn.sidebar-nav-item {
+    margin-top: 0;
+  }
+
+  .controls > .sidebar-icon-btn {
+    width: 44px;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0;
+    border-radius: 12px;
+    color: rgba(var(--team-secondary-rgb), 0.98);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(var(--team-secondary-rgb), 0.18);
+    font-size: 1.22rem;
+    font-weight: 900;
+  }
+
+  .controls > .sidebar-icon-btn:hover,
+  .controls > .sidebar-icon-btn:focus-visible {
+    color: #ffffff;
+    background: rgba(var(--team-secondary-rgb), 0.14);
+    border-color: rgba(var(--team-secondary-rgb), 0.34);
+  }
+
+  .controls > .sidebar-icon-btn::before {
+    content: none;
+    display: none;
+  }
+
+  .controls > .sidebar-icon-btn:disabled,
+  .controls > .sidebar-nav-item:disabled,
+  .admin-nav-group > .sidebar-nav-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   .top-status-wrap {
@@ -1372,6 +1422,15 @@ section {
   color: #991b1b;
   font-weight: 700;
 }
+.team-balance-card.is-positive .team-balance-value {
+  color: #166534;
+  font-weight: 700;
+}
+.team-balance-card.is-negative .team-balance-value {
+  background: #fff1f2;
+  color: #991b1b;
+  font-weight: 700;
+}
 .team-balance-notices {
   display: grid;
   gap: 6px;
@@ -1756,6 +1815,215 @@ th {
 .guest-roster-section #playersTable tbody tr:nth-child(even) td:nth-child(1) {
   background: #f2f5f9;
 }
+.guest-roster-section .table-wrap {
+  border-color: #d6dee9;
+  border-radius: 6px;
+  background: #f1f5f9;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+.guest-roster-section #playersTable {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.guest-roster-section #playersTable .col-meta-name {
+  width: 220px;
+}
+.guest-roster-section #playersTable .col-meta-type {
+  width: 68px;
+}
+.guest-roster-section #playersTable .col-meta-years {
+  width: 54px;
+}
+.guest-roster-section #playersTable .col-season {
+  width: 168px;
+}
+.guest-roster-section #playersTable th:nth-child(1),
+.guest-roster-section #playersTable td:nth-child(1) {
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
+}
+.guest-roster-section #playersTable th:nth-child(2),
+.guest-roster-section #playersTable td:nth-child(2) {
+  left: 220px;
+  width: 68px;
+  min-width: 68px;
+  max-width: 68px;
+}
+.guest-roster-section #playersTable th:nth-child(3),
+.guest-roster-section #playersTable td:nth-child(3) {
+  left: 288px;
+  width: 54px;
+  min-width: 54px;
+  max-width: 54px;
+}
+.guest-roster-section #playersTable th {
+  height: 44px;
+  padding: 8px 8px;
+  background: #eef2f7;
+  color: #334155;
+  border-bottom: 3px solid #475569;
+  border-right: 1px solid #d9e2ec;
+  text-align: center;
+  font-size: 0.86rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.guest-roster-section #playersTable thead th:nth-child(-n+3) {
+  background: #dfe7f2;
+}
+.guest-roster-section #playersTable thead th:nth-child(1) {
+  background: #dfe7f2;
+}
+.guest-roster-section #playersTable th:nth-child(n+4),
+.guest-roster-section #playersTable td:nth-child(n+4) {
+  min-width: 168px;
+  width: 168px;
+}
+.guest-roster-section #playersTable tbody td {
+  height: 42px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #d8e1ec;
+  border-right: none;
+  vertical-align: middle;
+}
+.guest-roster-section #playersTable tbody tr:nth-child(odd) td:nth-child(-n+3),
+.guest-roster-section #playersTable tbody tr:nth-child(even) td:nth-child(-n+3),
+.guest-roster-section #playersTable tbody tr:nth-child(odd) td:nth-child(1),
+.guest-roster-section #playersTable tbody tr:nth-child(even) td:nth-child(1) {
+  background: #dfe7f2;
+}
+.guest-roster-section #playersTable tbody tr:nth-child(odd) td:nth-child(n+4) {
+  background: #f7f9fc;
+}
+.guest-roster-section #playersTable tbody tr:nth-child(even) td:nth-child(n+4) {
+  background: #eef3f9;
+}
+.guest-roster-section #playersTable tbody tr:hover td:nth-child(n+4) {
+  background: #e5edf7;
+}
+.guest-roster-section #playersTable .salary-chip {
+  min-height: 28px;
+  max-width: 152px;
+  margin: 0 auto;
+  border: 1px solid #dde4ec;
+  border-radius: 5px;
+  background: #f7f7f8;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.65) inset;
+}
+.guest-roster-section #playersTable .salary-chip-main {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  color: #6b7280;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+.guest-roster-section #playersTable .salary-chip-pct {
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  margin-left: 0;
+  padding: 5px 6px;
+  color: #606873;
+  background: #eeeeef;
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--po,
+.guest-roster-section #playersTable .salary-chip.salary-option--gap {
+  background: #1295db;
+  border-color: #0b83c2;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--to {
+  background: #ff1010;
+  border-color: #dc0000;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--qo {
+  background: #94cc66;
+  border-color: #79b34b;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--po .salary-chip-main,
+.guest-roster-section #playersTable .salary-chip.salary-option--gap .salary-chip-main,
+.guest-roster-section #playersTable .salary-chip.salary-option--to .salary-chip-main,
+.guest-roster-section #playersTable .salary-chip.salary-option--qo .salary-chip-main,
+.guest-roster-section #playersTable .salary-chip.salary-option--po .salary-chip-pct,
+.guest-roster-section #playersTable .salary-chip.salary-option--gap .salary-chip-pct,
+.guest-roster-section #playersTable .salary-chip.salary-option--to .salary-chip-pct,
+.guest-roster-section #playersTable .salary-chip.salary-option--qo .salary-chip-pct {
+  color: #ffffff;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--po .salary-chip-pct,
+.guest-roster-section #playersTable .salary-chip.salary-option--gap .salary-chip-pct {
+  background: #075985;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--to .salary-chip-pct {
+  background: #b00000;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--qo .salary-chip-pct {
+  background: #6ea348;
+}
+.guest-roster-section #playersTable .salary-chip.salary-text-tag--fb {
+  background: #fff200;
+  border-color: #d4b000;
+}
+.guest-roster-section #playersTable .salary-chip.salary-text-tag--fb .salary-chip-main {
+  color: #111827;
+}
+.guest-roster-section #playersTable .salary-chip.salary-text-tag--eb {
+  background: #ffedd5;
+  border-color: #fb923c;
+}
+.guest-roster-section #playersTable .salary-chip.salary-text-tag--eb .salary-chip-main {
+  color: #9a3412;
+}
+.guest-roster-section #playersTable .salary-chip.salary-text-tag--nb {
+  background: #783f04;
+  border-color: #5e3203;
+}
+.guest-roster-section #playersTable .salary-chip.salary-text-tag--nb .salary-chip-main {
+  color: #ffffff;
+}
+.guest-roster-section #playersTable .salary-empty-bar {
+  display: none;
+}
+.guest-roster-section #playersTable .salary-empty-wrap {
+  min-height: 0;
+  height: 0;
+  justify-content: center;
+}
+.guest-roster-section #playersTable .salary-empty-wrap .salary-info-button {
+  transform: translateY(-2px);
+}
+.guest-roster-section #playersTable .player-cell {
+  gap: 5px;
+  min-width: 0;
+}
+.guest-roster-section #playersTable .player-name-row {
+  max-width: 100%;
+  min-width: 0;
+}
+.guest-roster-section #playersTable .player-name {
+  display: inline-block;
+  font-size: 0.84rem;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+.guest-roster-section #playersTable .player-tags {
+  gap: 4px;
+}
+.guest-roster-section #playersTable .pill {
+  padding: 1px 7px;
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
 .guest-dead-contracts-section #deadContractsTable th:nth-child(1),
 .guest-dead-contracts-section #deadContractsTable td:nth-child(1) {
   position: sticky;
@@ -1943,6 +2211,167 @@ th {
 }
 .guest-exceptions-section .table-wrap {
   background: #f4f6f8;
+}
+.guest-dead-contracts-section .table-wrap,
+.guest-exceptions-section .table-wrap {
+  overflow: auto;
+  border-color: #d6dee9;
+  border-radius: 6px;
+  background: #f1f5f9;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+.guest-dead-contracts-section #deadContractsTable,
+.guest-exceptions-section #exceptionsTable {
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+.guest-dead-contracts-section #deadContractsTable {
+  width: 1350px;
+  min-width: 1350px;
+}
+.guest-exceptions-section #exceptionsTable {
+  width: 510px;
+  min-width: 510px;
+}
+.guest-dead-contracts-section #deadContractsTable .col-meta-name,
+.guest-exceptions-section #exceptionsTable .col-meta-name {
+  width: 220px;
+}
+.guest-dead-contracts-section #deadContractsTable .col-meta-type,
+.guest-exceptions-section #exceptionsTable .col-meta-type {
+  width: 68px;
+}
+.guest-dead-contracts-section #deadContractsTable .col-meta-years,
+.guest-exceptions-section #exceptionsTable .col-meta-years {
+  width: 54px;
+}
+.guest-dead-contracts-section #deadContractsTable .col-season,
+.guest-exceptions-section #exceptionsTable .col-season {
+  width: 168px;
+}
+.guest-dead-contracts-section #deadContractsTable th,
+.guest-dead-contracts-section #deadContractsTable td,
+.guest-exceptions-section #exceptionsTable th,
+.guest-exceptions-section #exceptionsTable td {
+  height: 42px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #d8e1ec;
+  border-right: 1px solid #d9e2ec;
+  vertical-align: middle;
+}
+.guest-dead-contracts-section #deadContractsTable th,
+.guest-exceptions-section #exceptionsTable th {
+  height: 44px;
+  background: #eef2f7;
+  color: #334155;
+  border-bottom: 3px solid #475569;
+  text-align: center;
+  font-size: 0.86rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.guest-dead-contracts-section #deadContractsTable th:nth-child(1),
+.guest-dead-contracts-section #deadContractsTable td:nth-child(1),
+.guest-exceptions-section #exceptionsTable th:nth-child(1),
+.guest-exceptions-section #exceptionsTable td:nth-child(1) {
+  left: 0;
+  width: 342px;
+  min-width: 342px;
+  max-width: 342px;
+}
+.guest-dead-contracts-section #deadContractsTable th:nth-child(1),
+.guest-exceptions-section #exceptionsTable th:nth-child(1) {
+  background: #dfe7f2;
+}
+.guest-dead-contracts-section #deadContractsTable th:nth-child(n+2),
+.guest-dead-contracts-section #deadContractsTable td:nth-child(n+2),
+.guest-exceptions-section #exceptionsTable th:nth-child(2),
+.guest-exceptions-section #exceptionsTable td:nth-child(2) {
+  width: 168px;
+  min-width: 168px;
+  max-width: 168px;
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(odd) td:nth-child(1),
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(even) td:nth-child(1),
+.guest-exceptions-section #exceptionsTable tbody tr:nth-child(odd) td:nth-child(1),
+.guest-exceptions-section #exceptionsTable tbody tr:nth-child(even) td:nth-child(1) {
+  background: #dfe7f2;
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(odd) td:nth-child(n+2),
+.guest-exceptions-section #exceptionsTable tbody tr:nth-child(odd) td:nth-child(n+2) {
+  background: #f7f9fc;
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(even) td:nth-child(n+2),
+.guest-exceptions-section #exceptionsTable tbody tr:nth-child(even) td:nth-child(n+2) {
+  background: #eef3f9;
+}
+.guest-dead-contracts-section #deadContractsTable tbody tr:hover td:nth-child(n+2),
+.guest-exceptions-section #exceptionsTable tbody tr:hover td:nth-child(n+2) {
+  background: #e5edf7;
+}
+.guest-dead-contracts-section #deadContractsTable td:nth-child(1),
+.guest-exceptions-section #exceptionsTable td:nth-child(1) {
+  box-shadow: 12px 0 14px -14px rgba(15, 23, 42, 0.35);
+}
+.guest-dead-contracts-section .dead-contract-meta-cell,
+.guest-exceptions-section .exception-meta-cell {
+  width: 342px;
+  min-width: 342px;
+  max-width: 342px;
+}
+.guest-dead-contracts-section .dead-contract-meta,
+.guest-exceptions-section .exception-meta {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  gap: 5px;
+}
+.guest-dead-contracts-section .dead-contract-meta .player-name,
+.guest-exceptions-section .exception-meta .player-name {
+  display: inline-block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+.guest-dead-contracts-section #deadContractsTable .salary-chip,
+.guest-exceptions-section #exceptionsTable .salary-chip {
+  min-height: 28px;
+  max-width: 152px;
+  margin: 0 auto;
+  border: 1px solid #dde4ec;
+  border-radius: 5px;
+  background: #f7f7f8;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.65) inset;
+}
+.guest-dead-contracts-section #deadContractsTable .salary-chip-main,
+.guest-exceptions-section #exceptionsTable .salary-chip-main {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  color: #6b7280;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+.guest-dead-contracts-section #deadContractsTable .salary-chip-pct,
+.guest-exceptions-section #exceptionsTable .salary-chip-pct {
+  min-width: 44px;
+  padding: 5px 6px;
+  font-size: 0.64rem;
+}
+.guest-dead-contracts-section #deadContractsTable .salary-empty-bar,
+.guest-exceptions-section #exceptionsTable .salary-empty-bar {
+  display: none;
+}
+.guest-dead-contracts-section #deadContractsTable .salary-empty-wrap,
+.guest-exceptions-section #exceptionsTable .salary-empty-wrap {
+  min-height: 0;
+  height: 0;
+  justify-content: center;
 }
 .exception-detail-icon {
   display: inline-grid;
@@ -3118,7 +3547,9 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   }
   .guest-roster-section #playersTable th:nth-child(1),
   .guest-roster-section #playersTable td:nth-child(1) {
-    min-width: 190px;
+    width: 160px;
+    min-width: 160px;
+    max-width: 160px;
     left: 0;
   }
   .guest-roster-section #playersTable th:nth-child(2),
@@ -3143,6 +3574,20 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .guest-roster-section #playersTable td:nth-child(1) {
     box-shadow: 12px 0 14px -14px rgba(15, 23, 42, 0.4);
   }
+  .guest-roster-section #playersTable th:nth-child(n+4),
+  .guest-roster-section #playersTable td:nth-child(n+4) {
+    width: 136px;
+    min-width: 136px;
+  }
+  .guest-roster-section #playersTable th {
+    height: 40px;
+    padding: 7px 6px;
+    font-size: 0.78rem;
+  }
+  .guest-roster-section #playersTable tbody td {
+    height: 38px;
+    padding: 5px 6px;
+  }
   .player-cell {
     display: grid;
     gap: 3px;
@@ -3150,6 +3595,9 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   }
   .guest-roster-section #playersTable .player-tags {
     display: none;
+  }
+  .guest-roster-section #playersTable .player-name {
+    max-width: 124px;
   }
   .player-name {
     font-size: 0.9rem;
@@ -3165,6 +3613,19 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .player-mobile-tag {
     display: inline-block;
   }
+  .guest-roster-section #playersTable .salary-chip {
+    min-height: 26px;
+    max-width: 122px;
+  }
+  .guest-roster-section #playersTable .salary-chip-main {
+    padding: 4px 6px;
+    font-size: 0.72rem;
+  }
+  .guest-roster-section #playersTable .salary-chip-pct {
+    min-width: 34px;
+    padding: 4px 5px;
+    font-size: 0.56rem;
+  }
   .salary-chip-main {
     padding: 3px 6px;
     font-size: 0.84rem;
@@ -3177,7 +3638,7 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
     overflow-x: auto;
   }
   .guest-roster-section #playersTable {
-    min-width: 860px;
+    min-width: 840px;
   }
   #trackerTable,
   #deadContractsTable,
@@ -3306,6 +3767,131 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .guest-dead-contracts-section .salary-chip {
     width: auto;
     max-width: 100%;
+  }
+  .guest-dead-contracts-section .table-wrap,
+  .guest-exceptions-section .table-wrap {
+    overflow-x: auto;
+    border: 1px solid #d6dee9;
+    background: #f1f5f9;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+  }
+  .guest-dead-contracts-section #deadContractsTable,
+  .guest-exceptions-section #exceptionsTable {
+    display: table;
+    table-layout: fixed;
+    width: auto;
+  }
+  .guest-dead-contracts-section #deadContractsTable {
+    min-width: 976px;
+  }
+  .guest-exceptions-section #exceptionsTable {
+    min-width: 296px;
+  }
+  .guest-dead-contracts-section #deadContractsTable thead,
+  .guest-exceptions-section #exceptionsTable thead {
+    display: table-header-group;
+  }
+  .guest-dead-contracts-section #deadContractsTable tbody,
+  .guest-exceptions-section #exceptionsTable tbody {
+    display: table-row-group;
+  }
+  .guest-dead-contracts-section #deadContractsTable tr,
+  .guest-exceptions-section #exceptionsTable tr {
+    display: table-row;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    overflow: visible;
+    background: transparent;
+    box-shadow: none;
+  }
+  .guest-dead-contracts-section #deadContractsTable th,
+  .guest-dead-contracts-section #deadContractsTable td,
+  .guest-exceptions-section #exceptionsTable th,
+  .guest-exceptions-section #exceptionsTable td {
+    display: table-cell;
+    height: 38px;
+    padding: 5px 6px;
+    white-space: nowrap;
+    border-right: 1px solid #d9e2ec;
+    border-bottom: 1px solid #d8e1ec;
+  }
+  .guest-dead-contracts-section #deadContractsTable th,
+  .guest-exceptions-section #exceptionsTable th {
+    height: 40px;
+    padding: 7px 6px;
+    font-size: 0.78rem;
+    border-bottom: 3px solid #475569;
+  }
+  .guest-dead-contracts-section #deadContractsTable td::before,
+  .guest-exceptions-section #exceptionsTable td::before {
+    content: none !important;
+    display: none !important;
+  }
+  .guest-dead-contracts-section #deadContractsTable .col-meta-name,
+  .guest-exceptions-section #exceptionsTable .col-meta-name {
+    width: 160px;
+  }
+  .guest-dead-contracts-section #deadContractsTable .col-meta-type,
+  .guest-dead-contracts-section #deadContractsTable .col-meta-years,
+  .guest-exceptions-section #exceptionsTable .col-meta-type,
+  .guest-exceptions-section #exceptionsTable .col-meta-years {
+    width: 0;
+  }
+  .guest-dead-contracts-section #deadContractsTable .col-season,
+  .guest-exceptions-section #exceptionsTable .col-season {
+    width: 136px;
+  }
+  .guest-dead-contracts-section #deadContractsTable th:nth-child(1),
+  .guest-dead-contracts-section #deadContractsTable td:nth-child(1),
+  .guest-exceptions-section #exceptionsTable th:nth-child(1),
+  .guest-exceptions-section #exceptionsTable td:nth-child(1) {
+    width: 160px !important;
+    min-width: 160px !important;
+    max-width: 160px !important;
+  }
+  .guest-dead-contracts-section #deadContractsTable th:nth-child(n+2),
+  .guest-dead-contracts-section #deadContractsTable td:nth-child(n+2),
+  .guest-exceptions-section #exceptionsTable th:nth-child(2),
+  .guest-exceptions-section #exceptionsTable td:nth-child(2) {
+    width: 136px !important;
+    min-width: 136px !important;
+    max-width: 136px !important;
+  }
+  .guest-dead-contracts-section .dead-contract-meta-cell,
+  .guest-exceptions-section .exception-meta-cell {
+    width: 160px !important;
+    min-width: 160px !important;
+    max-width: 160px !important;
+  }
+  .guest-dead-contracts-section .dead-contract-meta,
+  .guest-exceptions-section .exception-meta {
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+  .guest-dead-contracts-section .dead-contract-meta .player-name,
+  .guest-exceptions-section .exception-meta .player-name {
+    max-width: 112px;
+  }
+  .guest-dead-contracts-section .dead-contract-meta .player-tags,
+  .guest-exceptions-section .exception-meta .player-tags {
+    display: none;
+  }
+  .guest-dead-contracts-section #deadContractsTable .salary-chip,
+  .guest-exceptions-section #exceptionsTable .salary-chip {
+    min-height: 26px;
+    max-width: 122px;
+  }
+  .guest-dead-contracts-section #deadContractsTable .salary-chip-main,
+  .guest-exceptions-section #exceptionsTable .salary-chip-main {
+    padding: 4px 6px;
+    font-size: 0.72rem;
+  }
+  .guest-dead-contracts-section #deadContractsTable .salary-chip-pct,
+  .guest-exceptions-section #exceptionsTable .salary-chip-pct {
+    min-width: 34px;
+    padding: 4px 5px;
+    font-size: 0.56rem;
   }
 }
 @media (max-width: 500px) {
