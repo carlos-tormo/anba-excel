@@ -1188,11 +1188,15 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 .trade-machine-asset-row select {
+  grid-column: 3;
   width: 100%;
   min-height: 34px;
   padding: 4px 7px;
   font-size: 0.78rem;
   font-weight: 800;
+}
+.trade-machine-recipient-select:disabled {
+  opacity: 0.55;
 }
 .trade-machine-tags {
   display: flex;
@@ -4756,6 +4760,12 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .trade-machine-asset-row {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
+  }
+  .trade-machine-asset-row select {
+    grid-column: 1;
+  }
+  .trade-machine-recipient-select:disabled {
+    display: none;
   }
   .trade-machine-asset-salary {
     justify-self: start;

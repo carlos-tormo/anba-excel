@@ -1136,7 +1136,7 @@ function tradeMachineAssetRowHtml({ key, type, label, detail, salary, badges = '
         </span>
       </label>
       ${salaryHtml}
-      <select data-trade-recipient="${key}" ${selected ? '' : 'disabled'} aria-label="Destino de ${escapeHtml(label)}">
+      <select class="trade-machine-recipient-select" data-trade-recipient="${key}" ${selected ? '' : 'disabled'} aria-label="Destino de ${escapeHtml(label)}">
         ${tradeMachineRecipientOptions(fromTeam, selectedTo)}
       </select>
     </div>
