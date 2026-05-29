@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import re
 import secrets
@@ -58,6 +59,35 @@ def parse_float(value: Optional[str]) -> Optional[float]:
         return None
 
 
+def parse_amount_like(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "e" in text.lower():
+        try:
+            parsed = float(text)
+            return parsed if math.isfinite(parsed) else None
+        except ValueError:
+            return None
+    cleaned = text.replace(" ", "")
+    if "," in cleaned and "." in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
+    else:
+        cleaned = cleaned.replace(".", "")
+    cleaned = re.sub(r"[^0-9.-]", "", cleaned)
+    if cleaned in {"", "-", "."}:
+        return None
+    try:
+        parsed = float(cleaned)
+        return parsed if math.isfinite(parsed) else None
+    except ValueError:
+        return None
+
+
 def parse_int(value: Optional[str]) -> Optional[int]:
     if value is None:
         return None
@@ -86,9 +116,22 @@ def dead_contract_salary_num(dead_contract: Dict[str, Any], season: int) -> floa
     value = dead_contract.get(f"salary_{season}_num")
     if value is not None:
         return float(value or 0.0)
+    text_value = parse_amount_like(dead_contract.get(f"salary_{season}_text"))
+    if text_value is not None:
+        return text_value
     if season == 2025:
-        return float(dead_contract.get("amount_num") or 0.0)
+        amount_value = dead_contract.get("amount_num")
+        if amount_value is not None:
+            return float(amount_value or 0.0)
+        return parse_amount_like(dead_contract.get("amount_text")) or 0.0
     return 0.0
+
+
+def row_salary_num(row: Dict[str, Any], season: int) -> float:
+    value = row.get(f"salary_{season}_num")
+    if value is not None:
+        return float(value or 0.0)
+    return parse_amount_like(row.get(f"salary_{season}_text")) or 0.0
 
 
 def normalize_pick_type(value: Any) -> str:
@@ -891,12 +934,11 @@ class LeagueDB:
         current_year = parse_int(settings.get("current_year")) or 2025
         if current_year < 2025 or current_year > 2030:
             current_year = 2025
-        salary_num_key = f"salary_{current_year}_num"
 
         # CAP Total: current-year player salaries excluding TW contracts.
-        cap_figure_players = sum((p.get(salary_num_key) or 0.0) for p in players if not p.get("is_two_way"))
+        cap_figure_players = sum(row_salary_num(p, current_year) for p in players if not p.get("is_two_way"))
         # GASTO Total: current-year player salaries including TW contracts.
-        player_payroll = sum((p.get(salary_num_key) or 0.0) for p in players)
+        player_payroll = sum(row_salary_num(p, current_year) for p in players)
 
         dead_cap_normal = sum(
             dead_contract_salary_num(d, current_year)

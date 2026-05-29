@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260528h">
+  <link rel="stylesheet" href="/styles.css?v=20260529i">
 </head>
 <body class="app-layout">
   <header>
@@ -20,6 +20,7 @@
       <button id="openLocatorBtn" class="icon-only-btn" type="button" aria-label="Search players and draft picks" title="Search">Search</button>
       <button id="trackerHomeBtn" type="button">Tracker</button>
       <button id="freeAgentsHomeBtn" type="button">Free agents</button>
+      <button id="tradeMachineHomeBtn" type="button">Máquina de traspasos</button>
       <span id="authBadge"></span>
       <a id="adminLink" href="/admin" class="ghost-link">Admin</a>
       <a id="loginLink" href="/login" class="ghost-link">Login</a>
@@ -41,6 +42,7 @@
       <div class="mobile-sidebar-links">
         <button id="mobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Clasificación</button>
         <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
+        <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄">Máquina de traspasos</button>
         <button id="mobileLocatorBtn" type="button" class="mobile-nav-btn" data-icon="⌕">Buscar</button>
         <a id="mobileAdminLink" href="/admin" class="mobile-nav-link" data-icon="⚙">Admin</a>
       </div>
@@ -146,6 +148,40 @@
       </div>
     </section>
 
+    <section id="tradeMachineSection" class="trade-machine-section section-hidden">
+      <div class="section-head trade-machine-head">
+        <div>
+          <h2>Máquina de traspasos</h2>
+          <div id="tradeMachineStatus" class="trade-machine-status" aria-live="polite"></div>
+        </div>
+        <div class="section-actions trade-machine-actions">
+          <label class="season-view-control" for="tradeMachineSeasonSelect">
+            <span>Temporada</span>
+            <select id="tradeMachineSeasonSelect"></select>
+          </label>
+          <button id="tradeMachineResetBtn" type="button">Reiniciar</button>
+          <button id="tradeMachineAddTeamBtn" type="button">Añadir equipo</button>
+        </div>
+      </div>
+      <div id="tradeMachineTeams" class="trade-machine-grid"></div>
+      <aside id="tradeMachineResults" class="trade-machine-results" aria-live="polite"></aside>
+    </section>
+
+    <nav id="teamTabs" class="team-tabs section-hidden" role="tablist" aria-label="Team sections">
+      <button type="button" class="team-tab-btn" data-team-tab="economy" role="tab" aria-selected="true">
+        <span class="team-tab-icon" aria-hidden="true">▦</span>
+        <span>Economía de roster</span>
+      </button>
+      <button type="button" class="team-tab-btn" data-team-tab="general" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">i</span>
+        <span>Info general</span>
+      </button>
+      <button type="button" class="team-tab-btn" data-team-tab="draft" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">✦</span>
+        <span>Draft</span>
+      </button>
+    </nav>
+
     <section id="teamMeta" class="cards team-summary-grid"></section>
 
     <section id="rosterSection" class="guest-roster-section">
@@ -195,6 +231,7 @@
             </tr>
           </thead>
           <tbody></tbody>
+          <tfoot></tfoot>
         </table>
       </div>
       <div id="playersCards" class="players-cards-grid section-hidden"></div>
@@ -267,8 +304,8 @@
       </div>
     </section>
 
-    <section id="assetsSection">
-      <h2>Draft Assets</h2>
+    <section id="assetsSection" class="team-tab-draft-section">
+      <h2 class="team-tab-section-title">Draft Assets</h2>
       <div id="draftAssetsBoard" class="draft-assets-board"></div>
     </section>
 
@@ -292,15 +329,16 @@
     </section>
 
     <section id="importantFiguresSection">
-      <h2>Cifras importantes</h2>
+      <h2>Balances</h2>
       <div class="table-wrap important-figures-wrap">
         <table id="importantFiguresTable">
           <tbody></tbody>
         </table>
       </div>
+      <div id="importantFiguresAppendix" class="important-figures-appendix"></div>
     </section>
   </main>
 
-  <script src="/guest.js?v=20260528h" defer></script>
+  <script src="/guest.js?v=20260529i" defer></script>
 </body>
 </html>

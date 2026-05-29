@@ -38,6 +38,7 @@ const state = {
   },
   ui: {
     viewMode: 'tracker',
+    activeTeamTab: 'economy',
     addingPlayer: false,
     addingDeadContract: false,
     addingDraftPick: false,
@@ -65,6 +66,20 @@ const PLAYER_SORT_CYCLE = [
 ];
 const POSITION_ORDER = { PG: 1, SG: 2, SF: 3, PF: 4, C: 5 };
 const ALL_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030];
+const TEAM_TABS = [
+  {
+    id: 'economy',
+    sections: ['rosterSection', 'deadContractsSection', 'assetsSection', 'playerRightsSection'],
+  },
+  {
+    id: 'general',
+    sections: ['teamMeta', 'adminTeamControlsSection', 'importantFiguresSection'],
+  },
+  {
+    id: 'draft',
+    sections: ['draftAssetsSection'],
+  },
+];
 
 function typeClass(value) {
   const v = String(value || '').toLowerCase().replaceAll('(', '').replaceAll(')', '').replaceAll('/', '').replaceAll(' ', '');
@@ -237,6 +252,15 @@ function seasonLabel(startYear) {
   return `${y}-${next}`;
 }
 
+function seasonSlashLabel(startYear) {
+  return seasonLabel(startYear).replace('-', '/');
+}
+
+function currentSeasonStart() {
+  const currentYear = Number(state.settings.current_year || 2025);
+  return Number.isInteger(currentYear) ? currentYear : 2025;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -247,12 +271,68 @@ function escapeHtml(value) {
 }
 
 function visibleSeasonYears() {
-  const currentYear = Number(state.settings.current_year || 2025);
+  const currentYear = currentSeasonStart();
   return ALL_SEASONS.filter((season) => season >= currentYear);
 }
 
+function salaryNumericValue(row, season) {
+  const direct = row?.[`salary_${season}_num`];
+  if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) {
+    return Number(direct);
+  }
+  return parseAmount(row?.[`salary_${season}_text`]) || 0;
+}
+
+function amountNumericValue(row) {
+  const direct = row?.amount_num;
+  if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) {
+    return Number(direct);
+  }
+  return parseAmount(row?.amount_text) || 0;
+}
+
+function isTwoWayPlayer(player) {
+  return boolValue(player?.is_two_way) || String(player?.bird_rights || '').trim().toUpperCase() === 'TW';
+}
+
+function isTwoWayDeadContract(dead) {
+  return String(dead?.dead_type || '').trim().toLowerCase().replaceAll('-', '_') === 'two_way';
+}
+
+function balanceSeasonYears() {
+  const currentYear = currentSeasonStart();
+  return Array.from({ length: 6 }, (_, idx) => currentYear + idx);
+}
+
+function exceptionBalanceTotal(season) {
+  if (season !== currentSeasonStart()) return 0;
+  return (state.teamData?.assets || [])
+    .filter((asset) => asset.asset_type === 'exception')
+    .reduce((sum, asset) => sum + amountNumericValue(asset), 0);
+}
+
+function seasonBalances(season) {
+  const players = state.teamData?.players || [];
+  const deadContracts = state.teamData?.dead_contracts || [];
+  const playerTotal = players.reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
+  const capPlayerTotal = players
+    .filter((player) => !isTwoWayPlayer(player))
+    .reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
+  const normalDeadTotal = deadContracts
+    .filter((dead) => !isTwoWayDeadContract(dead))
+    .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
+  const deadTotal = deadContracts.reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
+  const capTotal = capPlayerTotal + normalDeadTotal;
+  const gastoTotal = playerTotal + deadTotal;
+  return {
+    cap_total: capTotal,
+    gasto_total: gastoTotal,
+    apron_account: capTotal + exceptionBalanceTotal(season),
+  };
+}
+
 function applySeasonColumnVisibility() {
-  const currentYear = Number(state.settings.current_year || 2025);
+  const currentYear = currentSeasonStart();
   const tableConfigs = [
     { selector: '#playersTable', seasonOffset: 6 },
     { selector: '#deadContractsTable', seasonOffset: 2 },
@@ -1305,6 +1385,51 @@ async function refreshAdminLogsSafe() {
   }
 }
 
+function teamTabForSection(sectionId) {
+  return TEAM_TABS.find((tab) => tab.sections.includes(sectionId))?.id || null;
+}
+
+function activeTeamTab() {
+  return TEAM_TABS.some((tab) => tab.id === state.ui.activeTeamTab)
+    ? state.ui.activeTeamTab
+    : TEAM_TABS[0].id;
+}
+
+function syncTeamTabs() {
+  const showTeam = state.ui.viewMode === 'team';
+  const active = activeTeamTab();
+  const tabs = document.getElementById('teamTabs');
+  if (tabs) tabs.classList.toggle('section-hidden', !showTeam);
+
+  document.querySelectorAll('[data-team-tab]').forEach((btn) => {
+    const isActive = btn.dataset.teamTab === active;
+    btn.classList.toggle('is-active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+
+  TEAM_TABS.forEach((tab) => {
+    tab.sections.forEach((sectionId) => {
+      const section = document.getElementById(sectionId);
+      if (!section) return;
+      section.classList.toggle('section-hidden', !showTeam || tab.id !== active);
+    });
+  });
+}
+
+function setTeamTab(tabId) {
+  state.ui.activeTeamTab = TEAM_TABS.some((tab) => tab.id === tabId) ? tabId : TEAM_TABS[0].id;
+  syncTeamTabs();
+}
+
+function setupTeamTabs() {
+  document.querySelectorAll('[data-team-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setTeamTab(btn.dataset.teamTab);
+    });
+  });
+  syncTeamTabs();
+}
+
 function setViewMode(mode) {
   state.ui.viewMode = mode;
   const showTeam = mode === 'team';
@@ -1320,7 +1445,9 @@ function setViewMode(mode) {
 
   toggleSection('trackerSection', !showTracker);
   toggleSection('freeAgentsSection', !showFreeAgents);
+  toggleSection('teamTabs', !showTeam);
   toggleSection('teamMeta', !showTeam);
+  toggleSection('adminTeamControlsSection', !showTeam);
   toggleSection('settingsSection', !showLeagueSettings);
   toggleSection('adminLogsSection', !showAdminLog);
   toggleSection('rosterSection', !showTeam);
@@ -1330,6 +1457,7 @@ function setViewMode(mode) {
   toggleSection('draftAssetsSection', !showTeam);
   toggleSection('playerRightsSection', !showTeam);
   toggleSection('importantFiguresSection', !showTeam);
+  syncTeamTabs();
   syncAdminMobileInfoButton();
 
   const teamControls = [
@@ -1984,25 +2112,69 @@ function renderCards() {
 }
 
 function renderImportantFigures() {
-  const tbody = document.querySelector('#importantFiguresTable tbody');
-  if (!tbody) return;
-  const season = seasonLabel(Number(state.settings.current_year || 2025));
+  const table = document.getElementById('importantFiguresTable');
+  if (!table) return;
+  const currentYear = currentSeasonStart();
+  const seasons = balanceSeasonYears();
+  const seasonData = seasons.map((season) => ({ season, balances: seasonBalances(season) }));
+  const rows = [
+    ['CAP TOTAL', 'cap_total'],
+    ['GASTO TOTAL', 'gasto_total'],
+    ['Cuenta del APRON', 'apron_account'],
+  ];
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th class="balance-row-heading">Balance</th>
+        ${seasons.map((season) => `
+          <th class="${season === currentYear ? 'is-current-year' : ''}">${seasonSlashLabel(season)}</th>
+        `).join('')}
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.map(([label, key]) => `
+        <tr>
+          <th class="balance-row-label">${label}</th>
+          ${seasonData.map(({ season, balances }) => {
+            const value = Number(balances[key] || 0);
+            const valueClass = value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '';
+            return `
+              <td class="${season === currentYear ? 'is-current-year' : ''}">
+                <span class="balance-value ${valueClass}">${formatMoneyDots(value)}</span>
+              </td>
+            `;
+          }).join('')}
+        </tr>
+      `).join('')}
+    </tbody>
+  `;
+
+  const appendix = document.getElementById('importantFiguresAppendix');
+  if (!appendix) return;
   const salaryCap = Number(state.settings.salary_cap_2025 || 0);
   const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215);
   const firstApron = Number(state.settings.first_apron || 0);
   const secondApron = Number(state.settings.second_apron || 0);
   const minCap = Number(state.settings.minimum_cap_allowed || salaryCap * 0.9);
-  const rows = [
-    ['Temporada actual', season],
+  const appendixRows = [
+    ['Temporada actual', seasonLabel(currentYear)],
     ['Salary cap', formatDots(salaryCap)],
     ['Luxury cap', formatDots(luxuryCap)],
     ['1er Apron', formatDots(firstApron)],
     ['2do Apron', formatDots(secondApron)],
     ['Mínimo cap permitido', formatDots(minCap)],
   ];
-  tbody.innerHTML = rows
-    .map((row) => `<tr><th>${row[0]}</th><td>${row[1]}</td></tr>`)
-    .join('');
+  appendix.innerHTML = `
+    <div class="important-figures-appendix-title">Cifras importantes</div>
+    <div class="important-figures-appendix-list">
+      ${appendixRows.map(([label, value]) => `
+        <span class="important-figures-appendix-item">
+          <span>${label}</span>
+          <strong>${value}</strong>
+        </span>
+      `).join('')}
+    </div>
+  `;
 }
 
 function renderCapStatusPills(summary) {
@@ -2446,6 +2618,14 @@ function renderPlayers() {
           method: 'PATCH',
           body: JSON.stringify({ [key]: value }),
         });
+        p[key] = value;
+        if (key.startsWith('salary_')) {
+          const season = Number(key.split('_')[1] || 0);
+          const parsed = parseAmount(value);
+          if (Number.isFinite(season)) p[`salary_${season}_num`] = parsed;
+          renderRosterTotals(rows, ALL_SEASONS);
+          renderImportantFigures();
+        }
         await refreshSummary();
       });
 
@@ -2631,8 +2811,30 @@ function renderPlayers() {
   });
   if (state.ui.addingPlayer) appendAddPlayerRow(tbody);
   else appendAddPlayerTriggerRow(tbody);
+  renderRosterTotals(rows, ALL_SEASONS);
   syncSelectAllPlayers();
   applySeasonColumnVisibility();
+}
+
+function renderRosterTotals(rows, seasons) {
+  const tfoot = document.querySelector('#playersTable tfoot');
+  if (!tfoot) return;
+  const totals = seasons.map((season) => rows.reduce((sum, player) => sum + salaryNumericValue(player, season), 0));
+  tfoot.innerHTML = `
+    <tr class="roster-total-row">
+      <td class="roster-total-label">Total</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      ${totals.map((total) => `
+        <td><span class="roster-total-amount">${formatMoneyDots(total)}</span></td>
+      `).join('')}
+      <td></td>
+      <td></td>
+    </tr>
+  `;
 }
 
 function syncSelectAllPlayers() {
@@ -3470,6 +3672,13 @@ function renderDeadContracts() {
           method: 'PATCH',
           body: JSON.stringify({ [key]: value }),
         });
+        d[key] = value;
+        if (key.startsWith('salary_')) {
+          const season = Number(key.split('_')[1] || 0);
+          const parsed = parseAmount(value);
+          if (Number.isFinite(season)) d[`salary_${season}_num`] = parsed;
+        }
+        renderImportantFigures();
         await refreshSummary();
       });
 
@@ -3860,6 +4069,7 @@ async function init() {
   setupTradeModal();
   setupAdminMenu();
   setupAdminMobileNav();
+  setupTeamTabs();
   document.getElementById('logActionFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('logEntityFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('refreshLogsBtn').addEventListener('click', () => { void loadAdminLogs(); });

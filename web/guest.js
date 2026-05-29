@@ -27,6 +27,8 @@ const state = {
     free_agents: { key: 'name', dir: 'asc' },
   },
   ui: {
+    viewMode: 'tracker',
+    activeTeamTab: 'economy',
     rosterView: 'list',
     seasonViewStart: null,
     statusPills: [],
@@ -37,6 +39,13 @@ const state = {
     index: null,
     loading: false,
   },
+  tradeMachine: {
+    selectedTeams: [],
+    teamDataByCode: {},
+    selections: {},
+    seasonStart: null,
+    loading: false,
+  },
   filters: {
     guaranteedOnly: false,
     optionsOnly: false,
@@ -45,7 +54,28 @@ const state = {
 };
 
 const SEASON_WINDOW_SIZE = 6;
+const TRADE_MACHINE_MIN_TEAMS = 2;
+const TRADE_MACHINE_MAX_TEAMS = 5;
+const TRADE_MATCH_LOW_BAND = 7_250_000;
+const TRADE_MATCH_HIGH_BAND = 29_000_000;
+const TRADE_MATCH_CUSHION = 250_000;
+const TRADE_MATCH_EXPANDED_BUFFER_RATIO = 0.05513854478;
+const TRADE_MATCH_EXPANDED_BUFFER_FALLBACK = 8_527_000;
 const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
+const TEAM_TABS = [
+  {
+    id: 'economy',
+    sections: ['rosterSection', 'deadContractsSection', 'exceptionsSection', 'playerRightsSection'],
+  },
+  {
+    id: 'general',
+    sections: ['teamMeta', 'importantFiguresSection'],
+  },
+  {
+    id: 'draft',
+    sections: ['assetsSection'],
+  },
+];
 
 const PLAYER_SORT_CYCLE = [
   { key: 'position', dir: 'asc' },
@@ -246,7 +276,54 @@ function visibleSeasonYears() {
   return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => start + idx);
 }
 
+function teamTabForSection(sectionId) {
+  return TEAM_TABS.find((tab) => tab.sections.includes(sectionId))?.id || null;
+}
+
+function activeTeamTab() {
+  return TEAM_TABS.some((tab) => tab.id === state.ui.activeTeamTab)
+    ? state.ui.activeTeamTab
+    : TEAM_TABS[0].id;
+}
+
+function syncTeamTabs() {
+  const showTeam = state.ui.viewMode === 'team';
+  const active = activeTeamTab();
+  const tabs = document.getElementById('teamTabs');
+  if (tabs) tabs.classList.toggle('section-hidden', !showTeam);
+
+  document.querySelectorAll('[data-team-tab]').forEach((btn) => {
+    const isActive = btn.dataset.teamTab === active;
+    btn.classList.toggle('is-active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+
+  TEAM_TABS.forEach((tab) => {
+    tab.sections.forEach((sectionId) => {
+      const section = document.getElementById(sectionId);
+      if (!section) return;
+      section.classList.toggle('section-hidden', !showTeam || tab.id !== active);
+    });
+  });
+}
+
+function setTeamTab(tabId) {
+  state.ui.activeTeamTab = TEAM_TABS.some((tab) => tab.id === tabId) ? tabId : TEAM_TABS[0].id;
+  syncTeamTabs();
+}
+
+function setupTeamTabs() {
+  document.querySelectorAll('[data-team-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setTeamTab(btn.dataset.teamTab);
+    });
+  });
+  syncTeamTabs();
+}
+
 function scrollToTeamSection(sectionId) {
+  const tabId = teamTabForSection(sectionId);
+  if (tabId) setTeamTab(tabId);
   requestAnimationFrame(() => {
     const section = document.getElementById(sectionId);
     if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -486,6 +563,1018 @@ function salaryText(obj, season) {
     return money(num);
   }
   return '';
+}
+
+function seasonSlashLabel(startYear) {
+  return seasonLabel(startYear).replace('-', '/');
+}
+
+function parseAmountLike(raw) {
+  if (raw == null) return null;
+  const text = String(raw).trim();
+  if (!text) return null;
+  if (/[eE]/.test(text)) {
+    const expNum = Number(text);
+    return Number.isFinite(expNum) ? expNum : null;
+  }
+  let cleaned = text.replaceAll(' ', '');
+  if (cleaned.includes(',') && cleaned.includes('.')) {
+    cleaned = cleaned.replaceAll('.', '').replaceAll(',', '.');
+  } else if (cleaned.includes(',') && !cleaned.includes('.')) {
+    cleaned = cleaned.replaceAll(',', '.');
+  } else {
+    cleaned = cleaned.replaceAll('.', '');
+  }
+  cleaned = cleaned.replace(/[^0-9.-]/g, '');
+  if (!cleaned || cleaned === '-' || cleaned === '.') return null;
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : null;
+}
+
+function salaryNumericValue(row, season) {
+  const direct = row?.[`salary_${season}_num`];
+  if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) {
+    return Number(direct);
+  }
+  return parseAmountLike(row?.[`salary_${season}_text`]) || 0;
+}
+
+function amountNumericValue(row) {
+  const direct = row?.amount_num;
+  if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) {
+    return Number(direct);
+  }
+  return parseAmountLike(row?.amount_text) || 0;
+}
+
+function isTwoWayPlayer(player) {
+  return boolValue(player?.is_two_way) || String(player?.bird_rights || '').trim().toUpperCase() === 'TW';
+}
+
+function isTwoWayDeadContract(dead) {
+  return String(dead?.dead_type || '').trim().toLowerCase().replaceAll('-', '_') === 'two_way';
+}
+
+function balanceSeasonYears() {
+  const currentYear = currentSeasonStart();
+  return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => currentYear + idx);
+}
+
+function teamExceptionBalanceTotal(data, season) {
+  if (season !== currentSeasonStart()) return 0;
+  return (data?.assets || [])
+    .filter((asset) => asset.asset_type === 'exception')
+    .reduce((sum, asset) => sum + amountNumericValue(asset), 0);
+}
+
+function exceptionBalanceTotal(season) {
+  return teamExceptionBalanceTotal(state.teamData, season);
+}
+
+function teamSeasonBalances(data, season) {
+  const players = data?.players || [];
+  const deadContracts = data?.dead_contracts || [];
+  const playerTotal = players.reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
+  const capPlayerTotal = players
+    .filter((player) => !isTwoWayPlayer(player))
+    .reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
+  const normalDeadTotal = deadContracts
+    .filter((dead) => !isTwoWayDeadContract(dead))
+    .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
+  const deadTotal = deadContracts.reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
+  const capTotal = capPlayerTotal + normalDeadTotal;
+  const gastoTotal = playerTotal + deadTotal;
+  return {
+    cap_total: capTotal,
+    gasto_total: gastoTotal,
+    apron_account: capTotal + teamExceptionBalanceTotal(data, season),
+  };
+}
+
+function seasonBalances(season) {
+  return teamSeasonBalances(state.teamData, season);
+}
+
+function tradeMachineSeasonStart() {
+  const selected = Number(state.tradeMachine.seasonStart || currentSeasonStart());
+  return Number.isInteger(selected) ? selected : currentSeasonStart();
+}
+
+function tradeMachineDraftYearStart() {
+  return tradeMachineSeasonStart() + 1;
+}
+
+function tradeMachineValidTeamCodes() {
+  return new Set((state.teams || []).map((team) => team.code));
+}
+
+function tradeMachineUniqueCodes(codes) {
+  const validCodes = tradeMachineValidTeamCodes();
+  const seen = new Set();
+  return (codes || [])
+    .map((code) => String(code || '').trim().toUpperCase())
+    .filter((code) => code && validCodes.has(code) && !seen.has(code) && seen.add(code));
+}
+
+function defaultTradeMachineTeams(seedCodes = []) {
+  const seeded = tradeMachineUniqueCodes(seedCodes);
+  const codes = seeded.length ? seeded : tradeMachineUniqueCodes([state.teamCode]);
+  (state.teams || []).forEach((team) => {
+    if (codes.length >= TRADE_MACHINE_MIN_TEAMS) return;
+    if (!codes.includes(team.code)) codes.push(team.code);
+  });
+  return codes.slice(0, TRADE_MACHINE_MIN_TEAMS);
+}
+
+function tradeMachineTeamName(code) {
+  return (state.teams || []).find((team) => team.code === code)?.name || code;
+}
+
+function tradeMachineRecipientOptions(fromTeam, selectedTo) {
+  return (state.tradeMachine.selectedTeams || [])
+    .filter((code) => code !== fromTeam)
+    .map((code) => `<option value="${code}" ${code === selectedTo ? 'selected' : ''}>${code}</option>`)
+    .join('');
+}
+
+function tradeMachineDefaultRecipient(fromTeam) {
+  return (state.tradeMachine.selectedTeams || []).find((code) => code !== fromTeam) || '';
+}
+
+function draftPickType(asset) {
+  const type = String(asset?.draft_pick_type || 'own').trim().toLowerCase();
+  return ['own', 'acquired', 'sold', 'conditional'].includes(type) ? type : 'own';
+}
+
+function draftPickRound(asset) {
+  const roundRaw = String(asset?.draft_round || '').trim().toLowerCase();
+  if (roundRaw.includes('2')) return '2nd';
+  if (roundRaw.includes('1')) return '1st';
+  const label = String(asset?.label || '').trim().toLowerCase();
+  return label.includes('2') ? '2nd' : '1st';
+}
+
+function draftPickIsRestricted(asset) {
+  return boolValue(asset?.draft_pick_restricted);
+}
+
+function draftPickIsProtected(asset) {
+  return boolValue(asset?.draft_pick_protected);
+}
+
+function draftPickTradeOwner(asset, teamCode) {
+  if (draftPickType(asset) === 'conditional') {
+    return parseDraftConditionalTeams(asset?.draft_pick_conditional_teams)[0] || String(asset?.original_owner || teamCode || '').toUpperCase();
+  }
+  return String(asset?.original_owner || teamCode || '').toUpperCase();
+}
+
+function draftPickTradeLabel(asset, teamCode) {
+  const year = Number(asset?.year);
+  const yearLabel = Number.isFinite(year) ? String(year) : 'Sin año';
+  const owner = draftPickTradeOwner(asset, teamCode);
+  return `${yearLabel} ${draftPickRound(asset).toUpperCase()} ${owner || teamCode}`;
+}
+
+function tradeMachinePickBadges(asset) {
+  const badges = [];
+  const type = draftPickType(asset);
+  if (draftPickIsRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--danger">Restringida</span>');
+  if (draftPickIsProtected(asset)) badges.push('<span class="trade-machine-tag">Protegida</span>');
+  if (type === 'conditional') badges.push('<span class="trade-machine-tag">Condicional</span>');
+  if (type === 'acquired') badges.push('<span class="trade-machine-tag">Adquirida</span>');
+  return badges.join('');
+}
+
+function tradeMachineAssetKey(type, fromTeam, id) {
+  return `${type}:${fromTeam}:${id}`;
+}
+
+function tradeMachineSelectedAsset(key) {
+  return state.tradeMachine.selections[key] || null;
+}
+
+function tradeMachineAssetMeta(key) {
+  const [type, fromTeam, rawId] = String(key || '').split(':');
+  const id = Number(rawId);
+  const data = state.tradeMachine.teamDataByCode[fromTeam];
+  if (!data || !Number.isFinite(id)) return null;
+  if (type === 'player') {
+    const player = (data.players || []).find((item) => Number(item.id) === id);
+    if (!player) return null;
+    const salary = salaryNumericValue(player, tradeMachineSeasonStart());
+    return {
+      key,
+      type,
+      id,
+      fromTeam,
+      label: player.name || 'Jugador',
+      detail: [player.position, player.bird_rights].filter(Boolean).join(' · '),
+      salary,
+      capSalary: isTwoWayPlayer(player) ? 0 : salary,
+      restricted: false,
+      protected: false,
+      conditional: false,
+    };
+  }
+  if (type === 'pick') {
+    const pick = (data.assets || []).find((item) => item.asset_type === 'draft_pick' && Number(item.id) === id);
+    if (!pick) return null;
+    return {
+      key,
+      type,
+      id,
+      fromTeam,
+      label: draftPickTradeLabel(pick, fromTeam),
+      detail: String(pick.detail || '').trim(),
+      salary: 0,
+      capSalary: 0,
+      restricted: draftPickIsRestricted(pick),
+      protected: draftPickIsProtected(pick),
+      conditional: draftPickType(pick) === 'conditional',
+      round: draftPickRound(pick),
+    };
+  }
+  if (type === 'right') {
+    const right = (data.assets || []).find((item) => item.asset_type === 'player_right' && Number(item.id) === id);
+    if (!right) return null;
+    return {
+      key,
+      type,
+      id,
+      fromTeam,
+      label: right.label || 'Derecho de jugador',
+      detail: String(right.detail || '').trim(),
+      salary: 0,
+      capSalary: 0,
+      restricted: false,
+      protected: false,
+      conditional: false,
+    };
+  }
+  return null;
+}
+
+function pruneTradeMachineSelections() {
+  const teams = new Set(state.tradeMachine.selectedTeams || []);
+  Object.entries(state.tradeMachine.selections || {}).forEach(([key, selection]) => {
+    const meta = tradeMachineAssetMeta(key);
+    if (!meta || !teams.has(selection.fromTeam) || !teams.has(selection.toTeam) || selection.fromTeam === selection.toTeam) {
+      delete state.tradeMachine.selections[key];
+    }
+  });
+}
+
+async function ensureTradeMachineTeamData(codes) {
+  const unique = tradeMachineUniqueCodes(codes);
+  const missing = unique.filter((code) => !state.tradeMachine.teamDataByCode[code]);
+  if (!missing.length) return;
+  state.tradeMachine.loading = true;
+  renderTradeMachine();
+  try {
+    const loaded = await Promise.all(missing.map(async (code) => [code, await api(`/api/teams/${code}`)]));
+    loaded.forEach(([code, data]) => {
+      state.tradeMachine.teamDataByCode[code] = data;
+    });
+  } finally {
+    state.tradeMachine.loading = false;
+  }
+}
+
+function renderTradeMachineSeasonControl() {
+  const select = document.getElementById('tradeMachineSeasonSelect');
+  if (!select) return;
+  const current = currentSeasonStart();
+  const selected = tradeMachineSeasonStart();
+  select.innerHTML = availableSeasonViewStarts()
+    .map((season) => {
+      const suffix = season === current ? ' (actual)' : '';
+      return `<option value="${season}" ${season === selected ? 'selected' : ''}>${seasonLabel(season)}${suffix}</option>`;
+    })
+    .join('');
+}
+
+function tradeMachineTeamSelectHtml(code, index) {
+  const used = new Set((state.tradeMachine.selectedTeams || []).filter((_, idx) => idx !== index));
+  const options = (state.teams || []).map((team) => `
+    <option value="${team.code}" ${team.code === code ? 'selected' : ''} ${used.has(team.code) ? 'disabled' : ''}>
+      ${team.code} - ${escapeHtml(team.name || team.code)}
+    </option>
+  `).join('');
+  return `<select data-trade-team-select="${index}" aria-label="Equipo ${index + 1}">${options}</select>`;
+}
+
+function tradeMachineThresholds() {
+  const salaryCap = Number(state.settings.salary_cap_2025 || 0);
+  const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215 || 0);
+  return {
+    salaryCap,
+    luxuryCap,
+    firstApron: Number(state.settings.first_apron || 0),
+    secondApron: Number(state.settings.second_apron || 0),
+  };
+}
+
+function tradeMachineBalanceSnapshot(capFigure, apronFigure = capFigure) {
+  const thresholds = tradeMachineThresholds();
+  return [
+    { key: 'cap', label: 'CAP', value: thresholds.salaryCap - Number(capFigure || 0) },
+    { key: 'tax', label: 'Impuesto lujo', value: thresholds.luxuryCap - Number(capFigure || 0) },
+    { key: 'first_apron', label: '1er apron', value: thresholds.firstApron - Number(apronFigure || 0) },
+    { key: 'second_apron', label: '2do apron', value: thresholds.secondApron - Number(apronFigure || 0) },
+  ];
+}
+
+function tradeMachineFlowSkeleton(code) {
+  const data = state.tradeMachine.teamDataByCode[code] || {};
+  const season = tradeMachineSeasonStart();
+  const seasonTotals = teamSeasonBalances(data, season);
+  const summary = data.summary || {};
+  const beforeCap = season === currentSeasonStart() && Number.isFinite(Number(summary.cap_figure))
+    ? Number(summary.cap_figure)
+    : Number(seasonTotals.cap_total || 0);
+  return {
+    code,
+    beforeCap,
+    beforeApronAccount: beforeCap,
+    incomingSalary: 0,
+    outgoingSalary: 0,
+    incomingCapSalary: 0,
+    outgoingCapSalary: 0,
+    incomingAssets: [],
+    outgoingAssets: [],
+    postCap: beforeCap,
+    postApronAccount: beforeCap,
+    beforeBalances: tradeMachineBalanceSnapshot(beforeCap),
+    afterBalances: tradeMachineBalanceSnapshot(beforeCap),
+  };
+}
+
+function tradeMachineFlows() {
+  const flows = {};
+  (state.tradeMachine.selectedTeams || []).forEach((code) => {
+    flows[code] = tradeMachineFlowSkeleton(code);
+  });
+  Object.entries(state.tradeMachine.selections || {}).forEach(([key, selection]) => {
+    const meta = tradeMachineAssetMeta(key);
+    if (!meta || !flows[selection.fromTeam] || !flows[selection.toTeam]) return;
+    const salary = Number(meta.salary || 0);
+    const capSalary = Number(meta.capSalary ?? meta.salary ?? 0);
+    flows[selection.fromTeam].outgoingSalary += salary;
+    flows[selection.fromTeam].outgoingCapSalary += capSalary;
+    flows[selection.fromTeam].outgoingAssets.push({ ...meta, toTeam: selection.toTeam });
+    flows[selection.toTeam].incomingSalary += salary;
+    flows[selection.toTeam].incomingCapSalary += capSalary;
+    flows[selection.toTeam].incomingAssets.push({ ...meta, fromTeam: selection.fromTeam });
+  });
+  Object.values(flows).forEach((flow) => {
+    flow.postCap = flow.beforeCap + flow.incomingCapSalary - flow.outgoingCapSalary;
+    flow.postApronAccount = flow.beforeApronAccount + flow.incomingCapSalary - flow.outgoingCapSalary;
+    flow.afterBalances = tradeMachineBalanceSnapshot(flow.postCap, flow.postApronAccount);
+  });
+  return flows;
+}
+
+function tradeMachineExpandedBuffer(salaryCap) {
+  const cap = Number(salaryCap || state.settings.salary_cap_2025 || 0);
+  const calculated = Math.round(cap * TRADE_MATCH_EXPANDED_BUFFER_RATIO);
+  return calculated > 0 ? calculated : TRADE_MATCH_EXPANDED_BUFFER_FALLBACK;
+}
+
+function tradeMachineSalaryMatchLimit(outgoingSalary, apronLimited, salaryCap) {
+  const outgoing = Number(outgoingSalary || 0);
+  if (apronLimited) return outgoing;
+  if (outgoing < TRADE_MATCH_LOW_BAND) return outgoing * 2 + TRADE_MATCH_CUSHION;
+  if (outgoing <= TRADE_MATCH_HIGH_BAND) return outgoing + tradeMachineExpandedBuffer(salaryCap);
+  return outgoing * 1.25;
+}
+
+function tradeMachineSalaryMatchIssue(code, flow) {
+  const data = state.tradeMachine.teamDataByCode[code];
+  if (!data) return null;
+  const summary = data.summary || {};
+  const thresholds = tradeMachineThresholds();
+  const salaryCap = thresholds.salaryCap || Number(summary.salary_cap_2025 || 0);
+  const firstApron = thresholds.firstApron;
+  const secondApron = thresholds.secondApron;
+  const hardCap = String(summary.apron_hard_cap || '').trim().toLowerCase();
+  const postApronAccount = Number(flow.postApronAccount ?? flow.postCap ?? 0);
+  if (hardCap === 'first' && firstApron > 0 && postApronAccount > firstApron) {
+    return {
+      severity: 'illegal',
+      rule: 'hard_cap',
+      teamCode: code,
+      message: 'Tiene límite duro en el 1er apron y acabaría por encima.',
+    };
+  }
+  if (hardCap === 'second' && secondApron > 0 && postApronAccount > secondApron) {
+    return {
+      severity: 'illegal',
+      rule: 'hard_cap',
+      teamCode: code,
+      message: 'Tiene límite duro en el 2do apron y acabaría por encima.',
+    };
+  }
+  if (flow.incomingSalary <= flow.outgoingSalary) return null;
+  const capRoom = Math.max(0, salaryCap - flow.beforeCap);
+  if (flow.beforeCap < salaryCap && flow.incomingSalary <= flow.outgoingSalary + capRoom) return null;
+  if (flow.outgoingSalary <= 0) {
+    return {
+      severity: 'illegal',
+      rule: 'salary',
+      teamCode: code,
+      message: `Recibe ${formatBalanceMoney(flow.incomingSalary)} sin suficiente salario enviado ni margen salarial.`,
+    };
+  }
+  const apronLimited = hardCap === 'first'
+    || hardCap === 'second'
+    || (firstApron > 0 && (Number(flow.beforeApronAccount ?? flow.beforeCap ?? 0) >= firstApron || postApronAccount >= firstApron));
+  const limit = tradeMachineSalaryMatchLimit(flow.outgoingSalary, apronLimited, salaryCap);
+  if (flow.incomingSalary <= limit) return null;
+  return {
+    severity: 'illegal',
+    rule: 'salary',
+    teamCode: code,
+    message: `Puede recibir hasta ${formatBalanceMoney(limit)} por la regla básica de cuadre salarial, pero recibe ${formatBalanceMoney(flow.incomingSalary)}.`,
+  };
+}
+
+function tradeMachineIssuesForRule(issues, rule) {
+  return (issues || []).filter((issue) => issue.rule === rule);
+}
+
+function tradeMachineIssueMessage(issue) {
+  const teamPrefix = issue.teamCode ? `${issue.teamCode}: ` : '';
+  return `${teamPrefix}${issue.message}`;
+}
+
+function tradeMachineRuleChecklist(issues, selectedCount) {
+  const salaryIssues = tradeMachineIssuesForRule(issues, 'salary');
+  const hardCapIssues = tradeMachineIssuesForRule(issues, 'hard_cap');
+  const restrictedIssues = tradeMachineIssuesForRule(issues, 'restricted_pick');
+  const manualIssues = tradeMachineIssuesForRule(issues, 'manual_review');
+  return [
+    {
+      key: 'salary',
+      label: 'Cuadre salarial básico',
+      status: !selectedCount ? 'pending' : salaryIssues.length ? 'fail' : 'pass',
+      messages: !selectedCount
+        ? ['Añade activos para evaluar el cuadre salarial.']
+        : salaryIssues.length
+          ? salaryIssues.map(tradeMachineIssueMessage)
+          : ['El cuadre salarial básico pasa para todos los equipos seleccionados.'],
+    },
+    {
+      key: 'hard_cap',
+      label: 'Límite duro',
+      status: hardCapIssues.length ? 'fail' : 'pass',
+      messages: hardCapIssues.length
+        ? hardCapIssues.map(tradeMachineIssueMessage)
+        : ['No se detecta conflicto de límite duro en el 1er/2do apron.'],
+    },
+    {
+      key: 'restricted_pick',
+      label: 'Ronda restringida',
+      status: restrictedIssues.length ? 'fail' : 'pass',
+      messages: restrictedIssues.length
+        ? restrictedIssues.map(tradeMachineIssueMessage)
+        : ['No hay ninguna ronda restringida seleccionada.'],
+    },
+    {
+      key: 'manual_review',
+      label: 'Stepien/revisión manual',
+      status: manualIssues.length ? 'warning' : 'pass',
+      messages: manualIssues.length
+        ? manualIssues.map(tradeMachineIssueMessage)
+        : ['No se activa revisión por protecciones, condiciones, Stepien ni agregación/aprons.'],
+    },
+    {
+      key: 'roster_count',
+      label: 'Tamaño de plantilla',
+      status: 'pending',
+      messages: ['Pendiente: aún no se comprueba el tamaño de plantilla tras el traspaso.'],
+    },
+  ];
+}
+
+function validateTradeMachine() {
+  pruneTradeMachineSelections();
+  const teams = state.tradeMachine.selectedTeams || [];
+  const flows = tradeMachineFlows();
+  const issues = [];
+  if (teams.length < TRADE_MACHINE_MIN_TEAMS) {
+    issues.push({ severity: 'illegal', rule: 'setup', message: 'Selecciona al menos dos equipos.' });
+  }
+  if (teams.length > TRADE_MACHINE_MAX_TEAMS) {
+    issues.push({ severity: 'illegal', rule: 'setup', message: 'Selecciona cinco equipos o menos.' });
+  }
+  const selectedEntries = Object.entries(state.tradeMachine.selections || {});
+  if (!selectedEntries.length) {
+    issues.push({ severity: 'warning', rule: 'setup', message: 'Selecciona al menos un activo.' });
+  }
+  selectedEntries.forEach(([key, selection]) => {
+    const meta = tradeMachineAssetMeta(key);
+    if (!meta) {
+      issues.push({ severity: 'illegal', rule: 'setup', message: 'Un activo seleccionado ya no está disponible.' });
+      return;
+    }
+    if (!selection.toTeam || selection.toTeam === selection.fromTeam) {
+      issues.push({ severity: 'illegal', rule: 'setup', teamCode: selection.fromTeam, message: `${meta.label} necesita un equipo de destino.` });
+    }
+    if (meta.restricted) {
+      issues.push({ severity: 'illegal', rule: 'restricted_pick', teamCode: selection.fromTeam, message: `${meta.label} está restringida y no se puede mover.` });
+    }
+    if (meta.conditional || meta.protected) {
+      issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label} necesita revisión manual por condiciones/protecciones.` });
+    }
+    if (meta.type === 'pick' && meta.round === '1st') {
+      issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label} necesita revisión de la regla Stepien.` });
+    }
+  });
+  teams.forEach((code) => {
+    const flow = flows[code];
+    if (!flow) return;
+    if (!flow.incomingAssets.length && !flow.outgoingAssets.length) {
+      issues.push({ severity: 'warning', rule: 'setup', teamCode: code, message: 'Seleccionado, pero todavía no participa.' });
+    }
+    const salaryIssue = tradeMachineSalaryMatchIssue(code, flow);
+    if (salaryIssue) issues.push(salaryIssue);
+    const secondApron = Number(state.settings.second_apron || 0);
+    const beforeApronAccount = Number(flow.beforeApronAccount ?? flow.beforeCap ?? 0);
+    const postApronAccount = Number(flow.postApronAccount ?? flow.postCap ?? 0);
+    if (
+      secondApron > 0
+      && (flow.incomingAssets.length || flow.outgoingAssets.length)
+      && (beforeApronAccount >= secondApron || postApronAccount >= secondApron)
+    ) {
+      issues.push({ severity: 'warning', rule: 'manual_review', teamCode: code, message: 'Cerca/por encima del 2do apron; las restricciones de agregación y excepciones todavía no están completamente validadas.' });
+    }
+  });
+  const hasIllegal = issues.some((issue) => issue.severity === 'illegal');
+  const hasWarning = issues.some((issue) => issue.severity === 'warning');
+  return {
+    status: hasIllegal ? 'illegal' : hasWarning ? 'review' : 'legal',
+    issues,
+    checklist: tradeMachineRuleChecklist(issues, selectedEntries.length),
+    flows,
+  };
+}
+
+function tradeMachineAssetRowHtml({ key, type, label, detail, salary, badges = '', disabled = false }) {
+  const selected = tradeMachineSelectedAsset(key);
+  const fromTeam = key.split(':')[1];
+  const selectedTo = selected?.toTeam || tradeMachineDefaultRecipient(fromTeam);
+  const salaryHtml = salary > 0 ? `<span class="trade-machine-asset-salary">${formatBalanceMoney(salary)}</span>` : '';
+  return `
+    <div class="trade-machine-asset-row ${disabled ? 'is-disabled' : ''}">
+      <label>
+        <input type="checkbox" data-trade-asset-key="${key}" data-trade-asset-type="${type}" ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+        <span class="trade-machine-asset-main">
+          <span class="trade-machine-asset-name">${escapeHtml(label)}</span>
+          ${detail ? `<span class="trade-machine-asset-detail">${escapeHtml(detail)}</span>` : ''}
+          ${badges ? `<span class="trade-machine-tags">${badges}</span>` : ''}
+        </span>
+      </label>
+      ${salaryHtml}
+      <select data-trade-recipient="${key}" ${selected ? '' : 'disabled'} aria-label="Destino de ${escapeHtml(label)}">
+        ${tradeMachineRecipientOptions(fromTeam, selectedTo)}
+      </select>
+    </div>
+  `;
+}
+
+function tradeMachinePlayerRowsHtml(data, code) {
+  const season = tradeMachineSeasonStart();
+  const players = sortedRows(data.players || [], { key: 'position', dir: 'asc' });
+  if (!players.length) return '<div class="trade-machine-empty">Sin jugadores</div>';
+  return players.map((player) => {
+    const key = tradeMachineAssetKey('player', code, player.id);
+    const detail = [player.position, player.bird_rights].filter(Boolean).join(' · ');
+    return tradeMachineAssetRowHtml({
+      key,
+      type: 'player',
+      label: player.name || 'Jugador',
+      detail,
+      salary: salaryNumericValue(player, season),
+    });
+  }).join('');
+}
+
+function tradeMachinePickRowsHtml(data, code) {
+  const minDraftYear = tradeMachineDraftYearStart();
+  const picks = (data.assets || [])
+    .filter((asset) => asset.asset_type === 'draft_pick')
+    .filter((asset) => draftPickType(asset) !== 'sold')
+    .filter((asset) => {
+      const year = Number(asset.year);
+      return !Number.isFinite(year) || year >= minDraftYear;
+    })
+    .sort((a, b) => {
+      const yearA = Number(a.year || 0);
+      const yearB = Number(b.year || 0);
+      if (yearA !== yearB) return yearA - yearB;
+      return draftPickRound(a).localeCompare(draftPickRound(b));
+    });
+  if (!picks.length) return '<div class="trade-machine-empty">Sin rondas traspasables</div>';
+  return picks.map((pick) => {
+    const key = tradeMachineAssetKey('pick', code, pick.id);
+    const teams = draftPickType(pick) === 'conditional'
+      ? parseDraftConditionalTeams(pick.draft_pick_conditional_teams).join(' / ')
+      : '';
+    const detail = teams || String(pick.detail || '').trim();
+    return tradeMachineAssetRowHtml({
+      key,
+      type: 'pick',
+      label: draftPickTradeLabel(pick, code),
+      detail,
+      badges: tradeMachinePickBadges(pick),
+      disabled: draftPickIsRestricted(pick),
+      salary: 0,
+    });
+  }).join('');
+}
+
+function tradeMachineRightsRowsHtml(data, code) {
+  const rights = (data.assets || []).filter((asset) => asset.asset_type === 'player_right');
+  if (!rights.length) return '<div class="trade-machine-empty">Sin derechos de jugadores</div>';
+  return rights.map((right) => tradeMachineAssetRowHtml({
+    key: tradeMachineAssetKey('right', code, right.id),
+    type: 'right',
+    label: right.label || 'Derecho de jugador',
+    detail: right.detail || '',
+    salary: 0,
+  })).join('');
+}
+
+function tradeMachineLedgerHtml(flow) {
+  const net = flow.incomingSalary - flow.outgoingSalary;
+  return `
+    <div class="trade-machine-ledger">
+      <div><span>Recibe</span><strong>${formatBalanceMoney(flow.incomingSalary)}</strong></div>
+      <div><span>Envía</span><strong>${formatBalanceMoney(flow.outgoingSalary)}</strong></div>
+      <div><span>Neto</span><strong class="${net > 0 ? 'is-negative' : net < 0 ? 'is-positive' : ''}">${formatBalanceMoney(net)}</strong></div>
+      <div><span>CAP después</span><strong>${formatBalanceMoney(flow.postCap)}</strong></div>
+    </div>
+  `;
+}
+
+function tradeMachineAssetTypeLabel(type) {
+  if (type === 'player') return 'Jugador';
+  if (type === 'pick') return 'Ronda';
+  if (type === 'right') return 'Derecho';
+  return 'Activo';
+}
+
+function tradeMachineAssetSummaryHtml(asset, direction) {
+  const partner = direction === 'incoming' ? asset.fromTeam : asset.toTeam;
+  const partnerLabel = partner ? `${direction === 'incoming' ? 'desde' : 'a'} ${partner}` : '';
+  const salaryHtml = asset.salary > 0 ? `<span>${formatBalanceMoney(asset.salary)}</span>` : '';
+  return `
+    <li>
+      <span class="trade-machine-summary-type">${tradeMachineAssetTypeLabel(asset.type)}</span>
+      <strong>${escapeHtml(asset.label)}</strong>
+      ${asset.detail ? `<small>${escapeHtml(asset.detail)}</small>` : ''}
+      ${partnerLabel ? `<small>${escapeHtml(partnerLabel)}</small>` : ''}
+      ${salaryHtml}
+    </li>
+  `;
+}
+
+function tradeMachineAssetSummaryListHtml(assets, direction) {
+  if (!assets.length) return '<div class="trade-machine-summary-empty">Nada seleccionado</div>';
+  return `<ul>${assets.map((asset) => tradeMachineAssetSummaryHtml(asset, direction)).join('')}</ul>`;
+}
+
+function tradeMachineBalanceClass(value) {
+  const amount = Number(value || 0);
+  if (amount < 0) return 'is-negative';
+  if (amount > 0) return 'is-positive';
+  return '';
+}
+
+function tradeMachineBalanceRowsHtml(flow) {
+  const before = flow.beforeBalances || tradeMachineBalanceSnapshot(flow.beforeCap);
+  const after = flow.afterBalances || tradeMachineBalanceSnapshot(flow.postCap);
+  return before.map((item, idx) => {
+    const afterItem = after[idx] || item;
+    return `
+      <tr>
+        <th>${escapeHtml(item.label)}</th>
+        <td class="${tradeMachineBalanceClass(item.value)}">${formatBalanceMoney(item.value)}</td>
+        <td class="${tradeMachineBalanceClass(afterItem.value)}">${formatBalanceMoney(afterItem.value)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function tradeMachineTeamSummaryHtml(code, flow) {
+  const net = flow.incomingSalary - flow.outgoingSalary;
+  const incomingPicks = flow.incomingAssets.filter((asset) => asset.type === 'pick').length;
+  const incomingRights = flow.incomingAssets.filter((asset) => asset.type === 'right').length;
+  const outgoingPicks = flow.outgoingAssets.filter((asset) => asset.type === 'pick').length;
+  const outgoingRights = flow.outgoingAssets.filter((asset) => asset.type === 'right').length;
+  return `
+    <article class="trade-machine-summary-team">
+      <div class="trade-machine-summary-team-head">
+        <div>
+          <strong>${escapeHtml(code)} recibe</strong>
+          <span>${flow.incomingAssets.length} entran · ${flow.outgoingAssets.length} salen</span>
+        </div>
+        <div class="trade-machine-summary-counts">
+          <span>${incomingPicks} rondas recibidas</span>
+          <span>${incomingRights} derechos recibidos</span>
+          <span>${outgoingPicks} rondas enviadas</span>
+          <span>${outgoingRights} derechos enviados</span>
+        </div>
+      </div>
+      <div class="trade-machine-summary-assets">
+        <section>
+          <h4>Recibe</h4>
+          ${tradeMachineAssetSummaryListHtml(flow.incomingAssets, 'incoming')}
+        </section>
+        <section>
+          <h4>Envía</h4>
+          ${tradeMachineAssetSummaryListHtml(flow.outgoingAssets, 'outgoing')}
+        </section>
+      </div>
+      <div class="trade-machine-summary-money">
+        <span>Salario recibido <strong>${formatBalanceMoney(flow.incomingSalary)}</strong></span>
+        <span>Salario enviado <strong>${formatBalanceMoney(flow.outgoingSalary)}</strong></span>
+        <span>Neto <strong class="${net > 0 ? 'is-negative' : net < 0 ? 'is-positive' : ''}">${formatBalanceMoney(net)}</strong></span>
+      </div>
+      <table class="trade-machine-balance-table">
+        <thead>
+          <tr>
+            <th>Balance</th>
+            <th>Antes</th>
+            <th>Después</th>
+          </tr>
+        </thead>
+        <tbody>${tradeMachineBalanceRowsHtml(flow)}</tbody>
+      </table>
+    </article>
+  `;
+}
+
+function tradeMachineSetupNotesHtml(issues) {
+  const setupIssues = (issues || []).filter((issue) => issue.rule === 'setup');
+  if (!setupIssues.length) return '';
+  return `
+    <div class="trade-machine-setup-notes">
+      ${setupIssues.map((issue) => `
+        <div class="trade-machine-setup-note trade-machine-setup-note--${issue.severity}">
+          ${issue.teamCode ? `<strong>${escapeHtml(issue.teamCode)}</strong>` : ''}
+          <span>${escapeHtml(issue.message)}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function tradeMachineChecklistHtml(checklist) {
+  const statusLabels = {
+    pass: 'Correcto',
+    fail: 'Error',
+    warning: 'Aviso',
+    pending: 'Pendiente',
+  };
+  return `
+    <section class="trade-machine-checklist" aria-label="Checklist de validación del traspaso">
+      <div class="trade-machine-panel-title">
+        <h3>Checklist de reglas</h3>
+      </div>
+      <div class="trade-machine-checklist-grid">
+        ${(checklist || []).map((item) => `
+          <article class="trade-machine-check trade-machine-check--${item.status}">
+            <div class="trade-machine-check-head">
+              <strong>${escapeHtml(item.label)}</strong>
+              <span>${statusLabels[item.status] || item.status}</span>
+            </div>
+            <ul>
+              ${(item.messages || []).map((message) => `<li>${escapeHtml(message)}</li>`).join('')}
+            </ul>
+          </article>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderTradeMachineTeamCard(code, index, flow) {
+  const data = state.tradeMachine.teamDataByCode[code];
+  const canRemove = (state.tradeMachine.selectedTeams || []).length > TRADE_MACHINE_MIN_TEAMS;
+  if (!data) {
+    return `
+      <article class="trade-machine-team-card">
+        <div class="trade-machine-team-top">
+          ${tradeMachineTeamSelectHtml(code, index)}
+          ${canRemove ? `<button type="button" class="trade-machine-remove" data-trade-remove-team="${index}" aria-label="Quitar equipo">Quitar</button>` : ''}
+        </div>
+        <div class="trade-machine-empty">Cargando equipo...</div>
+      </article>
+    `;
+  }
+  const team = data.team || {};
+  return `
+    <article class="trade-machine-team-card">
+      <div class="trade-machine-team-top">
+        <div class="trade-machine-team-select">
+          <span class="trade-machine-team-kicker">Equipo ${index + 1}</span>
+          ${tradeMachineTeamSelectHtml(code, index)}
+        </div>
+        ${canRemove ? `<button type="button" class="trade-machine-remove" data-trade-remove-team="${index}" aria-label="Quitar ${code}">Quitar</button>` : ''}
+      </div>
+      <div class="trade-machine-team-title">
+        <span class="trade-machine-team-code">${escapeHtml(code)}</span>
+        <strong>${escapeHtml(team.name || tradeMachineTeamName(code))}</strong>
+      </div>
+      ${tradeMachineLedgerHtml(flow)}
+      <div class="trade-machine-assets">
+        <section>
+          <h3>Plantilla (${(data.players || []).length})</h3>
+          <div class="trade-machine-asset-list">${tradeMachinePlayerRowsHtml(data, code)}</div>
+        </section>
+        <section>
+          <h3>Rondas del draft</h3>
+          <div class="trade-machine-asset-list">${tradeMachinePickRowsHtml(data, code)}</div>
+        </section>
+        <section>
+          <h3>Derechos de jugadores</h3>
+          <div class="trade-machine-asset-list">${tradeMachineRightsRowsHtml(data, code)}</div>
+        </section>
+      </div>
+    </article>
+  `;
+}
+
+function renderTradeMachineResults(result) {
+  const resultEl = document.getElementById('tradeMachineResults');
+  if (!resultEl) return;
+  const statusLabel = result.status === 'legal' ? 'Válido' : result.status === 'illegal' ? 'No válido' : 'Requiere revisión';
+  const selectedCount = Object.keys(state.tradeMachine.selections || {}).length;
+  const assetLabel = selectedCount === 1 ? 'activo seleccionado' : 'activos seleccionados';
+  const summaryHtml = (state.tradeMachine.selectedTeams || []).map((code) => {
+    const flow = result.flows[code] || tradeMachineFlowSkeleton(code);
+    return tradeMachineTeamSummaryHtml(code, flow);
+  }).join('');
+  resultEl.innerHTML = `
+    <div class="trade-machine-result-head trade-machine-result-head--${result.status}">
+      <span>${statusLabel}</span>
+      <strong>${selectedCount} ${assetLabel}</strong>
+    </div>
+    <section class="trade-machine-summary-panel" aria-label="Resumen del traspaso">
+      <div class="trade-machine-panel-title">
+        <h3>Resumen del traspaso</h3>
+        <span>${seasonLabel(tradeMachineSeasonStart())}</span>
+      </div>
+      <div class="trade-machine-summary-grid">${summaryHtml}</div>
+    </section>
+    ${tradeMachineChecklistHtml(result.checklist)}
+    ${tradeMachineSetupNotesHtml(result.issues)}
+  `;
+}
+
+function renderTradeMachine() {
+  renderTradeMachineSeasonControl();
+  const grid = document.getElementById('tradeMachineTeams');
+  const status = document.getElementById('tradeMachineStatus');
+  const addBtn = document.getElementById('tradeMachineAddTeamBtn');
+  if (!grid) return;
+  const codes = state.tradeMachine.selectedTeams || [];
+  const result = validateTradeMachine();
+  if (status) status.textContent = `${seasonLabel(tradeMachineSeasonStart())} · ${codes.length} equipos`;
+  if (addBtn) addBtn.disabled = codes.length >= TRADE_MACHINE_MAX_TEAMS;
+  grid.innerHTML = codes
+    .map((code, index) => renderTradeMachineTeamCard(code, index, result.flows[code] || tradeMachineFlowSkeleton(code)))
+    .join('');
+  renderTradeMachineResults(result);
+}
+
+async function loadTradeMachine(seedCodes = []) {
+  const seed = seedCodes.length
+    ? seedCodes
+    : (state.tradeMachine.selectedTeams.length ? state.tradeMachine.selectedTeams : [state.teamCode].filter(Boolean));
+  state.tradeMachine.selectedTeams = defaultTradeMachineTeams(seed);
+  state.tradeMachine.seasonStart = state.tradeMachine.seasonStart || currentSeasonStart();
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  applyTeamTheme('');
+  setPageHeading('Máquina de traspasos', '');
+  renderCapStatusPills({});
+  setViewMode('trade-machine');
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  renderTradeMachine();
+  await ensureTradeMachineTeamData(state.tradeMachine.selectedTeams);
+  pruneTradeMachineSelections();
+  renderTradeMachine();
+}
+
+async function updateTradeMachineTeam(index, code) {
+  const nextCode = String(code || '').trim().toUpperCase();
+  if (!tradeMachineValidTeamCodes().has(nextCode)) return;
+  const selected = [...state.tradeMachine.selectedTeams];
+  if (selected.some((item, idx) => idx !== index && item === nextCode)) return;
+  const oldCode = selected[index];
+  selected[index] = nextCode;
+  state.tradeMachine.selectedTeams = selected;
+  Object.entries(state.tradeMachine.selections).forEach(([key, selection]) => {
+    if (selection.fromTeam === oldCode || selection.toTeam === oldCode) delete state.tradeMachine.selections[key];
+  });
+  renderTradeMachine();
+  await ensureTradeMachineTeamData([nextCode]);
+  renderTradeMachine();
+}
+
+async function addTradeMachineTeam() {
+  if (state.tradeMachine.selectedTeams.length >= TRADE_MACHINE_MAX_TEAMS) return;
+  const next = (state.teams || []).find((team) => !state.tradeMachine.selectedTeams.includes(team.code));
+  if (!next) return;
+  state.tradeMachine.selectedTeams.push(next.code);
+  renderTradeMachine();
+  await ensureTradeMachineTeamData([next.code]);
+  renderTradeMachine();
+}
+
+function removeTradeMachineTeam(index) {
+  if (state.tradeMachine.selectedTeams.length <= TRADE_MACHINE_MIN_TEAMS) return;
+  const removed = state.tradeMachine.selectedTeams[index];
+  state.tradeMachine.selectedTeams.splice(index, 1);
+  Object.entries(state.tradeMachine.selections).forEach(([key, selection]) => {
+    if (selection.fromTeam === removed || selection.toTeam === removed) delete state.tradeMachine.selections[key];
+  });
+  pruneTradeMachineSelections();
+  renderTradeMachine();
+}
+
+function resetTradeMachine() {
+  const seed = [state.tradeMachine.selectedTeams[0] || state.teamCode].filter(Boolean);
+  state.tradeMachine.selectedTeams = defaultTradeMachineTeams(seed);
+  state.tradeMachine.selections = {};
+  state.tradeMachine.seasonStart = currentSeasonStart();
+  void ensureTradeMachineTeamData(state.tradeMachine.selectedTeams).then(() => renderTradeMachine());
+  renderTradeMachine();
+}
+
+function setupTradeMachineControls() {
+  const desktopBtn = document.getElementById('tradeMachineHomeBtn');
+  const addBtn = document.getElementById('tradeMachineAddTeamBtn');
+  const resetBtn = document.getElementById('tradeMachineResetBtn');
+  const seasonSelect = document.getElementById('tradeMachineSeasonSelect');
+  const grid = document.getElementById('tradeMachineTeams');
+  if (desktopBtn) desktopBtn.addEventListener('click', async () => loadTradeMachine());
+  if (addBtn) addBtn.addEventListener('click', async () => addTradeMachineTeam());
+  if (resetBtn) resetBtn.addEventListener('click', () => resetTradeMachine());
+  if (seasonSelect) {
+    seasonSelect.addEventListener('change', () => {
+      state.tradeMachine.seasonStart = Number(seasonSelect.value || currentSeasonStart());
+      renderTradeMachine();
+    });
+  }
+  if (grid) {
+    grid.addEventListener('change', async (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.matches('[data-trade-team-select]')) {
+        await updateTradeMachineTeam(Number(target.dataset.tradeTeamSelect), target.value);
+        return;
+      }
+      if (target.matches('[data-trade-asset-key]')) {
+        const key = target.dataset.tradeAssetKey;
+        if (!key) return;
+        const meta = tradeMachineAssetMeta(key);
+        if (!meta) return;
+        if (target.checked) {
+          state.tradeMachine.selections[key] = {
+            key,
+            type: meta.type,
+            id: meta.id,
+            fromTeam: meta.fromTeam,
+            toTeam: tradeMachineDefaultRecipient(meta.fromTeam),
+          };
+        } else {
+          delete state.tradeMachine.selections[key];
+        }
+        renderTradeMachine();
+        return;
+      }
+      if (target.matches('[data-trade-recipient]')) {
+        const key = target.dataset.tradeRecipient;
+        if (key && state.tradeMachine.selections[key]) {
+          state.tradeMachine.selections[key].toTeam = target.value;
+          renderTradeMachine();
+        }
+      }
+    });
+    grid.addEventListener('click', (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      const removeBtn = target.closest('[data-trade-remove-team]');
+      if (!removeBtn) return;
+      removeTradeMachineTeam(Number(removeBtn.dataset.tradeRemoveTeam));
+    });
+  }
 }
 
 async function api(path, opts = {}) {
@@ -1111,28 +2200,18 @@ function syncMobileInfoButton() {
 }
 
 function setViewMode(mode) {
+  state.ui.viewMode = mode;
   const trackerSection = document.getElementById('trackerSection');
   const freeAgentsSection = document.getElementById('freeAgentsSection');
-  const teamMeta = document.getElementById('teamMeta');
-  const rosterSection = document.getElementById('rosterSection');
-  const deadContractsSection = document.getElementById('deadContractsSection');
-  const exceptionsSection = document.getElementById('exceptionsSection');
-  const assetsSection = document.getElementById('assetsSection');
-  const playerRightsSection = document.getElementById('playerRightsSection');
-  const importantFiguresSection = document.getElementById('importantFiguresSection');
-  const showTeam = mode === 'team';
+  const tradeMachineSection = document.getElementById('tradeMachineSection');
   const showTracker = mode === 'tracker';
   const showFreeAgents = mode === 'free-agents';
+  const showTradeMachine = mode === 'trade-machine';
 
   trackerSection.classList.toggle('section-hidden', !showTracker);
   freeAgentsSection.classList.toggle('section-hidden', !showFreeAgents);
-  teamMeta.classList.toggle('section-hidden', !showTeam);
-  rosterSection.classList.toggle('section-hidden', !showTeam);
-  deadContractsSection.classList.toggle('section-hidden', !showTeam);
-  exceptionsSection.classList.toggle('section-hidden', !showTeam);
-  assetsSection.classList.toggle('section-hidden', !showTeam);
-  playerRightsSection.classList.toggle('section-hidden', !showTeam);
-  importantFiguresSection.classList.toggle('section-hidden', !showTeam);
+  if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
+  syncTeamTabs();
   syncMobileInfoButton();
 }
 
@@ -1204,25 +2283,69 @@ function renderCards() {
 }
 
 function renderImportantFigures() {
-  const tbody = document.querySelector('#importantFiguresTable tbody');
-  if (!tbody) return;
-  const season = seasonLabel(Number(state.settings.current_year || 2025));
+  const table = document.getElementById('importantFiguresTable');
+  if (!table) return;
+  const currentYear = currentSeasonStart();
+  const seasons = balanceSeasonYears();
+  const seasonData = seasons.map((season) => ({ season, balances: seasonBalances(season) }));
+  const rows = [
+    ['CAP TOTAL', 'cap_total'],
+    ['GASTO TOTAL', 'gasto_total'],
+    ['Cuenta del APRON', 'apron_account'],
+  ];
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th class="balance-row-heading">Balance</th>
+        ${seasons.map((season) => `
+          <th class="${season === currentYear ? 'is-current-year' : ''}">${seasonSlashLabel(season)}</th>
+        `).join('')}
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.map(([label, key]) => `
+        <tr>
+          <th class="balance-row-label">${label}</th>
+          ${seasonData.map(({ season, balances }) => {
+            const value = Number(balances[key] || 0);
+            const valueClass = value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '';
+            return `
+              <td class="${season === currentYear ? 'is-current-year' : ''}">
+                <span class="balance-value ${valueClass}">${formatMoneyDots(value)}</span>
+              </td>
+            `;
+          }).join('')}
+        </tr>
+      `).join('')}
+    </tbody>
+  `;
+
+  const appendix = document.getElementById('importantFiguresAppendix');
+  if (!appendix) return;
   const salaryCap = Number(state.settings.salary_cap_2025 || 0);
   const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215);
   const firstApron = Number(state.settings.first_apron || 0);
   const secondApron = Number(state.settings.second_apron || 0);
   const minCap = Number(state.settings.minimum_cap_allowed || salaryCap * 0.9);
-  const rows = [
-    ['Temporada actual', season],
+  const appendixRows = [
+    ['Temporada actual', seasonLabel(currentYear)],
     ['Salary cap', formatDots(salaryCap)],
     ['Luxury cap', formatDots(luxuryCap)],
     ['1er Apron', formatDots(firstApron)],
     ['2do Apron', formatDots(secondApron)],
     ['Mínimo cap permitido', formatDots(minCap)],
   ];
-  tbody.innerHTML = rows
-    .map((row) => `<tr><th>${row[0]}</th><td>${row[1]}</td></tr>`)
-    .join('');
+  appendix.innerHTML = `
+    <div class="important-figures-appendix-title">Cifras importantes</div>
+    <div class="important-figures-appendix-list">
+      ${appendixRows.map(([label, value]) => `
+        <span class="important-figures-appendix-item">
+          <span>${label}</span>
+          <strong>${value}</strong>
+        </span>
+      `).join('')}
+    </div>
+  `;
 }
 
 function renderCapStatusPills(summary) {
@@ -1387,6 +2510,23 @@ function renderPlayers() {
   });
   bindSalaryInfoToggles(tbody);
   bindSalaryInfoToggles(cardsWrap);
+  renderRosterTotals(rows, seasons);
+}
+
+function renderRosterTotals(rows, seasons) {
+  const tfoot = document.querySelector('#playersTable tfoot');
+  if (!tfoot) return;
+  const totals = seasons.map((season) => rows.reduce((sum, player) => sum + salaryNumericValue(player, season), 0));
+  tfoot.innerHTML = `
+    <tr class="roster-total-row">
+      <td class="roster-total-label">Total</td>
+      <td></td>
+      <td></td>
+      ${totals.map((total) => `
+        <td><span class="roster-total-amount">${formatMoneyDots(total)}</span></td>
+      `).join('')}
+    </tr>
+  `;
 }
 
 function setupRosterFilters() {
@@ -2158,6 +3298,7 @@ function setupMobileNav() {
   const backdrop = document.getElementById('mobileSidebarBackdrop');
   const trackerBtn = document.getElementById('mobileTrackerBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
+  const tradeMachineBtn = document.getElementById('mobileTradeMachineBtn');
   const mobileLogoutBtn = document.getElementById('mobileLogoutBtn');
   const infoBtn = document.getElementById('mobileInfoBtn');
   const infoCloseBtn = document.getElementById('mobileInfoCloseBtn');
@@ -2182,6 +3323,12 @@ function setupMobileNav() {
     freeAgentsBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadFreeAgents();
+    });
+  }
+  if (tradeMachineBtn) {
+    tradeMachineBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadTradeMachine();
     });
   }
   if (mobileLogoutBtn) {
@@ -2230,6 +3377,8 @@ async function init() {
   setupSorting();
   setupLocatorModal();
   setupMobileNav();
+  setupTradeMachineControls();
+  setupTeamTabs();
   setupRosterViewControl();
   setupSeasonViewControl();
   setupRosterFilters();
