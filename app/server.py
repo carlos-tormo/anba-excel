@@ -492,12 +492,22 @@ class LeagueDB:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
             if "partially_guaranteed" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN partially_guaranteed INTEGER NOT NULL DEFAULT 0")
+            if "contract_notes" not in cols:
+                conn.execute("ALTER TABLE players ADD COLUMN contract_notes INTEGER NOT NULL DEFAULT 0")
             partial_guarantee_bool_cols = [f"salary_{season}_partially_guaranteed" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
             partial_guarantee_text_cols = [f"salary_{season}_guaranteed_text" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
+            contract_note_bool_cols = [f"salary_{season}_note" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
+            contract_note_text_cols = [f"salary_{season}_note_text" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
             for col in partial_guarantee_bool_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
             for col in partial_guarantee_text_cols:
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
+            for col in contract_note_bool_cols:
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            for col in contract_note_text_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
             asset_cols = {
@@ -1072,15 +1082,19 @@ class LeagueDB:
             "salary_2028_text", "salary_2029_text", "salary_2030_text",
             "salary_2025_guaranteed_text", "salary_2026_guaranteed_text", "salary_2027_guaranteed_text",
             "salary_2028_guaranteed_text", "salary_2029_guaranteed_text", "salary_2030_guaranteed_text",
+            "salary_2025_note_text", "salary_2026_note_text", "salary_2027_note_text",
+            "salary_2028_note_text", "salary_2029_note_text", "salary_2030_note_text",
             "option_2025", "option_2026", "option_2027", "option_2028", "option_2029", "option_2030",
             "notes",
         ]
         bool_fields = [
-            "provisional_amounts", "partially_guaranteed",
+            "provisional_amounts", "partially_guaranteed", "contract_notes",
             "salary_2025_provisional", "salary_2026_provisional", "salary_2027_provisional",
             "salary_2028_provisional", "salary_2029_provisional", "salary_2030_provisional",
             "salary_2025_partially_guaranteed", "salary_2026_partially_guaranteed", "salary_2027_partially_guaranteed",
             "salary_2028_partially_guaranteed", "salary_2029_partially_guaranteed", "salary_2030_partially_guaranteed",
+            "salary_2025_note", "salary_2026_note", "salary_2027_note",
+            "salary_2028_note", "salary_2029_note", "salary_2030_note",
         ]
         assignments = []
         values: List[Any] = []

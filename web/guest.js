@@ -105,12 +105,24 @@ function salaryGuaranteedTextField(season) {
   return `salary_${season}_guaranteed_text`;
 }
 
+function salaryNoteField(season) {
+  return `salary_${season}_note`;
+}
+
+function salaryNoteTextField(season) {
+  return `salary_${season}_note_text`;
+}
+
 function playerUsesProvisionalAmounts(player) {
   return boolValue(player?.provisional_amounts);
 }
 
 function playerUsesPartialGuarantees(player) {
   return boolValue(player?.partially_guaranteed);
+}
+
+function playerUsesContractNotes(player) {
+  return boolValue(player?.contract_notes);
 }
 
 function playerSeasonIsProvisional(player, season) {
@@ -121,6 +133,10 @@ function playerSeasonIsPartiallyGuaranteed(player, season) {
   return playerUsesPartialGuarantees(player) && boolValue(player?.[salaryPartialGuaranteeField(season)]);
 }
 
+function playerSeasonHasContractNote(player, season) {
+  return playerUsesContractNotes(player) && boolValue(player?.[salaryNoteField(season)]);
+}
+
 function salaryInfoMessages(player, season) {
   const messages = [];
   if (playerSeasonIsProvisional(player, season)) {
@@ -129,6 +145,10 @@ function salaryInfoMessages(player, season) {
   if (playerSeasonIsPartiallyGuaranteed(player, season)) {
     const amount = String(player?.[salaryGuaranteedTextField(season)] || '').trim();
     messages.push(amount ? `${amount} guaranteed` : 'Guaranteed amount pending');
+  }
+  if (playerSeasonHasContractNote(player, season)) {
+    const note = String(player?.[salaryNoteTextField(season)] || '').trim();
+    messages.push(note || 'Nota pendiente');
   }
   return messages;
 }
@@ -504,11 +524,13 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   const cap = Number(state.settings.salary_cap_2025 || 154647000);
   const isProvisional = playerSeasonIsProvisional(obj, season);
   const isPartiallyGuaranteed = playerSeasonIsPartiallyGuaranteed(obj, season);
+  const hasContractNote = playerSeasonHasContractNote(obj, season);
   const infoMessages = salaryInfoMessages(obj, season);
   const infoHtml = salaryInfoHtml(infoMessages);
   const salaryStateClasses = [
     isProvisional ? 'salary-chip--provisional' : '',
     isPartiallyGuaranteed ? 'salary-chip--partial-guarantee' : '',
+    hasContractNote ? 'salary-chip--note' : '',
   ].filter(Boolean).join(' ');
 
   if (num !== null && num !== undefined && Number.isFinite(Number(num))) {
@@ -535,7 +557,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
 
   if (!showEmptyYears) return '';
   return `
-    <div class="salary-empty-wrap ${isProvisional ? 'salary-empty-wrap--provisional' : ''} ${isPartiallyGuaranteed ? 'salary-empty-wrap--partial-guarantee' : ''}">
+    <div class="salary-empty-wrap ${isProvisional ? 'salary-empty-wrap--provisional' : ''} ${isPartiallyGuaranteed ? 'salary-empty-wrap--partial-guarantee' : ''} ${hasContractNote ? 'salary-empty-wrap--note' : ''}">
       <div class="salary-empty-bar" aria-hidden="true"></div>
       ${infoHtml}
     </div>
@@ -551,6 +573,17 @@ function deadTypePillHtml(value) {
   if (normalized !== 'two_way') return '';
   const label = normalized === 'two_way' ? 'Two Way' : 'Normal';
   return `<span class="dead-type-pill dead-type-pill--${normalized}">${escapeHtml(label)}</span>`;
+}
+
+function deadExclusionPillsHtml(dead) {
+  const pills = [];
+  if (deadContractExcludedFromGasto(dead)) {
+    pills.push('<span class="dead-exclusion-pill dead-exclusion-pill--gasto" title="Excluded from GASTO total">No GASTO</span>');
+  }
+  if (deadContractExcludedFromCap(dead)) {
+    pills.push('<span class="dead-exclusion-pill dead-exclusion-pill--cap" title="Excluded from CAP total">No CAP</span>');
+  }
+  return pills.join('');
 }
 
 function salaryText(obj, season) {
@@ -2893,12 +2926,14 @@ function renderDeadContracts() {
   rows.forEach((d) => {
     const tr = document.createElement('tr');
     const typePill = deadTypePillHtml(d.dead_type);
+    const exclusionPills = deadExclusionPillsHtml(d);
     tr.innerHTML = `
       <td colspan="3" class="dead-contract-meta-cell">
         <div class="player-cell dead-contract-meta">
           <span class="player-name">${escapeHtml(d.label || '')}</span>
           <span class="player-tags">
             ${typePill}
+            ${exclusionPills}
           </span>
         </div>
       </td>

@@ -3185,6 +3185,11 @@ th {
   box-shadow: inset 3px 0 0 #0ea5e9;
   overflow: visible;
 }
+.salary-chip--note {
+  border-color: #7c3aed;
+  box-shadow: inset 3px 0 0 #7c3aed;
+  overflow: visible;
+}
 .salary-chip.salary-option--po {
   background: #e0f2fe;
   border-color: #7dd3fc;
@@ -3263,6 +3268,9 @@ th {
 }
 .salary-empty-wrap--partial-guarantee .salary-empty-bar {
   background: rgba(14, 165, 233, 0.28);
+}
+.salary-empty-wrap--note .salary-empty-bar {
+  background: rgba(124, 58, 237, 0.25);
 }
 .salary-info-button {
   position: relative;
@@ -3345,6 +3353,7 @@ th {
 }
 .salary-provisional-toggle,
 .salary-partial-toggle,
+.salary-note-toggle,
 .provisional-master-toggle {
   display: inline-flex;
   align-items: center;
@@ -3355,7 +3364,8 @@ th {
   white-space: nowrap;
 }
 .salary-provisional-toggle,
-.salary-partial-toggle {
+.salary-partial-toggle,
+.salary-note-toggle {
   padding: 2px 6px;
   border: 1px solid rgba(245, 158, 11, 0.42);
   border-radius: 999px;
@@ -3367,23 +3377,34 @@ th {
   background: #e0f2fe;
   color: #075985;
 }
+.salary-note-toggle {
+  border-color: rgba(124, 58, 237, 0.42);
+  background: #ede9fe;
+  color: #5b21b6;
+}
 .salary-provisional-toggle input,
 .salary-partial-toggle input,
+.salary-note-toggle input,
 .provisional-master-toggle input {
   width: auto;
   margin: 0;
 }
-.salary-partial-control {
+.salary-partial-control,
+.salary-note-control {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   flex-wrap: wrap;
 }
-.salary-partial-amount {
+.salary-partial-amount,
+.salary-note-text {
   width: 108px;
   min-width: 92px;
   font-size: 0.72rem;
   padding: 3px 6px;
+}
+.salary-note-text {
+  width: 132px;
 }
 .provisional-master-toggle {
   margin-left: 4px;
@@ -3396,6 +3417,10 @@ td.salary-provisional-cell .salary-edit {
 td.salary-partial-guarantee-cell .salary-edit {
   border-color: #0ea5e9;
   box-shadow: inset 3px 0 0 #0ea5e9;
+}
+td.salary-note-cell .salary-edit {
+  border-color: #7c3aed;
+  box-shadow: inset 3px 0 0 #7c3aed;
 }
 .salary-pill .salary-main {
   font-variant-numeric: tabular-nums;
@@ -3947,6 +3972,23 @@ td.salary-option--nb .salary-pct {
   background: #f3e8ff;
   border-color: #e9d5ff;
   color: #a64d79;
+}
+.dead-exclusion-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 800;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  border: 1px solid #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
+  white-space: nowrap;
+}
+.dead-exclusion-pill--cap {
+  border-color: #fdba74;
+  background: #ffedd5;
+  color: #9a3412;
 }
 .type-pill--mid,
 .type-pill--tmid,
@@ -4773,18 +4815,30 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
     min-width: 160px !important;
     max-width: 160px !important;
   }
-  .guest-dead-contracts-section .dead-contract-meta,
   .guest-exceptions-section .exception-meta {
     flex-wrap: nowrap;
+    gap: 4px;
+  }
+  .guest-dead-contracts-section .dead-contract-meta {
+    flex-wrap: wrap;
     gap: 4px;
   }
   .guest-dead-contracts-section .dead-contract-meta .player-name,
   .guest-exceptions-section .exception-meta .player-name {
     max-width: 112px;
   }
-  .guest-dead-contracts-section .dead-contract-meta .player-tags,
   .guest-exceptions-section .exception-meta .player-tags {
     display: none;
+  }
+  .guest-dead-contracts-section .dead-contract-meta .player-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+  .guest-dead-contracts-section .dead-exclusion-pill,
+  .guest-dead-contracts-section .dead-type-pill {
+    padding: 1px 6px;
+    font-size: 0.62rem;
   }
   .guest-dead-contracts-section #deadContractsTable .salary-chip,
   .guest-exceptions-section #exceptionsTable .salary-chip {

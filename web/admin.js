@@ -118,12 +118,24 @@ function salaryGuaranteedTextField(season) {
   return `salary_${season}_guaranteed_text`;
 }
 
+function salaryNoteField(season) {
+  return `salary_${season}_note`;
+}
+
+function salaryNoteTextField(season) {
+  return `salary_${season}_note_text`;
+}
+
 function playerUsesProvisionalAmounts(player) {
   return boolValue(player?.provisional_amounts);
 }
 
 function playerUsesPartialGuarantees(player) {
   return boolValue(player?.partially_guaranteed);
+}
+
+function playerUsesContractNotes(player) {
+  return boolValue(player?.contract_notes);
 }
 
 function playerSeasonIsProvisional(player, season) {
@@ -134,6 +146,10 @@ function playerSeasonIsPartiallyGuaranteed(player, season) {
   return playerUsesPartialGuarantees(player) && boolValue(player?.[salaryPartialGuaranteeField(season)]);
 }
 
+function playerSeasonHasContractNote(player, season) {
+  return playerUsesContractNotes(player) && boolValue(player?.[salaryNoteField(season)]);
+}
+
 function salaryInfoMessages(player, season) {
   const messages = [];
   if (playerSeasonIsProvisional(player, season)) {
@@ -142,6 +158,10 @@ function salaryInfoMessages(player, season) {
   if (playerSeasonIsPartiallyGuaranteed(player, season)) {
     const amount = String(player?.[salaryGuaranteedTextField(season)] || '').trim();
     messages.push(amount ? `${amount} guaranteed` : 'Guaranteed amount pending');
+  }
+  if (playerSeasonHasContractNote(player, season)) {
+    const note = String(player?.[salaryNoteTextField(season)] || '').trim();
+    messages.push(note || 'Nota pendiente');
   }
   return messages;
 }
@@ -2398,6 +2418,7 @@ function syncAdminSalaryInfoCell(cellWrap, player, season) {
   if (td) {
     td.classList.toggle('salary-provisional-cell', playerSeasonIsProvisional(player, season));
     td.classList.toggle('salary-partial-guarantee-cell', playerSeasonIsPartiallyGuaranteed(player, season));
+    td.classList.toggle('salary-note-cell', playerSeasonHasContractNote(player, season));
   }
   if (existing) {
     existing.remove();
@@ -2526,6 +2547,91 @@ function appendSalaryPartialGuaranteeControl(cellWrap, player, season) {
     if (e.key === 'Enter') {
       e.preventDefault();
       amountInput.blur();
+    }
+  });
+  cellWrap.appendChild(wrap);
+  syncAdminSalaryInfoCell(cellWrap, player, season);
+}
+
+function appendSalaryNoteControl(cellWrap, player, season) {
+  if (!cellWrap || !playerUsesContractNotes(player)) {
+    syncAdminSalaryInfoCell(cellWrap, player, season);
+    return;
+  }
+  const checkedField = salaryNoteField(season);
+  const textField = salaryNoteTextField(season);
+  const wrap = document.createElement('div');
+  wrap.className = 'salary-note-control';
+  wrap.innerHTML = `
+    <label class="salary-note-toggle" title="Contract note">
+      <input type="checkbox" data-role="salary-note" data-season="${season}">
+      <span>Note</span>
+    </label>
+    <input class="salary-note-text" data-role="salary-note-text" data-season="${season}" type="text" placeholder="Note">
+  `;
+  const checkbox = wrap.querySelector('[data-role="salary-note"]');
+  const noteInput = wrap.querySelector('[data-role="salary-note-text"]');
+  const syncNoteInput = () => {
+    noteInput.disabled = !checkbox.checked;
+    noteInput.classList.toggle('section-hidden', !checkbox.checked);
+  };
+  checkbox.checked = boolValue(player[checkedField]);
+  noteInput.value = player[textField] == null ? '' : player[textField];
+  syncNoteInput();
+
+  checkbox.addEventListener('change', async () => {
+    const previous = boolValue(player[checkedField]);
+    const next = Boolean(checkbox.checked);
+    player[checkedField] = next ? 1 : 0;
+    syncNoteInput();
+    syncAdminSalaryInfoCell(cellWrap, player, season);
+    checkbox.disabled = true;
+    try {
+      await api(`/api/players/${player.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [checkedField]: next }),
+      });
+    } catch (err) {
+      player[checkedField] = previous ? 1 : 0;
+      checkbox.checked = previous;
+      syncNoteInput();
+      syncAdminSalaryInfoCell(cellWrap, player, season);
+      alert(`Contract note save failed: ${err.message}`);
+    } finally {
+      checkbox.disabled = false;
+    }
+  });
+
+  let savingNote = false;
+  const persistNote = async () => {
+    if (savingNote) return;
+    const previous = String(player[textField] || '');
+    const next = noteInput.value.trim();
+    if (next === previous) return;
+    player[textField] = next;
+    syncAdminSalaryInfoCell(cellWrap, player, season);
+    savingNote = true;
+    noteInput.disabled = true;
+    try {
+      await api(`/api/players/${player.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [textField]: next || null }),
+      });
+    } catch (err) {
+      player[textField] = previous;
+      noteInput.value = previous;
+      syncAdminSalaryInfoCell(cellWrap, player, season);
+      alert(`Contract note text save failed: ${err.message}`);
+    } finally {
+      savingNote = false;
+      syncNoteInput();
+    }
+  };
+  noteInput.addEventListener('blur', () => { void persistNote(); });
+  noteInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      noteInput.blur();
     }
   });
   cellWrap.appendChild(wrap);
@@ -2765,6 +2871,7 @@ function renderPlayers() {
           const cellWrap = fieldEl.closest('.salary-cell-admin');
           appendSalaryProvisionalControl(cellWrap, p, season);
           appendSalaryPartialGuaranteeControl(cellWrap, p, season);
+          appendSalaryNoteControl(cellWrap, p, season);
         }
       }
       if (key === 'position') {
@@ -2907,6 +3014,30 @@ function renderPlayers() {
           alert(`Partially guaranteed save failed: ${err.message}`);
         } finally {
           partialMaster.disabled = false;
+        }
+      });
+    }
+
+    const notesMaster = tr.querySelector('[data-role="contract-notes"]');
+    if (notesMaster) {
+      notesMaster.checked = playerUsesContractNotes(p);
+      notesMaster.addEventListener('change', async () => {
+        const previous = playerUsesContractNotes(p);
+        const next = Boolean(notesMaster.checked);
+        p.contract_notes = next ? 1 : 0;
+        notesMaster.disabled = true;
+        try {
+          await api(`/api/players/${p.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ contract_notes: next }),
+          });
+          renderPlayers();
+        } catch (err) {
+          p.contract_notes = previous ? 1 : 0;
+          notesMaster.checked = previous;
+          alert(`Contract notes save failed: ${err.message}`);
+        } finally {
+          notesMaster.disabled = false;
         }
       });
     }
