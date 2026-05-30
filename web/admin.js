@@ -299,6 +299,14 @@ function isTwoWayDeadContract(dead) {
   return String(dead?.dead_type || '').trim().toLowerCase().replaceAll('-', '_') === 'two_way';
 }
 
+function deadContractExcludedFromGasto(dead) {
+  return boolValue(dead?.exclude_from_gasto);
+}
+
+function deadContractExcludedFromCap(dead) {
+  return boolValue(dead?.exclude_from_cap);
+}
+
 function balanceSeasonYears() {
   const currentYear = currentSeasonStart();
   return Array.from({ length: 6 }, (_, idx) => currentYear + idx);
@@ -311,6 +319,46 @@ function exceptionBalanceTotal(season) {
     .reduce((sum, asset) => sum + amountNumericValue(asset), 0);
 }
 
+function luxuryHistoryYears() {
+  const currentYear = currentSeasonStart();
+  return Array.from({ length: 4 }, (_, idx) => currentYear - idx - 1);
+}
+
+function luxuryRepeaterHistoryMap(data) {
+  const rows = Array.isArray(data?.luxury_history) ? data.luxury_history : [];
+  return new Map(rows.map((row) => [Number(row.season_year), boolValue(row.repeater)]));
+}
+
+function luxuryRepeaterForSeason(data, season) {
+  const map = luxuryRepeaterHistoryMap(data);
+  const year = Number(season);
+  if (map.has(year)) return Boolean(map.get(year));
+  const currentYear = currentSeasonStart();
+  if (year > currentYear && map.has(currentYear)) return Boolean(map.get(currentYear));
+  return false;
+}
+
+function luxuryTaxAmount(overage, repeater) {
+  let remaining = Math.max(0, Number(overage || 0));
+  if (!remaining) return 0;
+  const tierSize = 5_000_000;
+  const baseRates = repeater
+    ? [2.5, 2.75, 3.5, 4.25]
+    : [1.5, 1.75, 2.5, 3.25];
+  let tax = 0;
+  let tierIndex = 0;
+  while (remaining > 0) {
+    const taxable = Math.min(tierSize, remaining);
+    const rate = tierIndex < baseRates.length
+      ? baseRates[tierIndex]
+      : baseRates[baseRates.length - 1] + ((tierIndex - baseRates.length + 1) * 0.5);
+    tax += taxable * rate;
+    remaining -= taxable;
+    tierIndex += 1;
+  }
+  return tax;
+}
+
 function seasonBalances(season) {
   const players = state.teamData?.players || [];
   const deadContracts = state.teamData?.dead_contracts || [];
@@ -318,16 +366,22 @@ function seasonBalances(season) {
   const capPlayerTotal = players
     .filter((player) => !isTwoWayPlayer(player))
     .reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
-  const normalDeadTotal = deadContracts
-    .filter((dead) => !isTwoWayDeadContract(dead))
+  const normalDeadCapTotal = deadContracts
+    .filter((dead) => !isTwoWayDeadContract(dead) && !deadContractExcludedFromCap(dead))
     .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
-  const deadTotal = deadContracts.reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
-  const capTotal = capPlayerTotal + normalDeadTotal;
-  const gastoTotal = playerTotal + deadTotal;
+  const deadGastoTotal = deadContracts
+    .filter((dead) => !deadContractExcludedFromGasto(dead))
+    .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
+  const capTotal = capPlayerTotal + normalDeadCapTotal;
+  const gastoTotal = playerTotal + deadGastoTotal;
+  const salaryCap = Number(state.settings.salary_cap_2025 || 0);
+  const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215 || 0);
+  const luxuryOverage = Math.max(0, capTotal - luxuryCap);
   return {
     cap_total: capTotal,
     gasto_total: gastoTotal,
-    apron_account: capTotal + exceptionBalanceTotal(season),
+    apron_account: capTotal,
+    luxury_tax: luxuryTaxAmount(luxuryOverage, luxuryRepeaterForSeason(state.teamData, season)),
   };
 }
 
@@ -335,7 +389,7 @@ function applySeasonColumnVisibility() {
   const currentYear = currentSeasonStart();
   const tableConfigs = [
     { selector: '#playersTable', seasonOffset: 6 },
-    { selector: '#deadContractsTable', seasonOffset: 2 },
+    { selector: '#deadContractsTable', seasonOffset: 4 },
   ];
   tableConfigs.forEach(({ selector, seasonOffset }) => {
     const table = document.querySelector(selector);
@@ -2121,6 +2175,7 @@ function renderImportantFigures() {
     ['CAP TOTAL', 'cap_total'],
     ['GASTO TOTAL', 'gasto_total'],
     ['Cuenta del APRON', 'apron_account'],
+    ['Luxury tax', 'luxury_tax'],
   ];
   table.innerHTML = `
     <thead>
@@ -2137,7 +2192,10 @@ function renderImportantFigures() {
           <th class="balance-row-label">${label}</th>
           ${seasonData.map(({ season, balances }) => {
             const value = Number(balances[key] || 0);
-            const valueClass = value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '';
+            const isLiability = key === 'luxury_tax';
+            const valueClass = isLiability
+              ? (value > 0 ? 'is-negative' : '')
+              : (value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '');
             return `
               <td class="${season === currentYear ? 'is-current-year' : ''}">
                 <span class="balance-value ${valueClass}">${formatMoneyDots(value)}</span>
@@ -2175,6 +2233,52 @@ function renderImportantFigures() {
       `).join('')}
     </div>
   `;
+  renderLuxuryHistory();
+}
+
+function renderLuxuryHistory() {
+  const wrap = document.getElementById('luxuryHistorySection');
+  if (!wrap) return;
+  if (!state.teamData) {
+    wrap.innerHTML = '';
+    return;
+  }
+  const rows = luxuryHistoryYears().map((year) => ({
+    year,
+    repeater: luxuryRepeaterForSeason(state.teamData, year),
+  }));
+  wrap.innerHTML = `
+    <h3>Historia de luxury</h3>
+    <div class="luxury-history-wrap">
+      <table class="luxury-history-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>¿Reincidente?</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(({ year, repeater }) => `
+            <tr>
+              <th>${seasonSlashLabel(year)}</th>
+              <td>
+                <select data-luxury-repeater-year="${year}" aria-label="Reincidente ${seasonSlashLabel(year)}">
+                  <option value="0"${repeater ? '' : ' selected'}>No</option>
+                  <option value="1"${repeater ? ' selected' : ''}>Sí</option>
+                </select>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  wrap.querySelectorAll('[data-luxury-repeater-year]').forEach((select) => {
+    select.addEventListener('change', async () => {
+      const year = Number(select.dataset.luxuryRepeaterYear);
+      await saveTeamLuxuryHistory(year, select.value === '1');
+    });
+  });
 }
 
 function renderCapStatusPills(summary) {
@@ -3687,6 +3791,30 @@ function renderDeadContracts() {
       }
     });
 
+    tr.querySelectorAll('[data-dead-flag]').forEach((checkbox) => {
+      const key = checkbox.dataset.deadFlag;
+      checkbox.checked = boolValue(d[key]);
+      checkbox.addEventListener('change', async () => {
+        const previous = boolValue(d[key]);
+        const next = checkbox.checked;
+        checkbox.disabled = true;
+        try {
+          await api(`/api/dead-contracts/${d.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ [key]: next }),
+          });
+          d[key] = next;
+          renderImportantFigures();
+          await refreshSummary();
+        } catch (err) {
+          checkbox.checked = previous;
+          alert(`Dead contract flag save failed: ${err.message}`);
+        } finally {
+          checkbox.disabled = false;
+        }
+      });
+    });
+
     tr.querySelector('[data-action="delete-dead-contract"]').addEventListener('click', async () => {
       if (!confirm('Delete this dead contract?')) return;
       await api(`/api/dead-contracts/${d.id}`, { method: 'DELETE' });
@@ -3706,6 +3834,8 @@ function renderDeadContracts() {
           <option value="two_way">Two Way</option>
         </select>
       </td>
+      <td><label class="dead-exclusion-toggle"><input data-new-field="exclude_from_gasto" type="checkbox"></label></td>
+      <td><label class="dead-exclusion-toggle"><input data-new-field="exclude_from_cap" type="checkbox"></label></td>
       <td><input data-new-field="salary_2025_text" placeholder="0"></td>
       <td><input data-new-field="salary_2026_text" placeholder="0"></td>
       <td><input data-new-field="salary_2027_text" placeholder="0"></td>
@@ -3726,6 +3856,8 @@ function renderDeadContracts() {
         team_code: state.teamCode,
         dead_type: String(tr.querySelector('[data-new-field="dead_type"]')?.value || 'normal').trim() || 'normal',
         label: String(tr.querySelector('[data-new-field="label"]')?.value || '').trim(),
+        exclude_from_gasto: Boolean(tr.querySelector('[data-new-field="exclude_from_gasto"]')?.checked),
+        exclude_from_cap: Boolean(tr.querySelector('[data-new-field="exclude_from_cap"]')?.checked),
       };
       let hasSalary = false;
       for (const season of ALL_SEASONS) {
@@ -3754,7 +3886,7 @@ function renderDeadContracts() {
     const tr = document.createElement('tr');
     tr.className = 'table-add-trigger-row';
     tr.innerHTML = `
-      <td colspan="4">
+      <td colspan="11">
         <button type="button" class="table-add-trigger">
           <span class="table-add-badge">+</span>
           <span>Add dead contract</span>
@@ -3784,6 +3916,7 @@ async function loadTeam(code) {
   const cashSentInput = document.getElementById('teamCashSentInput');
   if (cashSentInput) cashSentInput.value = formatDots(data.team.cash_sent || 0);
   syncTeamApronHardCapControls();
+  syncTeamLuxuryRepeaterControl();
   renderTeamStrip();
   renderTeamPicker();
   renderAdminMobileTeamGrid();
@@ -3977,6 +4110,70 @@ function setupTeamApronHardCapControls() {
     } else {
       await saveTeamApronHardCap(firstInput.checked ? 'first' : '');
     }
+  });
+}
+
+function upsertLocalLuxuryHistory(year, repeater) {
+  if (!state.teamData) return;
+  const seasonYear = Number(year);
+  const rows = Array.isArray(state.teamData.luxury_history)
+    ? [...state.teamData.luxury_history]
+    : [];
+  const existing = rows.find((row) => Number(row.season_year) === seasonYear);
+  if (existing) {
+    existing.repeater = Boolean(repeater);
+  } else {
+    rows.push({ season_year: seasonYear, repeater: Boolean(repeater) });
+  }
+  rows.sort((a, b) => Number(b.season_year) - Number(a.season_year));
+  state.teamData.luxury_history = rows;
+}
+
+function syncTeamLuxuryRepeaterControl() {
+  const select = document.getElementById('teamLuxuryRepeaterCurrentSelect');
+  if (!select) return;
+  select.value = luxuryRepeaterForSeason(state.teamData, currentSeasonStart()) ? '1' : '0';
+  select.disabled = !state.teamCode;
+}
+
+async function saveTeamLuxuryHistory(year, repeater) {
+  if (!state.teamCode) {
+    alert('No team selected.');
+    syncTeamLuxuryRepeaterControl();
+    return;
+  }
+  const seasonYear = Number(year);
+  if (!Number.isInteger(seasonYear)) {
+    alert('Invalid luxury season.');
+    return;
+  }
+  const controls = [
+    document.getElementById('teamLuxuryRepeaterCurrentSelect'),
+    ...document.querySelectorAll(`[data-luxury-repeater-year="${seasonYear}"]`),
+  ].filter(Boolean);
+  controls.forEach((control) => { control.disabled = true; });
+  try {
+    await api(`/api/teams/${state.teamCode}/luxury-history`, {
+      method: 'PATCH',
+      body: JSON.stringify({ season_year: seasonYear, repeater: Boolean(repeater) }),
+    });
+    upsertLocalLuxuryHistory(seasonYear, Boolean(repeater));
+    renderImportantFigures();
+    syncTeamLuxuryRepeaterControl();
+  } catch (err) {
+    renderImportantFigures();
+    syncTeamLuxuryRepeaterControl();
+    alert(`Luxury history save failed: ${err.message}`);
+  } finally {
+    controls.forEach((control) => { control.disabled = false; });
+  }
+}
+
+function setupTeamLuxuryRepeaterControl() {
+  const select = document.getElementById('teamLuxuryRepeaterCurrentSelect');
+  if (!select) return;
+  select.addEventListener('change', async () => {
+    await saveTeamLuxuryHistory(currentSeasonStart(), select.value === '1');
   });
 }
 
@@ -4303,6 +4500,7 @@ async function init() {
     await saveCurrentTeamCash(receivedInput, sentInput, btn);
   });
   setupTeamApronHardCapControls();
+  setupTeamLuxuryRepeaterControl();
   document.getElementById('closeMoveLogModalBtn')?.addEventListener('click', closeMoveLogModal);
   document.getElementById('moveLogModal')?.addEventListener('click', (e) => {
     if (e.target?.id === 'moveLogModal') closeMoveLogModal();

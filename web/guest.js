@@ -615,6 +615,14 @@ function isTwoWayDeadContract(dead) {
   return String(dead?.dead_type || '').trim().toLowerCase().replaceAll('-', '_') === 'two_way';
 }
 
+function deadContractExcludedFromGasto(dead) {
+  return boolValue(dead?.exclude_from_gasto);
+}
+
+function deadContractExcludedFromCap(dead) {
+  return boolValue(dead?.exclude_from_cap);
+}
+
 function balanceSeasonYears() {
   const currentYear = currentSeasonStart();
   return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => currentYear + idx);
@@ -631,6 +639,46 @@ function exceptionBalanceTotal(season) {
   return teamExceptionBalanceTotal(state.teamData, season);
 }
 
+function luxuryHistoryYears() {
+  const currentYear = currentSeasonStart();
+  return Array.from({ length: 4 }, (_, idx) => currentYear - idx - 1);
+}
+
+function luxuryRepeaterHistoryMap(data) {
+  const rows = Array.isArray(data?.luxury_history) ? data.luxury_history : [];
+  return new Map(rows.map((row) => [Number(row.season_year), boolValue(row.repeater)]));
+}
+
+function luxuryRepeaterForSeason(data, season) {
+  const map = luxuryRepeaterHistoryMap(data);
+  const year = Number(season);
+  if (map.has(year)) return Boolean(map.get(year));
+  const currentYear = currentSeasonStart();
+  if (year > currentYear && map.has(currentYear)) return Boolean(map.get(currentYear));
+  return false;
+}
+
+function luxuryTaxAmount(overage, repeater) {
+  let remaining = Math.max(0, Number(overage || 0));
+  if (!remaining) return 0;
+  const tierSize = 5_000_000;
+  const baseRates = repeater
+    ? [2.5, 2.75, 3.5, 4.25]
+    : [1.5, 1.75, 2.5, 3.25];
+  let tax = 0;
+  let tierIndex = 0;
+  while (remaining > 0) {
+    const taxable = Math.min(tierSize, remaining);
+    const rate = tierIndex < baseRates.length
+      ? baseRates[tierIndex]
+      : baseRates[baseRates.length - 1] + ((tierIndex - baseRates.length + 1) * 0.5);
+    tax += taxable * rate;
+    remaining -= taxable;
+    tierIndex += 1;
+  }
+  return tax;
+}
+
 function teamSeasonBalances(data, season) {
   const players = data?.players || [];
   const deadContracts = data?.dead_contracts || [];
@@ -638,16 +686,22 @@ function teamSeasonBalances(data, season) {
   const capPlayerTotal = players
     .filter((player) => !isTwoWayPlayer(player))
     .reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
-  const normalDeadTotal = deadContracts
-    .filter((dead) => !isTwoWayDeadContract(dead))
+  const normalDeadCapTotal = deadContracts
+    .filter((dead) => !isTwoWayDeadContract(dead) && !deadContractExcludedFromCap(dead))
     .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
-  const deadTotal = deadContracts.reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
-  const capTotal = capPlayerTotal + normalDeadTotal;
-  const gastoTotal = playerTotal + deadTotal;
+  const deadGastoTotal = deadContracts
+    .filter((dead) => !deadContractExcludedFromGasto(dead))
+    .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
+  const capTotal = capPlayerTotal + normalDeadCapTotal;
+  const gastoTotal = playerTotal + deadGastoTotal;
+  const salaryCap = Number(state.settings.salary_cap_2025 || 0);
+  const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215 || 0);
+  const luxuryOverage = Math.max(0, capTotal - luxuryCap);
   return {
     cap_total: capTotal,
     gasto_total: gastoTotal,
-    apron_account: capTotal + teamExceptionBalanceTotal(data, season),
+    apron_account: capTotal,
+    luxury_tax: luxuryTaxAmount(luxuryOverage, luxuryRepeaterForSeason(data, season)),
   };
 }
 
@@ -2292,6 +2346,7 @@ function renderImportantFigures() {
     ['CAP TOTAL', 'cap_total'],
     ['GASTO TOTAL', 'gasto_total'],
     ['Cuenta del APRON', 'apron_account'],
+    ['Luxury tax', 'luxury_tax'],
   ];
   table.innerHTML = `
     <thead>
@@ -2308,7 +2363,10 @@ function renderImportantFigures() {
           <th class="balance-row-label">${label}</th>
           ${seasonData.map(({ season, balances }) => {
             const value = Number(balances[key] || 0);
-            const valueClass = value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '';
+            const isLiability = key === 'luxury_tax';
+            const valueClass = isLiability
+              ? (value > 0 ? 'is-negative' : '')
+              : (value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '');
             return `
               <td class="${season === currentYear ? 'is-current-year' : ''}">
                 <span class="balance-value ${valueClass}">${formatMoneyDots(value)}</span>
@@ -2344,6 +2402,41 @@ function renderImportantFigures() {
           <strong>${value}</strong>
         </span>
       `).join('')}
+    </div>
+  `;
+  renderLuxuryHistory();
+}
+
+function renderLuxuryHistory() {
+  const wrap = document.getElementById('luxuryHistorySection');
+  if (!wrap) return;
+  if (!state.teamData) {
+    wrap.innerHTML = '';
+    return;
+  }
+  const rows = luxuryHistoryYears().map((year) => ({
+    year,
+    repeater: luxuryRepeaterForSeason(state.teamData, year),
+  }));
+  wrap.innerHTML = `
+    <h3>Historia de luxury</h3>
+    <div class="luxury-history-wrap">
+      <table class="luxury-history-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>¿Reincidente?</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(({ year, repeater }) => `
+            <tr>
+              <th>${seasonSlashLabel(year)}</th>
+              <td><span class="luxury-history-value">${repeater ? 'Sí' : 'No'}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
     </div>
   `;
 }

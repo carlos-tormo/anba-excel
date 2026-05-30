@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260529a">
+  <link rel="stylesheet" href="/styles.css?v=20260530d">
 </head>
 <body class="app-layout">
   <header>
@@ -194,6 +194,11 @@
           <input id="teamSecondApronCapInput" type="checkbox">
           <span>Capped at 2nd apron</span>
         </label>
+        <label for="teamLuxuryRepeaterCurrentSelect">Reincidente luxury</label>
+        <select id="teamLuxuryRepeaterCurrentSelect">
+          <option value="0">No</option>
+          <option value="1">Sí</option>
+        </select>
       </div>
     </section>
     <section id="settingsSection" class="settings-panel section-hidden">
@@ -296,6 +301,8 @@
             <tr>
               <th data-sort="label">Names</th>
               <th data-sort="dead_type">Type</th>
+              <th data-sort="exclude_from_gasto">Exclude from Gasto</th>
+              <th data-sort="exclude_from_cap">Exclude from CAP</th>
               <th data-sort="salary_2025_num">2025-26</th>
               <th data-sort="salary_2026_num">2026-27</th>
               <th data-sort="salary_2027_num">2027-28</th>
@@ -357,6 +364,7 @@
         </table>
       </div>
       <div id="importantFiguresAppendix" class="important-figures-appendix"></div>
+      <div id="luxuryHistorySection" class="luxury-history-section"></div>
     </section>
   </main>
 
@@ -454,6 +462,16 @@
           <option value="normal">Normal</option>
           <option value="two_way">Two Way</option>
         </select>
+      </td>
+      <td>
+        <label class="dead-exclusion-toggle">
+          <input data-dead-flag="exclude_from_gasto" type="checkbox">
+        </label>
+      </td>
+      <td>
+        <label class="dead-exclusion-toggle">
+          <input data-dead-flag="exclude_from_cap" type="checkbox">
+        </label>
       </td>
       <td><input data-field="salary_2025_text"></td>
       <td><input data-field="salary_2026_text"></td>
@@ -617,6 +635,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260529a" defer></script>
+  <script src="/admin.js?v=20260530d" defer></script>
 </body>
 </html>

@@ -127,6 +127,14 @@ def dead_contract_salary_num(dead_contract: Dict[str, Any], season: int) -> floa
     return 0.0
 
 
+def dead_contract_excluded_from_gasto(dead_contract: Dict[str, Any]) -> bool:
+    return parse_bool(dead_contract.get("exclude_from_gasto"))
+
+
+def dead_contract_excluded_from_cap(dead_contract: Dict[str, Any]) -> bool:
+    return parse_bool(dead_contract.get("exclude_from_cap"))
+
+
 def row_salary_num(row: Dict[str, Any], season: int) -> float:
     value = row.get(f"salary_{season}_num")
     if value is not None:
@@ -360,6 +368,8 @@ class LeagueDB:
                     label TEXT,
                     amount_text TEXT,
                     amount_num REAL,
+                    exclude_from_gasto INTEGER NOT NULL DEFAULT 0,
+                    exclude_from_cap INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -424,6 +434,18 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS team_luxury_history (
+                    team_id INTEGER NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    repeater INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (team_id, season_year),
+                    FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_token TEXT PRIMARY KEY,
                     data_json TEXT NOT NULL,
@@ -443,6 +465,7 @@ class LeagueDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_dead_contracts_team_id ON dead_contracts(team_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_name ON free_agents(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_move_logs_team_season ON team_move_logs(team_id, season_year, bucket)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_team_luxury_history_team_year ON team_luxury_history(team_id, season_year)")
             cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(players)").fetchall()
@@ -508,6 +531,10 @@ class LeagueDB:
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(dead_contracts)").fetchall()
             }
+            if "exclude_from_gasto" not in dead_cols:
+                conn.execute("ALTER TABLE dead_contracts ADD COLUMN exclude_from_gasto INTEGER NOT NULL DEFAULT 0")
+            if "exclude_from_cap" not in dead_cols:
+                conn.execute("ALTER TABLE dead_contracts ADD COLUMN exclude_from_cap INTEGER NOT NULL DEFAULT 0")
             for season in [2025, 2026, 2027, 2028, 2029, 2030]:
                 text_col = f"salary_{season}_text"
                 num_col = f"salary_{season}_num"
@@ -814,6 +841,7 @@ class LeagueDB:
             settings = self.get_settings()
             summary = self._calc_summary(team, players, assets, dead_contracts, settings)
             move_summary = self._team_move_summary(conn, int(team["id"]), int(summary["current_year"]), settings)
+            luxury_history = self._team_luxury_history(conn, int(team["id"]), int(summary["current_year"]))
             return {
                 "team": team,
                 "players": players,
@@ -821,6 +849,7 @@ class LeagueDB:
                 "dead_contracts": dead_contracts,
                 "summary": summary,
                 "move_summary": move_summary,
+                "luxury_history": luxury_history,
             }
 
     def list_tracker(self) -> List[Dict[str, Any]]:
@@ -858,16 +887,18 @@ class LeagueDB:
                 f"""
                 SELECT
                     team_id,
-                    SUM(CASE WHEN dead_type = 'two_way' THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_two_way,
-                    SUM(CASE WHEN dead_type != 'two_way' THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_normal
+                    SUM(CASE WHEN dead_type = 'two_way' AND COALESCE(exclude_from_gasto, 0) = 0 THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_two_way_gasto,
+                    SUM(CASE WHEN dead_type != 'two_way' AND COALESCE(exclude_from_gasto, 0) = 0 THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_normal_gasto,
+                    SUM(CASE WHEN dead_type != 'two_way' AND COALESCE(exclude_from_cap, 0) = 0 THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_normal_cap
                 FROM dead_contracts
                 GROUP BY team_id
                 """
             )
             for row in dead_cur.fetchall():
                 dead_aggs[int(row["team_id"])] = {
-                    "dead_two_way": float(row["dead_two_way"] or 0.0),
-                    "dead_normal": float(row["dead_normal"] or 0.0),
+                    "dead_two_way_gasto": float(row["dead_two_way_gasto"] or 0.0),
+                    "dead_normal_gasto": float(row["dead_normal_gasto"] or 0.0),
+                    "dead_normal_cap": float(row["dead_normal_cap"] or 0.0),
                 }
 
             salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
@@ -877,10 +908,10 @@ class LeagueDB:
             for team in teams:
                 team_id = int(team["id"])
                 p = player_aggs.get(team_id, {"cap_players": 0.0, "payroll_players": 0.0})
-                d = dead_aggs.get(team_id, {"dead_two_way": 0.0, "dead_normal": 0.0})
+                d = dead_aggs.get(team_id, {"dead_two_way_gasto": 0.0, "dead_normal_gasto": 0.0, "dead_normal_cap": 0.0})
 
-                cap_figure = float(p["cap_players"]) + float(d["dead_normal"])
-                payroll = float(p["payroll_players"]) + float(d["dead_normal"]) + float(d["dead_two_way"])
+                cap_figure = float(p["cap_players"]) + float(d["dead_normal_cap"])
+                payroll = float(p["payroll_players"]) + float(d["dead_normal_gasto"]) + float(d["dead_two_way_gasto"])
                 first_apron = float(first_apron_setting) if first_apron_setting is not None else float(team["first_apron"] or 0.0)
                 second_apron = float(second_apron_setting) if second_apron_setting is not None else float(team["second_apron"] or 0.0)
                 rows.append(
@@ -923,6 +954,44 @@ class LeagueDB:
             conn.commit()
             return cur.rowcount > 0
 
+    def _team_luxury_history(self, conn: sqlite3.Connection, team_id: int, current_year: int) -> List[Dict[str, Any]]:
+        years = [current_year, *[current_year - offset for offset in range(1, 5)]]
+        placeholders = ",".join("?" for _ in years)
+        rows = conn.execute(
+            f"""
+            SELECT season_year, repeater
+            FROM team_luxury_history
+            WHERE team_id = ? AND season_year IN ({placeholders})
+            """,
+            (team_id, *years),
+        ).fetchall()
+        by_year = {int(row["season_year"]): bool(row["repeater"]) for row in rows}
+        return [
+            {
+                "season_year": year,
+                "repeater": bool(by_year.get(year, False)),
+            }
+            for year in years
+        ]
+
+    def update_team_luxury_history(self, code: str, season_year: int, repeater: bool) -> bool:
+        with self.connect() as conn:
+            row = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not row:
+                return False
+            conn.execute(
+                """
+                INSERT INTO team_luxury_history (team_id, season_year, repeater, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(team_id, season_year) DO UPDATE SET
+                    repeater = excluded.repeater,
+                    updated_at = excluded.updated_at
+                """,
+                (int(row["id"]), int(season_year), 1 if repeater else 0, now_iso()),
+            )
+            conn.commit()
+            return True
+
     def _calc_summary(
         self,
         team: Dict[str, Any],
@@ -944,16 +1013,24 @@ class LeagueDB:
             dead_contract_salary_num(d, current_year)
             for d in dead_contracts
             if normalize_dead_type(d.get("dead_type")) == "normal"
+            and not dead_contract_excluded_from_cap(d)
         )
-        dead_cap_two_way = sum(
+        dead_gasto_normal = sum(
+            dead_contract_salary_num(d, current_year)
+            for d in dead_contracts
+            if normalize_dead_type(d.get("dead_type")) == "normal"
+            and not dead_contract_excluded_from_gasto(d)
+        )
+        dead_gasto_two_way = sum(
             dead_contract_salary_num(d, current_year)
             for d in dead_contracts
             if normalize_dead_type(d.get("dead_type")) == "two_way"
+            and not dead_contract_excluded_from_gasto(d)
         )
         exceptions = sum((a.get("amount_num") or 0.0) for a in assets if a.get("asset_type") == "exception")
 
         cap_figure = cap_figure_players + dead_cap_normal
-        payroll = player_payroll + dead_cap_normal + dead_cap_two_way
+        payroll = player_payroll + dead_gasto_normal + dead_gasto_two_way
 
         salary_cap = parse_float(settings.get("salary_cap_2025")) or team["salary_cap"]
         luxury = salary_cap * 1.215
@@ -965,9 +1042,11 @@ class LeagueDB:
 
         return {
             "player_payroll": player_payroll,
-            "dead_cap": dead_cap_normal + dead_cap_two_way,
+            "dead_cap": dead_gasto_normal + dead_gasto_two_way,
             "dead_cap_normal": dead_cap_normal,
-            "dead_cap_two_way": dead_cap_two_way,
+            "dead_cap_two_way": dead_gasto_two_way,
+            "dead_gasto_normal": dead_gasto_normal,
+            "dead_gasto_two_way": dead_gasto_two_way,
             "exceptions_total": exceptions,
             "cap_figure": cap_figure,
             "payroll": payroll,
@@ -1509,6 +1588,7 @@ class LeagueDB:
                 """
                 INSERT INTO dead_contracts (
                     team_id, row_order, dead_type, label, amount_text, amount_num,
+                    exclude_from_gasto, exclude_from_cap,
                     salary_2025_text, salary_2025_num,
                     salary_2026_text, salary_2026_num,
                     salary_2027_text, salary_2027_num,
@@ -1517,7 +1597,7 @@ class LeagueDB:
                     salary_2030_text, salary_2030_num,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -1526,6 +1606,8 @@ class LeagueDB:
                     payload.get("label", "Dead Contract"),
                     amount_text,
                     parse_float(amount_text),
+                    1 if parse_bool(payload.get("exclude_from_gasto")) else 0,
+                    1 if parse_bool(payload.get("exclude_from_cap")) else 0,
                     salary_texts[2025],
                     parse_float(salary_texts[2025]),
                     salary_texts[2026],
@@ -1552,6 +1634,10 @@ class LeagueDB:
         if "dead_type" in payload:
             assigns.append("dead_type = ?")
             vals.append(normalize_dead_type(payload.get("dead_type")))
+        for bool_field in ["exclude_from_gasto", "exclude_from_cap"]:
+            if bool_field in payload:
+                assigns.append(f"{bool_field} = ?")
+                vals.append(1 if parse_bool(payload.get(bool_field)) else 0)
         for f in fields:
             if f in payload:
                 assigns.append(f"{f} = ?")
@@ -2988,6 +3074,29 @@ class Handler(SimpleHTTPRequestHandler):
             ok = self.db.update_player(player_id, payload)
             if ok:
                 self._log_admin_action("update", "player", str(player_id), None, {"fields": sorted(payload.keys())})
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
+        if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/luxury-history"):
+            parts = parsed.path.split("/")
+            if len(parts) < 5:
+                self._json(404, {"error": "not_found"})
+                return
+            code = parts[3]
+            season_year = parse_int(payload.get("season_year"))
+            if season_year is None or season_year < 2000 or season_year > 2100:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            repeater = parse_bool(payload.get("repeater"))
+            ok = self.db.update_team_luxury_history(code, season_year, repeater)
+            if ok:
+                self._log_admin_action(
+                    "update",
+                    "team_luxury_history",
+                    f"{code.upper()}:{season_year}",
+                    code.upper(),
+                    {"season_year": season_year, "repeater": repeater},
+                )
             self._json(200 if ok else 404, {"ok": ok})
             return
 

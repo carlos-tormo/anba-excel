@@ -3620,6 +3620,80 @@ td.salary-option--nb .salary-pct {
   color: #334155;
   font-variant-numeric: tabular-nums;
 }
+.luxury-history-section {
+  max-width: 520px;
+  margin-top: 18px;
+}
+.luxury-history-section h3 {
+  margin: 0 0 8px;
+  color: #263343;
+  font-size: 1rem;
+  font-weight: 900;
+}
+.luxury-history-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+}
+.luxury-history-table {
+  width: 100%;
+  min-width: 360px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.luxury-history-table th,
+.luxury-history-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  color: #334155;
+  font-size: 0.86rem;
+  text-align: left;
+}
+.luxury-history-table thead th {
+  background: #eef2f7;
+  color: #475569;
+  font-weight: 900;
+}
+.luxury-history-table tbody th {
+  width: 45%;
+  background: rgba(var(--team-secondary-rgb), 0.16);
+  color: #1f2937;
+  font-weight: 900;
+}
+.luxury-history-table tbody tr:last-child th,
+.luxury-history-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.luxury-history-table select {
+  min-height: 34px;
+  width: 120px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #172033;
+  font-weight: 800;
+}
+.luxury-history-value {
+  display: inline-flex;
+  min-width: 34px;
+  color: #172033;
+  font-weight: 900;
+}
+.dead-exclusion-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  width: 100%;
+}
+.dead-exclusion-toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
 .bulk-bar {
   display: flex;
   gap: 8px;
@@ -4557,6 +4631,16 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   #deadContractsTable td:nth-child(5)::before { content: "2028-29"; }
   #deadContractsTable td:nth-child(6)::before { content: "2029-30"; }
   #deadContractsTable td:nth-child(7)::before { content: "2030-31"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(2)::before { content: "Type"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(3)::before { content: "Exclude Gasto"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(4)::before { content: "Exclude CAP"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(5)::before { content: "2025-26"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(6)::before { content: "2026-27"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(7)::before { content: "2027-28"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(8)::before { content: "2028-29"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(9)::before { content: "2029-30"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(10)::before { content: "2030-31"; }
+  #deadContractsSection:not(.guest-dead-contracts-section) #deadContractsTable td:nth-child(11)::before { content: "Actions"; }
   #exceptionsTable td:nth-child(1)::before { content: "Name"; }
   #exceptionsTable td:nth-child(2)::before { content: "Value"; }
   #trackerTable td > *,
