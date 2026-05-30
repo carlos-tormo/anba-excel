@@ -777,10 +777,21 @@ function tradeMachineTeamName(code) {
   return (state.teams || []).find((team) => team.code === code)?.name || code;
 }
 
+function tradeMachineTeamLogoHtml(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  const src = teamLogoCandidates(normalized)[0] || '';
+  return `
+    <span class="trade-machine-team-kicker-logo" aria-hidden="true">
+      <span>${escapeHtml(normalized)}</span>
+      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+    </span>
+  `;
+}
+
 function tradeMachineRecipientOptions(fromTeam, selectedTo) {
   return (state.tradeMachine.selectedTeams || [])
     .filter((code) => code !== fromTeam)
-    .map((code) => `<option value="${code}" ${code === selectedTo ? 'selected' : ''}>${code}</option>`)
+    .map((code) => `<option value="${code}" ${code === selectedTo ? 'selected' : ''}>${code} · ${escapeHtml(tradeMachineTeamName(code))}</option>`)
     .join('');
 }
 
@@ -1207,25 +1218,42 @@ function validateTradeMachine() {
   };
 }
 
-function tradeMachineAssetRowHtml({ key, type, label, detail, salary, badges = '', disabled = false }) {
+function tradeMachineAssetDetailHtml(detail, mobileDetail) {
+  const desktop = String(detail || '').trim();
+  const mobile = String(mobileDetail || desktop).trim();
+  if (!desktop && !mobile) return '';
+  if (!mobile || mobile === desktop) return `<span class="trade-machine-asset-detail">${escapeHtml(desktop || mobile)}</span>`;
+  return `
+    <span class="trade-machine-asset-detail">
+      <span class="trade-machine-detail-desktop">${escapeHtml(desktop)}</span>
+      <span class="trade-machine-detail-mobile">${escapeHtml(mobile)}</span>
+    </span>
+  `;
+}
+
+function tradeMachineAssetRowHtml({ key, type, label, detail, mobileDetail, salary, badges = '', disabled = false }) {
   const selected = tradeMachineSelectedAsset(key);
   const fromTeam = key.split(':')[1];
   const selectedTo = selected?.toTeam || tradeMachineDefaultRecipient(fromTeam);
-  const salaryHtml = salary > 0 ? `<span class="trade-machine-asset-salary">${formatBalanceMoney(salary)}</span>` : '';
+  const salaryHtml = salary > 0
+    ? `<span class="trade-machine-asset-salary">${formatBalanceMoney(salary)}</span>`
+    : '<span class="trade-machine-asset-salary trade-machine-asset-salary--empty" aria-hidden="true"></span>';
   return `
     <div class="trade-machine-asset-row ${disabled ? 'is-disabled' : ''}">
       <label>
         <input type="checkbox" data-trade-asset-key="${key}" data-trade-asset-type="${type}" ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
         <span class="trade-machine-asset-main">
           <span class="trade-machine-asset-name">${escapeHtml(label)}</span>
-          ${detail ? `<span class="trade-machine-asset-detail">${escapeHtml(detail)}</span>` : ''}
+          ${tradeMachineAssetDetailHtml(detail, mobileDetail)}
           ${badges ? `<span class="trade-machine-tags">${badges}</span>` : ''}
         </span>
       </label>
-      ${salaryHtml}
-      <select class="trade-machine-recipient-select" data-trade-recipient="${key}" ${selected ? '' : 'disabled'} aria-label="Destino de ${escapeHtml(label)}">
-        ${tradeMachineRecipientOptions(fromTeam, selectedTo)}
-      </select>
+      <div class="trade-machine-asset-route">
+        ${salaryHtml}
+        <select class="trade-machine-recipient-select" data-trade-recipient="${key}" ${selected ? '' : 'disabled'} aria-label="Destino de ${escapeHtml(label)}">
+          ${tradeMachineRecipientOptions(fromTeam, selectedTo)}
+        </select>
+      </div>
     </div>
   `;
 }
@@ -1237,12 +1265,14 @@ function tradeMachinePlayerRowsHtml(data, code) {
   return players.map((player) => {
     const key = tradeMachineAssetKey('player', code, player.id);
     const detail = [player.position, player.bird_rights].filter(Boolean).join(' · ');
+    const salary = salaryNumericValue(player, season);
     return tradeMachineAssetRowHtml({
       key,
       type: 'player',
       label: player.name || 'Jugador',
       detail,
-      salary: salaryNumericValue(player, season),
+      mobileDetail: [player.position, salary > 0 ? formatBalanceMoney(salary) : 'Sin salario'].filter(Boolean).join(' · '),
+      salary,
     });
   }).join('');
 }
@@ -1301,6 +1331,52 @@ function tradeMachineLedgerHtml(flow) {
       <div><span>Envía</span><strong>${formatBalanceMoney(flow.outgoingSalary)}</strong></div>
       <div><span>Neto</span><strong class="${net > 0 ? 'is-negative' : net < 0 ? 'is-positive' : ''}">${formatBalanceMoney(net)}</strong></div>
       <div><span>CAP después</span><strong>${formatBalanceMoney(flow.postCap)}</strong></div>
+    </div>
+  `;
+}
+
+function tradeMachinePreviewChipHtml(asset, direction) {
+  const partner = direction === 'incoming' ? asset.fromTeam : asset.toTeam;
+  const partnerLabel = partner ? `${direction === 'incoming' ? 'desde' : 'a'} ${partner}` : '';
+  const salaryLabel = asset.salary > 0 ? formatBalanceMoney(asset.salary) : tradeMachineAssetTypeLabel(asset.type);
+  return `
+    <span class="trade-machine-preview-chip">
+      <span class="trade-machine-preview-chip-main">
+        <strong>${escapeHtml(asset.label)}</strong>
+        <small>${escapeHtml([partnerLabel, salaryLabel].filter(Boolean).join(' · '))}</small>
+      </span>
+      <button type="button" data-trade-remove-asset="${asset.key}" aria-label="Quitar ${escapeHtml(asset.label)}">&times;</button>
+    </span>
+  `;
+}
+
+function tradeMachinePreviewListHtml(assets, direction) {
+  if (!assets.length) return '<div class="trade-machine-preview-empty">Sin activos</div>';
+  return `
+    <div class="trade-machine-preview-chips">
+      ${assets.map((asset) => tradeMachinePreviewChipHtml(asset, direction)).join('')}
+    </div>
+  `;
+}
+
+function tradeMachineTeamPreviewHtml(flow) {
+  const hasAssets = flow.incomingAssets.length || flow.outgoingAssets.length;
+  return `
+    <div class="trade-machine-team-preview ${hasAssets ? '' : 'is-empty'}" aria-label="Vista previa del traspaso">
+      <section>
+        <div class="trade-machine-preview-head">
+          <span>Salen</span>
+          <strong>${flow.outgoingSalary > 0 ? `- ${formatBalanceMoney(flow.outgoingSalary)}` : formatBalanceMoney(0)}</strong>
+        </div>
+        ${tradeMachinePreviewListHtml(flow.outgoingAssets, 'outgoing')}
+      </section>
+      <section>
+        <div class="trade-machine-preview-head">
+          <span>Entran</span>
+          <strong>${flow.incomingSalary > 0 ? `+ ${formatBalanceMoney(flow.incomingSalary)}` : formatBalanceMoney(0)}</strong>
+        </div>
+        ${tradeMachinePreviewListHtml(flow.incomingAssets, 'incoming')}
+      </section>
     </div>
   `;
 }
@@ -1454,28 +1530,33 @@ function renderTradeMachineTeamCard(code, index, flow) {
     return `
       <article class="trade-machine-team-card">
         <div class="trade-machine-team-top">
-          ${tradeMachineTeamSelectHtml(code, index)}
+          <div class="trade-machine-team-select">
+            <span class="trade-machine-team-kicker">
+              Equipo ${index + 1}
+              ${tradeMachineTeamLogoHtml(code)}
+            </span>
+            ${tradeMachineTeamSelectHtml(code, index)}
+          </div>
           ${canRemove ? `<button type="button" class="trade-machine-remove" data-trade-remove-team="${index}" aria-label="Quitar equipo">Quitar</button>` : ''}
         </div>
         <div class="trade-machine-empty">Cargando equipo...</div>
       </article>
     `;
   }
-  const team = data.team || {};
   return `
     <article class="trade-machine-team-card">
       <div class="trade-machine-team-top">
         <div class="trade-machine-team-select">
-          <span class="trade-machine-team-kicker">Equipo ${index + 1}</span>
+          <span class="trade-machine-team-kicker">
+            Equipo ${index + 1}
+            ${tradeMachineTeamLogoHtml(code)}
+          </span>
           ${tradeMachineTeamSelectHtml(code, index)}
         </div>
         ${canRemove ? `<button type="button" class="trade-machine-remove" data-trade-remove-team="${index}" aria-label="Quitar ${code}">Quitar</button>` : ''}
       </div>
-      <div class="trade-machine-team-title">
-        <span class="trade-machine-team-code">${escapeHtml(code)}</span>
-        <strong>${escapeHtml(team.name || tradeMachineTeamName(code))}</strong>
-      </div>
       ${tradeMachineLedgerHtml(flow)}
+      ${tradeMachineTeamPreviewHtml(flow)}
       <div class="trade-machine-assets">
         <section>
           <h3>Plantilla (${(data.players || []).length})</h3>
@@ -1657,6 +1738,15 @@ function setupTradeMachineControls() {
     grid.addEventListener('click', (e) => {
       const target = e.target;
       if (!(target instanceof HTMLElement)) return;
+      const removeAssetBtn = target.closest('[data-trade-remove-asset]');
+      if (removeAssetBtn) {
+        const key = removeAssetBtn.dataset.tradeRemoveAsset;
+        if (key) {
+          delete state.tradeMachine.selections[key];
+          renderTradeMachine();
+        }
+        return;
+      }
       const removeBtn = target.closest('[data-trade-remove-team]');
       if (!removeBtn) return;
       removeTradeMachineTeam(Number(removeBtn.dataset.tradeRemoveTeam));

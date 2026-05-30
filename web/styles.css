@@ -1035,11 +1035,47 @@ h1 {
   font-weight: 800;
 }
 .trade-machine-team-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   color: #64748b;
   font-size: 0.72rem;
   font-weight: 900;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.trade-machine-team-kicker-logo {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  overflow: hidden;
+  border: 1px solid #d6dee9;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+.trade-machine-team-kicker-logo span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: rgb(var(--team-primary-rgb));
+  color: #ffffff;
+  font-size: 0.52rem;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+.trade-machine-team-kicker-logo img {
+  position: absolute;
+  inset: 2px;
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  object-fit: contain;
+  background: #ffffff;
 }
 .trade-machine-remove {
   min-height: 36px;
@@ -1136,7 +1172,7 @@ h1 {
 }
 .trade-machine-asset-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(82px, 104px);
+  grid-template-columns: minmax(0, 1fr) minmax(166px, auto);
   align-items: center;
   gap: 8px;
   min-height: 46px;
@@ -1181,6 +1217,17 @@ h1 {
   font-size: 0.72rem;
   font-weight: 700;
 }
+.trade-machine-detail-mobile {
+  display: none;
+}
+.trade-machine-asset-route {
+  display: grid;
+  grid-template-columns: auto minmax(82px, 108px);
+  align-items: center;
+  gap: 8px;
+  justify-self: end;
+  min-width: 0;
+}
 .trade-machine-asset-salary {
   color: #334155;
   font-size: 0.8rem;
@@ -1188,7 +1235,6 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 .trade-machine-asset-row select {
-  grid-column: 3;
   width: 100%;
   min-height: 34px;
   padding: 4px 7px;
@@ -1227,6 +1273,92 @@ h1 {
   color: #64748b;
   background: #f8fafc;
   font-size: 0.84rem;
+  font-weight: 800;
+}
+.trade-machine-team-preview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: 1px solid #dbe3ee;
+  background: #ffffff;
+}
+.trade-machine-team-preview section {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 82px;
+  padding: 10px 12px;
+  border-right: 1px solid #dbe3ee;
+}
+.trade-machine-team-preview section:last-child {
+  border-right: none;
+}
+.trade-machine-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+.trade-machine-preview-head strong {
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.trade-machine-preview-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.trade-machine-preview-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 5px 6px 5px 9px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #0f172a;
+}
+.trade-machine-preview-chip-main {
+  display: grid;
+  min-width: 0;
+}
+.trade-machine-preview-chip strong {
+  overflow: hidden;
+  max-width: 160px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+.trade-machine-preview-chip small {
+  overflow: hidden;
+  max-width: 160px;
+  color: #64748b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+.trade-machine-preview-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.14);
+  color: #334155;
+  font-size: 1rem;
+  line-height: 1;
+}
+.trade-machine-preview-empty {
+  color: #94a3b8;
+  font-size: 0.76rem;
   font-weight: 800;
 }
 .trade-machine-results {
@@ -1728,13 +1860,32 @@ h1 {
     0 12px 24px rgba(30, 64, 175, 0.12);
 }
 .draft-pick-card--restricted {
-  border-color: rgba(185, 28, 28, 0.78);
+  border-color: rgba(153, 27, 27, 0.62);
   background:
-    radial-gradient(130px 80px at 12% 50%, rgba(254, 202, 202, 0.58), transparent 72%),
-    linear-gradient(180deg, #fff7f7, #fee2e2);
+    repeating-linear-gradient(
+      -45deg,
+      rgba(185, 28, 28, 0.08) 0,
+      rgba(185, 28, 28, 0.08) 8px,
+      rgba(241, 245, 249, 0.84) 8px,
+      rgba(241, 245, 249, 0.84) 18px
+    ),
+    linear-gradient(180deg, #fff5f5, #e5e7eb);
   box-shadow:
-    0 0 0 1px rgba(185, 28, 28, 0.22),
-    0 12px 24px rgba(127, 29, 29, 0.16);
+    inset 7px 0 0 rgba(153, 27, 27, 0.82),
+    0 0 0 1px rgba(153, 27, 27, 0.18),
+    0 8px 16px rgba(100, 116, 139, 0.12);
+  filter: saturate(0.58);
+}
+.draft-pick-card--restricted .pick-card-logo-wrap,
+.draft-pick-card--restricted .pick-owner-logo {
+  filter: grayscale(0.85);
+  opacity: 0.62;
+}
+.draft-pick-card--restricted .pick-card-title {
+  color: #7f1d1d;
+}
+.draft-pick-card--restricted .pick-card-subtitle {
+  color: #64748b;
 }
 .pick-card-logo-wrap {
   width: 58px;
@@ -4895,18 +5046,50 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .trade-machine-ledger {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .trade-machine-team-preview {
+    grid-template-columns: 1fr;
+  }
+  .trade-machine-team-preview section {
+    min-height: 0;
+    border-right: none;
+    border-bottom: 1px solid #dbe3ee;
+  }
+  .trade-machine-team-preview section:last-child {
+    border-bottom: none;
+  }
   .trade-machine-asset-row {
+    grid-template-columns: minmax(0, 1fr) minmax(104px, 126px);
+    align-items: center;
+  }
+  .trade-machine-asset-row:has(.trade-machine-recipient-select:disabled) {
     grid-template-columns: minmax(0, 1fr);
-    align-items: stretch;
+  }
+  .trade-machine-detail-desktop {
+    display: none;
+  }
+  .trade-machine-detail-mobile {
+    display: inline;
+  }
+  .trade-machine-asset-route {
+    grid-template-columns: 1fr;
+    justify-self: stretch;
   }
   .trade-machine-asset-row select {
-    grid-column: 1;
+    grid-column: auto;
+    min-height: 38px;
   }
   .trade-machine-recipient-select:disabled {
     display: none;
   }
   .trade-machine-asset-salary {
-    justify-self: start;
+    display: none;
+  }
+  .trade-machine-preview-chip {
+    border-radius: 8px;
+  }
+  .trade-machine-preview-chip strong,
+  .trade-machine-preview-chip small {
+    max-width: 210px;
   }
   .trade-machine-result-head {
     align-items: flex-start;
