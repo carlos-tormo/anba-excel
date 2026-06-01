@@ -18,6 +18,11 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
 DEFAULT_ENV_FILE = ROOT / ".env"
+ROSTER_STANDARD_MIN_DEFAULT = 14
+ROSTER_STANDARD_MAX_DEFAULT = 15
+ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT = 18
+ROSTER_TWO_WAY_MIN_DEFAULT = 0
+ROSTER_TWO_WAY_MAX_DEFAULT = 3
 
 
 def load_env_file(path: Path) -> None:
@@ -95,6 +100,37 @@ def parse_int(value: Optional[str]) -> Optional[int]:
         return int(str(value).strip())
     except ValueError:
         return None
+
+
+def settings_int(settings: Dict[str, str], key: str, default: int) -> int:
+    parsed = parse_int(settings.get(key))
+    if parsed is None or parsed < 0:
+        return default
+    return parsed
+
+
+def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
+    current_year = parse_int(settings.get("current_year")) or 2025
+    if current_year < 2025 or current_year > 2030:
+        current_year = 2025
+    salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
+    return {
+        "salary_cap_2025": salary_cap,
+        "current_year": current_year,
+        "first_apron": parse_float(settings.get("first_apron")) or 195945000.0,
+        "second_apron": parse_float(settings.get("second_apron")) or 207824000.0,
+        "cash_limit_total": parse_float(settings.get("cash_limit_total")) or 0.0,
+        "trade_move_limit_pre30": max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0),
+        "trade_move_limit_post30": max(0, parse_int(settings.get("trade_move_limit_post30")) or 0),
+        "trade_move_phase": normalize_move_phase(settings.get("trade_move_phase")),
+        "roster_standard_min": settings_int(settings, "roster_standard_min", ROSTER_STANDARD_MIN_DEFAULT),
+        "roster_standard_max": settings_int(settings, "roster_standard_max", ROSTER_STANDARD_MAX_DEFAULT),
+        "roster_standard_offseason_max": settings_int(settings, "roster_standard_offseason_max", ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT),
+        "roster_two_way_min": settings_int(settings, "roster_two_way_min", ROSTER_TWO_WAY_MIN_DEFAULT),
+        "roster_two_way_max": settings_int(settings, "roster_two_way_max", ROSTER_TWO_WAY_MAX_DEFAULT),
+        "luxury_cap": salary_cap * 1.215,
+        "minimum_cap_allowed": salary_cap * 0.9,
+    }
 
 
 def parse_bool(value: Any) -> bool:
@@ -358,6 +394,21 @@ class LeagueDB:
                 """,
                 (now_iso(),),
             )
+            roster_defaults = {
+                "roster_standard_min": ROSTER_STANDARD_MIN_DEFAULT,
+                "roster_standard_max": ROSTER_STANDARD_MAX_DEFAULT,
+                "roster_standard_offseason_max": ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT,
+                "roster_two_way_min": ROSTER_TWO_WAY_MIN_DEFAULT,
+                "roster_two_way_max": ROSTER_TWO_WAY_MAX_DEFAULT,
+            }
+            for key, value in roster_defaults.items():
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (key, str(value), now_iso()),
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS dead_contracts (
@@ -881,7 +932,9 @@ class LeagueDB:
                 SELECT
                     team_id,
                     SUM(CASE WHEN COALESCE(is_two_way, 0) = 0 THEN COALESCE({salary_num_col}, 0) ELSE 0 END) AS cap_players,
-                    SUM(COALESCE({salary_num_col}, 0)) AS payroll_players
+                    SUM(COALESCE({salary_num_col}, 0)) AS payroll_players,
+                    SUM(CASE WHEN COALESCE(is_two_way, 0) != 0 OR UPPER(COALESCE(bird_rights, '')) = 'TW' THEN 0 ELSE 1 END) AS roster_standard_count,
+                    SUM(CASE WHEN COALESCE(is_two_way, 0) != 0 OR UPPER(COALESCE(bird_rights, '')) = 'TW' THEN 1 ELSE 0 END) AS roster_two_way_count
                 FROM players
                 GROUP BY team_id
                 """
@@ -890,6 +943,8 @@ class LeagueDB:
                 player_aggs[int(row["team_id"])] = {
                     "cap_players": float(row["cap_players"] or 0.0),
                     "payroll_players": float(row["payroll_players"] or 0.0),
+                    "roster_standard_count": int(row["roster_standard_count"] or 0),
+                    "roster_two_way_count": int(row["roster_two_way_count"] or 0),
                 }
 
             dead_aggs: Dict[int, Dict[str, float]] = {}
@@ -911,14 +966,61 @@ class LeagueDB:
                     "dead_normal_cap": float(row["dead_normal_cap"] or 0.0),
                 }
 
+            draft_year_start = current_year + 1
+            draft_aggs: Dict[int, Dict[str, int]] = {}
+            draft_cur = conn.execute(
+                """
+                SELECT
+                    team_id,
+                    SUM(
+                        CASE
+                            WHEN CAST(COALESCE(year, '0') AS INTEGER) >= ?
+                                AND LOWER(COALESCE(draft_pick_type, 'own')) != 'sold'
+                                AND LOWER(COALESCE(draft_round, '')) NOT LIKE '%2%'
+                                AND LOWER(COALESCE(label, '')) NOT LIKE '%2%'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS draft_first_count,
+                    SUM(
+                        CASE
+                            WHEN CAST(COALESCE(year, '0') AS INTEGER) >= ?
+                                AND LOWER(COALESCE(draft_pick_type, 'own')) != 'sold'
+                                AND (
+                                    LOWER(COALESCE(draft_round, '')) LIKE '%2%'
+                                    OR LOWER(COALESCE(label, '')) LIKE '%2%'
+                                )
+                            THEN 1 ELSE 0
+                        END
+                    ) AS draft_second_count
+                FROM assets
+                WHERE asset_type = 'draft_pick'
+                GROUP BY team_id
+                """,
+                (draft_year_start, draft_year_start),
+            )
+            for row in draft_cur.fetchall():
+                draft_aggs[int(row["team_id"])] = {
+                    "draft_first_count": int(row["draft_first_count"] or 0),
+                    "draft_second_count": int(row["draft_second_count"] or 0),
+                }
+
             salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
             luxury_cap = salary_cap * 1.215
             first_apron_setting = parse_float(settings.get("first_apron"))
             second_apron_setting = parse_float(settings.get("second_apron"))
             for team in teams:
                 team_id = int(team["id"])
-                p = player_aggs.get(team_id, {"cap_players": 0.0, "payroll_players": 0.0})
+                p = player_aggs.get(
+                    team_id,
+                    {
+                        "cap_players": 0.0,
+                        "payroll_players": 0.0,
+                        "roster_standard_count": 0,
+                        "roster_two_way_count": 0,
+                    },
+                )
                 d = dead_aggs.get(team_id, {"dead_two_way_gasto": 0.0, "dead_normal_gasto": 0.0, "dead_normal_cap": 0.0})
+                draft_counts = draft_aggs.get(team_id, {"draft_first_count": 0, "draft_second_count": 0})
 
                 cap_figure = float(p["cap_players"]) + float(d["dead_normal_cap"])
                 payroll = float(p["payroll_players"]) + float(d["dead_normal_gasto"]) + float(d["dead_two_way_gasto"])
@@ -934,6 +1036,10 @@ class LeagueDB:
                         "espacio_luxury": luxury_cap - cap_figure,
                         "espacio_1er_apron": first_apron - cap_figure,
                         "espacio_2do_apron": second_apron - cap_figure,
+                        "roster_standard_count": int(p["roster_standard_count"]),
+                        "roster_two_way_count": int(p["roster_two_way_count"]),
+                        "draft_first_count": int(draft_counts["draft_first_count"]),
+                        "draft_second_count": int(draft_counts["draft_second_count"]),
                     }
                 )
             return rows
@@ -1018,6 +1124,12 @@ class LeagueDB:
         cap_figure_players = sum(row_salary_num(p, current_year) for p in players if not p.get("is_two_way"))
         # GASTO Total: current-year player salaries including TW contracts.
         player_payroll = sum(row_salary_num(p, current_year) for p in players)
+        roster_standard_count = sum(
+            1
+            for p in players
+            if not p.get("is_two_way") and str(p.get("bird_rights") or "").strip().upper() != "TW"
+        )
+        roster_two_way_count = len(players) - roster_standard_count
 
         dead_cap_normal = sum(
             dead_contract_salary_num(d, current_year)
@@ -1072,6 +1184,8 @@ class LeagueDB:
             "trade_move_phase": normalize_move_phase(settings.get("trade_move_phase")),
             "trade_move_limit_pre30": max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0),
             "trade_move_limit_post30": max(0, parse_int(settings.get("trade_move_limit_post30")) or 0),
+            "roster_standard_count": roster_standard_count,
+            "roster_two_way_count": roster_two_way_count,
             "apron_hard_cap": normalize_apron_hard_cap(team.get("apron_hard_cap")) or "",
         }
 
@@ -2563,30 +2677,9 @@ class Handler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/settings":
             settings = self.db.get_settings()
-            current_year = parse_int(settings.get("current_year")) or 2025
-            if current_year < 2025 or current_year > 2030:
-                current_year = 2025
-            salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
-            cash_limit_total = parse_float(settings.get("cash_limit_total")) or 0.0
-            trade_move_limit_pre30 = max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0)
-            trade_move_limit_post30 = max(0, parse_int(settings.get("trade_move_limit_post30")) or 0)
-            trade_move_phase = normalize_move_phase(settings.get("trade_move_phase"))
             self._json(
                 200,
-                {
-                    "settings": {
-                        "salary_cap_2025": salary_cap,
-                        "current_year": current_year,
-                        "first_apron": parse_float(settings.get("first_apron")) or 195945000.0,
-                        "second_apron": parse_float(settings.get("second_apron")) or 207824000.0,
-                        "cash_limit_total": cash_limit_total,
-                        "trade_move_limit_pre30": trade_move_limit_pre30,
-                        "trade_move_limit_post30": trade_move_limit_post30,
-                        "trade_move_phase": trade_move_phase,
-                        "luxury_cap": salary_cap * 1.215,
-                        "minimum_cap_allowed": salary_cap * 0.9,
-                    }
-                },
+                {"settings": public_settings_payload(settings)},
             )
             return
 
@@ -2893,32 +2986,13 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 raise
             merged = self.db.get_settings()
-            merged_year = parse_int(merged.get("current_year")) or 2025
-            if merged_year < 2025 or merged_year > 2030:
-                merged_year = 2025
-            merged_salary_cap = parse_float(merged.get("salary_cap_2025")) or 154647000.0
-            merged_cash_limit_total = parse_float(merged.get("cash_limit_total")) or 0.0
-            merged_trade_move_limit_pre30 = max(0, parse_int(merged.get("trade_move_limit_pre30")) or 0)
-            merged_trade_move_limit_post30 = max(0, parse_int(merged.get("trade_move_limit_post30")) or 0)
-            merged_trade_move_phase = normalize_move_phase(merged.get("trade_move_phase"))
             self._log_admin_action("update", "settings", None, None, {"progress_year": result})
             self._json(
                 200,
                 {
                     "ok": True,
                     "result": result,
-                    "settings": {
-                        "salary_cap_2025": merged_salary_cap,
-                        "current_year": merged_year,
-                        "first_apron": parse_float(merged.get("first_apron")) or 195945000.0,
-                        "second_apron": parse_float(merged.get("second_apron")) or 207824000.0,
-                        "cash_limit_total": merged_cash_limit_total,
-                        "trade_move_limit_pre30": merged_trade_move_limit_pre30,
-                        "trade_move_limit_post30": merged_trade_move_limit_post30,
-                        "trade_move_phase": merged_trade_move_phase,
-                        "luxury_cap": merged_salary_cap * 1.215,
-                        "minimum_cap_allowed": merged_salary_cap * 0.9,
-                    },
+                    "settings": public_settings_payload(merged),
                 },
             )
             return
@@ -2942,6 +3016,11 @@ class Handler(SimpleHTTPRequestHandler):
             next_trade_move_limit_pre30: Optional[int] = None
             next_trade_move_limit_post30: Optional[int] = None
             next_trade_move_phase: Optional[str] = None
+            next_roster_standard_min: Optional[int] = None
+            next_roster_standard_max: Optional[int] = None
+            next_roster_standard_offseason_max: Optional[int] = None
+            next_roster_two_way_min: Optional[int] = None
+            next_roster_two_way_max: Optional[int] = None
 
             if "salary_cap_2025" in payload:
                 cap = payload.get("salary_cap_2025")
@@ -2996,6 +3075,50 @@ class Handler(SimpleHTTPRequestHandler):
             if "trade_move_phase" in payload:
                 next_trade_move_phase = normalize_move_phase(payload.get("trade_move_phase"))
 
+            roster_int_fields = {
+                "roster_standard_min": "invalid_roster_standard_min",
+                "roster_standard_max": "invalid_roster_standard_max",
+                "roster_standard_offseason_max": "invalid_roster_standard_offseason_max",
+                "roster_two_way_min": "invalid_roster_two_way_min",
+                "roster_two_way_max": "invalid_roster_two_way_max",
+            }
+            parsed_roster_fields: Dict[str, int] = {}
+            for field, error in roster_int_fields.items():
+                if field not in payload:
+                    continue
+                parsed_value = parse_int(str(payload.get(field)))
+                if parsed_value is None or parsed_value < 0:
+                    self._json(400, {"error": error})
+                    return
+                parsed_roster_fields[field] = parsed_value
+            if "roster_standard_min" in parsed_roster_fields:
+                next_roster_standard_min = parsed_roster_fields["roster_standard_min"]
+            if "roster_standard_max" in parsed_roster_fields:
+                next_roster_standard_max = parsed_roster_fields["roster_standard_max"]
+            if "roster_standard_offseason_max" in parsed_roster_fields:
+                next_roster_standard_offseason_max = parsed_roster_fields["roster_standard_offseason_max"]
+            if "roster_two_way_min" in parsed_roster_fields:
+                next_roster_two_way_min = parsed_roster_fields["roster_two_way_min"]
+            if "roster_two_way_max" in parsed_roster_fields:
+                next_roster_two_way_max = parsed_roster_fields["roster_two_way_max"]
+
+            current_settings = public_settings_payload(self.db.get_settings())
+            standard_min_check = next_roster_standard_min if next_roster_standard_min is not None else int(current_settings["roster_standard_min"])
+            standard_max_check = next_roster_standard_max if next_roster_standard_max is not None else int(current_settings["roster_standard_max"])
+            standard_offseason_max_check = (
+                next_roster_standard_offseason_max
+                if next_roster_standard_offseason_max is not None
+                else int(current_settings["roster_standard_offseason_max"])
+            )
+            two_way_min_check = next_roster_two_way_min if next_roster_two_way_min is not None else int(current_settings["roster_two_way_min"])
+            two_way_max_check = next_roster_two_way_max if next_roster_two_way_max is not None else int(current_settings["roster_two_way_max"])
+            if standard_min_check > standard_max_check or standard_max_check > standard_offseason_max_check:
+                self._json(400, {"error": "invalid_roster_standard_range"})
+                return
+            if two_way_min_check > two_way_max_check:
+                self._json(400, {"error": "invalid_roster_two_way_range"})
+                return
+
             if (
                 next_salary_cap is None
                 and next_current_year is None
@@ -3005,6 +3128,11 @@ class Handler(SimpleHTTPRequestHandler):
                 and next_trade_move_limit_pre30 is None
                 and next_trade_move_limit_post30 is None
                 and next_trade_move_phase is None
+                and next_roster_standard_min is None
+                and next_roster_standard_max is None
+                and next_roster_standard_offseason_max is None
+                and next_roster_two_way_min is None
+                and next_roster_two_way_max is None
             ):
                 self._json(400, {"error": "settings_payload_required"})
                 return
@@ -3025,6 +3153,16 @@ class Handler(SimpleHTTPRequestHandler):
                 self.db.update_setting("trade_move_limit_post30", str(int(next_trade_move_limit_post30)))
             if next_trade_move_phase is not None:
                 self.db.update_setting("trade_move_phase", next_trade_move_phase)
+            if next_roster_standard_min is not None:
+                self.db.update_setting("roster_standard_min", str(next_roster_standard_min))
+            if next_roster_standard_max is not None:
+                self.db.update_setting("roster_standard_max", str(next_roster_standard_max))
+            if next_roster_standard_offseason_max is not None:
+                self.db.update_setting("roster_standard_offseason_max", str(next_roster_standard_offseason_max))
+            if next_roster_two_way_min is not None:
+                self.db.update_setting("roster_two_way_min", str(next_roster_two_way_min))
+            if next_roster_two_way_max is not None:
+                self.db.update_setting("roster_two_way_max", str(next_roster_two_way_max))
             self._log_admin_action(
                 "update",
                 "settings",
@@ -3039,34 +3177,20 @@ class Handler(SimpleHTTPRequestHandler):
                     "trade_move_limit_pre30": next_trade_move_limit_pre30,
                     "trade_move_limit_post30": next_trade_move_limit_post30,
                     "trade_move_phase": next_trade_move_phase,
+                    "roster_standard_min": next_roster_standard_min,
+                    "roster_standard_max": next_roster_standard_max,
+                    "roster_standard_offseason_max": next_roster_standard_offseason_max,
+                    "roster_two_way_min": next_roster_two_way_min,
+                    "roster_two_way_max": next_roster_two_way_max,
                 },
             )
 
             merged = self.db.get_settings()
-            merged_year = parse_int(merged.get("current_year")) or 2025
-            if merged_year < 2025 or merged_year > 2030:
-                merged_year = 2025
-            merged_salary_cap = parse_float(merged.get("salary_cap_2025")) or 154647000.0
-            merged_cash_limit_total = parse_float(merged.get("cash_limit_total")) or 0.0
-            merged_trade_move_limit_pre30 = max(0, parse_int(merged.get("trade_move_limit_pre30")) or 0)
-            merged_trade_move_limit_post30 = max(0, parse_int(merged.get("trade_move_limit_post30")) or 0)
-            merged_trade_move_phase = normalize_move_phase(merged.get("trade_move_phase"))
             self._json(
                 200,
                 {
                     "ok": True,
-                    "settings": {
-                        "salary_cap_2025": merged_salary_cap,
-                        "current_year": merged_year,
-                        "first_apron": parse_float(merged.get("first_apron")) or 195945000.0,
-                        "second_apron": parse_float(merged.get("second_apron")) or 207824000.0,
-                        "cash_limit_total": merged_cash_limit_total,
-                        "trade_move_limit_pre30": merged_trade_move_limit_pre30,
-                        "trade_move_limit_post30": merged_trade_move_limit_post30,
-                        "trade_move_phase": merged_trade_move_phase,
-                        "luxury_cap": merged_salary_cap * 1.215,
-                        "minimum_cap_allowed": merged_salary_cap * 0.9,
-                    },
+                    "settings": public_settings_payload(merged),
                 },
             )
             return

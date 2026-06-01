@@ -17,6 +17,11 @@ const state = {
     second_apron: 207824000,
     luxury_cap: 187896105,
     minimum_cap_allowed: 139182300,
+    roster_standard_min: 14,
+    roster_standard_max: 15,
+    roster_standard_offseason_max: 18,
+    roster_two_way_min: 0,
+    roster_two_way_max: 3,
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
@@ -61,6 +66,8 @@ const TRADE_MATCH_HIGH_BAND = 29_000_000;
 const TRADE_MATCH_CUSHION = 250_000;
 const TRADE_MATCH_EXPANDED_BUFFER_RATIO = 0.05513854478;
 const TRADE_MATCH_EXPANDED_BUFFER_FALLBACK = 8_527_000;
+const TRADE_PICK_ACTION_SEND = 'send_pick';
+const TRADE_PICK_ACTION_SWAP = 'swap_rights';
 const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
 const TEAM_TABS = [
   {
@@ -644,6 +651,65 @@ function isTwoWayPlayer(player) {
   return boolValue(player?.is_two_way) || String(player?.bird_rights || '').trim().toUpperCase() === 'TW';
 }
 
+function rosterLimits() {
+  const standardMin = Math.max(0, Number(state.settings.roster_standard_min ?? 14) || 0);
+  const standardMax = Math.max(standardMin, Number(state.settings.roster_standard_max ?? 15) || 0);
+  const standardOffseasonMax = Math.max(standardMax, Number(state.settings.roster_standard_offseason_max ?? 18) || 0);
+  const twoWayMin = Math.max(0, Number(state.settings.roster_two_way_min ?? 0) || 0);
+  const twoWayMax = Math.max(twoWayMin, Number(state.settings.roster_two_way_max ?? 3) || 0);
+  return { standardMin, standardMax, standardOffseasonMax, twoWayMin, twoWayMax };
+}
+
+function rosterCountFromPlayers(players = []) {
+  return (players || []).reduce((counts, player) => {
+    if (isTwoWayPlayer(player)) counts.twoWay += 1;
+    else counts.standard += 1;
+    return counts;
+  }, { standard: 0, twoWay: 0 });
+}
+
+function rosterCountFromSummary(summary = {}) {
+  const standard = Number(summary.roster_standard_count);
+  const twoWay = Number(summary.roster_two_way_count);
+  if (Number.isFinite(standard) && Number.isFinite(twoWay)) {
+    return { standard, twoWay };
+  }
+  return rosterCountFromPlayers(state.teamData?.players || []);
+}
+
+function rosterCountStatus(kind, count, limits = rosterLimits()) {
+  if (kind === 'twoWay') {
+    if (count < limits.twoWayMin) {
+      return { key: 'under', label: `Bajo mínimo ${limits.twoWayMin}` };
+    }
+    if (count > limits.twoWayMax) {
+      return { key: 'over', label: `Sobre máximo ${limits.twoWayMax}` };
+    }
+    return { key: 'ok', label: `${limits.twoWayMin}-${limits.twoWayMax}` };
+  }
+  if (count < limits.standardMin) {
+    return { key: 'under', label: `Bajo mínimo ${limits.standardMin}` };
+  }
+  if (count > limits.standardOffseasonMax) {
+    return { key: 'over', label: `Sobre máximo ${limits.standardOffseasonMax}` };
+  }
+  if (count > limits.standardMax) {
+    return { key: 'offseason', label: `Solo offseason (${limits.standardOffseasonMax} max)` };
+  }
+  return { key: 'ok', label: `${limits.standardMin}-${limits.standardMax}` };
+}
+
+function rosterCountChipHtml(kind, count, label) {
+  const status = rosterCountStatus(kind, count);
+  return `
+    <span class="roster-count-chip roster-count-chip--${status.key}">
+      <span>${label}</span>
+      <strong>${count}</strong>
+      <small>${escapeHtml(status.label)}</small>
+    </span>
+  `;
+}
+
 function isTwoWayDeadContract(dead) {
   return String(dead?.dead_type || '').trim().toLowerCase().replaceAll('-', '_') === 'two_way';
 }
@@ -812,6 +878,28 @@ function draftPickRound(asset) {
   return label.includes('2') ? '2nd' : '1st';
 }
 
+function draftPickCountsFromAssets(assets = []) {
+  const draftYearStart = currentSeasonStart() + 1;
+  return (assets || []).reduce((counts, asset) => {
+    if (asset?.asset_type !== 'draft_pick') return counts;
+    if (draftPickType(asset) === 'sold') return counts;
+    const year = Number(asset.year);
+    if (Number.isFinite(year) && year < draftYearStart) return counts;
+    if (draftPickRound(asset) === '2nd') counts.second += 1;
+    else counts.first += 1;
+    return counts;
+  }, { first: 0, second: 0 });
+}
+
+function draftPickCountChipHtml(count, label) {
+  return `
+    <span class="draft-count-chip">
+      <span>${label}</span>
+      <strong>${count}</strong>
+    </span>
+  `;
+}
+
 function draftPickIsRestricted(asset) {
   return boolValue(asset?.draft_pick_restricted);
 }
@@ -832,6 +920,36 @@ function draftPickTradeLabel(asset, teamCode) {
   const yearLabel = Number.isFinite(year) ? String(year) : 'Sin año';
   const owner = draftPickTradeOwner(asset, teamCode);
   return `${yearLabel} ${draftPickRound(asset).toUpperCase()} ${owner || teamCode}`;
+}
+
+function tradeMachinePickAction(value) {
+  return value === TRADE_PICK_ACTION_SWAP ? TRADE_PICK_ACTION_SWAP : TRADE_PICK_ACTION_SEND;
+}
+
+function tradeMachinePickActionOptions(selectedAction) {
+  const selected = tradeMachinePickAction(selectedAction);
+  return [
+    [TRADE_PICK_ACTION_SEND, 'Enviar ronda'],
+    [TRADE_PICK_ACTION_SWAP, 'Vender swap'],
+  ].map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+}
+
+function tradeMachineAssetForSelection(meta, selection) {
+  if (meta?.type !== 'pick') return meta;
+  const pickAction = tradeMachinePickAction(selection?.pickAction);
+  if (pickAction !== TRADE_PICK_ACTION_SWAP) {
+    return { ...meta, pickAction };
+  }
+  const details = [meta.detail, 'La ronda no cambia de dueño; se venden derechos de intercambio.']
+    .filter(Boolean)
+    .join(' · ');
+  return {
+    ...meta,
+    type: 'swap_right',
+    pickAction,
+    label: `Swap ${meta.label}`,
+    detail: details,
+  };
 }
 
 function tradeMachinePickBadges(asset) {
@@ -870,6 +988,7 @@ function tradeMachineAssetMeta(key) {
       detail: [player.position, player.bird_rights].filter(Boolean).join(' · '),
       salary,
       capSalary: isTwoWayPlayer(player) ? 0 : salary,
+      isTwoWay: isTwoWayPlayer(player),
       restricted: false,
       protected: false,
       conditional: false,
@@ -988,6 +1107,7 @@ function tradeMachineFlowSkeleton(code) {
   const season = tradeMachineSeasonStart();
   const seasonTotals = teamSeasonBalances(data, season);
   const summary = data.summary || {};
+  const rosterCounts = rosterCountFromPlayers(data.players || []);
   const beforeCap = season === currentSeasonStart() && Number.isFinite(Number(summary.cap_figure))
     ? Number(summary.cap_figure)
     : Number(seasonTotals.cap_total || 0);
@@ -1003,6 +1123,10 @@ function tradeMachineFlowSkeleton(code) {
     outgoingAssets: [],
     postCap: beforeCap,
     postApronAccount: beforeCap,
+    beforeRosterStandard: rosterCounts.standard,
+    beforeRosterTwoWay: rosterCounts.twoWay,
+    postRosterStandard: rosterCounts.standard,
+    postRosterTwoWay: rosterCounts.twoWay,
     beforeBalances: tradeMachineBalanceSnapshot(beforeCap),
     afterBalances: tradeMachineBalanceSnapshot(beforeCap),
   };
@@ -1016,14 +1140,24 @@ function tradeMachineFlows() {
   Object.entries(state.tradeMachine.selections || {}).forEach(([key, selection]) => {
     const meta = tradeMachineAssetMeta(key);
     if (!meta || !flows[selection.fromTeam] || !flows[selection.toTeam]) return;
-    const salary = Number(meta.salary || 0);
-    const capSalary = Number(meta.capSalary ?? meta.salary ?? 0);
+    const asset = tradeMachineAssetForSelection(meta, selection);
+    const salary = Number(asset.salary || 0);
+    const capSalary = Number(asset.capSalary ?? asset.salary ?? 0);
     flows[selection.fromTeam].outgoingSalary += salary;
     flows[selection.fromTeam].outgoingCapSalary += capSalary;
-    flows[selection.fromTeam].outgoingAssets.push({ ...meta, toTeam: selection.toTeam });
+    flows[selection.fromTeam].outgoingAssets.push({ ...asset, toTeam: selection.toTeam });
     flows[selection.toTeam].incomingSalary += salary;
     flows[selection.toTeam].incomingCapSalary += capSalary;
-    flows[selection.toTeam].incomingAssets.push({ ...meta, fromTeam: selection.fromTeam });
+    flows[selection.toTeam].incomingAssets.push({ ...asset, fromTeam: selection.fromTeam });
+    if (asset.type === 'player') {
+      if (asset.isTwoWay) {
+        flows[selection.fromTeam].postRosterTwoWay -= 1;
+        flows[selection.toTeam].postRosterTwoWay += 1;
+      } else {
+        flows[selection.fromTeam].postRosterStandard -= 1;
+        flows[selection.toTeam].postRosterStandard += 1;
+      }
+    }
   });
   Object.values(flows).forEach((flow) => {
     flow.postCap = flow.beforeCap + flow.incomingCapSalary - flow.outgoingCapSalary;
@@ -1111,6 +1245,7 @@ function tradeMachineRuleChecklist(issues, selectedCount) {
   const hardCapIssues = tradeMachineIssuesForRule(issues, 'hard_cap');
   const restrictedIssues = tradeMachineIssuesForRule(issues, 'restricted_pick');
   const manualIssues = tradeMachineIssuesForRule(issues, 'manual_review');
+  const rosterIssues = tradeMachineIssuesForRule(issues, 'roster_count');
   return [
     {
       key: 'salary',
@@ -1149,10 +1284,63 @@ function tradeMachineRuleChecklist(issues, selectedCount) {
     {
       key: 'roster_count',
       label: 'Tamaño de plantilla',
-      status: 'pending',
-      messages: ['Pendiente: aún no se comprueba el tamaño de plantilla tras el traspaso.'],
+      status: rosterIssues.some((issue) => issue.severity === 'illegal')
+        ? 'fail'
+        : rosterIssues.some((issue) => issue.severity === 'warning')
+          ? 'warning'
+          : 'pass',
+      messages: rosterIssues.length
+        ? rosterIssues.map(tradeMachineIssueMessage)
+        : ['El tamaño de plantilla queda dentro de los límites configurados.'],
     },
   ];
+}
+
+function tradeMachineRosterCountIssues(code, flow) {
+  const limits = rosterLimits();
+  const issues = [];
+  const standard = Number(flow.postRosterStandard || 0);
+  const twoWay = Number(flow.postRosterTwoWay || 0);
+  if (standard > limits.standardOffseasonMax) {
+    issues.push({
+      severity: 'illegal',
+      rule: 'roster_count',
+      teamCode: code,
+      message: `Quedaría con ${standard} contratos estándar; el máximo configurado para offseason es ${limits.standardOffseasonMax}.`,
+    });
+  } else if (standard > limits.standardMax) {
+    issues.push({
+      severity: 'warning',
+      rule: 'roster_count',
+      teamCode: code,
+      message: `Quedaría con ${standard} contratos estándar. Solo sería válido en offseason; durante la temporada el máximo es ${limits.standardMax}.`,
+    });
+  }
+  if (standard < limits.standardMin) {
+    issues.push({
+      severity: 'warning',
+      rule: 'roster_count',
+      teamCode: code,
+      message: `Quedaría con ${standard} contratos estándar, por debajo del mínimo configurado (${limits.standardMin}).`,
+    });
+  }
+  if (twoWay > limits.twoWayMax) {
+    issues.push({
+      severity: 'illegal',
+      rule: 'roster_count',
+      teamCode: code,
+      message: `Quedaría con ${twoWay} contratos two-way; el máximo configurado es ${limits.twoWayMax}.`,
+    });
+  }
+  if (twoWay < limits.twoWayMin) {
+    issues.push({
+      severity: 'warning',
+      rule: 'roster_count',
+      teamCode: code,
+      message: `Quedaría con ${twoWay} contratos two-way, por debajo del mínimo configurado (${limits.twoWayMin}).`,
+    });
+  }
+  return issues;
 }
 
 function validateTradeMachine() {
@@ -1176,6 +1364,7 @@ function validateTradeMachine() {
       issues.push({ severity: 'illegal', rule: 'setup', message: 'Un activo seleccionado ya no está disponible.' });
       return;
     }
+    const pickAction = meta.type === 'pick' ? tradeMachinePickAction(selection.pickAction) : null;
     if (!selection.toTeam || selection.toTeam === selection.fromTeam) {
       issues.push({ severity: 'illegal', rule: 'setup', teamCode: selection.fromTeam, message: `${meta.label} necesita un equipo de destino.` });
     }
@@ -1185,7 +1374,9 @@ function validateTradeMachine() {
     if (meta.conditional || meta.protected) {
       issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label} necesita revisión manual por condiciones/protecciones.` });
     }
-    if (meta.type === 'pick' && meta.round === '1st') {
+    if (meta.type === 'pick' && pickAction === TRADE_PICK_ACTION_SWAP) {
+      issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label}: derecho de swap seleccionado; revisa protecciones, prioridad y equipo que acabaría eligiendo.` });
+    } else if (meta.type === 'pick' && meta.round === '1st') {
       issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label} necesita revisión de la regla Stepien.` });
     }
   });
@@ -1197,6 +1388,7 @@ function validateTradeMachine() {
     }
     const salaryIssue = tradeMachineSalaryMatchIssue(code, flow);
     if (salaryIssue) issues.push(salaryIssue);
+    tradeMachineRosterCountIssues(code, flow).forEach((issue) => issues.push(issue));
     const secondApron = Number(state.settings.second_apron || 0);
     const beforeApronAccount = Number(flow.beforeApronAccount ?? flow.beforeCap ?? 0);
     const postApronAccount = Number(flow.postApronAccount ?? flow.postCap ?? 0);
@@ -1235,9 +1427,18 @@ function tradeMachineAssetRowHtml({ key, type, label, detail, mobileDetail, sala
   const selected = tradeMachineSelectedAsset(key);
   const fromTeam = key.split(':')[1];
   const selectedTo = selected?.toTeam || tradeMachineDefaultRecipient(fromTeam);
+  const selectedPickAction = tradeMachinePickAction(selected?.pickAction);
+  const hasPickAction = type === 'pick' && Boolean(selected);
   const salaryHtml = salary > 0
     ? `<span class="trade-machine-asset-salary">${formatBalanceMoney(salary)}</span>`
     : '<span class="trade-machine-asset-salary trade-machine-asset-salary--empty" aria-hidden="true"></span>';
+  const pickActionHtml = hasPickAction
+    ? `
+      <select class="trade-machine-pick-action-select" data-trade-pick-action="${key}" aria-label="Acción para ${escapeHtml(label)}">
+        ${tradeMachinePickActionOptions(selectedPickAction)}
+      </select>
+    `
+    : '';
   return `
     <div class="trade-machine-asset-row ${disabled ? 'is-disabled' : ''}">
       <label>
@@ -1248,8 +1449,8 @@ function tradeMachineAssetRowHtml({ key, type, label, detail, mobileDetail, sala
           ${badges ? `<span class="trade-machine-tags">${badges}</span>` : ''}
         </span>
       </label>
-      <div class="trade-machine-asset-route">
-        ${salaryHtml}
+      <div class="trade-machine-asset-route trade-machine-asset-route--${type} ${hasPickAction ? 'has-pick-action' : ''}">
+        ${type === 'pick' ? pickActionHtml : salaryHtml}
         <select class="trade-machine-recipient-select" data-trade-recipient="${key}" ${selected ? '' : 'disabled'} aria-label="Destino de ${escapeHtml(label)}">
           ${tradeMachineRecipientOptions(fromTeam, selectedTo)}
         </select>
@@ -1335,6 +1536,25 @@ function tradeMachineLedgerHtml(flow) {
   `;
 }
 
+function tradeMachineRosterHtml(flow) {
+  const standardStatus = rosterCountStatus('standard', Number(flow.postRosterStandard || 0));
+  const twoWayStatus = rosterCountStatus('twoWay', Number(flow.postRosterTwoWay || 0));
+  return `
+    <div class="trade-machine-roster-counts" aria-label="Tamaño de plantilla después del traspaso">
+      <span class="trade-machine-roster-count trade-machine-roster-count--${standardStatus.key}">
+        <small>Estándar</small>
+        <strong>${flow.beforeRosterStandard} → ${flow.postRosterStandard}</strong>
+        <em>${escapeHtml(standardStatus.label)}</em>
+      </span>
+      <span class="trade-machine-roster-count trade-machine-roster-count--${twoWayStatus.key}">
+        <small>Two-way</small>
+        <strong>${flow.beforeRosterTwoWay} → ${flow.postRosterTwoWay}</strong>
+        <em>${escapeHtml(twoWayStatus.label)}</em>
+      </span>
+    </div>
+  `;
+}
+
 function tradeMachinePreviewChipHtml(asset, direction) {
   const partner = direction === 'incoming' ? asset.fromTeam : asset.toTeam;
   const partnerLabel = partner ? `${direction === 'incoming' ? 'desde' : 'a'} ${partner}` : '';
@@ -1384,6 +1604,7 @@ function tradeMachineTeamPreviewHtml(flow) {
 function tradeMachineAssetTypeLabel(type) {
   if (type === 'player') return 'Jugador';
   if (type === 'pick') return 'Ronda';
+  if (type === 'swap_right') return 'Derecho swap';
   if (type === 'right') return 'Derecho';
   return 'Activo';
 }
@@ -1433,8 +1654,10 @@ function tradeMachineBalanceRowsHtml(flow) {
 function tradeMachineTeamSummaryHtml(code, flow) {
   const net = flow.incomingSalary - flow.outgoingSalary;
   const incomingPicks = flow.incomingAssets.filter((asset) => asset.type === 'pick').length;
+  const incomingSwapRights = flow.incomingAssets.filter((asset) => asset.type === 'swap_right').length;
   const incomingRights = flow.incomingAssets.filter((asset) => asset.type === 'right').length;
   const outgoingPicks = flow.outgoingAssets.filter((asset) => asset.type === 'pick').length;
+  const outgoingSwapRights = flow.outgoingAssets.filter((asset) => asset.type === 'swap_right').length;
   const outgoingRights = flow.outgoingAssets.filter((asset) => asset.type === 'right').length;
   return `
     <article class="trade-machine-summary-team">
@@ -1445,8 +1668,10 @@ function tradeMachineTeamSummaryHtml(code, flow) {
         </div>
         <div class="trade-machine-summary-counts">
           <span>${incomingPicks} rondas recibidas</span>
+          ${incomingSwapRights ? `<span>${incomingSwapRights} swaps recibidos</span>` : ''}
           <span>${incomingRights} derechos recibidos</span>
           <span>${outgoingPicks} rondas enviadas</span>
+          ${outgoingSwapRights ? `<span>${outgoingSwapRights} swaps enviados</span>` : ''}
           <span>${outgoingRights} derechos enviados</span>
         </div>
       </div>
@@ -1556,6 +1781,7 @@ function renderTradeMachineTeamCard(code, index, flow) {
         ${canRemove ? `<button type="button" class="trade-machine-remove" data-trade-remove-team="${index}" aria-label="Quitar ${code}">Quitar</button>` : ''}
       </div>
       ${tradeMachineLedgerHtml(flow)}
+      ${tradeMachineRosterHtml(flow)}
       ${tradeMachineTeamPreviewHtml(flow)}
       <div class="trade-machine-assets">
         <section>
@@ -1720,6 +1946,7 @@ function setupTradeMachineControls() {
             id: meta.id,
             fromTeam: meta.fromTeam,
             toTeam: tradeMachineDefaultRecipient(meta.fromTeam),
+            pickAction: meta.type === 'pick' ? TRADE_PICK_ACTION_SEND : undefined,
           };
         } else {
           delete state.tradeMachine.selections[key];
@@ -1731,6 +1958,14 @@ function setupTradeMachineControls() {
         const key = target.dataset.tradeRecipient;
         if (key && state.tradeMachine.selections[key]) {
           state.tradeMachine.selections[key].toTeam = target.value;
+          renderTradeMachine();
+        }
+        return;
+      }
+      if (target.matches('[data-trade-pick-action]')) {
+        const key = target.dataset.tradePickAction;
+        if (key && state.tradeMachine.selections[key]) {
+          state.tradeMachine.selections[key].pickAction = tradeMachinePickAction(target.value);
           renderTradeMachine();
         }
       }
@@ -2407,6 +2642,10 @@ function renderTracker() {
       <td>${formatMoneyDots(row.espacio_luxury)}</td>
       <td>${formatMoneyDots(row.espacio_1er_apron)}</td>
       <td>${formatMoneyDots(row.espacio_2do_apron)}</td>
+      <td>${rosterCountChipHtml('standard', Number(row.roster_standard_count || 0), 'Std')}</td>
+      <td>${rosterCountChipHtml('twoWay', Number(row.roster_two_way_count || 0), 'TW')}</td>
+      <td>${draftPickCountChipHtml(Number(row.draft_first_count || 0), '1st')}</td>
+      <td>${draftPickCountChipHtml(Number(row.draft_second_count || 0), '2nd')}</td>
     `;
     const teamBtn = tr.querySelector('[data-team-code]');
     teamBtn.addEventListener('click', async () => {
@@ -2527,7 +2766,28 @@ function renderImportantFigures() {
       `).join('')}
     </div>
   `;
+  renderRosterCountSection();
   renderLuxuryHistory();
+}
+
+function renderRosterCountSection() {
+  const wrap = document.getElementById('rosterCountSection');
+  if (!wrap) return;
+  const counts = rosterCountFromSummary(state.teamData?.summary || {});
+  const limits = rosterLimits();
+  wrap.innerHTML = `
+    <div class="roster-count-head">
+      <h3>Tamaño de plantilla</h3>
+      <span>Contratos activos</span>
+    </div>
+    <div class="roster-count-grid">
+      ${rosterCountChipHtml('standard', counts.standard, 'Estándar')}
+      ${rosterCountChipHtml('twoWay', counts.twoWay, 'Two-way')}
+    </div>
+    <div class="roster-count-note">
+      Estándar: ${limits.standardMin}-${limits.standardMax} en temporada, ${limits.standardOffseasonMax} en offseason · Two-way: ${limits.twoWayMin}-${limits.twoWayMax}
+    </div>
+  `;
 }
 
 function renderLuxuryHistory() {
@@ -3125,6 +3385,7 @@ async function fetchTrackerRowsFallback() {
   const rows = await Promise.all(state.teams.map(async (t) => {
     const data = await api(`/api/teams/${t.code}`);
     const s = data.summary || {};
+    const draftCounts = draftPickCountsFromAssets(data.assets || []);
     return {
       team_code: t.code,
       team_name: t.name,
@@ -3134,6 +3395,10 @@ async function fetchTrackerRowsFallback() {
       espacio_luxury: Number(s.room_to_luxury || 0),
       espacio_1er_apron: Number(s.room_to_first_apron || 0),
       espacio_2do_apron: Number(s.room_to_second_apron || 0),
+      roster_standard_count: Number(s.roster_standard_count || rosterCountFromPlayers(data.players || []).standard),
+      roster_two_way_count: Number(s.roster_two_way_count || rosterCountFromPlayers(data.players || []).twoWay),
+      draft_first_count: draftCounts.first,
+      draft_second_count: draftCounts.second,
     };
   }));
   return rows;

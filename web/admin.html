@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260530i">
+  <link rel="stylesheet" href="/styles.css?v=20260601b">
 </head>
 <body class="app-layout">
   <header>
@@ -130,6 +130,10 @@
               <th data-sort="espacio_luxury">Espacio Luxury</th>
               <th data-sort="espacio_1er_apron">Espacio 1er apron</th>
               <th data-sort="espacio_2do_apron">Espacio 2do apron</th>
+              <th data-sort="roster_standard_count">Std</th>
+              <th data-sort="roster_two_way_count">TW</th>
+              <th data-sort="draft_first_count">1st picks</th>
+              <th data-sort="draft_second_count">2nd picks</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -181,11 +185,6 @@
         <label for="teamGmInlineInput">GM</label>
         <input id="teamGmInlineInput" type="text" placeholder="GM name">
         <button id="saveTeamGmInlineBtn">Save GM</button>
-        <label for="teamCashReceivedInput">Cash recibido</label>
-        <input id="teamCashReceivedInput" type="text" inputmode="numeric" placeholder="0">
-        <label for="teamCashSentInput">Cash enviado</label>
-        <input id="teamCashSentInput" type="text" inputmode="numeric" placeholder="0">
-        <button id="saveTeamCashInlineBtn">Save balances</button>
         <label class="team-apron-cap-toggle">
           <input id="teamFirstApronCapInput" type="checkbox">
           <span>Capped at 1st apron</span>
@@ -216,6 +215,16 @@
         <input id="tradeMoveLimitPre30Input" type="text" inputmode="numeric" placeholder="15">
         <label for="tradeMoveLimitPost30Input">Moves max (post-30)</label>
         <input id="tradeMoveLimitPost30Input" type="text" inputmode="numeric" placeholder="15">
+        <label for="rosterStandardMinInput">Standard min</label>
+        <input id="rosterStandardMinInput" type="text" inputmode="numeric" placeholder="14">
+        <label for="rosterStandardMaxInput">Standard max</label>
+        <input id="rosterStandardMaxInput" type="text" inputmode="numeric" placeholder="15">
+        <label for="rosterStandardOffseasonMaxInput">Standard offseason max</label>
+        <input id="rosterStandardOffseasonMaxInput" type="text" inputmode="numeric" placeholder="18">
+        <label for="rosterTwoWayMinInput">Two-way min</label>
+        <input id="rosterTwoWayMinInput" type="text" inputmode="numeric" placeholder="0">
+        <label for="rosterTwoWayMaxInput">Two-way max</label>
+        <input id="rosterTwoWayMaxInput" type="text" inputmode="numeric" placeholder="3">
         <label for="tradeMovePhaseSelect">Move phase</label>
         <select id="tradeMovePhaseSelect">
           <option value="pre30">Pre-30</option>
@@ -363,6 +372,7 @@
           <tbody></tbody>
         </table>
       </div>
+      <div id="rosterCountSection" class="roster-count-section"></div>
       <div id="importantFiguresAppendix" class="important-figures-appendix"></div>
       <div id="luxuryHistorySection" class="luxury-history-section"></div>
     </section>
@@ -639,6 +649,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260530f" defer></script>
+  <script src="/admin.js?v=20260601b" defer></script>
 </body>
 </html>

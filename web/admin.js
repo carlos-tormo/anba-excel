@@ -19,6 +19,11 @@ const state = {
     trade_move_phase: 'pre30',
     luxury_cap: 187896105,
     minimum_cap_allowed: 139182300,
+    roster_standard_min: 14,
+    roster_standard_max: 15,
+    roster_standard_offseason_max: 18,
+    roster_two_way_min: 0,
+    roster_two_way_max: 3,
   },
   selectedPlayerIds: new Set(),
   trade: {
@@ -313,6 +318,90 @@ function amountNumericValue(row) {
 
 function isTwoWayPlayer(player) {
   return boolValue(player?.is_two_way) || String(player?.bird_rights || '').trim().toUpperCase() === 'TW';
+}
+
+function rosterLimits() {
+  const standardMin = Math.max(0, Number(state.settings.roster_standard_min ?? 14) || 0);
+  const standardMax = Math.max(standardMin, Number(state.settings.roster_standard_max ?? 15) || 0);
+  const standardOffseasonMax = Math.max(standardMax, Number(state.settings.roster_standard_offseason_max ?? 18) || 0);
+  const twoWayMin = Math.max(0, Number(state.settings.roster_two_way_min ?? 0) || 0);
+  const twoWayMax = Math.max(twoWayMin, Number(state.settings.roster_two_way_max ?? 3) || 0);
+  return { standardMin, standardMax, standardOffseasonMax, twoWayMin, twoWayMax };
+}
+
+function rosterCountFromPlayers(players = []) {
+  return (players || []).reduce((counts, player) => {
+    if (isTwoWayPlayer(player)) counts.twoWay += 1;
+    else counts.standard += 1;
+    return counts;
+  }, { standard: 0, twoWay: 0 });
+}
+
+function rosterCountFromSummary(summary = {}) {
+  const standard = Number(summary.roster_standard_count);
+  const twoWay = Number(summary.roster_two_way_count);
+  if (Number.isFinite(standard) && Number.isFinite(twoWay)) {
+    return { standard, twoWay };
+  }
+  return rosterCountFromPlayers(state.teamData?.players || []);
+}
+
+function rosterCountStatus(kind, count, limits = rosterLimits()) {
+  if (kind === 'twoWay') {
+    if (count < limits.twoWayMin) return { key: 'under', label: `Bajo mínimo ${limits.twoWayMin}` };
+    if (count > limits.twoWayMax) return { key: 'over', label: `Sobre máximo ${limits.twoWayMax}` };
+    return { key: 'ok', label: `${limits.twoWayMin}-${limits.twoWayMax}` };
+  }
+  if (count < limits.standardMin) return { key: 'under', label: `Bajo mínimo ${limits.standardMin}` };
+  if (count > limits.standardOffseasonMax) return { key: 'over', label: `Sobre máximo ${limits.standardOffseasonMax}` };
+  if (count > limits.standardMax) return { key: 'offseason', label: `Solo offseason (${limits.standardOffseasonMax} max)` };
+  return { key: 'ok', label: `${limits.standardMin}-${limits.standardMax}` };
+}
+
+function rosterCountChipHtml(kind, count, label) {
+  const status = rosterCountStatus(kind, count);
+  return `
+    <span class="roster-count-chip roster-count-chip--${status.key}">
+      <span>${label}</span>
+      <strong>${count}</strong>
+      <small>${escapeHtml(status.label)}</small>
+    </span>
+  `;
+}
+
+function draftPickType(asset) {
+  const type = String(asset?.draft_pick_type || 'own').trim().toLowerCase();
+  return ['own', 'acquired', 'sold', 'conditional'].includes(type) ? type : 'own';
+}
+
+function draftPickRound(asset) {
+  const roundRaw = String(asset?.draft_round || '').trim().toLowerCase();
+  if (roundRaw.includes('2')) return '2nd';
+  if (roundRaw.includes('1')) return '1st';
+  const label = String(asset?.label || '').trim().toLowerCase();
+  return label.includes('2') ? '2nd' : '1st';
+}
+
+function draftPickCountsFromAssets(assets = []) {
+  const draftYearStart = currentSeasonStart() + 1;
+  return (assets || []).reduce((counts, asset) => {
+    if (asset?.asset_type !== 'draft_pick') return counts;
+    if (draftPickType(asset) === 'sold') return counts;
+    const year = Number(asset.year);
+    if (Number.isFinite(year) && year < draftYearStart) return counts;
+    if (draftPickRound(asset) === '2nd') counts.second += 1;
+    else counts.first += 1;
+    return counts;
+  }, { first: 0, second: 0 });
+}
+
+function draftPickCountChipHtml(count, label) {
+  return `
+    <span class="draft-count-chip">
+      <span>${label}</span>
+      <strong>${count}</strong>
+    </span>
+  `;
 }
 
 function isTwoWayDeadContract(dead) {
@@ -1888,6 +1977,10 @@ function renderTracker() {
       <td>${formatMoneyDots(row.espacio_luxury)}</td>
       <td>${formatMoneyDots(row.espacio_1er_apron)}</td>
       <td>${formatMoneyDots(row.espacio_2do_apron)}</td>
+      <td>${rosterCountChipHtml('standard', Number(row.roster_standard_count || 0), 'Std')}</td>
+      <td>${rosterCountChipHtml('twoWay', Number(row.roster_two_way_count || 0), 'TW')}</td>
+      <td>${draftPickCountChipHtml(Number(row.draft_first_count || 0), '1st')}</td>
+      <td>${draftPickCountChipHtml(Number(row.draft_second_count || 0), '2nd')}</td>
     `;
     const teamBtn = tr.querySelector('[data-team-code]');
     teamBtn.addEventListener('click', async () => {
@@ -2253,7 +2346,28 @@ function renderImportantFigures() {
       `).join('')}
     </div>
   `;
+  renderRosterCountSection();
   renderLuxuryHistory();
+}
+
+function renderRosterCountSection() {
+  const wrap = document.getElementById('rosterCountSection');
+  if (!wrap) return;
+  const counts = rosterCountFromSummary(state.teamData?.summary || {});
+  const limits = rosterLimits();
+  wrap.innerHTML = `
+    <div class="roster-count-head">
+      <h3>Tamaño de plantilla</h3>
+      <span>Contratos activos</span>
+    </div>
+    <div class="roster-count-grid">
+      ${rosterCountChipHtml('standard', counts.standard, 'Estándar')}
+      ${rosterCountChipHtml('twoWay', counts.twoWay, 'Two-way')}
+    </div>
+    <div class="roster-count-note">
+      Estándar: ${limits.standardMin}-${limits.standardMax} en temporada, ${limits.standardOffseasonMax} en offseason · Two-way: ${limits.twoWayMin}-${limits.twoWayMax}
+    </div>
+  `;
 }
 
 function renderLuxuryHistory() {
@@ -3254,13 +3368,7 @@ function renderAssets() {
   if (!board) return;
   board.innerHTML = '';
 
-  const normalizedRound = (pick) => {
-    const roundRaw = String(pick.draft_round || '').trim().toLowerCase();
-    if (roundRaw.includes('2')) return '2nd';
-    if (roundRaw.includes('1')) return '1st';
-    const label = String(pick.label || '').trim().toLowerCase();
-    return label.includes('2') ? '2nd' : '1st';
-  };
+  const normalizedRound = (pick) => draftPickRound(pick);
 
   const normalizedType = (pick) => {
     const type = String(pick.draft_pick_type || 'own').trim().toLowerCase();
@@ -3598,7 +3706,7 @@ function renderAssets() {
         const conditionalList = card.querySelector('[data-conditional-list]');
 
         typeSelect.value = pick.draft_pick_type || 'own';
-        roundSelect.value = pick.draft_round || '1st';
+        roundSelect.value = pick.draft_round || normalizedRound(pick);
         ownerSelect.value = pick.original_owner || '';
         renderSoldToTeamSelects(soldToList, pick.draft_pick_sold_to);
         renderConditionalTeamSelects(conditionalList, pick.draft_pick_conditional_teams);
@@ -3646,6 +3754,7 @@ function renderAssets() {
           const type = typeSelect.value;
           await persist({
             draft_pick_type: type,
+            draft_round: roundSelect.value,
             original_owner: type === 'acquired' ? ownerSelect.value || null : null,
             draft_pick_sold_to: type === 'sold' ? readSoldToTeamSelects(card) : [],
             draft_pick_conditional_teams: type === 'conditional' ? readConditionalTeamSelects(card) : [],
@@ -4042,10 +4151,6 @@ async function loadTeam(code) {
   setViewMode('team');
   const gmInlineInput = document.getElementById('teamGmInlineInput');
   if (gmInlineInput) gmInlineInput.value = data.team.gm || '';
-  const cashReceivedInput = document.getElementById('teamCashReceivedInput');
-  if (cashReceivedInput) cashReceivedInput.value = formatDots(data.team.cash_received || 0);
-  const cashSentInput = document.getElementById('teamCashSentInput');
-  if (cashSentInput) cashSentInput.value = formatDots(data.team.cash_sent || 0);
   syncTeamApronHardCapControls();
   syncTeamLuxuryRepeaterControl();
   renderTeamStrip();
@@ -4066,6 +4171,7 @@ async function fetchTrackerRowsFallback() {
   const rows = await Promise.all(state.teams.map(async (t) => {
     const data = await api(`/api/teams/${t.code}`);
     const s = data.summary || {};
+    const draftCounts = draftPickCountsFromAssets(data.assets || []);
     return {
       team_code: t.code,
       team_name: t.name,
@@ -4075,6 +4181,10 @@ async function fetchTrackerRowsFallback() {
       espacio_luxury: Number(s.room_to_luxury || 0),
       espacio_1er_apron: Number(s.room_to_first_apron || 0),
       espacio_2do_apron: Number(s.room_to_second_apron || 0),
+      roster_standard_count: Number(s.roster_standard_count || rosterCountFromPlayers(data.players || []).standard),
+      roster_two_way_count: Number(s.roster_two_way_count || rosterCountFromPlayers(data.players || []).twoWay),
+      draft_first_count: draftCounts.first,
+      draft_second_count: draftCounts.second,
     };
   }));
   return rows;
@@ -4377,6 +4487,11 @@ async function init() {
   const cashLimitTotalInput = document.getElementById('cashLimitTotalInput');
   const tradeMoveLimitPre30Input = document.getElementById('tradeMoveLimitPre30Input');
   const tradeMoveLimitPost30Input = document.getElementById('tradeMoveLimitPost30Input');
+  const rosterStandardMinInput = document.getElementById('rosterStandardMinInput');
+  const rosterStandardMaxInput = document.getElementById('rosterStandardMaxInput');
+  const rosterStandardOffseasonMaxInput = document.getElementById('rosterStandardOffseasonMaxInput');
+  const rosterTwoWayMinInput = document.getElementById('rosterTwoWayMinInput');
+  const rosterTwoWayMaxInput = document.getElementById('rosterTwoWayMaxInput');
   const tradeMovePhaseSelect = document.getElementById('tradeMovePhaseSelect');
   const currentYearSelect = document.getElementById('currentYearSelect');
   capInput.value = formatDots(state.settings.salary_cap_2025);
@@ -4385,6 +4500,11 @@ async function init() {
   cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
   tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
   tradeMoveLimitPost30Input.value = formatDots(state.settings.trade_move_limit_post30);
+  rosterStandardMinInput.value = formatDots(state.settings.roster_standard_min);
+  rosterStandardMaxInput.value = formatDots(state.settings.roster_standard_max);
+  rosterStandardOffseasonMaxInput.value = formatDots(state.settings.roster_standard_offseason_max);
+  rosterTwoWayMinInput.value = formatDots(state.settings.roster_two_way_min);
+  rosterTwoWayMaxInput.value = formatDots(state.settings.roster_two_way_max);
   tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
   currentYearSelect.value = String(state.settings.current_year || 2025);
 
@@ -4525,6 +4645,34 @@ async function init() {
       alert('Invalid post-30 move limit.');
       return;
     }
+    const parsedRosterStandardMin = parseAmount(rosterStandardMinInput.value);
+    const parsedRosterStandardMax = parseAmount(rosterStandardMaxInput.value);
+    const parsedRosterStandardOffseasonMax = parseAmount(rosterStandardOffseasonMaxInput.value);
+    const parsedRosterTwoWayMin = parseAmount(rosterTwoWayMinInput.value);
+    const parsedRosterTwoWayMax = parseAmount(rosterTwoWayMaxInput.value);
+    if (
+      parsedRosterStandardMin == null
+      || parsedRosterStandardMax == null
+      || parsedRosterStandardOffseasonMax == null
+      || parsedRosterStandardMin < 0
+      || parsedRosterStandardMax < 0
+      || parsedRosterStandardOffseasonMax < 0
+      || parsedRosterStandardMin > parsedRosterStandardMax
+      || parsedRosterStandardMax > parsedRosterStandardOffseasonMax
+    ) {
+      alert('Invalid standard roster limits.');
+      return;
+    }
+    if (
+      parsedRosterTwoWayMin == null
+      || parsedRosterTwoWayMax == null
+      || parsedRosterTwoWayMin < 0
+      || parsedRosterTwoWayMax < 0
+      || parsedRosterTwoWayMin > parsedRosterTwoWayMax
+    ) {
+      alert('Invalid two-way roster limits.');
+      return;
+    }
     const selectedYear = Number(currentYearSelect.value);
     if (!Number.isInteger(selectedYear) || selectedYear < 2025 || selectedYear > 2030) {
       alert('Invalid current year.');
@@ -4551,6 +4699,11 @@ async function init() {
         trade_move_limit_pre30: parsedTradeMoveLimitPre30,
         trade_move_limit_post30: parsedTradeMoveLimitPost30,
         trade_move_phase: selectedTradeMovePhase,
+        roster_standard_min: parsedRosterStandardMin,
+        roster_standard_max: parsedRosterStandardMax,
+        roster_standard_offseason_max: parsedRosterStandardOffseasonMax,
+        roster_two_way_min: parsedRosterTwoWayMin,
+        roster_two_way_max: parsedRosterTwoWayMax,
       }),
     });
     state.settings = {
@@ -4564,6 +4717,11 @@ async function init() {
     cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
     tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
     tradeMoveLimitPost30Input.value = formatDots(state.settings.trade_move_limit_post30);
+    rosterStandardMinInput.value = formatDots(state.settings.roster_standard_min);
+    rosterStandardMaxInput.value = formatDots(state.settings.roster_standard_max);
+    rosterStandardOffseasonMaxInput.value = formatDots(state.settings.roster_standard_offseason_max);
+    rosterTwoWayMinInput.value = formatDots(state.settings.roster_two_way_min);
+    rosterTwoWayMaxInput.value = formatDots(state.settings.roster_two_way_max);
     tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (state.ui.viewMode === 'team' && state.teamCode) {
@@ -4608,6 +4766,11 @@ async function init() {
     cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
     tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
     tradeMoveLimitPost30Input.value = formatDots(state.settings.trade_move_limit_post30);
+    rosterStandardMinInput.value = formatDots(state.settings.roster_standard_min);
+    rosterStandardMaxInput.value = formatDots(state.settings.roster_standard_max);
+    rosterStandardOffseasonMaxInput.value = formatDots(state.settings.roster_standard_offseason_max);
+    rosterTwoWayMinInput.value = formatDots(state.settings.roster_two_way_min);
+    rosterTwoWayMaxInput.value = formatDots(state.settings.roster_two_way_max);
     tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
 
@@ -4623,12 +4786,6 @@ async function init() {
     const input = document.getElementById('teamGmInlineInput');
     const btn = document.getElementById('saveTeamGmInlineBtn');
     await saveCurrentTeamGm(input, btn);
-  });
-  document.getElementById('saveTeamCashInlineBtn').addEventListener('click', async () => {
-    const receivedInput = document.getElementById('teamCashReceivedInput');
-    const sentInput = document.getElementById('teamCashSentInput');
-    const btn = document.getElementById('saveTeamCashInlineBtn');
-    await saveCurrentTeamCash(receivedInput, sentInput, btn);
   });
   setupTeamApronHardCapControls();
   setupTeamLuxuryRepeaterControl();

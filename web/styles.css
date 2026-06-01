@@ -1146,6 +1146,67 @@ h1 {
 .trade-machine-result-team .is-negative {
   color: #b91c1c;
 }
+.trade-machine-roster-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #dbe3ee;
+  background: #f8fafc;
+}
+.trade-machine-roster-count {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #dbe3ee;
+  border-radius: 7px;
+  background: #ffffff;
+}
+.trade-machine-roster-count small,
+.trade-machine-roster-count em {
+  color: #64748b;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 900;
+}
+.trade-machine-roster-count strong {
+  color: #0f172a;
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+}
+.trade-machine-roster-count em {
+  justify-self: end;
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trade-machine-roster-count--ok {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.trade-machine-roster-count--under,
+.trade-machine-roster-count--offseason {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+.trade-machine-roster-count--over {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.trade-machine-roster-count--ok strong {
+  color: #15803d;
+}
+.trade-machine-roster-count--under strong,
+.trade-machine-roster-count--offseason strong {
+  color: #b45309;
+}
+.trade-machine-roster-count--over strong {
+  color: #b91c1c;
+}
 .trade-machine-assets {
   display: grid;
   gap: 14px;
@@ -1228,6 +1289,12 @@ h1 {
   justify-self: end;
   min-width: 0;
 }
+.trade-machine-asset-route--pick {
+  grid-template-columns: minmax(82px, 108px);
+}
+.trade-machine-asset-route--pick.has-pick-action {
+  grid-template-columns: minmax(116px, 134px) minmax(82px, 108px);
+}
 .trade-machine-asset-salary {
   color: #334155;
   font-size: 0.8rem;
@@ -1240,6 +1307,11 @@ h1 {
   padding: 4px 7px;
   font-size: 0.78rem;
   font-weight: 800;
+}
+.trade-machine-pick-action-select {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 .trade-machine-recipient-select:disabled {
   opacity: 0.55;
@@ -3766,6 +3838,123 @@ td.salary-option--nb .salary-pct {
 .balance-value.is-negative {
   color: #b91c1c;
 }
+.roster-count-section {
+  display: grid;
+  gap: 10px;
+  max-width: 720px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #d6dee9;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
+}
+.roster-count-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.roster-count-head h3 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 1rem;
+  font-weight: 900;
+}
+.roster-count-head span,
+.roster-count-note {
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+.roster-count-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.roster-count-chip {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.roster-count-chip span {
+  color: #475569;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+.roster-count-chip strong {
+  justify-self: end;
+  color: #0f172a;
+  font-size: 1.12rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.roster-count-chip small {
+  grid-column: 1 / -1;
+  color: #64748b;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+.roster-count-chip--ok {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.roster-count-chip--ok strong {
+  color: #15803d;
+}
+.roster-count-chip--under,
+.roster-count-chip--offseason {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+.roster-count-chip--under strong,
+.roster-count-chip--offseason strong {
+  color: #b45309;
+}
+.roster-count-chip--over {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.roster-count-chip--over strong {
+  color: #b91c1c;
+}
+#trackerTable .roster-count-chip {
+  min-width: 86px;
+  padding: 5px 7px;
+}
+#trackerTable .roster-count-chip strong {
+  font-size: 0.92rem;
+}
+#trackerTable .roster-count-chip small {
+  font-size: 0.58rem;
+}
+.draft-count-chip {
+  display: inline-flex;
+  min-width: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-weight: 800;
+}
+.draft-count-chip span {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+.draft-count-chip strong {
+  font-size: 0.92rem;
+  color: #0f172a;
+}
 .important-figures-appendix {
   max-width: 1500px;
   margin-top: 10px;
@@ -3900,10 +4089,6 @@ td.salary-option--nb .salary-pct {
 }
 #currentYearSelect {
   min-width: 116px;
-}
-#teamCashReceivedInput,
-#teamCashSentInput {
-  width: 150px;
 }
 
 .inline-editor.salary-edit {
@@ -4817,6 +5002,10 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   #trackerTable td:nth-child(5)::before { content: "Espacio Luxury"; }
   #trackerTable td:nth-child(6)::before { content: "Espacio 1er Apron"; }
   #trackerTable td:nth-child(7)::before { content: "Espacio 2do Apron"; }
+  #trackerTable td:nth-child(8)::before { content: "Std"; }
+  #trackerTable td:nth-child(9)::before { content: "TW"; }
+  #trackerTable td:nth-child(10)::before { content: "1st Picks"; }
+  #trackerTable td:nth-child(11)::before { content: "2nd Picks"; }
   #deadContractsTable td:nth-child(1)::before { content: "Names"; }
   #deadContractsTable td:nth-child(2)::before { content: "2025-26"; }
   #deadContractsTable td:nth-child(3)::before { content: "2026-27"; }
@@ -5046,6 +5235,17 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .trade-machine-ledger {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .trade-machine-roster-counts,
+  .roster-count-grid {
+    grid-template-columns: 1fr;
+  }
+  .trade-machine-roster-count {
+    grid-template-columns: auto auto;
+  }
+  .trade-machine-roster-count em {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
   .trade-machine-team-preview {
     grid-template-columns: 1fr;
   }
@@ -5073,6 +5273,9 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .trade-machine-asset-route {
     grid-template-columns: 1fr;
     justify-self: stretch;
+  }
+  .trade-machine-asset-row:has(.trade-machine-recipient-select:disabled) .trade-machine-asset-route {
+    display: none;
   }
   .trade-machine-asset-row select {
     grid-column: auto;
