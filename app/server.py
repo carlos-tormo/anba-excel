@@ -920,124 +920,68 @@ class LeagueDB:
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < 2025 or current_year > 2030:
                 current_year = 2025
-            salary_num_col = f"salary_{current_year}_num"
-
             team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
             teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
             rows: List[Dict[str, Any]] = []
 
-            player_aggs: Dict[int, Dict[str, float]] = {}
-            players_cur = conn.execute(
-                f"""
-                SELECT
-                    team_id,
-                    SUM(CASE WHEN COALESCE(is_two_way, 0) = 0 THEN COALESCE({salary_num_col}, 0) ELSE 0 END) AS cap_players,
-                    SUM(COALESCE({salary_num_col}, 0)) AS payroll_players,
-                    SUM(CASE WHEN COALESCE(is_two_way, 0) != 0 OR UPPER(COALESCE(bird_rights, '')) = 'TW' THEN 0 ELSE 1 END) AS roster_standard_count,
-                    SUM(CASE WHEN COALESCE(is_two_way, 0) != 0 OR UPPER(COALESCE(bird_rights, '')) = 'TW' THEN 1 ELSE 0 END) AS roster_two_way_count
-                FROM players
-                GROUP BY team_id
-                """
-            )
-            for row in players_cur.fetchall():
-                player_aggs[int(row["team_id"])] = {
-                    "cap_players": float(row["cap_players"] or 0.0),
-                    "payroll_players": float(row["payroll_players"] or 0.0),
-                    "roster_standard_count": int(row["roster_standard_count"] or 0),
-                    "roster_two_way_count": int(row["roster_two_way_count"] or 0),
-                }
-
-            dead_aggs: Dict[int, Dict[str, float]] = {}
-            dead_cur = conn.execute(
-                f"""
-                SELECT
-                    team_id,
-                    SUM(CASE WHEN dead_type = 'two_way' AND COALESCE(exclude_from_gasto, 0) = 0 THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_two_way_gasto,
-                    SUM(CASE WHEN dead_type != 'two_way' AND COALESCE(exclude_from_gasto, 0) = 0 THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_normal_gasto,
-                    SUM(CASE WHEN dead_type != 'two_way' AND COALESCE(exclude_from_cap, 0) = 0 THEN COALESCE({salary_num_col}, CASE WHEN {current_year} = 2025 THEN amount_num ELSE 0 END, 0) ELSE 0 END) AS dead_normal_cap
-                FROM dead_contracts
-                GROUP BY team_id
-                """
-            )
-            for row in dead_cur.fetchall():
-                dead_aggs[int(row["team_id"])] = {
-                    "dead_two_way_gasto": float(row["dead_two_way_gasto"] or 0.0),
-                    "dead_normal_gasto": float(row["dead_normal_gasto"] or 0.0),
-                    "dead_normal_cap": float(row["dead_normal_cap"] or 0.0),
-                }
-
             draft_year_start = current_year + 1
-            draft_aggs: Dict[int, Dict[str, int]] = {}
-            draft_cur = conn.execute(
-                """
-                SELECT
-                    team_id,
-                    SUM(
-                        CASE
-                            WHEN CAST(COALESCE(year, '0') AS INTEGER) >= ?
-                                AND LOWER(COALESCE(draft_pick_type, 'own')) != 'sold'
-                                AND LOWER(COALESCE(draft_round, '')) NOT LIKE '%2%'
-                                AND LOWER(COALESCE(label, '')) NOT LIKE '%2%'
-                            THEN 1 ELSE 0
-                        END
-                    ) AS draft_first_count,
-                    SUM(
-                        CASE
-                            WHEN CAST(COALESCE(year, '0') AS INTEGER) >= ?
-                                AND LOWER(COALESCE(draft_pick_type, 'own')) != 'sold'
-                                AND (
-                                    LOWER(COALESCE(draft_round, '')) LIKE '%2%'
-                                    OR LOWER(COALESCE(label, '')) LIKE '%2%'
-                                )
-                            THEN 1 ELSE 0
-                        END
-                    ) AS draft_second_count
-                FROM assets
-                WHERE asset_type = 'draft_pick'
-                GROUP BY team_id
-                """,
-                (draft_year_start, draft_year_start),
-            )
-            for row in draft_cur.fetchall():
-                draft_aggs[int(row["team_id"])] = {
-                    "draft_first_count": int(row["draft_first_count"] or 0),
-                    "draft_second_count": int(row["draft_second_count"] or 0),
-                }
 
-            salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
-            luxury_cap = salary_cap * 1.215
-            first_apron_setting = parse_float(settings.get("first_apron"))
-            second_apron_setting = parse_float(settings.get("second_apron"))
+            def pick_round_for_tracker(asset: Dict[str, Any]) -> str:
+                round_raw = str(asset.get("draft_round") or "").strip().lower()
+                if "2" in round_raw:
+                    return "2nd"
+                if "1" in round_raw:
+                    return "1st"
+                label = str(asset.get("label") or "").strip().lower()
+                return "2nd" if "2" in label else "1st"
+
+            def draft_counts_for_tracker(assets: List[Dict[str, Any]]) -> Dict[str, int]:
+                counts = {"draft_first_count": 0, "draft_second_count": 0}
+                for asset in assets:
+                    if asset.get("asset_type") != "draft_pick":
+                        continue
+                    if normalize_pick_type(asset.get("draft_pick_type")) == "sold":
+                        continue
+                    year = parse_int(asset.get("year"))
+                    if year is not None and year < draft_year_start:
+                        continue
+                    if pick_round_for_tracker(asset) == "2nd":
+                        counts["draft_second_count"] += 1
+                    else:
+                        counts["draft_first_count"] += 1
+                return counts
+
             for team in teams:
                 team_id = int(team["id"])
-                p = player_aggs.get(
-                    team_id,
-                    {
-                        "cap_players": 0.0,
-                        "payroll_players": 0.0,
-                        "roster_standard_count": 0,
-                        "roster_two_way_count": 0,
-                    },
+                player_cur = conn.execute(
+                    "SELECT * FROM players WHERE team_id = ? ORDER BY row_order, id",
+                    (team_id,),
                 )
-                d = dead_aggs.get(team_id, {"dead_two_way_gasto": 0.0, "dead_normal_gasto": 0.0, "dead_normal_cap": 0.0})
-                draft_counts = draft_aggs.get(team_id, {"draft_first_count": 0, "draft_second_count": 0})
-
-                cap_figure = float(p["cap_players"]) + float(d["dead_normal_cap"])
-                payroll = float(p["payroll_players"]) + float(d["dead_normal_gasto"]) + float(d["dead_two_way_gasto"])
-                first_apron = float(first_apron_setting) if first_apron_setting is not None else float(team["first_apron"] or 0.0)
-                second_apron = float(second_apron_setting) if second_apron_setting is not None else float(team["second_apron"] or 0.0)
+                players = [row_to_dict(player_cur, row) for row in player_cur.fetchall()]
+                asset_cur = conn.execute(
+                    "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
+                    (team_id,),
+                )
+                assets = [row_to_dict(asset_cur, row) for row in asset_cur.fetchall()]
+                dead_cur = conn.execute(
+                    "SELECT * FROM dead_contracts WHERE team_id = ? ORDER BY dead_type, row_order, id",
+                    (team_id,),
+                )
+                dead_contracts = [row_to_dict(dead_cur, row) for row in dead_cur.fetchall()]
+                summary = self._calc_summary(team, players, assets, dead_contracts, settings)
+                draft_counts = draft_counts_for_tracker(assets)
                 rows.append(
                     {
                         "team_code": team["code"],
                         "team_name": team["name"],
-                        "cap_total": cap_figure,
-                        "gasto_total": payroll,
-                        "espacio_cap": salary_cap - cap_figure,
-                        "espacio_luxury": luxury_cap - cap_figure,
-                        "espacio_1er_apron": first_apron - cap_figure,
-                        "espacio_2do_apron": second_apron - cap_figure,
-                        "roster_standard_count": int(p["roster_standard_count"]),
-                        "roster_two_way_count": int(p["roster_two_way_count"]),
+                        "cap_total": float(summary["cap_figure"]),
+                        "gasto_total": float(summary["payroll"]),
+                        "espacio_cap": float(summary["room_to_cap"]),
+                        "espacio_luxury": float(summary["room_to_luxury"]),
+                        "espacio_1er_apron": float(summary["room_to_first_apron"]),
+                        "espacio_2do_apron": float(summary["room_to_second_apron"]),
+                        "roster_standard_count": int(summary["roster_standard_count"]),
+                        "roster_two_way_count": int(summary["roster_two_way_count"]),
                         "draft_first_count": int(draft_counts["draft_first_count"]),
                         "draft_second_count": int(draft_counts["draft_second_count"]),
                     }

@@ -60,7 +60,7 @@ const state = {
 
 const SEASON_WINDOW_SIZE = 6;
 const TRADE_MACHINE_MIN_TEAMS = 2;
-const TRADE_MACHINE_MAX_TEAMS = 5;
+const TRADE_MACHINE_MAX_TEAMS = 6;
 const TRADE_MATCH_LOW_BAND = 7_250_000;
 const TRADE_MATCH_HIGH_BAND = 29_000_000;
 const TRADE_MATCH_CUSHION = 250_000;
@@ -710,6 +710,29 @@ function rosterCountChipHtml(kind, count, label) {
   `;
 }
 
+function trackerRosterCountChipHtml(kind, count) {
+  const status = rosterCountStatus(kind, count);
+  return `
+    <span class="tracker-roster-count-chip tracker-roster-count-chip--${status.key}">
+      <strong>${count}</strong>
+    </span>
+  `;
+}
+
+function trackerRosterHeaderHtml(kind, label, arrow = '') {
+  const limits = rosterLimits();
+  const range = kind === 'twoWay'
+    ? `Min: ${limits.twoWayMin} · Max: ${limits.twoWayMax}`
+    : `Min: ${limits.standardMin} · Max: ${limits.standardMax}`;
+  return `<span class="th-main">${label}${arrow}</span><span class="th-sub">${range}</span>`;
+}
+
+function trackerSpaceValueHtml(value) {
+  const numeric = Number(value || 0);
+  const className = numeric < 0 ? 'is-negative' : numeric > 0 ? 'is-positive' : 'is-neutral';
+  return `<span class="tracker-space-value ${className}">${formatMoneyDots(numeric)}</span>`;
+}
+
 function isTwoWayDeadContract(dead) {
   return String(dead?.dead_type || '').trim().toLowerCase().replaceAll('-', '_') === 'two_way';
 }
@@ -857,7 +880,7 @@ function tradeMachineTeamLogoHtml(code) {
 function tradeMachineRecipientOptions(fromTeam, selectedTo) {
   return (state.tradeMachine.selectedTeams || [])
     .filter((code) => code !== fromTeam)
-    .map((code) => `<option value="${code}" ${code === selectedTo ? 'selected' : ''}>${code} · ${escapeHtml(tradeMachineTeamName(code))}</option>`)
+    .map((code) => `<option value="${code}" ${code === selectedTo ? 'selected' : ''}>${code}</option>`)
     .join('');
 }
 
@@ -1352,7 +1375,7 @@ function validateTradeMachine() {
     issues.push({ severity: 'illegal', rule: 'setup', message: 'Selecciona al menos dos equipos.' });
   }
   if (teams.length > TRADE_MACHINE_MAX_TEAMS) {
-    issues.push({ severity: 'illegal', rule: 'setup', message: 'Selecciona cinco equipos o menos.' });
+    issues.push({ severity: 'illegal', rule: 'setup', message: 'Selecciona seis equipos o menos.' });
   }
   const selectedEntries = Object.entries(state.tradeMachine.selections || {});
   if (!selectedEntries.length) {
@@ -1586,14 +1609,12 @@ function tradeMachineTeamPreviewHtml(flow) {
       <section>
         <div class="trade-machine-preview-head">
           <span>Salen</span>
-          <strong>${flow.outgoingSalary > 0 ? `- ${formatBalanceMoney(flow.outgoingSalary)}` : formatBalanceMoney(0)}</strong>
         </div>
         ${tradeMachinePreviewListHtml(flow.outgoingAssets, 'outgoing')}
       </section>
       <section>
         <div class="trade-machine-preview-head">
           <span>Entran</span>
-          <strong>${flow.incomingSalary > 0 ? `+ ${formatBalanceMoney(flow.incomingSalary)}` : formatBalanceMoney(0)}</strong>
         </div>
         ${tradeMachinePreviewListHtml(flow.incomingAssets, 'incoming')}
       </section>
@@ -2053,7 +2074,14 @@ function updateSortIndicators(tableId, sortCfg) {
     const isMatch = key === sortCfg.key;
     if (isMatch) matched = true;
     const arrow = isMatch ? (sortCfg.dir === 'asc' ? ' ▲' : ' ▼') : '';
-    th.innerHTML = `<span class="th-main">${th.dataset.label || th.textContent.replace(/[ ▲▼]/g, '')}${arrow}</span>`;
+    const label = th.dataset.label || th.textContent.replace(/[ ▲▼]/g, '');
+    if (tableId === 'trackerTable' && key === 'roster_standard_count') {
+      th.innerHTML = trackerRosterHeaderHtml('standard', label, arrow);
+    } else if (tableId === 'trackerTable' && key === 'roster_two_way_count') {
+      th.innerHTML = trackerRosterHeaderHtml('twoWay', label, arrow);
+    } else {
+      th.innerHTML = `<span class="th-main">${label}${arrow}</span>`;
+    }
   });
   const cycleHeader = document.querySelector(`#${tableId} thead th[data-sort-mode="player-cycle"]`);
   if (cycleHeader && tableId === 'playersTable') {
@@ -2638,12 +2666,12 @@ function renderTracker() {
       <td><button type="button" class="tracker-team-btn" data-team-code="${row.team_code}">${row.team_code}</button></td>
       <td>${formatMoneyDots(row.cap_total)}</td>
       <td>${formatMoneyDots(row.gasto_total)}</td>
-      <td>${formatMoneyDots(row.espacio_cap)}</td>
-      <td>${formatMoneyDots(row.espacio_luxury)}</td>
-      <td>${formatMoneyDots(row.espacio_1er_apron)}</td>
-      <td>${formatMoneyDots(row.espacio_2do_apron)}</td>
-      <td>${rosterCountChipHtml('standard', Number(row.roster_standard_count || 0), 'Std')}</td>
-      <td>${rosterCountChipHtml('twoWay', Number(row.roster_two_way_count || 0), 'TW')}</td>
+      <td>${trackerSpaceValueHtml(row.espacio_cap)}</td>
+      <td>${trackerSpaceValueHtml(row.espacio_luxury)}</td>
+      <td>${trackerSpaceValueHtml(row.espacio_1er_apron)}</td>
+      <td>${trackerSpaceValueHtml(row.espacio_2do_apron)}</td>
+      <td>${trackerRosterCountChipHtml('standard', Number(row.roster_standard_count || 0))}</td>
+      <td>${trackerRosterCountChipHtml('twoWay', Number(row.roster_two_way_count || 0))}</td>
       <td>${draftPickCountChipHtml(Number(row.draft_first_count || 0), '1st')}</td>
       <td>${draftPickCountChipHtml(Number(row.draft_second_count || 0), '2nd')}</td>
     `;

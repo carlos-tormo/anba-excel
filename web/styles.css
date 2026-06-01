@@ -3924,15 +3924,57 @@ td.salary-option--nb .salary-pct {
 .roster-count-chip--over strong {
   color: #b91c1c;
 }
-#trackerTable .roster-count-chip {
-  min-width: 86px;
-  padding: 5px 7px;
+.tracker-roster-count-chip {
+  display: inline-flex;
+  min-width: 48px;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 999px;
+  background: #f8fafc;
 }
-#trackerTable .roster-count-chip strong {
-  font-size: 0.92rem;
+.tracker-roster-count-chip strong {
+  color: #0f172a;
+  font-size: 0.96rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
 }
-#trackerTable .roster-count-chip small {
-  font-size: 0.58rem;
+.tracker-roster-count-chip--ok {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.tracker-roster-count-chip--ok strong {
+  color: #15803d;
+}
+.tracker-roster-count-chip--under,
+.tracker-roster-count-chip--offseason {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+.tracker-roster-count-chip--under strong,
+.tracker-roster-count-chip--offseason strong {
+  color: #b45309;
+}
+.tracker-roster-count-chip--over {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.tracker-roster-count-chip--over strong {
+  color: #b91c1c;
+}
+.tracker-space-value {
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.tracker-space-value.is-positive {
+  color: #15803d;
+}
+.tracker-space-value.is-negative {
+  color: #b91c1c;
+}
+.tracker-space-value.is-neutral {
+  color: #475569;
 }
 .draft-count-chip {
   display: inline-flex;
