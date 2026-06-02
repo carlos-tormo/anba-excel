@@ -877,6 +877,18 @@ function tradeMachineTeamLogoHtml(code) {
   `;
 }
 
+function tradeMachineSummaryLogoHtml(code, className = 'trade-machine-summary-mini-logo') {
+  const normalized = String(code || '').trim().toUpperCase();
+  if (!normalized) return '';
+  const src = teamLogoCandidates(normalized)[0] || '';
+  return `
+    <span class="${className}" title="${escapeHtml(normalized)}" aria-label="${escapeHtml(normalized)}">
+      <span>${escapeHtml(normalized)}</span>
+      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+    </span>
+  `;
+}
+
 function tradeMachineRecipientOptions(fromTeam, selectedTo) {
   return (state.tradeMachine.selectedTeams || [])
     .filter((code) => code !== fromTeam)
@@ -1632,14 +1644,16 @@ function tradeMachineAssetTypeLabel(type) {
 
 function tradeMachineAssetSummaryHtml(asset, direction) {
   const partner = direction === 'incoming' ? asset.fromTeam : asset.toTeam;
-  const partnerLabel = partner ? `${direction === 'incoming' ? 'desde' : 'a'} ${partner}` : '';
-  const salaryHtml = asset.salary > 0 ? `<span>${formatBalanceMoney(asset.salary)}</span>` : '';
+  const typeClass = `trade-machine-summary-asset--${asset.type || 'asset'}`;
+  const partnerLogo = tradeMachineSummaryLogoHtml(partner);
+  const salaryHtml = asset.salary > 0 ? `<span class="trade-machine-summary-asset-money">${formatBalanceMoney(asset.salary)}</span>` : '';
   return `
-    <li>
-      <span class="trade-machine-summary-type">${tradeMachineAssetTypeLabel(asset.type)}</span>
-      <strong>${escapeHtml(asset.label)}</strong>
+    <li class="trade-machine-summary-asset ${typeClass}">
+      <div class="trade-machine-summary-asset-head">
+        <strong>${escapeHtml(asset.label)}</strong>
+        ${partnerLogo}
+      </div>
       ${asset.detail ? `<small>${escapeHtml(asset.detail)}</small>` : ''}
-      ${partnerLabel ? `<small>${escapeHtml(partnerLabel)}</small>` : ''}
       ${salaryHtml}
     </li>
   `;
@@ -1655,6 +1669,16 @@ function tradeMachineBalanceClass(value) {
   if (amount < 0) return 'is-negative';
   if (amount > 0) return 'is-positive';
   return '';
+}
+
+function tradeMachineSummaryCountHtml(label, incoming, outgoing, incomingLabel = 'recibidas', outgoingLabel = 'enviadas') {
+  return `
+    <span class="trade-machine-summary-metric">
+      <strong>${escapeHtml(label)}</strong>
+      <span class="trade-machine-summary-flow trade-machine-summary-flow--in" title="${escapeHtml(incomingLabel)}" aria-label="${escapeHtml(`${label} ${incomingLabel}`)}">↙ ${incoming}</span>
+      <span class="trade-machine-summary-flow trade-machine-summary-flow--out" title="${escapeHtml(outgoingLabel)}" aria-label="${escapeHtml(`${label} ${outgoingLabel}`)}">↗ ${outgoing}</span>
+    </span>
+  `;
 }
 
 function tradeMachineBalanceRowsHtml(flow) {
@@ -1680,20 +1704,23 @@ function tradeMachineTeamSummaryHtml(code, flow) {
   const outgoingPicks = flow.outgoingAssets.filter((asset) => asset.type === 'pick').length;
   const outgoingSwapRights = flow.outgoingAssets.filter((asset) => asset.type === 'swap_right').length;
   const outgoingRights = flow.outgoingAssets.filter((asset) => asset.type === 'right').length;
+  const countMetrics = [
+    tradeMachineSummaryCountHtml('Rondas', incomingPicks, outgoingPicks),
+    (incomingSwapRights || outgoingSwapRights) ? tradeMachineSummaryCountHtml('Swaps', incomingSwapRights, outgoingSwapRights, 'recibidos', 'enviados') : '',
+    tradeMachineSummaryCountHtml('Derechos', incomingRights, outgoingRights, 'recibidos', 'enviados'),
+  ].filter(Boolean).join('');
   return `
     <article class="trade-machine-summary-team">
       <div class="trade-machine-summary-team-head">
-        <div>
-          <strong>${escapeHtml(code)} recibe</strong>
-          <span>${flow.incomingAssets.length} entran · ${flow.outgoingAssets.length} salen</span>
+        <div class="trade-machine-summary-team-title">
+          ${tradeMachineSummaryLogoHtml(code, 'trade-machine-summary-team-logo')}
+          <div>
+            <strong>${escapeHtml(code)}</strong>
+            <span>${flow.incomingAssets.length} entran · ${flow.outgoingAssets.length} salen</span>
+          </div>
         </div>
         <div class="trade-machine-summary-counts">
-          <span>${incomingPicks} rondas recibidas</span>
-          ${incomingSwapRights ? `<span>${incomingSwapRights} swaps recibidos</span>` : ''}
-          <span>${incomingRights} derechos recibidos</span>
-          <span>${outgoingPicks} rondas enviadas</span>
-          ${outgoingSwapRights ? `<span>${outgoingSwapRights} swaps enviados</span>` : ''}
-          <span>${outgoingRights} derechos enviados</span>
+          ${countMetrics}
         </div>
       </div>
       <div class="trade-machine-summary-assets">
@@ -3090,9 +3117,10 @@ function readInitialSeasonStart() {
 }
 
 function assetSeasonYear(asset) {
-  const year = Number(asset?.year);
+  const rawYear = asset?.year;
+  if (rawYear === null || rawYear === undefined || String(rawYear).trim() === '') return null;
+  const year = Number(rawYear);
   if (Number.isFinite(year)) return year;
-  if (asset?.asset_type === 'exception') return currentSeasonStart();
   return null;
 }
 

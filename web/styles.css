@@ -386,8 +386,11 @@ h1 {
       180deg,
       rgba(var(--team-primary-rgb), 0.24),
       rgba(var(--team-secondary-rgb), 0.18)
-    );
+  );
   border-bottom: 1px solid rgba(var(--team-primary-rgb), 0.22);
+}
+.team-strip-section .page-shell {
+  width: 100%;
 }
 
 @media (min-width: 721px) {
@@ -632,7 +635,8 @@ h1 {
 .team-strip {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  justify-content: space-between;
+  gap: clamp(3px, 0.25vw, 8px);
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: 2px;
@@ -740,8 +744,10 @@ h1 {
 }
 .team-btn {
   position: relative;
-  width: 44px;
-  min-width: 44px;
+  flex: 1 1 34px;
+  width: auto;
+  min-width: 28px;
+  max-width: 44px;
   background: transparent;
   border: none;
   padding: 0;
@@ -1507,20 +1513,69 @@ h1 {
   justify-content: space-between;
   gap: 10px;
 }
-.trade-machine-summary-team-head > div:first-child {
+.trade-machine-summary-team-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.trade-machine-summary-team-title > div {
   display: grid;
-  gap: 2px;
+  gap: 1px;
+  min-width: 0;
 }
 .trade-machine-summary-team-head strong {
   color: #0f172a;
   font-size: 0.95rem;
   font-weight: 900;
 }
-.trade-machine-summary-team-head span,
-.trade-machine-summary-counts span {
+.trade-machine-summary-team-title span {
   color: #64748b;
   font-size: 0.72rem;
   font-weight: 800;
+}
+.trade-machine-summary-team-logo,
+.trade-machine-summary-mini-logo {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid #d6dee9;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+.trade-machine-summary-team-logo {
+  width: 28px;
+  height: 28px;
+}
+.trade-machine-summary-mini-logo {
+  width: 22px;
+  height: 22px;
+}
+.trade-machine-summary-team-logo span,
+.trade-machine-summary-mini-logo span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: rgb(var(--team-primary-rgb));
+  color: #ffffff;
+  font-size: 0.52rem;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+.trade-machine-summary-team-logo img,
+.trade-machine-summary-mini-logo img {
+  position: absolute;
+  inset: 2px;
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  object-fit: contain;
+  background: #ffffff;
 }
 .trade-machine-summary-counts {
   display: flex;
@@ -1528,11 +1583,33 @@ h1 {
   justify-content: flex-end;
   gap: 4px;
 }
-.trade-machine-summary-counts span {
-  padding: 2px 6px;
+.trade-machine-summary-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 5px;
   border: 1px solid #dbe3ee;
   border-radius: 999px;
   background: #ffffff;
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.trade-machine-summary-metric strong {
+  color: #475569;
+  font-size: inherit;
+}
+.trade-machine-summary-flow {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.trade-machine-summary-flow--in {
+  color: #15803d;
+}
+.trade-machine-summary-flow--out {
+  color: #b91c1c;
 }
 .trade-machine-summary-assets {
   display: grid;
@@ -1564,10 +1641,38 @@ h1 {
   display: grid;
   gap: 2px;
   min-width: 0;
-  padding: 7px;
+  padding: 7px 7px 7px 9px;
   border: 1px solid #dbe3ee;
+  border-left-width: 4px;
   border-radius: 7px;
   background: #ffffff;
+}
+.trade-machine-summary-asset--player {
+  border-color: #bae6fd;
+  border-left-color: #0284c7;
+  background: #f0f9ff;
+}
+.trade-machine-summary-asset--pick {
+  border-color: #bbf7d0;
+  border-left-color: #16a34a;
+  background: #f0fdf4;
+}
+.trade-machine-summary-asset--swap_right {
+  border-color: #ddd6fe;
+  border-left-color: #7c3aed;
+  background: #f5f3ff;
+}
+.trade-machine-summary-asset--right {
+  border-color: #fed7aa;
+  border-left-color: #ea580c;
+  background: #fff7ed;
+}
+.trade-machine-summary-asset-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
 .trade-machine-summary-assets li strong {
   overflow: hidden;
@@ -1577,20 +1682,11 @@ h1 {
   font-weight: 900;
 }
 .trade-machine-summary-assets li small,
-.trade-machine-summary-assets li span:not(.trade-machine-summary-type),
+.trade-machine-summary-asset-money,
 .trade-machine-summary-empty {
   color: #64748b;
   font-size: 0.7rem;
   font-weight: 800;
-}
-.trade-machine-summary-type {
-  width: max-content;
-  padding: 1px 5px;
-  border-radius: 999px;
-  background: #e0f2fe;
-  color: #0369a1;
-  font-size: 0.66rem;
-  font-weight: 900;
 }
 .trade-machine-summary-money {
   display: grid;
