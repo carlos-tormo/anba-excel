@@ -269,6 +269,27 @@ def normalize_apron_hard_cap(value: Any) -> Optional[str]:
     return None
 
 
+def normalize_gm_start_date(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def normalize_hex_color(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", raw):
+        return raw.upper()
+    return None
+
+
 def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
     return {d[0]: row[idx] for idx, d in enumerate(cursor.description)}
 
@@ -497,6 +518,35 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS team_gm_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    row_order INTEGER NOT NULL,
+                    gm_name TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    color TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS draft_order (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    draft_year INTEGER NOT NULL,
+                    draft_round TEXT NOT NULL,
+                    pick_number INTEGER NOT NULL,
+                    owner_team_code TEXT NOT NULL,
+                    original_team_code TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(draft_year, draft_round, pick_number)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_token TEXT PRIMARY KEY,
                     data_json TEXT NOT NULL,
@@ -517,6 +567,8 @@ class LeagueDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_name ON free_agents(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_move_logs_team_season ON team_move_logs(team_id, season_year, bucket)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_luxury_history_team_year ON team_luxury_history(team_id, season_year)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_team_start ON team_gm_history(team_id, start_date)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_order_year_round ON draft_order(draft_year, draft_round, pick_number)")
             cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(players)").fetchall()
@@ -876,6 +928,155 @@ class LeagueDB:
             cur = conn.execute("SELECT id, code, name, gm, apron_hard_cap FROM teams ORDER BY code")
             return [row_to_dict(cur, row) for row in cur.fetchall()]
 
+    def current_draft_year(self) -> int:
+        settings = self.get_settings()
+        current_year = parse_int(settings.get("current_year")) or 2025
+        if current_year < 2025 or current_year > 2030:
+            current_year = 2025
+        return current_year + 1
+
+    def _normalize_draft_order_payload(
+        self,
+        conn: sqlite3.Connection,
+        payload: Dict[str, Any],
+        *,
+        existing: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        source = dict(existing or {})
+        source.update(payload)
+
+        draft_year = parse_int(source.get("draft_year"))
+        if draft_year is None:
+            draft_year = self.current_draft_year()
+        if draft_year < 2000 or draft_year > 2100:
+            raise ValueError("invalid_draft_year")
+
+        pick_number = parse_int(source.get("pick_number"))
+        if pick_number is None or pick_number <= 0 or pick_number > 300:
+            raise ValueError("invalid_pick_number")
+
+        draft_round = normalize_pick_round(source.get("draft_round"))
+        owner_team_code = normalize_team_code(source.get("owner_team_code"))
+        original_team_code = normalize_team_code(source.get("original_team_code"))
+        if not owner_team_code or not original_team_code:
+            raise ValueError("team_codes_required")
+
+        existing_codes = {
+            str(row["code"]).upper()
+            for row in conn.execute(
+                "SELECT code FROM teams WHERE code IN (?, ?)",
+                (owner_team_code, original_team_code),
+            ).fetchall()
+        }
+        if owner_team_code not in existing_codes or original_team_code not in existing_codes:
+            raise ValueError("team_not_found")
+
+        return {
+            "draft_year": draft_year,
+            "draft_round": draft_round,
+            "pick_number": pick_number,
+            "owner_team_code": owner_team_code,
+            "original_team_code": original_team_code,
+        }
+
+    def list_draft_order(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
+        year = draft_year if draft_year is not None else self.current_draft_year()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    d.id,
+                    d.draft_year,
+                    d.draft_round,
+                    d.pick_number,
+                    d.owner_team_code,
+                    COALESCE(owner.name, d.owner_team_code) AS owner_team_name,
+                    d.original_team_code,
+                    COALESCE(original.name, d.original_team_code) AS original_team_name,
+                    d.created_at,
+                    d.updated_at
+                FROM draft_order d
+                LEFT JOIN teams owner ON owner.code = d.owner_team_code
+                LEFT JOIN teams original ON original.code = d.original_team_code
+                WHERE d.draft_year = ?
+                ORDER BY
+                    CASE d.draft_round WHEN '1st' THEN 1 WHEN '2nd' THEN 2 ELSE 3 END,
+                    d.pick_number,
+                    d.id
+                """,
+                (int(year),),
+            )
+            return {
+                "draft_year": int(year),
+                "draft_order": [row_to_dict(cur, row) for row in cur.fetchall()],
+            }
+
+    def create_draft_order_entry(self, payload: Dict[str, Any]) -> int:
+        with self.connect() as conn:
+            values = self._normalize_draft_order_payload(conn, payload)
+            timestamp = now_iso()
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO draft_order (
+                        draft_year, draft_round, pick_number, owner_team_code,
+                        original_team_code, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        values["draft_year"],
+                        values["draft_round"],
+                        values["pick_number"],
+                        values["owner_team_code"],
+                        values["original_team_code"],
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            except sqlite3.IntegrityError as err:
+                raise ValueError("duplicate_draft_pick") from err
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def update_draft_order_entry(self, entry_id: int, payload: Dict[str, Any]) -> bool:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM draft_order WHERE id = ?", (entry_id,)).fetchone()
+            if not row:
+                return False
+            values = self._normalize_draft_order_payload(conn, payload, existing=dict(row))
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE draft_order
+                    SET draft_year = ?,
+                        draft_round = ?,
+                        pick_number = ?,
+                        owner_team_code = ?,
+                        original_team_code = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        values["draft_year"],
+                        values["draft_round"],
+                        values["pick_number"],
+                        values["owner_team_code"],
+                        values["original_team_code"],
+                        now_iso(),
+                        entry_id,
+                    ),
+                )
+            except sqlite3.IntegrityError as err:
+                raise ValueError("duplicate_draft_pick") from err
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_draft_order_entry(self, entry_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM draft_order WHERE id = ?", (entry_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
     def get_team(self, code: str) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             team_cur = conn.execute("SELECT * FROM teams WHERE code = ?", (code.upper(),))
@@ -903,6 +1104,26 @@ class LeagueDB:
             summary = self._calc_summary(team, players, assets, dead_contracts, settings)
             move_summary = self._team_move_summary(conn, int(team["id"]), int(summary["current_year"]), settings)
             luxury_history = self._team_luxury_history(conn, int(team["id"]), int(summary["current_year"]))
+            gm_cur = conn.execute(
+                """
+                SELECT
+                    h.id,
+                    t.code AS team_code,
+                    t.name AS team_name,
+                    h.row_order,
+                    h.gm_name,
+                    h.start_date,
+                    h.color,
+                    h.created_at,
+                    h.updated_at
+                FROM team_gm_history h
+                JOIN teams t ON t.id = h.team_id
+                WHERE h.team_id = ?
+                ORDER BY h.start_date, h.row_order, h.id
+                """,
+                (team["id"],),
+            )
+            gm_history = [row_to_dict(gm_cur, r) for r in gm_cur.fetchall()]
             return {
                 "team": team,
                 "players": players,
@@ -911,7 +1132,83 @@ class LeagueDB:
                 "summary": summary,
                 "move_summary": move_summary,
                 "luxury_history": luxury_history,
+                "gm_history": gm_history,
             }
+
+    def list_gm_history(self, code: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        with self.connect() as conn:
+            params: List[Any] = []
+            where = ""
+            if code:
+                where = "WHERE t.code = ?"
+                params.append(code.upper())
+                exists = conn.execute("SELECT 1 FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+                if not exists:
+                    return None
+            cur = conn.execute(
+                f"""
+                SELECT
+                    h.id,
+                    t.code AS team_code,
+                    t.name AS team_name,
+                    h.row_order,
+                    h.gm_name,
+                    h.start_date,
+                    h.color,
+                    h.created_at,
+                    h.updated_at
+                FROM team_gm_history h
+                JOIN teams t ON t.id = h.team_id
+                {where}
+                ORDER BY t.code, h.start_date, h.row_order, h.id
+                """,
+                params,
+            )
+            return [row_to_dict(cur, row) for row in cur.fetchall()]
+
+    def replace_gm_history(self, code: str, entries: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        normalized: List[Dict[str, Any]] = []
+        for raw in entries:
+            gm_name = str(raw.get("gm_name") or raw.get("name") or "").strip()
+            start_date = normalize_gm_start_date(raw.get("start_date"))
+            if not gm_name or not start_date:
+                raise ValueError("invalid_gm_history_entry")
+            normalized.append(
+                {
+                    "gm_name": gm_name,
+                    "start_date": start_date,
+                    "color": normalize_hex_color(raw.get("color")),
+                }
+            )
+
+        normalized.sort(key=lambda row: (row["start_date"], row["gm_name"].lower()))
+
+        with self.connect() as conn:
+            team_row = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not team_row:
+                return None
+            team_id = int(team_row["id"])
+            timestamp = now_iso()
+            conn.execute("DELETE FROM team_gm_history WHERE team_id = ?", (team_id,))
+            for idx, entry in enumerate(normalized, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO team_gm_history (
+                        team_id, row_order, gm_name, start_date, color, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        team_id,
+                        idx,
+                        entry["gm_name"],
+                        entry["start_date"],
+                        entry["color"],
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            conn.commit()
+        return self.list_gm_history(code)
 
     def list_tracker(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
@@ -2619,6 +2916,30 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(200, {"free_agents": self.db.list_free_agents()})
             return
 
+        if parsed.path == "/api/draft-order":
+            qs = parse_qs(parsed.query)
+            raw_year = (qs.get("year") or [""])[0].strip()
+            draft_year = None
+            if raw_year:
+                draft_year = parse_int(raw_year)
+                if draft_year is None or draft_year < 2000 or draft_year > 2100:
+                    self._json(400, {"error": "invalid_draft_year"})
+                    return
+            self._json(200, self.db.list_draft_order(draft_year))
+            return
+
+        if parsed.path == "/api/gm-history":
+            if not self._require_admin():
+                return
+            qs = parse_qs(parsed.query)
+            team_code = str((qs.get("team") or [""])[0] or "").strip().upper() or None
+            rows = self.db.list_gm_history(team_code)
+            if rows is None:
+                self._json(404, {"error": "team_not_found"})
+                return
+            self._json(200, {"gm_history": rows})
+            return
+
         if parsed.path == "/api/settings":
             settings = self.db.get_settings()
             self._json(
@@ -2721,6 +3042,27 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._log_admin_action("create", "free_agent", str(free_agent_id), None, {"name": payload.get("name")})
             self._json(201, {"free_agent_id": free_agent_id})
+            return
+
+        if parsed.path == "/api/draft-order":
+            try:
+                draft_order_id = self.db.create_draft_order_entry(payload)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_draft_order"})
+                return
+            self._log_admin_action(
+                "create",
+                "draft_order",
+                str(draft_order_id),
+                payload.get("owner_team_code"),
+                {
+                    "draft_year": payload.get("draft_year"),
+                    "draft_round": payload.get("draft_round"),
+                    "pick_number": payload.get("pick_number"),
+                    "original_team_code": payload.get("original_team_code"),
+                },
+            )
+            self._json(201, {"draft_order_id": draft_order_id})
             return
 
         if parsed.path.startswith("/api/free-agents/") and parsed.path.endswith("/sign"):
@@ -2919,6 +3261,33 @@ class Handler(SimpleHTTPRequestHandler):
                 {"dead_type": payload.get("dead_type"), "label": payload.get("label")},
             )
             self._json(201, {"dead_contract_id": dead_contract_id})
+            return
+
+        if parsed.path == "/api/gm-history":
+            team_code = str(payload.get("team_code") or "").strip().upper()
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            raw_entries = payload.get("entries")
+            if not isinstance(raw_entries, list):
+                self._json(400, {"error": "entries_required"})
+                return
+            try:
+                rows = self.db.replace_gm_history(team_code, raw_entries)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_gm_history"})
+                return
+            if rows is None:
+                self._json(404, {"error": "team_not_found"})
+                return
+            self._log_admin_action(
+                "update",
+                "gm_history",
+                team_code,
+                team_code,
+                {"entries_count": len(rows)},
+            )
+            self._json(200, {"ok": True, "gm_history": rows})
             return
 
         if parsed.path == "/api/settings/progress-year":
@@ -3151,6 +3520,28 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(200 if ok else 404, {"ok": ok})
             return
 
+        if parsed.path.startswith("/api/draft-order/"):
+            try:
+                draft_order_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_draft_order_id"})
+                return
+            try:
+                ok = self.db.update_draft_order_entry(draft_order_id, payload)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_draft_order"})
+                return
+            if ok:
+                self._log_admin_action(
+                    "update",
+                    "draft_order",
+                    str(draft_order_id),
+                    payload.get("owner_team_code"),
+                    {"fields": sorted(payload.keys())},
+                )
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
         if parsed.path.startswith("/api/players/"):
             player_id = int(parsed.path.split("/")[-1])
             ok = self.db.update_player(player_id, payload)
@@ -3253,6 +3644,18 @@ class Handler(SimpleHTTPRequestHandler):
             ok = self.db.delete_free_agent(free_agent_id)
             if ok:
                 self._log_admin_action("delete", "free_agent", str(free_agent_id))
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
+        if parsed.path.startswith("/api/draft-order/"):
+            try:
+                draft_order_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_draft_order_id"})
+                return
+            ok = self.db.delete_draft_order_entry(draft_order_id)
+            if ok:
+                self._log_admin_action("delete", "draft_order", str(draft_order_id))
             self._json(200 if ok else 404, {"ok": ok})
             return
 

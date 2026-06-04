@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260601i">
+  <link rel="stylesheet" href="/styles.css?v=20260604c">
 </head>
 <body class="app-layout">
   <header>
@@ -19,6 +19,7 @@
       <div id="capStatusPills" class="top-status-wrap"></div>
       <button id="openLocatorBtn" class="icon-only-btn" type="button" aria-label="Search players and draft picks" title="Search">Search</button>
       <button id="trackerHomeBtn" type="button">Tracker</button>
+      <button id="draftHomeBtn" type="button">Draft</button>
       <button id="freeAgentsHomeBtn" type="button">Free agents</button>
       <button id="tradeMachineHomeBtn" type="button">Máquina de traspasos</button>
       <span id="authBadge"></span>
@@ -41,6 +42,7 @@
       </div>
       <div class="mobile-sidebar-links">
         <button id="mobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Clasificación</button>
+        <button id="mobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈">Draft</button>
         <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄">Máquina de traspasos</button>
         <button id="mobileLocatorBtn" type="button" class="mobile-nav-btn" data-icon="⌕">Buscar</button>
@@ -150,6 +152,16 @@
           <tbody></tbody>
         </table>
       </div>
+    </section>
+
+    <section id="draftOrderSection" class="draft-order-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Draft</h2>
+          <div id="draftOrderSubtitle" class="section-subtitle"></div>
+        </div>
+      </div>
+      <div id="draftOrderBoard" class="draft-order-board"></div>
     </section>
 
     <section id="tradeMachineSection" class="trade-machine-section section-hidden">
@@ -345,6 +357,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260601j" defer></script>
+  <script src="/guest.js?v=20260604d" defer></script>
 </body>
 </html>

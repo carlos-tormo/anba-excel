@@ -5,6 +5,10 @@ const state = {
   teams: [],
   trackerRows: [],
   freeAgents: [],
+  draftOrder: {
+    draft_year: null,
+    draft_order: [],
+  },
   teamCode: null,
   teamData: null,
   auth: null,
@@ -76,7 +80,7 @@ const TEAM_TABS = [
   },
   {
     id: 'general',
-    sections: ['teamMeta', 'importantFiguresSection'],
+    sections: ['teamMeta', 'importantFiguresSection', 'gmTimelineSection'],
   },
   {
     id: 'draft',
@@ -92,7 +96,7 @@ const PLAYER_SORT_CYCLE = [
   { key: 'rating', dir: 'desc' },
   { key: 'rating', dir: 'asc' },
 ];
-const POSITION_ORDER = { PG: 1, SG: 2, SF: 3, PF: 4, C: 5 };
+const POSITION_ORDER = { PG: 1, SG: 2, SF: 3, PF: 4, C: 5, TW: 6 };
 
 function boolValue(value) {
   if (value === true) return true;
@@ -329,7 +333,8 @@ function syncTeamTabs() {
     tab.sections.forEach((sectionId) => {
       const section = document.getElementById(sectionId);
       if (!section) return;
-      section.classList.toggle('section-hidden', !showTeam || tab.id !== active);
+      const forceHidden = sectionId === 'gmTimelineSection' && !hasTeamGmTimelineEntries();
+      section.classList.toggle('section-hidden', !showTeam || tab.id !== active || forceHidden);
     });
   });
 }
@@ -2070,6 +2075,7 @@ function sortValue(row, key) {
   const val = row?.[key];
   if (val === null || val === undefined || val === '') return null;
   if (key === 'position') {
+    if (isTwoWayPlayer(row)) return POSITION_ORDER.TW;
     return POSITION_ORDER[String(val).toUpperCase()] ?? 999;
   }
   if (typeof val === 'number') return val;
@@ -2091,6 +2097,51 @@ function sortedRows(rows, sortCfg) {
     if (va > vb) return 1 * dir;
     return 0;
   });
+}
+
+function rosterPositionKey(player) {
+  if (isTwoWayPlayer(player)) return 'TW';
+  const raw = String(player?.position || '').trim().toUpperCase();
+  const primary = raw.split(/[\/,\s-]+/).find(Boolean) || '';
+  return POSITION_ORDER[primary] ? primary : (primary || 'NA');
+}
+
+function rosterPositionLabel(positionKey) {
+  const labels = {
+    PG: 'Point Guards',
+    SG: 'Shooting Guards',
+    SF: 'Small Forwards',
+    PF: 'Power Forwards',
+    C: 'Centers',
+    TW: 'Two Ways',
+    NA: 'Sin posición',
+  };
+  return labels[positionKey] || positionKey;
+}
+
+function rosterPositionCounts(rows) {
+  return rows.reduce((counts, player) => {
+    const key = rosterPositionKey(player);
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function shouldRenderRosterPositionGroups() {
+  return state.sort.players?.key === 'position';
+}
+
+function appendRosterPositionSeparator(tbody, positionKey, count, colspan) {
+  const tr = document.createElement('tr');
+  tr.className = 'roster-position-row';
+  tr.innerHTML = `
+    <td colspan="${colspan}">
+      <span class="roster-position-code">${escapeHtml(positionKey === 'NA' ? '-' : positionKey)}</span>
+      <span class="roster-position-name">${escapeHtml(rosterPositionLabel(positionKey))}</span>
+      <span class="roster-position-count">${count} ${count === 1 ? 'player' : 'players'}</span>
+    </td>
+  `;
+  tbody.appendChild(tr);
 }
 
 function updateSortIndicators(tableId, sortCfg) {
@@ -2670,13 +2721,16 @@ function setViewMode(mode) {
   state.ui.viewMode = mode;
   const trackerSection = document.getElementById('trackerSection');
   const freeAgentsSection = document.getElementById('freeAgentsSection');
+  const draftOrderSection = document.getElementById('draftOrderSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
   const showTracker = mode === 'tracker';
   const showFreeAgents = mode === 'free-agents';
+  const showDraftOrder = mode === 'draft-order';
   const showTradeMachine = mode === 'trade-machine';
 
   trackerSection.classList.toggle('section-hidden', !showTracker);
   freeAgentsSection.classList.toggle('section-hidden', !showFreeAgents);
+  if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
   syncTeamTabs();
   syncMobileInfoButton();
@@ -2733,6 +2787,102 @@ function renderFreeAgents() {
     `;
     tbody.appendChild(tr);
   });
+}
+
+function teamByCode(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  return (state.teams || []).find((team) => String(team.code || '').toUpperCase() === normalized) || null;
+}
+
+function draftOrderLogoHtml(code, className = 'draft-order-team-logo') {
+  const normalized = String(code || '').trim().toUpperCase();
+  if (!normalized) return '<span class="draft-order-team-fallback">-</span>';
+  const src = teamLogoCandidates(normalized)[0];
+  return `
+    <span class="${className}" title="${escapeHtml(normalized)}" aria-label="${escapeHtml(normalized)}">
+      <span>${escapeHtml(normalized)}</span>
+      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+    </span>
+  `;
+}
+
+function draftOrderTeamHtml(code, name) {
+  const normalized = String(code || '').trim().toUpperCase();
+  const team = teamByCode(normalized);
+  const label = String(name || team?.name || normalized || '').trim();
+  return `
+    <span class="draft-order-team">
+      ${draftOrderLogoHtml(normalized)}
+      <span class="draft-order-team-text">
+        <strong>${escapeHtml(normalized || '-')}</strong>
+        <span>${escapeHtml(label || normalized || '-')}</span>
+      </span>
+    </span>
+  `;
+}
+
+function draftOrderViaHtml(code, name) {
+  const normalized = String(code || '').trim().toUpperCase();
+  const team = teamByCode(normalized);
+  const label = String(name || team?.name || normalized || '').trim();
+  return `
+    <span class="draft-order-via" title="${escapeHtml(label || normalized)}">
+      <span>(Vía</span>
+      ${draftOrderLogoHtml(normalized, 'draft-order-via-logo')}
+      <span>)</span>
+    </span>
+  `;
+}
+
+function draftOrderViaCellHtml(row) {
+  const owner = String(row?.owner_team_code || '').trim().toUpperCase();
+  const original = String(row?.original_team_code || '').trim().toUpperCase();
+  if (owner && original && owner === original) return '';
+  return draftOrderViaHtml(row?.original_team_code, row?.original_team_name);
+}
+
+function renderDraftOrderRound(round, label) {
+  const rows = (state.draftOrder?.draft_order || [])
+    .filter((row) => String(row.draft_round || '').trim() === round)
+    .sort((a, b) => Number(a.pick_number || 0) - Number(b.pick_number || 0));
+  const body = rows.length
+    ? rows.map((row) => `
+        <tr>
+          <td class="draft-order-number">${escapeHtml(row.pick_number || '')}</td>
+          <td>${draftOrderTeamHtml(row.owner_team_code, row.owner_team_name)}</td>
+          <td>${draftOrderViaCellHtml(row)}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="3" class="draft-order-empty">No selections configured.</td></tr>';
+  return `
+    <article class="draft-order-round">
+      <h3>${escapeHtml(label)}</h3>
+      <div class="table-wrap draft-order-table-wrap">
+        <table class="draft-order-table">
+          <thead>
+            <tr>
+              <th>Number</th>
+              <th>Team that owns the pick</th>
+              <th>Original pick</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function renderDraftOrder() {
+  const board = document.getElementById('draftOrderBoard');
+  const subtitle = document.getElementById('draftOrderSubtitle');
+  if (!board) return;
+  const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart() + 1);
+  if (subtitle) subtitle.textContent = `${draftYear} order of selection`;
+  board.innerHTML = `
+    ${renderDraftOrderRound('1st', '1st Round')}
+    ${renderDraftOrderRound('2nd', '2nd Round')}
+  `;
 }
 
 function renderCards() {
@@ -2879,6 +3029,236 @@ function renderLuxuryHistory() {
   `;
 }
 
+function gmTimelineTeam(code) {
+  return (state.teams || []).find((team) => team.code === code) || null;
+}
+
+function gmTimelineDefaultColor(index, teamCode) {
+  const theme = TEAM_THEMES[teamCode] || { primary: '#0f766e', secondary: '#99f6e4' };
+  const palette = [theme.primary, theme.secondary, '#334155', '#f8fafc', '#b91c1c', '#d97706'];
+  const color = palette[index % palette.length] || theme.primary;
+  return color.toUpperCase();
+}
+
+function parseGmTimelineDate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const date = new Date(`${raw}T00:00:00Z`);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const slashMatch = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (slashMatch) {
+    const [, dd, mm, yyyy] = slashMatch;
+    const date = new Date(`${yyyy}-${mm}-${dd}T00:00:00Z`);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  return null;
+}
+
+function formatGmTimelineDate(value) {
+  const date = parseGmTimelineDate(value);
+  if (!date) return '';
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = String(date.getUTCFullYear());
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function teamGmTimelineEntries() {
+  const code = state.teamCode || '';
+  return (state.teamData?.gm_history || [])
+    .map((entry, idx) => ({
+      gm_name: String(entry.gm_name || '').trim(),
+      start_date: String(entry.start_date || '').trim(),
+      color: String(entry.color || gmTimelineDefaultColor(idx, code)).trim(),
+    }))
+    .filter((entry) => entry.gm_name && parseGmTimelineDate(entry.start_date))
+    .sort((a, b) => {
+      const aTime = parseGmTimelineDate(a.start_date)?.getTime() || 0;
+      const bTime = parseGmTimelineDate(b.start_date)?.getTime() || 0;
+      if (aTime !== bTime) return aTime - bTime;
+      return a.gm_name.localeCompare(b.gm_name);
+    });
+}
+
+function hasTeamGmTimelineEntries() {
+  return teamGmTimelineEntries().length > 0;
+}
+
+function gmTimelineSvg(entries, teamCode) {
+  const team = gmTimelineTeam(teamCode) || { code: teamCode, name: teamCode };
+  const theme = TEAM_THEMES[teamCode] || { primary: '#0f766e', secondary: '#99f6e4' };
+  const parsedEntries = entries.map((entry, idx) => ({
+    ...entry,
+    date: parseGmTimelineDate(entry.start_date),
+    color: entry.color || gmTimelineDefaultColor(idx, teamCode),
+  })).filter((entry) => entry.date);
+  const width = 1500;
+  const height = 820;
+  const left = 90;
+  const right = 90;
+  const timelineY = 575;
+  const barY = 475;
+  const barH = 52;
+  const today = new Date();
+  const present = new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()));
+  const firstDate = parsedEntries[0]?.date || present;
+  const lastStart = parsedEntries[parsedEntries.length - 1]?.date || present;
+  const fallbackEnd = new Date(Date.UTC(lastStart.getUTCFullYear() + 1, lastStart.getUTCMonth(), lastStart.getUTCDate()));
+  const endDate = present.getTime() > lastStart.getTime() ? present : fallbackEnd;
+  const minTime = firstDate.getTime();
+  const maxTime = Math.max(endDate.getTime(), minTime + 86400000);
+  const xForDate = (date) => {
+    const pct = (date.getTime() - minTime) / (maxTime - minTime);
+    return left + Math.max(0, Math.min(1, pct)) * (width - left - right);
+  };
+  const startYear = firstDate.getUTCFullYear();
+  const endYear = endDate.getUTCFullYear();
+  const tickYears = Array.from({ length: endYear - startYear + 1 }, (_, idx) => startYear + idx);
+  const logoHref = teamLogoCandidates(teamCode)[0] || '';
+  const segments = parsedEntries.map((entry, idx) => {
+    const startX = xForDate(entry.date);
+    const end = parsedEntries[idx + 1]?.date || endDate;
+    const endX = Math.max(startX + 8, xForDate(end));
+    const radius = idx === 0 || idx === parsedEntries.length - 1 ? 24 : 0;
+    return `<rect x="${startX.toFixed(1)}" y="${barY}" width="${(endX - startX).toFixed(1)}" height="${barH}" rx="${radius}" fill="${escapeHtml(entry.color)}" opacity="0.94"/>`;
+  }).join('');
+  const markerLevels = [275, 348, 405, 318];
+  const rawMarkerLayout = parsedEntries.map((entry) => {
+    const x = xForDate(entry.date);
+    const labelWidth = Math.max(130, Math.min(230, String(entry.gm_name || '').length * 16 + 52));
+    const preferredLabelX = Math.max(left + labelWidth / 2, Math.min(width - right - labelWidth / 2, x));
+    return { entry, x, labelWidth, labelX: preferredLabelX };
+  });
+  rawMarkerLayout.forEach((layout, idx) => {
+    if (idx === 0) return;
+    const previous = rawMarkerLayout[idx - 1];
+    const minX = previous.labelX + previous.labelWidth / 2 + layout.labelWidth / 2 + 14;
+    layout.labelX = Math.max(layout.labelX, minX);
+  });
+  for (let idx = rawMarkerLayout.length - 1; idx >= 0; idx -= 1) {
+    const layout = rawMarkerLayout[idx];
+    const maxX = width - right - layout.labelWidth / 2;
+    layout.labelX = Math.min(layout.labelX, maxX);
+    if (idx < rawMarkerLayout.length - 1) {
+      const next = rawMarkerLayout[idx + 1];
+      const maxBeforeNext = next.labelX - next.labelWidth / 2 - layout.labelWidth / 2 - 14;
+      layout.labelX = Math.min(layout.labelX, maxBeforeNext);
+    }
+    layout.labelX = Math.max(left + layout.labelWidth / 2, layout.labelX);
+  }
+  const markerLayout = parsedEntries.map((entry, idx) => {
+    const raw = rawMarkerLayout[idx];
+    const x = raw?.x ?? xForDate(entry.date);
+    const labelX = raw?.labelX ?? x;
+    const levelIndex = idx % markerLevels.length;
+    const labelY = markerLevels[levelIndex];
+    const avatarY = labelY - 72;
+    return { entry, x, labelX, labelY, avatarY };
+  });
+  const markers = markerLayout.map(({ entry, x, labelX, labelY, avatarY }) => {
+    const connectorTop = Math.min(barY - 8, labelY + 54);
+    return `
+      <g>
+        <path d="M ${labelX.toFixed(1)} ${connectorTop} L ${labelX.toFixed(1)} ${barY - 22} L ${x.toFixed(1)} ${barY}" fill="none" stroke="#f8fafc" stroke-width="3" opacity="0.88" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="${labelX.toFixed(1)}" cy="${avatarY}" r="33" fill="${escapeHtml(entry.color)}" stroke="#f8fafc" stroke-width="3"/>
+        <circle cx="${labelX.toFixed(1)}" cy="${avatarY - 9}" r="10" fill="none" stroke="#f8fafc" stroke-width="4"/>
+        <path d="M ${labelX - 19} ${avatarY + 18} C ${labelX - 14} ${avatarY + 2}, ${labelX + 14} ${avatarY + 2}, ${labelX + 19} ${avatarY + 18}" fill="none" stroke="#f8fafc" stroke-width="4" stroke-linecap="round"/>
+        <text x="${labelX.toFixed(1)}" y="${labelY}" text-anchor="middle" fill="#f8fafc" font-size="28" font-weight="900">${escapeHtml(entry.gm_name)}</text>
+        <text x="${labelX.toFixed(1)}" y="${labelY + 34}" text-anchor="middle" fill="#f8fafc" font-size="22" font-weight="700" letter-spacing="1">${escapeHtml(formatGmTimelineDate(entry.start_date))}</text>
+      </g>
+    `;
+  }).join('');
+  const ticks = tickYears.map((year) => {
+    const x = xForDate(new Date(Date.UTC(year, 0, 1)));
+    return `
+      <g>
+        <line x1="${x.toFixed(1)}" y1="${timelineY - 28}" x2="${x.toFixed(1)}" y2="${timelineY + 20}" stroke="#f8fafc" stroke-width="2" stroke-dasharray="5 8" opacity="0.75"/>
+        <circle cx="${x.toFixed(1)}" cy="${timelineY + 28}" r="8" fill="#111827" stroke="#f8fafc" stroke-width="3"/>
+        <text x="${x.toFixed(1)}" y="${timelineY + 70}" text-anchor="middle" fill="#f8fafc" font-size="30" font-weight="900" letter-spacing="2">${year}</text>
+      </g>
+    `;
+  }).join('');
+  const buildings = Array.from({ length: 22 }, (_, idx) => {
+    const bw = 28 + (idx % 4) * 9;
+    const bh = 95 + (idx % 5) * 32;
+    const x = 28 + idx * 67;
+    const y = 360 - bh;
+    return `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="#f8fafc" opacity="${0.045 + (idx % 3) * 0.018}"/>`;
+  }).join('');
+
+  return `
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(team.name)} GM timeline">
+  <defs>
+    <radialGradient id="gmBgGlow" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="${escapeHtml(theme.primary)}" stop-opacity="0.22"/>
+      <stop offset="58%" stop-color="#111827" stop-opacity="0.84"/>
+      <stop offset="100%" stop-color="#020617" stop-opacity="1"/>
+    </radialGradient>
+    <linearGradient id="gmBarFrame" x1="0%" x2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.88"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.62"/>
+    </linearGradient>
+  </defs>
+  <rect width="1500" height="820" fill="#020617"/>
+  <rect width="1500" height="820" fill="url(#gmBgGlow)"/>
+  <g>${buildings}</g>
+  <text x="750" y="92" text-anchor="middle" fill="${escapeHtml(theme.primary)}" font-size="70" font-weight="900" letter-spacing="15">${escapeHtml(team.name)}</text>
+  <text x="750" y="148" text-anchor="middle" fill="#f8fafc" font-size="38" font-weight="900" letter-spacing="15">GENERAL MANAGERS TIMELINE</text>
+  <line x1="390" y1="188" x2="675" y2="188" stroke="${escapeHtml(theme.primary)}" stroke-width="3"/>
+  <line x1="825" y1="188" x2="1110" y2="188" stroke="${escapeHtml(theme.primary)}" stroke-width="3"/>
+  <image href="${escapeHtml(logoHref)}" x="710" y="158" width="80" height="80" opacity="0.98"/>
+  <text x="750" y="610" text-anchor="middle" fill="#f8fafc" font-size="360" font-weight="900" opacity="0.045">${escapeHtml(team.code || teamCode)}</text>
+  <rect x="${left}" y="${barY}" width="${width - left - right}" height="${barH}" rx="26" fill="#f8fafc" opacity="0.14"/>
+  <rect x="${left}" y="${barY}" width="${width - left - right}" height="${barH}" rx="26" fill="none" stroke="url(#gmBarFrame)" stroke-width="3"/>
+  ${segments}
+  <line x1="${left}" y1="${timelineY + 28}" x2="${width - right}" y2="${timelineY + 28}" stroke="#f8fafc" stroke-width="3"/>
+  ${ticks}
+  ${markers}
+  <text x="${left}" y="690" text-anchor="start" fill="${escapeHtml(theme.primary)}" font-size="26" font-weight="900" letter-spacing="2">${escapeHtml(formatGmTimelineDate(parsedEntries[0]?.start_date || ''))}</text>
+  <text x="${left}" y="720" text-anchor="start" fill="${escapeHtml(theme.primary)}" font-size="25" font-weight="900" letter-spacing="3">START</text>
+  <text x="${width - right}" y="690" text-anchor="end" fill="${escapeHtml(theme.primary)}" font-size="26" font-weight="900" letter-spacing="2">${escapeHtml(formatGmTimelineDate(endDate.toISOString().slice(0, 10)))}</text>
+  <text x="${width - right}" y="720" text-anchor="end" fill="${escapeHtml(theme.primary)}" font-size="25" font-weight="900" letter-spacing="3">PRESENT</text>
+  <text x="750" y="755" text-anchor="middle" fill="#f8fafc" font-size="18" letter-spacing="12" opacity="0.88">BUILDING THE FUTURE. TOGETHER.</text>
+  <line x1="520" y1="780" x2="690" y2="780" stroke="${escapeHtml(theme.primary)}" stroke-width="2"/>
+  <line x1="810" y1="780" x2="980" y2="780" stroke="${escapeHtml(theme.primary)}" stroke-width="2"/>
+  <text x="750" y="789" text-anchor="middle" fill="${escapeHtml(theme.primary)}" font-size="26" font-weight="900">${escapeHtml(team.code || teamCode)}</text>
+  <text x="34" y="790" fill="#cbd5e1" font-size="16" font-style="italic" opacity="0.86">All dates in DD/MM/YYYY</text>
+</svg>`.trim();
+}
+
+function ensureGmTimelineSection() {
+  let section = document.getElementById('gmTimelineSection');
+  if (section) return section;
+  const after = document.getElementById('importantFiguresSection');
+  if (!after?.parentElement) return null;
+  section = document.createElement('section');
+  section.id = 'gmTimelineSection';
+  section.className = 'gm-timeline-section section-hidden';
+  section.innerHTML = `
+    <h2>GM timeline</h2>
+    <div id="gmTimelinePreview" class="gm-timeline-preview"></div>
+  `;
+  after.insertAdjacentElement('afterend', section);
+  return section;
+}
+
+function renderGmTimelineSection() {
+  const section = ensureGmTimelineSection();
+  if (!section) return;
+  const preview = section.querySelector('#gmTimelinePreview');
+  const entries = teamGmTimelineEntries();
+  if (!entries.length) {
+    if (preview) preview.innerHTML = '';
+    section.classList.add('section-hidden');
+    return;
+  }
+  if (preview) preview.innerHTML = gmTimelineSvg(entries, state.teamCode);
+  syncTeamTabs();
+}
+
 function renderCapStatusPills(summary) {
   const wrap = document.getElementById('capStatusPills');
   if (!wrap) return;
@@ -2966,7 +3346,17 @@ function renderPlayers() {
   const playerHeader = document.querySelector('#playersTable thead th[data-sort-mode="player-cycle"]');
   if (playerHeader) playerHeader.dataset.label = `PLAYER (${rows.length})`;
   updateSortIndicators('playersTable', state.sort.players);
+  const showPositionGroups = shouldRenderRosterPositionGroups();
+  const positionCounts = rosterPositionCounts(rows);
+  let previousPositionKey = null;
   rows.forEach((p) => {
+    if (showPositionGroups) {
+      const positionKey = rosterPositionKey(p);
+      if (positionKey !== previousPositionKey) {
+        appendRosterPositionSeparator(tbody, positionKey, positionCounts[positionKey] || 0, 3 + seasons.length);
+        previousPositionKey = positionKey;
+      }
+    }
     const metaPayload = {
       position: p.position || '',
       rating: p.rating || '',
@@ -3435,6 +3825,7 @@ async function loadTeam(code) {
   renderAssets();
   renderPlayerRights();
   renderImportantFigures();
+  renderGmTimelineSection();
 }
 
 async function fetchTrackerRowsFallback() {
@@ -3505,6 +3896,29 @@ async function loadFreeAgents() {
   renderTeamStrip();
   renderMobileTeamGrid();
   renderFreeAgents();
+}
+
+async function loadDraftOrder() {
+  const res = await api('/api/draft-order');
+  state.draftOrder = {
+    draft_year: res.draft_year || currentSeasonStart() + 1,
+    draft_order: res.draft_order || [],
+  };
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('draft-order');
+  setPageHeading('Draft', `${state.draftOrder.draft_year} order of selection`);
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  renderDraftOrder();
 }
 
 function normalizeLocatorText(value) {
@@ -3836,6 +4250,7 @@ function setupMobileNav() {
   const closeBtn = document.getElementById('mobileSidebarCloseBtn');
   const backdrop = document.getElementById('mobileSidebarBackdrop');
   const trackerBtn = document.getElementById('mobileTrackerBtn');
+  const draftBtn = document.getElementById('mobileDraftBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
   const tradeMachineBtn = document.getElementById('mobileTradeMachineBtn');
   const mobileLogoutBtn = document.getElementById('mobileLogoutBtn');
@@ -3856,6 +4271,12 @@ function setupMobileNav() {
     trackerBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadTracker();
+    });
+  }
+  if (draftBtn) {
+    draftBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadDraftOrder();
     });
   }
   if (freeAgentsBtn) {
@@ -3906,6 +4327,9 @@ async function init() {
   });
   document.getElementById('trackerHomeBtn').addEventListener('click', async () => {
     await loadTracker();
+  });
+  document.getElementById('draftHomeBtn').addEventListener('click', async () => {
+    await loadDraftOrder();
   });
   document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
     await loadFreeAgents();

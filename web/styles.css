@@ -994,6 +994,151 @@ h1 {
 .trade-machine-section.section-hidden {
   display: none;
 }
+.draft-order-section {
+  display: grid;
+  gap: 14px;
+}
+.draft-order-board {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+.draft-order-round {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d6e0ec;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+}
+.draft-order-round h3 {
+  margin: 0;
+  padding: 12px 14px;
+  background: #e6edf6;
+  border-bottom: 2px solid #42526a;
+  color: #27364b;
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.draft-order-table-wrap {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.draft-order-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.draft-order-table th,
+.draft-order-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #dbe5f0;
+  text-align: left;
+  vertical-align: middle;
+}
+.draft-order-table th {
+  background: #f4f7fb;
+  color: #53657f;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.draft-order-table tbody tr:nth-child(even) td {
+  background: #f8fbff;
+}
+.draft-order-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.draft-order-table th:first-child,
+.draft-order-table td:first-child {
+  width: 76px;
+}
+.draft-order-number {
+  color: #0f172a;
+  font-size: 1.08rem;
+  font-weight: 900;
+}
+.draft-order-team,
+.draft-order-via {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+}
+.draft-order-team-logo,
+.draft-order-via-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid #dbe5f0;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f766e;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+.draft-order-via-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+.draft-order-team-logo img,
+.draft-order-via-logo img {
+  display: block;
+  max-width: 82%;
+  max-height: 82%;
+  object-fit: contain;
+}
+.draft-order-team-text {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.draft-order-team-text strong {
+  color: #0f766e;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.draft-order-team-text span {
+  max-width: 220px;
+  overflow: hidden;
+  color: #334155;
+  font-size: 0.88rem;
+  font-weight: 800;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.draft-order-via {
+  color: #53657f;
+  font-size: 0.84rem;
+  font-weight: 900;
+}
+.draft-order-empty {
+  color: #64748b;
+  font-weight: 800;
+  text-align: center;
+}
+.draft-order-admin-table input,
+.draft-order-admin-table select {
+  width: 100%;
+  min-width: 0;
+}
+.draft-order-admin-table th:last-child,
+.draft-order-admin-table td:last-child {
+  width: 104px;
+}
 .trade-machine-head {
   align-items: end;
 }
@@ -3045,10 +3190,63 @@ th {
 .guest-roster-section #playersTable .player-tags {
   gap: 4px;
 }
+.guest-roster-section #playersTable .player-tags .pos-pill,
+#rosterSection:not(.guest-roster-section) #playersTable .player-tags .pos-pill {
+  display: none;
+}
 .guest-roster-section #playersTable .pill {
   padding: 1px 7px;
   font-size: 0.68rem;
   line-height: 1.2;
+}
+.roster-position-row td {
+  padding: 8px 12px;
+  background:
+    linear-gradient(90deg, rgba(var(--team-primary-rgb), 0.14), rgba(var(--team-primary-rgb), 0.03)) !important;
+  border-top: 2px solid rgba(var(--team-primary-rgb), 0.24);
+  border-bottom: 2px solid rgba(var(--team-primary-rgb), 0.2);
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.roster-position-code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  margin-right: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(var(--team-primary-rgb), 0.9);
+  color: #ffffff;
+}
+
+.roster-position-name {
+  margin-right: 8px;
+}
+
+.roster-position-count {
+  color: #64748b;
+  font-size: 0.7rem;
+}
+
+.guest-roster-section #playersTable tbody tr.roster-position-row td {
+  position: static;
+  left: auto;
+  z-index: auto;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  height: 32px;
+  text-align: left;
+  box-shadow: none;
+}
+
+.guest-roster-section #playersTable tbody tr.roster-position-row + tr td {
+  border-top: none;
 }
 .guest-dead-contracts-section #deadContractsTable th:nth-child(1),
 .guest-dead-contracts-section #deadContractsTable td:nth-child(1) {
@@ -3857,6 +4055,131 @@ td.salary-option--nb .salary-pct {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+.gm-timeline-section {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.gm-timeline-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.gm-timeline-head h2 {
+  margin: 0 0 4px;
+  color: #0f172a;
+}
+
+.gm-timeline-head p {
+  max-width: 560px;
+  margin: 0;
+  color: #64748b;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+.gm-timeline-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.gm-timeline-controls label {
+  color: #475569;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.gm-timeline-controls select {
+  min-width: 190px;
+}
+
+.gm-timeline-table-wrap {
+  margin-top: 0;
+}
+
+.gm-timeline-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.gm-timeline-row {
+  background: #f8fafc;
+}
+
+.gm-timeline-table th,
+.gm-timeline-table td {
+  border-bottom: 1px solid #dbe3ee;
+  padding: 8px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.gm-timeline-table th {
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.gm-timeline-table input[type="text"],
+.gm-timeline-table input[type="date"] {
+  width: 100%;
+  min-width: 0;
+}
+
+.gm-timeline-row input[type="color"] {
+  width: 72px;
+  min-height: 36px;
+  padding: 3px;
+}
+.gm-timeline-empty {
+  padding: 12px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 800;
+}
+
+.gm-timeline-empty-cell {
+  padding: 14px;
+  color: #64748b;
+  font-weight: 800;
+  text-align: center;
+}
+
+.gm-timeline-status {
+  min-height: 20px;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+.gm-timeline-status--success {
+  color: #15803d;
+}
+.gm-timeline-status--error {
+  color: #b91c1c;
+}
+.gm-timeline-preview {
+  overflow: auto;
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  background: #020617;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.12);
+}
+.gm-timeline-preview svg {
+  display: block;
+  width: 100%;
+  min-width: 820px;
+  height: auto;
 }
 .team-apron-cap-toggle {
   display: inline-flex;
@@ -4816,6 +5139,31 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
     grid-template-columns: 1fr;
     gap: 8px;
   }
+  .draft-order-board {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .draft-order-round h3 {
+    padding: 10px 12px;
+    font-size: 0.9rem;
+  }
+  .draft-order-table th,
+  .draft-order-table td {
+    padding: 8px;
+  }
+  .draft-order-table th:first-child,
+  .draft-order-table td:first-child {
+    width: 54px;
+  }
+  .draft-order-team-text span {
+    max-width: 150px;
+  }
+  .draft-order-via {
+    gap: 6px;
+  }
+  .draft-order-admin-board {
+    gap: 14px;
+  }
   .team-summary-grid {
     gap: 10px;
   }
@@ -5457,6 +5805,19 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   }
   .trade-machine-checklist-grid {
     grid-template-columns: 1fr;
+  }
+  .gm-timeline-head,
+  .gm-timeline-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .gm-timeline-controls select,
+  .gm-timeline-controls button {
+    width: 100%;
+  }
+  .gm-timeline-table th,
+  .gm-timeline-table td {
+    padding: 7px;
   }
 }
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260601i">
+  <link rel="stylesheet" href="/styles.css?v=20260604c">
 </head>
 <body class="app-layout">
   <header>
@@ -19,6 +19,7 @@
       <div id="capStatusPills" class="top-status-wrap"></div>
       <div class="admin-nav-group admin-nav-main">
         <button id="trackerHomeBtn" class="sidebar-nav-item" type="button">Tracker</button>
+        <button id="draftHomeBtn" class="sidebar-nav-item" type="button">Draft</button>
         <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button">Free agents</button>
       </div>
       <button id="reloadBtn" class="sidebar-icon-btn" type="button" aria-label="Reload" title="Reload">↻</button>
@@ -49,6 +50,7 @@
       </div>
       <div class="mobile-sidebar-links">
         <button id="adminMobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Tracker</button>
+        <button id="adminMobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈">Draft</button>
         <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡">Admin Log</button>
         <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙">League Settings</button>
@@ -91,6 +93,7 @@
           <option value="">All Entities</option>
           <option value="player">player</option>
           <option value="free_agent">free_agent</option>
+          <option value="draft_order">draft_order</option>
           <option value="asset">asset</option>
           <option value="dead_contract">dead_contract</option>
           <option value="team">team</option>
@@ -161,6 +164,53 @@
           </thead>
           <tbody></tbody>
         </table>
+      </div>
+    </section>
+
+    <section id="draftOrderSection" class="draft-order-section draft-order-admin-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Draft</h2>
+          <div id="draftOrderSubtitle" class="section-subtitle"></div>
+        </div>
+        <div class="section-actions">
+          <button id="addDraftOrderFirstBtn" type="button">Add 1st-round pick</button>
+          <button id="addDraftOrderSecondBtn" type="button">Add 2nd-round pick</button>
+        </div>
+      </div>
+      <div id="draftOrderBoard" class="draft-order-board draft-order-admin-board">
+        <article class="draft-order-round">
+          <h3>1st Round</h3>
+          <div class="table-wrap draft-order-table-wrap">
+            <table id="draftOrderFirstTable" class="draft-order-table draft-order-admin-table">
+              <thead>
+                <tr>
+                  <th>Number</th>
+                  <th>Team that owns the pick</th>
+                  <th>Original pick</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="draft-order-round">
+          <h3>2nd Round</h3>
+          <div class="table-wrap draft-order-table-wrap">
+            <table id="draftOrderSecondTable" class="draft-order-table draft-order-admin-table">
+              <thead>
+                <tr>
+                  <th>Number</th>
+                  <th>Team that owns the pick</th>
+                  <th>Original pick</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
       </div>
     </section>
 
@@ -375,6 +425,36 @@
       <div id="rosterCountSection" class="roster-count-section"></div>
       <div id="importantFiguresAppendix" class="important-figures-appendix"></div>
       <div id="luxuryHistorySection" class="luxury-history-section"></div>
+    </section>
+
+    <section id="gmTimelineSection" class="gm-timeline-section">
+      <div class="section-head gm-timeline-head">
+        <div>
+          <h2>GM timeline</h2>
+          <p>Enter each GM stint start date for this franchise, then generate the public visual.</p>
+        </div>
+        <div class="section-actions gm-timeline-controls">
+          <button id="addGmTimelineRowBtn" type="button">Add GM</button>
+          <button id="saveGmTimelineBtn" type="button">Save timeline</button>
+          <button id="generateGmTimelineBtn" type="button">Generate visual</button>
+          <button id="downloadGmTimelineSvgBtn" type="button">Download SVG</button>
+        </div>
+      </div>
+      <div class="table-wrap gm-timeline-table-wrap">
+        <table class="gm-timeline-table">
+          <thead>
+            <tr>
+              <th>GM name</th>
+              <th>Start date</th>
+              <th>Color</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="gmTimelineRows"></tbody>
+        </table>
+      </div>
+      <div id="gmTimelineStatus" class="gm-timeline-status" aria-live="polite"></div>
+      <div id="gmTimelinePreview" class="gm-timeline-preview"></div>
     </section>
   </main>
 
@@ -649,6 +729,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260601d" defer></script>
+  <script src="/admin.js?v=20260604c" defer></script>
 </body>
 </html>
