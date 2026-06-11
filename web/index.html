@@ -5,20 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260604c">
+  <link rel="stylesheet" href="/styles.css?v=20260611b">
 </head>
 <body class="app-layout">
   <header>
     <button id="mobileMenuBtn" class="mobile-icon-btn" type="button" aria-label="Open navigation menu" title="Menu">☰</button>
     <div class="page-title-wrap">
-      <h1 id="pageTitle">ANBA League Viewer</h1>
-      <div id="pageSubtitle" class="page-subtitle section-hidden"></div>
+      <button id="mobilePrevTeamBtn" class="team-nav-btn mobile-team-nav-btn" type="button" aria-label="Previous team" title="Previous team" hidden>&lsaquo;</button>
+      <div class="page-title-text">
+        <h1 id="pageTitle">ANBA League Viewer</h1>
+        <div id="pageSubtitle" class="page-subtitle section-hidden"></div>
+      </div>
+      <button id="mobileNextTeamBtn" class="team-nav-btn mobile-team-nav-btn" type="button" aria-label="Next team" title="Next team" hidden>&rsaquo;</button>
     </div>
     <button id="mobileInfoBtn" class="mobile-icon-btn" type="button" aria-label="Team status information" title="Info" hidden>i</button>
     <div class="controls">
       <div id="capStatusPills" class="top-status-wrap"></div>
       <button id="openLocatorBtn" class="icon-only-btn" type="button" aria-label="Search players and draft picks" title="Search">Search</button>
       <button id="trackerHomeBtn" type="button">Tracker</button>
+      <button id="figuresHomeBtn" type="button">Cifras</button>
       <button id="draftHomeBtn" type="button">Draft</button>
       <button id="freeAgentsHomeBtn" type="button">Free agents</button>
       <button id="tradeMachineHomeBtn" type="button">Máquina de traspasos</button>
@@ -42,6 +47,7 @@
       </div>
       <div class="mobile-sidebar-links">
         <button id="mobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Clasificación</button>
+        <button id="mobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦">Cifras</button>
         <button id="mobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈">Draft</button>
         <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄">Máquina de traspasos</button>
@@ -107,13 +113,27 @@
   </div>
   <section class="team-strip-section">
     <div class="page-shell">
-      <div id="teamStrip" class="team-strip" aria-label="Team selector"></div>
+      <div class="team-strip-nav">
+        <button id="desktopPrevTeamBtn" class="team-nav-btn team-strip-nav-btn" type="button" aria-label="Previous team" title="Previous team" hidden>&lsaquo;</button>
+        <div id="teamStrip" class="team-strip" aria-label="Team selector"></div>
+        <button id="desktopNextTeamBtn" class="team-nav-btn team-strip-nav-btn" type="button" aria-label="Next team" title="Next team" hidden>&rsaquo;</button>
+      </div>
     </div>
   </section>
   <main class="page-shell">
     <section id="trackerSection">
       <h2>Tracker</h2>
-      <div class="table-wrap">
+      <nav id="trackerTabs" class="team-tabs tracker-tabs" role="tablist" aria-label="Tracker sections">
+        <button type="button" class="team-tab-btn tracker-tab-btn is-active" data-tracker-tab="general" role="tab" aria-selected="true">
+          <span class="team-tab-icon" aria-hidden="true">i</span>
+          <span>General Info</span>
+        </button>
+        <button type="button" class="team-tab-btn tracker-tab-btn" data-tracker-tab="economy" role="tab" aria-selected="false">
+          <span class="team-tab-icon" aria-hidden="true">▦</span>
+          <span>Economy</span>
+        </button>
+      </nav>
+      <div id="trackerGeneralPanel" class="tracker-tab-panel table-wrap">
         <table id="trackerTable">
           <thead>
             <tr>
@@ -122,6 +142,7 @@
               <th data-sort="gasto_total">GASTO total</th>
               <th data-sort="espacio_cap">Espacio CAP</th>
               <th data-sort="espacio_luxury">Espacio Luxury</th>
+              <th data-sort="luxury_tax">Luxury tax</th>
               <th data-sort="espacio_1er_apron">Espacio 1er apron</th>
               <th data-sort="espacio_2do_apron">Espacio 2do apron</th>
               <th data-sort="roster_standard_count">Std</th>
@@ -133,6 +154,42 @@
           <tbody></tbody>
         </table>
       </div>
+      <div id="trackerEconomyPanel" class="tracker-tab-panel section-hidden">
+        <div class="section-actions tracker-economy-toolbar">
+          <label class="season-view-control" for="trackerEconomySeasonSelect">
+            <span>Temporada</span>
+            <select id="trackerEconomySeasonSelect"></select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table id="trackerEconomyTable">
+            <thead>
+              <tr>
+                <th data-sort="team_code">Team</th>
+                <th data-sort="balance">Balance</th>
+                <th data-sort="revenue">Revenue</th>
+                <th data-sort="expenses">Expenses</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="figuresSection" class="section-hidden">
+      <div class="section-head figures-section-head">
+        <div>
+          <h2>Cifras</h2>
+        </div>
+        <div class="section-actions">
+          <label class="season-view-control" for="figuresSeasonSelect">
+            <span>Temporada</span>
+            <select id="figuresSeasonSelect"></select>
+          </label>
+        </div>
+      </div>
+      <div id="figuresBoard" class="figures-board"></div>
     </section>
 
     <section id="freeAgentsSection" class="section-hidden">
@@ -357,6 +414,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260604d" defer></script>
+  <script src="/guest.js?v=20260611a" defer></script>
 </body>
 </html>

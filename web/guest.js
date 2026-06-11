@@ -4,6 +4,8 @@ const MOVE_LIMIT_POST30 = 4;
 const state = {
   teams: [],
   trackerRows: [],
+  trackerEconomyRows: [],
+  trackerEconomySeasons: [],
   freeAgents: [],
   draftOrder: {
     draft_year: null,
@@ -26,9 +28,11 @@ const state = {
     roster_standard_offseason_max: 18,
     roster_two_way_min: 0,
     roster_two_way_max: 3,
+    free_agency_mode: false,
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
+    trackerEconomy: { key: 'balance', dir: 'desc' },
     players: { key: 'position', dir: 'asc' },
     dead_contracts: { key: 'label', dir: 'asc' },
     exceptions: { key: 'label', dir: 'asc' },
@@ -37,9 +41,12 @@ const state = {
   },
   ui: {
     viewMode: 'tracker',
+    activeTrackerTab: 'general',
     activeTeamTab: 'economy',
     rosterView: 'list',
     seasonViewStart: null,
+    figuresSeasonStart: null,
+    trackerEconomySeason: null,
     statusPills: [],
     mobileSidebarOpen: false,
     mobileInfoOpen: false,
@@ -73,6 +80,25 @@ const TRADE_MATCH_EXPANDED_BUFFER_FALLBACK = 8_527_000;
 const TRADE_PICK_ACTION_SEND = 'send_pick';
 const TRADE_PICK_ACTION_SWAP = 'swap_rights';
 const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
+const TAXPAYER_MLE_BASE_AMOUNT = 5_500_007;
+const TAXPAYER_MLE_BASE_CAP = 154_647_000;
+const MINIMUM_SALARY_BASE_SEASON = 2025;
+const MINIMUM_SALARY_BASE_CAP = 154_647_000;
+const TWO_WAY_MINIMUM_BASE = 636_435;
+const MINIMUM_SALARY_CONTRACT_YEARS = [1, 2, 3, 4, 5];
+const MINIMUM_SALARY_BASE_ROWS = [
+  { experience: 0, label: '0', salaries: [1_272_870, null, null, null, null] },
+  { experience: 1, label: '1', salaries: [2_048_494, 2_150_917, null, null, null] },
+  { experience: 2, label: '2', salaries: [2_296_274, 2_411_090, 2_525_901, null, null] },
+  { experience: 3, label: '3', salaries: [2_378_870, 2_497_812, 2_616_754, 2_735_698, null] },
+  { experience: 4, label: '4', salaries: [2_461_463, 2_584_539, 2_707_612, 2_830_685, 2_953_760] },
+  { experience: 5, label: '5', salaries: [2_667_947, 2_801_346, 2_934_742, 3_068_140, 3_201_538] },
+  { experience: 6, label: '6', salaries: [2_874_436, 3_018_158, 3_161_876, 3_305_598, 3_449_321] },
+  { experience: 7, label: '7', salaries: [3_080_921, 3_234_968, 3_389_014, 3_543_059, 3_697_107] },
+  { experience: 8, label: '8', salaries: [3_287_409, 3_451_779, 3_616_151, 3_780_524, 3_944_896] },
+  { experience: 9, label: '9', salaries: [3_493_898, 3_659_836, 3_825_773, 3_991_710, 4_157_649] },
+  { experience: 10, label: '10+', salaries: [3_634_153, 3_815_861, 3_997_570, 4_179_277, 4_360_985] },
+];
 const TEAM_TABS = [
   {
     id: 'economy',
@@ -175,13 +201,84 @@ function salaryInfoHtml(messages) {
   `;
 }
 
+function clearSalaryInfoPopover(btn) {
+  const pop = btn?.querySelector?.('.salary-info-pop');
+  if (!pop) return;
+  pop.classList.remove('is-fixed');
+  pop.style.left = '';
+  pop.style.top = '';
+  pop.style.visibility = '';
+}
+
+function positionSalaryInfoPopover(btn) {
+  const pop = btn?.querySelector?.('.salary-info-pop');
+  if (!pop) return;
+  pop.classList.add('is-fixed');
+  pop.style.visibility = 'hidden';
+  pop.style.left = '0px';
+  pop.style.top = '0px';
+
+  const btnRect = btn.getBoundingClientRect();
+  const popRect = pop.getBoundingClientRect();
+  const gap = 8;
+  const width = popRect.width || 240;
+  const height = popRect.height || 44;
+  const maxLeft = Math.max(8, window.innerWidth - width - 8);
+  let left = btnRect.left + (btnRect.width / 2) - (width / 2);
+  left = Math.max(8, Math.min(left, maxLeft));
+  let top = btnRect.bottom + gap;
+  if (top + height > window.innerHeight - 8) {
+    top = btnRect.top - height - gap;
+  }
+  top = Math.max(8, top);
+
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  pop.style.visibility = '';
+}
+
+function closeSalaryInfoPopovers(except = null) {
+  document.querySelectorAll('.salary-info-button.show-detail').forEach((btn) => {
+    if (btn === except) return;
+    btn.classList.remove('show-detail');
+    clearSalaryInfoPopover(btn);
+  });
+}
+
+function setupSalaryInfoGlobalHandlers() {
+  if (window.__salaryInfoGlobalHandlersBound) return;
+  window.__salaryInfoGlobalHandlersBound = true;
+  document.addEventListener('click', () => closeSalaryInfoPopovers());
+  const repositionActive = () => {
+    document.querySelectorAll('.salary-info-button.show-detail').forEach(positionSalaryInfoPopover);
+  };
+  window.addEventListener('resize', repositionActive);
+  window.addEventListener('scroll', repositionActive, true);
+}
+
 function bindSalaryInfoToggles(root) {
   if (!root) return;
+  setupSalaryInfoGlobalHandlers();
   root.querySelectorAll('.salary-info-button').forEach((btn) => {
+    btn.addEventListener('mouseenter', () => positionSalaryInfoPopover(btn));
+    btn.addEventListener('focus', () => positionSalaryInfoPopover(btn));
+    btn.addEventListener('mouseleave', () => {
+      if (!btn.classList.contains('show-detail')) clearSalaryInfoPopover(btn);
+    });
+    btn.addEventListener('blur', () => {
+      if (!btn.classList.contains('show-detail')) clearSalaryInfoPopover(btn);
+    });
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      btn.classList.toggle('show-detail');
+      const willShow = !btn.classList.contains('show-detail');
+      closeSalaryInfoPopovers(btn);
+      btn.classList.toggle('show-detail', willShow);
+      if (willShow) {
+        positionSalaryInfoPopover(btn);
+      } else {
+        clearSalaryInfoPopover(btn);
+      }
     });
   });
 }
@@ -285,20 +382,72 @@ function currentSeasonStart() {
   return Number.isInteger(currentYear) ? currentYear : 2025;
 }
 
+function freeAgencyModeActive() {
+  return boolValue(state.settings.free_agency_mode);
+}
+
+function defaultSeasonViewStart() {
+  const currentYear = currentSeasonStart();
+  return freeAgencyModeActive() ? currentYear + 1 : currentYear;
+}
+
 function availableSeasonViewStarts() {
   const currentYear = currentSeasonStart();
   return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => currentYear + idx);
 }
 
 function normalizeSeasonViewStart(value) {
-  const requested = Number(value);
   const starts = availableSeasonViewStarts();
-  return starts.includes(requested) ? requested : starts[0];
+  if (value === null || value === undefined || value === '') {
+    const defaultStart = defaultSeasonViewStart();
+    return starts.includes(defaultStart) ? defaultStart : starts[0];
+  }
+  const requested = Number(value);
+  if (starts.includes(requested)) return requested;
+  const defaultStart = defaultSeasonViewStart();
+  return starts.includes(defaultStart) ? defaultStart : starts[0];
 }
 
 function selectedSeasonStart() {
   const normalized = normalizeSeasonViewStart(state.ui.seasonViewStart);
   state.ui.seasonViewStart = normalized;
+  return normalized;
+}
+
+function normalizeFiguresSeasonStart(value) {
+  const starts = availableSeasonViewStarts();
+  const requested = Number(value);
+  return starts.includes(requested) ? requested : starts[0];
+}
+
+function selectedFiguresSeasonStart() {
+  const normalized = normalizeFiguresSeasonStart(state.ui.figuresSeasonStart ?? currentSeasonStart());
+  state.ui.figuresSeasonStart = normalized;
+  return normalized;
+}
+
+function trackerEconomySeasonOptions() {
+  const seasons = new Set(
+    (state.trackerEconomySeasons || [])
+      .map((season) => Number(season))
+      .filter((season) => Number.isInteger(season) && season >= 2000 && season <= 2100)
+  );
+  seasons.add(currentSeasonStart());
+  seasons.add(2025);
+  return Array.from(seasons).sort((a, b) => a - b);
+}
+
+function normalizeTrackerEconomySeason(value) {
+  const options = trackerEconomySeasonOptions();
+  const requested = Number(value);
+  if (options.includes(requested)) return requested;
+  const current = currentSeasonStart();
+  return options.includes(current) ? current : (options[0] || 2025);
+}
+
+function selectedTrackerEconomySeason() {
+  const normalized = normalizeTrackerEconomySeason(state.ui.trackerEconomySeason);
+  state.ui.trackerEconomySeason = normalized;
   return normalized;
 }
 
@@ -337,6 +486,45 @@ function syncTeamTabs() {
       section.classList.toggle('section-hidden', !showTeam || tab.id !== active || forceHidden);
     });
   });
+}
+
+function activeTrackerTab() {
+  return ['general', 'economy'].includes(state.ui.activeTrackerTab)
+    ? state.ui.activeTrackerTab
+    : 'general';
+}
+
+function syncTrackerTabs() {
+  const showTracker = state.ui.viewMode === 'tracker';
+  const active = activeTrackerTab();
+  const tabs = document.getElementById('trackerTabs');
+  if (tabs) tabs.classList.toggle('section-hidden', !showTracker);
+  document.querySelectorAll('[data-tracker-tab]').forEach((btn) => {
+    const isActive = btn.dataset.trackerTab === active;
+    btn.classList.toggle('is-active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+  const generalPanel = document.getElementById('trackerGeneralPanel');
+  const economyPanel = document.getElementById('trackerEconomyPanel');
+  if (generalPanel) generalPanel.classList.toggle('section-hidden', !showTracker || active !== 'general');
+  if (economyPanel) economyPanel.classList.toggle('section-hidden', !showTracker || active !== 'economy');
+}
+
+function setTrackerTab(tabId) {
+  state.ui.activeTrackerTab = ['general', 'economy'].includes(tabId) ? tabId : 'general';
+  syncTrackerTabs();
+}
+
+function setupTrackerTabs() {
+  document.querySelectorAll('[data-tracker-tab]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      setTrackerTab(btn.dataset.trackerTab);
+      if (state.ui.activeTrackerTab === 'economy') {
+        await loadTrackerEconomy();
+      }
+    });
+  });
+  syncTrackerTabs();
 }
 
 function setTeamTab(tabId) {
@@ -492,6 +680,8 @@ function hasSpecialTextTag(obj, season) {
 }
 
 function hasSeasonCellValue(obj, season) {
+  const hold = capHoldInfo(obj, season);
+  if (hold.displayable) return true;
   const text = String(obj[`salary_${season}_text`] ?? '').trim();
   if (text) return true;
   const rawNum = obj[`salary_${season}_num`];
@@ -524,7 +714,39 @@ function filteredPlayers(players) {
   });
 }
 
+function playerHasVisibleCapHold(player) {
+  return visibleSeasonYears().some((season) => capHoldInfo(player, season).displayable);
+}
+
 function salaryCellHtml(obj, season, showEmptyYears = true) {
+  const capHold = capHoldInfo(obj, season);
+  if (capHold.displayable) {
+    const seasonCap = capForSeason(season);
+    const capHoldAmount = Number(capHold.amount || 0);
+    const qoValue = Number(capHold.displayAmount || 0);
+    const pct = capHoldAmount > 0 && seasonCap > 0
+      ? `${((capHoldAmount / seasonCap) * 100).toFixed(1)}%`
+      : '';
+    const main = capHoldAmount > 0 ? formatDots(capHoldAmount) : escapeHtml(capHold.label || 'Hold TBD');
+    const message = capHold.message || 'Cap hold pending';
+    const qoValueHtml = qoValue > 0
+      ? `<span class="salary-cap-hold-qo-value">Valor QO = ${formatDots(qoValue)}</span>`
+      : '';
+    return `
+      <div class="salary-cap-hold-cell">
+        <div class="salary-chip salary-chip--cap-hold ${capHold.pending ? 'salary-chip--cap-hold-pending' : ''}">
+          <span class="salary-chip-main">${main}</span>
+          ${pct ? `<span class="salary-chip-pct">${pct}</span>` : ''}
+        </div>
+        <div class="salary-cap-hold-side">
+          <span class="salary-cap-hold-ref">${escapeHtml(capHold.shortLabel || 'Cap hold')}</span>
+          ${salaryInfoHtml([message])}
+          ${qoValueHtml}
+        </div>
+      </div>
+    `;
+  }
+
   const text = obj[`salary_${season}_text`];
   const num = obj[`salary_${season}_num`];
   const option = obj[`option_${season}`];
@@ -533,7 +755,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   const textTagCode = String(text || '').trim().toUpperCase();
   const optionCode = String(option || '').trim().toUpperCase();
   const hideOptionTag = ['FB', 'EB', 'NB'].includes(textTagCode) || ['FB', 'EB', 'NB'].includes(optionCode);
-  const cap = Number(state.settings.salary_cap_2025 || 154647000);
+  const cap = capForSeason(season) || 154647000;
   const isProvisional = playerSeasonIsProvisional(obj, season);
   const isPartiallyGuaranteed = playerSeasonIsPartiallyGuaranteed(obj, season);
   const hasContractNote = playerSeasonHasContractNote(obj, season);
@@ -644,6 +866,172 @@ function salaryNumericValue(row, season) {
   return parseAmountLike(row?.[`salary_${season}_text`]) || 0;
 }
 
+function seasonSalaryTextCode(row, season) {
+  return String(row?.[`salary_${season}_text`] || '').trim().toUpperCase();
+}
+
+function seasonOptionCode(row, season) {
+  return String(row?.[`option_${season}`] || '').trim().toUpperCase();
+}
+
+function hasNumericSeasonSalary(row, season) {
+  const direct = row?.[`salary_${season}_num`];
+  if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) return true;
+  return parseAmountLike(row?.[`salary_${season}_text`]) !== null;
+}
+
+function isRestrictedRightsPlayer(player) {
+  const rights = String(player?.bird_rights || '').trim().toUpperCase();
+  return rights === 'R' || rights.startsWith('R(');
+}
+
+function capHoldTargetSeason() {
+  return currentSeasonStart() + 1;
+}
+
+function pendingCapHold(shortLabel, message, options = {}) {
+  const label = String(shortLabel || '').toUpperCase().startsWith('QO') ? 'QO TBD' : 'Hold TBD';
+  return {
+    active: true,
+    displayable: true,
+    amount: 0,
+    displayAmount: options.displayAmount,
+    pending: true,
+    label,
+    shortLabel,
+    message,
+  };
+}
+
+function calculatedCapHold(amount, shortLabel, message, options = {}) {
+  return {
+    active: true,
+    displayable: true,
+    amount: Math.round(Number(amount || 0)),
+    displayAmount: options.displayAmount,
+    pending: false,
+    label: 'Cap hold',
+    shortLabel,
+    message,
+  };
+}
+
+function birdCapHoldInfo(player, season, code) {
+  const previousSalary = salaryNumericValue(player, season - 1);
+  if (!previousSalary || previousSalary <= 0) {
+    return pendingCapHold(`${code} hold`, 'Cap hold pendiente: falta salario anterior.');
+  }
+  if (code === 'NB') {
+    const rights = String(player?.bird_rights || '').trim().toUpperCase();
+    if (rights === 'MIN' || rights === 'TW' || salaryLooksLikeMinimum(previousSalary, season - 1)) {
+      return calculatedCapHold(
+        minimumSalaryForSeason(season, 2, 1),
+        'NB hold',
+        'Cap hold Non-Bird mínimo: mínimo de veterano de dos años.',
+      );
+    }
+    return calculatedCapHold(previousSalary * 1.2, 'NB hold', 'Cap hold Non-Bird: 120% del salario anterior.');
+  }
+  if (code === 'EB') {
+    return calculatedCapHold(previousSalary * 1.3, 'EB hold', 'Cap hold Early Bird: 130% del salario anterior.');
+  }
+  if (code === 'FB') {
+    const averageSalary = averageSalaryForSeason(season - 1);
+    if (!averageSalary) {
+      return pendingCapHold('FB hold', 'Cap hold Full Bird pendiente: falta salario medio de la liga.');
+    }
+    const multiplier = previousSalary < averageSalary ? 1.9 : 1.5;
+    return calculatedCapHold(
+      previousSalary * multiplier,
+      'FB hold',
+      `Cap hold Full Bird: ${Math.round(multiplier * 100)}% del salario anterior.`,
+    );
+  }
+  return null;
+}
+
+function capHoldInfo(player, season) {
+  if (!freeAgencyModeActive() || Number(season) !== capHoldTargetSeason()) {
+    return { active: false, displayable: false, amount: 0 };
+  }
+
+  const textCode = seasonSalaryTextCode(player, season);
+  const optionCode = seasonOptionCode(player, season);
+  const isQualifyingOffer = textCode === 'QO' || optionCode === 'QO';
+  const birdCode = ['NB', 'EB', 'FB'].includes(textCode)
+    ? textCode
+    : (['NB', 'EB', 'FB'].includes(optionCode) ? optionCode : '');
+  const qualifyingOfferValue = isQualifyingOffer ? salaryNumericValue(player, season) : 0;
+
+  if (!isQualifyingOffer && hasNumericSeasonSalary(player, season)) {
+    return { active: false, displayable: false, amount: 0 };
+  }
+
+  if (isTwoWayPlayer(player)) {
+    return calculatedCapHold(
+      minimumSalaryForSeason(season, 1, 1),
+      'TW hold',
+      'Cap hold two-way: mínimo de veterano de un año.',
+    );
+  }
+
+  if (isQualifyingOffer && isRestrictedRightsPlayer(player)) {
+    const previousSalary = salaryNumericValue(player, season - 1);
+    const averageSalary = averageSalaryForSeason(season - 1);
+    if (!previousSalary || previousSalary <= 0) {
+      return pendingCapHold(
+        'QO hold',
+        'Cap hold QO pendiente: falta salario anterior.',
+        { displayAmount: qualifyingOfferValue || undefined },
+      );
+    }
+    if (!averageSalary) {
+      return pendingCapHold(
+        'QO hold',
+        'Cap hold QO pendiente: falta salario medio de la liga para aplicar 300% o 250%.',
+        { displayAmount: qualifyingOfferValue || undefined },
+      );
+    }
+    const multiplier = previousSalary < averageSalary ? 3 : 2.5;
+    const capHoldAmount = Math.round(previousSalary * multiplier);
+    const details = [
+      `Cap hold QO: ${Math.round(multiplier * 100)}% del salario anterior.`,
+      qualifyingOfferValue > 0 ? `QO visible: ${formatDots(qualifyingOfferValue)}.` : '',
+      `Cuenta CAP: ${formatDots(capHoldAmount)}.`,
+    ].filter(Boolean).join(' ');
+    return calculatedCapHold(
+      capHoldAmount,
+      'QO hold',
+      details,
+      { displayAmount: qualifyingOfferValue || undefined },
+    );
+  }
+
+  if (birdCode) {
+    const info = birdCapHoldInfo(player, season, birdCode);
+    if (info) return info;
+  }
+
+  if (isQualifyingOffer) {
+    return pendingCapHold('QO hold', 'Cap hold QO pendiente: falta tipo Bird/NB/EB/FB para calcularlo.');
+  }
+
+  return { active: false, displayable: false, amount: 0 };
+}
+
+function salaryDisplayNumericValue(row, season) {
+  const hold = capHoldInfo(row, season);
+  if (hold.displayable && hold.amount > 0) return hold.amount;
+  return salaryNumericValue(row, season);
+}
+
+function playerCapCountValue(player, season) {
+  const hold = capHoldInfo(player, season);
+  if (hold.displayable && hold.amount > 0) return hold.amount;
+  if (isTwoWayPlayer(player)) return 0;
+  return salaryNumericValue(player, season);
+}
+
 function amountNumericValue(row) {
   const direct = row?.amount_num;
   if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) {
@@ -738,6 +1126,18 @@ function trackerSpaceValueHtml(value) {
   return `<span class="tracker-space-value ${className}">${formatMoneyDots(numeric)}</span>`;
 }
 
+function trackerLuxuryTaxValueHtml(value) {
+  const numeric = Number(value || 0);
+  const className = numeric > 0 ? 'is-negative' : 'is-neutral';
+  return `<span class="tracker-tax-value ${className}">${formatMoneyDots(numeric)}</span>`;
+}
+
+function trackerEconomyValueHtml(value) {
+  const numeric = Number(value || 0);
+  const className = numeric < 0 ? 'is-negative' : numeric > 0 ? 'is-positive' : 'is-neutral';
+  return `<span class="tracker-space-value ${className}">${formatMoneyDots(numeric)}</span>`;
+}
+
 function isTwoWayDeadContract(dead) {
   return String(dead?.dead_type || '').trim().toLowerCase().replaceAll('-', '_') === 'two_way';
 }
@@ -810,9 +1210,7 @@ function teamSeasonBalances(data, season) {
   const players = data?.players || [];
   const deadContracts = data?.dead_contracts || [];
   const playerTotal = players.reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
-  const capPlayerTotal = players
-    .filter((player) => !isTwoWayPlayer(player))
-    .reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
+  const capPlayerTotal = players.reduce((sum, player) => sum + playerCapCountValue(player, season), 0);
   const normalDeadCapTotal = deadContracts
     .filter((dead) => !isTwoWayDeadContract(dead) && !deadContractExcludedFromCap(dead))
     .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
@@ -821,8 +1219,8 @@ function teamSeasonBalances(data, season) {
     .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
   const capTotal = capPlayerTotal + normalDeadCapTotal;
   const gastoTotal = playerTotal + deadGastoTotal;
-  const salaryCap = Number(state.settings.salary_cap_2025 || 0);
-  const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215 || 0);
+  const salaryCap = capForSeason(season);
+  const luxuryCap = luxuryCapForSeason(season);
   const luxuryOverage = Math.max(0, capTotal - luxuryCap);
   return {
     cap_total: capTotal,
@@ -834,6 +1232,254 @@ function teamSeasonBalances(data, season) {
 
 function seasonBalances(season) {
   return teamSeasonBalances(state.teamData, season);
+}
+
+function displayBalanceSeason() {
+  return state.ui.viewMode === 'team' ? selectedSeasonStart() : defaultSeasonViewStart();
+}
+
+function summaryForBalanceSeason(data, season = displayBalanceSeason()) {
+  const base = data?.summary || {};
+  const balances = teamSeasonBalances(data, season);
+  const salaryCap = capForSeason(season) || Number(base.salary_cap_2025 || 0);
+  const luxuryCap = luxuryCapForSeason(season);
+  const firstApron = firstApronForSeason(season) || Number(base.first_apron || 0);
+  const secondApron = secondApronForSeason(season) || Number(base.second_apron || 0);
+  return {
+    ...base,
+    current_year: season,
+    cap_figure: balances.cap_total,
+    payroll: balances.gasto_total,
+    room_to_cap: salaryCap - balances.cap_total,
+    room_to_luxury: luxuryCap - balances.cap_total,
+    room_to_first_apron: firstApron - balances.cap_total,
+    room_to_second_apron: secondApron - balances.cap_total,
+  };
+}
+
+function capForSeason(season) {
+  const direct = Number(state.settings[`salary_cap_${season}`]);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  return Number(state.settings.salary_cap_2025 || 0);
+}
+
+function firstApronForSeason(season) {
+  const direct = Number(state.settings[`first_apron_${season}`]);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  return Number(state.settings.first_apron || 0);
+}
+
+function secondApronForSeason(season) {
+  const direct = Number(state.settings[`second_apron_${season}`]);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  return Number(state.settings.second_apron || 0);
+}
+
+function luxuryCapForSeason(season) {
+  return capForSeason(season) * 1.215;
+}
+
+function cashLimitForSeason(season) {
+  return capForSeason(season) * 0.0515;
+}
+
+function averageSalaryForSeason(season) {
+  const direct = Number(state.settings[`average_salary_${season}`]);
+  return Number.isFinite(direct) && direct > 0 ? direct : 0;
+}
+
+function taxpayerMidLevelForSeason(season) {
+  const cap = capForSeason(season);
+  if (!cap) return 0;
+  return TAXPAYER_MLE_BASE_AMOUNT * (cap / TAXPAYER_MLE_BASE_CAP);
+}
+
+function minimumSalaryScaleForSeason(season) {
+  const cap = capForSeason(season);
+  if (!cap) return 1;
+  return cap / MINIMUM_SALARY_BASE_CAP;
+}
+
+function scaledMinimumSalary(value, season) {
+  if (value === null || value === undefined) return null;
+  return Math.round(Number(value) * minimumSalaryScaleForSeason(season));
+}
+
+function twoWayMinimumSalaryForSeason(season) {
+  return scaledMinimumSalary(TWO_WAY_MINIMUM_BASE, season);
+}
+
+function minimumSalaryForSeason(season, experienceYears, contractYear = 1) {
+  const cappedExperience = Math.max(0, Math.min(10, Number(experienceYears || 0)));
+  const row = MINIMUM_SALARY_BASE_ROWS.find((item) => item.experience === cappedExperience);
+  if (!row) return null;
+  const yearIndex = Math.max(0, Math.min(MINIMUM_SALARY_CONTRACT_YEARS.length - 1, Number(contractYear || 1) - 1));
+  return scaledMinimumSalary(row.salaries[yearIndex], season);
+}
+
+function minimumSalaryValuesForSeason(season) {
+  const values = [twoWayMinimumSalaryForSeason(season)];
+  MINIMUM_SALARY_BASE_ROWS.forEach((row) => {
+    row.salaries.forEach((salary) => {
+      const value = scaledMinimumSalary(salary, season);
+      if (value) values.push(value);
+    });
+  });
+  return values;
+}
+
+function salaryLooksLikeMinimum(amount, season) {
+  const numeric = Math.round(Number(amount || 0));
+  if (!numeric) return false;
+  return minimumSalaryValuesForSeason(season).some((minimum) => Math.abs(numeric - minimum) <= 2);
+}
+
+function figuresSeasonYears() {
+  return availableSeasonViewStarts();
+}
+
+function maximumSalaryRows() {
+  return [
+    { label: 'Salario máximo 0-6 años', value: (season) => capForSeason(season) * 0.25 },
+    { label: 'Salario máximo 7-9 años', value: (season) => capForSeason(season) * 0.30 },
+    { label: 'Salario máximo 10+ años', value: (season) => capForSeason(season) * 0.35 },
+  ];
+}
+
+function exceptionRows() {
+  return [
+    { label: 'Mid-Level Exception', value: (season) => capForSeason(season) * 0.0912 },
+    { label: 'Room Mid-Level Exception', value: (season) => capForSeason(season) * 0.05678 },
+    { label: 'Bi-Annual Exception', value: (season) => capForSeason(season) * 0.0332 },
+    { label: 'Tax-Payer Mid-Level Exception', value: taxpayerMidLevelForSeason },
+  ];
+}
+
+function capLimitRows() {
+  return [
+    { label: 'Salary cap', value: capForSeason },
+    { label: 'Luxury cap', value: luxuryCapForSeason },
+    { label: '1er Apron', value: firstApronForSeason },
+    { label: '2do Apron', value: secondApronForSeason },
+    { label: 'Cash máximo traspasable', value: cashLimitForSeason },
+  ];
+}
+
+function averageSalaryRows() {
+  return [
+    { label: 'Salario medio de la liga', value: (season) => averageSalaryForSeason(season) || null },
+  ];
+}
+
+function figureValueHtml(row, season) {
+  const value = row.value(season);
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+    return '<span class="figures-pending">Pendiente</span>';
+  }
+  return `<span>${formatMoneyDots(value)}</span>`;
+}
+
+function figuresTableHtml(title, rows, seasons, description = '') {
+  const currentYear = currentSeasonStart();
+  return `
+    <section class="figures-group">
+      <div class="figures-group-head">
+        <h3>${escapeHtml(title)}</h3>
+        ${description ? `<p>${escapeHtml(description)}</p>` : ''}
+      </div>
+      <div class="table-wrap figures-table-wrap">
+      <table class="figures-table">
+        <thead>
+          <tr>
+            <th>Cifra</th>
+            ${seasons.map((season) => `
+              <th class="${season === currentYear ? 'figures-current-season' : ''}">
+                ${seasonSlashLabel(season)}
+                ${season === currentYear ? '<span>actual</span>' : ''}
+              </th>
+            `).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              <th>${escapeHtml(row.label)}</th>
+              ${seasons.map((season) => `<td>${figureValueHtml(row, season)}</td>`).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    </section>
+  `;
+}
+
+function minimumSalaryTableHtml(season) {
+  const currentYear = currentSeasonStart();
+  return `
+    <article class="minimum-salary-season ${season === currentYear ? 'is-current-season' : ''}">
+      <div class="minimum-salary-season-head">
+        <h4>
+          ${seasonSlashLabel(season)}
+          ${season === currentYear ? '<span>actual</span>' : ''}
+        </h4>
+        <span class="minimum-two-way">Two Way ${formatMoneyDots(twoWayMinimumSalaryForSeason(season))}</span>
+      </div>
+      <div class="table-wrap minimum-salary-table-wrap">
+        <table class="figures-table minimum-salary-table">
+          <thead>
+            <tr>
+              <th>Años exp</th>
+              ${MINIMUM_SALARY_CONTRACT_YEARS.map((year) => `<th>Año ${year}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${MINIMUM_SALARY_BASE_ROWS.map((row) => `
+              <tr>
+                <th>${escapeHtml(row.label)}</th>
+                ${row.salaries.map((salary) => {
+                  const value = scaledMinimumSalary(salary, season);
+                  return `<td class="${value ? '' : 'figures-empty-cell'}">${value ? formatMoneyDots(value) : ''}</td>`;
+                }).join('')}
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function minimumSalarySectionHtml(seasons) {
+  const selectedSeason = selectedFiguresSeasonStart();
+  return `
+    <section class="figures-group minimum-salary-group">
+      <div class="figures-group-head">
+        <h3>Salarios mínimos</h3>
+        <p>Base 2025/26 escalada por el crecimiento del Salary Cap.</p>
+      </div>
+      <div class="minimum-salary-grid">
+        ${minimumSalaryTableHtml(selectedSeason)}
+      </div>
+    </section>
+  `;
+}
+
+function renderFigures() {
+  const board = document.getElementById('figuresBoard');
+  if (!board) return;
+  const seasons = figuresSeasonYears();
+  renderFiguresSeasonControl();
+  board.innerHTML = `
+    <div class="figures-note">
+      Las cifras derivadas se calculan desde el Salary Cap configurado por temporada. Los mínimos parten de la tabla 2025/26 y escalan con el crecimiento del cap.
+    </div>
+    ${figuresTableHtml('Salarios máximos', maximumSalaryRows(), seasons)}
+    ${figuresTableHtml('Excepciones', exceptionRows(), seasons)}
+    ${figuresTableHtml('Límites de cap, luxury, aprons y cash', capLimitRows(), seasons)}
+    ${minimumSalarySectionHtml(seasons)}
+    ${figuresTableHtml('Salario medio', averageSalaryRows(), seasons)}
+  `;
 }
 
 function tradeMachineSeasonStart() {
@@ -1122,13 +1768,14 @@ function tradeMachineTeamSelectHtml(code, index) {
 }
 
 function tradeMachineThresholds() {
-  const salaryCap = Number(state.settings.salary_cap_2025 || 0);
-  const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215 || 0);
+  const season = tradeMachineSeasonStart();
+  const salaryCap = capForSeason(season);
+  const luxuryCap = luxuryCapForSeason(season);
   return {
     salaryCap,
     luxuryCap,
-    firstApron: Number(state.settings.first_apron || 0),
-    secondApron: Number(state.settings.second_apron || 0),
+    firstApron: firstApronForSeason(season),
+    secondApron: secondApronForSeason(season),
   };
 }
 
@@ -1429,7 +2076,7 @@ function validateTradeMachine() {
     const salaryIssue = tradeMachineSalaryMatchIssue(code, flow);
     if (salaryIssue) issues.push(salaryIssue);
     tradeMachineRosterCountIssues(code, flow).forEach((issue) => issues.push(issue));
-    const secondApron = Number(state.settings.second_apron || 0);
+    const secondApron = secondApronForSeason(tradeMachineSeasonStart());
     const beforeApronAccount = Number(flow.beforeApronAccount ?? flow.beforeCap ?? 0);
     const postApronAccount = Number(flow.postApronAccount ?? flow.postCap ?? 0);
     if (
@@ -2188,6 +2835,21 @@ function setupSorting() {
     });
   });
 
+  document.querySelectorAll('#trackerEconomyTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.trackerEconomy;
+      state.sort.trackerEconomy = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderTrackerEconomy();
+      updateSortIndicators('trackerEconomyTable', state.sort.trackerEconomy);
+    });
+  });
+
   document.querySelectorAll('#playersTable thead th[data-sort]').forEach((th) => {
     if (!th.dataset.label) th.dataset.label = th.textContent.trim();
     th.classList.add('sortable');
@@ -2311,6 +2973,66 @@ function setPageHeading(title, subtitle = '') {
   subtitleEl.classList.toggle('section-hidden', !value);
 }
 
+function currentTeamIndex() {
+  const code = String(state.teamCode || '').trim().toUpperCase();
+  if (!code) return -1;
+  return (state.teams || []).findIndex((team) => String(team.code || '').toUpperCase() === code);
+}
+
+function adjacentTeam(delta) {
+  const teams = state.teams || [];
+  if (!teams.length) return null;
+  const index = currentTeamIndex();
+  if (index < 0) return null;
+  const nextIndex = (index + delta + teams.length) % teams.length;
+  return teams[nextIndex] || null;
+}
+
+function updateTeamNavButtons() {
+  const show = Boolean(state.teamCode && state.teamData && (state.teams || []).length > 1);
+  const prevTeam = show ? adjacentTeam(-1) : null;
+  const nextTeam = show ? adjacentTeam(1) : null;
+  const titleWrap = document.querySelector('.page-title-wrap');
+  if (titleWrap) titleWrap.classList.toggle('has-team-nav', show);
+  const controls = [
+    ['mobilePrevTeamBtn', prevTeam, 'Previous'],
+    ['desktopPrevTeamBtn', prevTeam, 'Previous'],
+    ['mobileNextTeamBtn', nextTeam, 'Next'],
+    ['desktopNextTeamBtn', nextTeam, 'Next'],
+  ];
+
+  controls.forEach(([id, team, label]) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.hidden = !show || !team;
+    btn.disabled = !show || !team;
+    const teamLabel = team ? `${team.code} - ${team.name || team.code}` : `${label} team`;
+    btn.setAttribute('aria-label', `${label} team: ${teamLabel}`);
+    btn.title = teamLabel;
+  });
+}
+
+async function navigateAdjacentTeam(delta) {
+  const target = adjacentTeam(delta);
+  if (!target?.code || target.code === state.teamCode) return;
+  await loadTeam(target.code);
+}
+
+function setupTeamNavControls() {
+  [
+    ['mobilePrevTeamBtn', -1],
+    ['desktopPrevTeamBtn', -1],
+    ['mobileNextTeamBtn', 1],
+    ['desktopNextTeamBtn', 1],
+  ].forEach(([id, delta]) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      await navigateAdjacentTeam(delta);
+    });
+  });
+}
+
 function ensurePlayerMetaModal() {
   let backdrop = document.getElementById('playerMetaBackdrop');
   if (backdrop) return backdrop;
@@ -2391,12 +3113,14 @@ function teamLogoCandidates(code) {
 function renderTeamStrip() {
   const strip = document.getElementById('teamStrip');
   strip.innerHTML = '';
+  let activeButton = null;
 
   state.teams.forEach((t) => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `team-btn${state.teamCode === t.code ? ' active' : ''}`;
     btn.title = `${t.code} - ${t.name}`;
+    if (state.teamCode === t.code) activeButton = btn;
 
     const fallback = document.createElement('span');
     fallback.className = 'team-fallback';
@@ -2438,6 +3162,13 @@ function renderTeamStrip() {
     btn.appendChild(label);
     strip.appendChild(btn);
   });
+
+  updateTeamNavButtons();
+  if (activeButton && window.matchMedia('(min-width: 721px)').matches) {
+    window.requestAnimationFrame(() => {
+      activeButton.scrollIntoView({ block: 'nearest', inline: 'center' });
+    });
+  }
 }
 
 function renderMobileTeamGrid() {
@@ -2687,8 +3418,9 @@ function buildSummaryCardsHtml(summary) {
 function openMobileInfo() {
   const list = document.getElementById('mobileInfoList');
   if (!list) return;
-  const summaryHtml = state.teamData?.summary
-    ? `<div class="mobile-info-summary cards team-summary-grid">${buildSummaryCardsHtml(state.teamData.summary)}</div>`
+  const summary = state.teamData ? summaryForBalanceSeason(state.teamData) : null;
+  const summaryHtml = summary
+    ? `<div class="mobile-info-summary cards team-summary-grid">${buildSummaryCardsHtml(summary)}</div>`
     : '';
   if (!summaryHtml) return;
   list.innerHTML = summaryHtml;
@@ -2720,18 +3452,22 @@ function syncMobileInfoButton() {
 function setViewMode(mode) {
   state.ui.viewMode = mode;
   const trackerSection = document.getElementById('trackerSection');
+  const figuresSection = document.getElementById('figuresSection');
   const freeAgentsSection = document.getElementById('freeAgentsSection');
   const draftOrderSection = document.getElementById('draftOrderSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
   const showTracker = mode === 'tracker';
+  const showFigures = mode === 'figures';
   const showFreeAgents = mode === 'free-agents';
   const showDraftOrder = mode === 'draft-order';
   const showTradeMachine = mode === 'trade-machine';
 
   trackerSection.classList.toggle('section-hidden', !showTracker);
+  if (figuresSection) figuresSection.classList.toggle('section-hidden', !showFigures);
   freeAgentsSection.classList.toggle('section-hidden', !showFreeAgents);
   if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
+  syncTrackerTabs();
   syncTeamTabs();
   syncMobileInfoButton();
 }
@@ -2749,6 +3485,7 @@ function renderTracker() {
       <td>${formatMoneyDots(row.gasto_total)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_cap)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_luxury)}</td>
+      <td>${trackerLuxuryTaxValueHtml(row.luxury_tax)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_1er_apron)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_2do_apron)}</td>
       <td>${trackerRosterCountChipHtml('standard', Number(row.roster_standard_count || 0))}</td>
@@ -2762,6 +3499,44 @@ function renderTracker() {
     });
     tbody.appendChild(tr);
   });
+}
+
+function populateTrackerEconomySeasonSelect() {
+  const select = document.getElementById('trackerEconomySeasonSelect');
+  if (!select) return;
+  const selected = selectedTrackerEconomySeason();
+  select.innerHTML = trackerEconomySeasonOptions()
+    .map((season) => `<option value="${season}"${season === selected ? ' selected' : ''}>${seasonLabel(season)}</option>`)
+    .join('');
+  select.value = String(selected);
+}
+
+function renderTrackerEconomy() {
+  const tbody = document.querySelector('#trackerEconomyTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  populateTrackerEconomySeasonSelect();
+
+  const rows = sortedRows(state.trackerEconomyRows || [], state.sort.trackerEconomy);
+  rows.forEach((row) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><button type="button" class="tracker-team-btn" data-team-code="${escapeHtml(row.team_code)}">${escapeHtml(row.team_code)}</button></td>
+      <td>${trackerEconomyValueHtml(row.balance)}</td>
+      <td>${trackerEconomyValueHtml(row.revenue)}</td>
+      <td>${trackerEconomyValueHtml(row.expenses)}</td>
+    `;
+    const teamBtn = tr.querySelector('[data-team-code]');
+    teamBtn.addEventListener('click', async () => {
+      await loadTeam(row.team_code);
+    });
+    tbody.appendChild(tr);
+  });
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="4">No economy data for this season.</td>';
+    tbody.appendChild(tr);
+  }
 }
 
 function renderFreeAgents() {
@@ -2888,7 +3663,7 @@ function renderDraftOrder() {
 function renderCards() {
   const wrap = document.getElementById('teamMeta');
   const t = state.teamData.team;
-  const s = state.teamData.summary;
+  const s = summaryForBalanceSeason(state.teamData);
   setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
   wrap.innerHTML = buildSummaryCardsHtml(s);
@@ -2947,10 +3722,10 @@ function renderImportantFigures() {
 
   const appendix = document.getElementById('importantFiguresAppendix');
   if (!appendix) return;
-  const salaryCap = Number(state.settings.salary_cap_2025 || 0);
-  const luxuryCap = Number(state.settings.luxury_cap || salaryCap * 1.215);
-  const firstApron = Number(state.settings.first_apron || 0);
-  const secondApron = Number(state.settings.second_apron || 0);
+  const salaryCap = capForSeason(currentYear);
+  const luxuryCap = luxuryCapForSeason(currentYear);
+  const firstApron = firstApronForSeason(currentYear);
+  const secondApron = secondApronForSeason(currentYear);
   const minCap = Number(state.settings.minimum_cap_allowed || salaryCap * 0.9);
   const appendixRows = [
     ['Temporada actual', seasonLabel(currentYear)],
@@ -3313,6 +4088,26 @@ function renderSeasonViewControl() {
   select.value = String(selected);
 }
 
+function renderFiguresSeasonControl() {
+  const select = document.getElementById('figuresSeasonSelect');
+  if (!select) return;
+  const currentYear = currentSeasonStart();
+  const selected = selectedFiguresSeasonStart();
+  select.innerHTML = availableSeasonViewStarts()
+    .map((season) => {
+      const suffix = season === currentYear ? ' (current)' : '';
+      return `<option value="${season}">${seasonLabel(season)}${suffix}</option>`;
+    })
+    .join('');
+  select.value = String(selected);
+}
+
+function setFiguresSeasonStart(startYear) {
+  state.ui.figuresSeasonStart = normalizeFiguresSeasonStart(startYear);
+  renderFiguresSeasonControl();
+  if (state.ui.viewMode === 'figures') renderFigures();
+}
+
 function setSeasonViewStart(startYear) {
   state.ui.seasonViewStart = normalizeSeasonViewStart(startYear);
   renderSeasonViewControl();
@@ -3322,6 +4117,7 @@ function setSeasonViewStart(startYear) {
   renderDeadContracts();
   renderExceptions();
   renderAssets();
+  renderImportantFigures();
 }
 
 function setupSeasonViewControl() {
@@ -3330,6 +4126,24 @@ function setupSeasonViewControl() {
   renderSeasonViewControl();
   select.addEventListener('change', () => {
     setSeasonViewStart(select.value);
+  });
+}
+
+function setupFiguresSeasonControl() {
+  const select = document.getElementById('figuresSeasonSelect');
+  if (!select) return;
+  renderFiguresSeasonControl();
+  select.addEventListener('change', () => {
+    setFiguresSeasonStart(select.value);
+  });
+}
+
+function setupTrackerEconomySeasonControl() {
+  const select = document.getElementById('trackerEconomySeasonSelect');
+  if (!select) return;
+  select.addEventListener('change', async () => {
+    state.ui.trackerEconomySeason = Number(select.value);
+    await loadTrackerEconomy(state.ui.trackerEconomySeason);
   });
 }
 
@@ -3350,6 +4164,7 @@ function renderPlayers() {
   const positionCounts = rosterPositionCounts(rows);
   let previousPositionKey = null;
   rows.forEach((p) => {
+    const hasVisibleCapHold = playerHasVisibleCapHold(p);
     if (showPositionGroups) {
       const positionKey = rosterPositionKey(p);
       if (positionKey !== previousPositionKey) {
@@ -3364,6 +4179,7 @@ function renderPlayers() {
       years: p.years_left || '',
     };
     const tr = document.createElement('tr');
+    if (hasVisibleCapHold) tr.classList.add('roster-row--cap-hold');
     tr.innerHTML = `
       <td>
         <div class="player-cell">
@@ -3405,6 +4221,7 @@ function renderPlayers() {
         .filter((row) => state.filters.showEmptyYears || Boolean(salaryBox(p, row.season)));
       const card = document.createElement('article');
       card.className = 'player-card';
+      if (hasVisibleCapHold) card.classList.add('player-card--cap-hold');
       card.innerHTML = `
         <div class="player-card-head">
           <div class="player-card-name">${escapeHtml(p.name || '')}</div>
@@ -3437,7 +4254,7 @@ function renderPlayers() {
 function renderRosterTotals(rows, seasons) {
   const tfoot = document.querySelector('#playersTable tfoot');
   if (!tfoot) return;
-  const totals = seasons.map((season) => rows.reduce((sum, player) => sum + salaryNumericValue(player, season), 0));
+  const totals = seasons.map((season) => rows.reduce((sum, player) => sum + salaryDisplayNumericValue(player, season), 0));
   tfoot.innerHTML = `
     <tr class="roster-total-row">
       <td class="roster-total-label">Total</td>
@@ -3829,19 +4646,26 @@ async function loadTeam(code) {
 }
 
 async function fetchTrackerRowsFallback() {
+  const season = freeAgencyModeActive() ? defaultSeasonViewStart() : currentSeasonStart();
+  const salaryCap = capForSeason(season);
+  const luxuryCap = luxuryCapForSeason(season);
+  const firstApron = firstApronForSeason(season);
+  const secondApron = secondApronForSeason(season);
   const rows = await Promise.all(state.teams.map(async (t) => {
     const data = await api(`/api/teams/${t.code}`);
     const s = data.summary || {};
+    const balances = teamSeasonBalances(data, season);
     const draftCounts = draftPickCountsFromAssets(data.assets || []);
     return {
       team_code: t.code,
       team_name: t.name,
-      cap_total: Number(s.cap_figure || 0),
-      gasto_total: Number(s.payroll || 0),
-      espacio_cap: Number(s.room_to_cap || 0),
-      espacio_luxury: Number(s.room_to_luxury || 0),
-      espacio_1er_apron: Number(s.room_to_first_apron || 0),
-      espacio_2do_apron: Number(s.room_to_second_apron || 0),
+      cap_total: Number(balances.cap_total || 0),
+      gasto_total: Number(balances.gasto_total || 0),
+      espacio_cap: salaryCap - Number(balances.cap_total || 0),
+      espacio_luxury: luxuryCap - Number(balances.cap_total || 0),
+      luxury_tax: Number(balances.luxury_tax || 0),
+      espacio_1er_apron: firstApron - Number(balances.cap_total || 0),
+      espacio_2do_apron: secondApron - Number(balances.cap_total || 0),
       roster_standard_count: Number(s.roster_standard_count || rosterCountFromPlayers(data.players || []).standard),
       roster_two_way_count: Number(s.roster_two_way_count || rosterCountFromPlayers(data.players || []).twoWay),
       draft_first_count: draftCounts.first,
@@ -3851,10 +4675,37 @@ async function fetchTrackerRowsFallback() {
   return rows;
 }
 
+async function loadTrackerEconomy(season = null) {
+  const selected = normalizeTrackerEconomySeason(season ?? state.ui.trackerEconomySeason ?? currentSeasonStart());
+  try {
+    const res = await api(`/api/tracker/economy?season=${encodeURIComponent(selected)}`);
+    state.trackerEconomyRows = res.rows || [];
+    state.trackerEconomySeasons = res.seasons || [];
+    state.ui.trackerEconomySeason = Number(res.season_year || selected);
+  } catch (err) {
+    if (!String(err.message || '').includes('API 404')) throw err;
+    state.trackerEconomyRows = state.teams.map((team) => ({
+      team_code: team.code,
+      team_name: team.name,
+      season_year: selected,
+      balance: 0,
+      revenue: 0,
+      expenses: 0,
+    }));
+    state.trackerEconomySeasons = [selected];
+    state.ui.trackerEconomySeason = selected;
+  }
+  renderTrackerEconomy();
+  updateSortIndicators('trackerEconomyTable', state.sort.trackerEconomy);
+}
+
 async function loadTracker() {
   try {
     const res = await api('/api/tracker');
     state.trackerRows = res.tracker || [];
+    if (freeAgencyModeActive()) {
+      state.trackerRows = await fetchTrackerRowsFallback();
+    }
   } catch (err) {
     if (!String(err.message || '').includes('API 404')) throw err;
     console.warn('API /api/tracker not available, using client fallback.');
@@ -3875,7 +4726,26 @@ async function loadTracker() {
   renderTeamStrip();
   renderMobileTeamGrid();
   renderTracker();
+  await loadTrackerEconomy();
   renderImportantFigures();
+}
+
+async function loadFigures() {
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('figures');
+  setPageHeading('Cifras', 'Guía de importes derivados del Salary Cap');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  renderFigures();
 }
 
 async function loadFreeAgents() {
@@ -4250,6 +5120,7 @@ function setupMobileNav() {
   const closeBtn = document.getElementById('mobileSidebarCloseBtn');
   const backdrop = document.getElementById('mobileSidebarBackdrop');
   const trackerBtn = document.getElementById('mobileTrackerBtn');
+  const figuresBtn = document.getElementById('mobileFiguresBtn');
   const draftBtn = document.getElementById('mobileDraftBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
   const tradeMachineBtn = document.getElementById('mobileTradeMachineBtn');
@@ -4271,6 +5142,12 @@ function setupMobileNav() {
     trackerBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadTracker();
+    });
+  }
+  if (figuresBtn) {
+    figuresBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadFigures();
     });
   }
   if (draftBtn) {
@@ -4328,6 +5205,9 @@ async function init() {
   document.getElementById('trackerHomeBtn').addEventListener('click', async () => {
     await loadTracker();
   });
+  document.getElementById('figuresHomeBtn').addEventListener('click', async () => {
+    await loadFigures();
+  });
   document.getElementById('draftHomeBtn').addEventListener('click', async () => {
     await loadDraftOrder();
   });
@@ -4341,9 +5221,13 @@ async function init() {
   setupLocatorModal();
   setupMobileNav();
   setupTradeMachineControls();
+  setupTrackerTabs();
+  setupTrackerEconomySeasonControl();
   setupTeamTabs();
+  setupTeamNavControls();
   setupRosterViewControl();
   setupSeasonViewControl();
+  setupFiguresSeasonControl();
   setupRosterFilters();
   let savedRosterView = null;
   try {

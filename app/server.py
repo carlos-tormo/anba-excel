@@ -23,6 +23,41 @@ ROSTER_STANDARD_MAX_DEFAULT = 15
 ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT = 18
 ROSTER_TWO_WAY_MIN_DEFAULT = 0
 ROSTER_TWO_WAY_MAX_DEFAULT = 3
+CAP_FORECAST_MIN_YEAR = 2025
+CAP_FORECAST_MAX_YEAR = 2035
+CAP_FORECAST_WINDOW = 6
+DEFAULT_TEAM_ECONOMY_2025 = {
+    "ATL": {"balance": 49_905_105, "revenue": 372_450_359, "expenses": -322_545_254},
+    "BKN": {"balance": 117_587_256, "revenue": 493_925_372, "expenses": -376_338_116},
+    "BOS": {"balance": 271_569_320, "revenue": 728_354_717, "expenses": -456_785_397},
+    "CHA": {"balance": 105_567_971, "revenue": 452_264_896, "expenses": -346_696_925},
+    "CHI": {"balance": 78_874_566, "revenue": 367_686_721, "expenses": -288_812_156},
+    "CLE": {"balance": 40_491_791, "revenue": 430_701_221, "expenses": -390_209_430},
+    "DAL": {"balance": 74_154_395, "revenue": 439_141_781, "expenses": -364_987_386},
+    "DEN": {"balance": -68_704_521, "revenue": 319_379_550, "expenses": -388_084_072},
+    "DET": {"balance": 45_663_887, "revenue": 319_379_550, "expenses": -273_715_663},
+    "GSW": {"balance": 90_139_132, "revenue": 509_431_397, "expenses": -419_292_264},
+    "HOU": {"balance": -13_142_400, "revenue": 319_379_550, "expenses": -332_521_951},
+    "IND": {"balance": 63_445_621, "revenue": 319_379_550, "expenses": -255_933_930},
+    "LAC": {"balance": 150_815_622, "revenue": 484_347_099, "expenses": -333_531_477},
+    "LAL": {"balance": 129_196_200, "revenue": 508_030_229, "expenses": -378_834_030},
+    "MEM": {"balance": 70_112_249, "revenue": 351_073_054, "expenses": -280_960_805},
+    "MIA": {"balance": 69_616_115, "revenue": 319_379_550, "expenses": -249_763_436},
+    "MIL": {"balance": 128_048_578, "revenue": 550_158_841, "expenses": -422_110_263},
+    "MIN": {"balance": 143_281_108, "revenue": 594_585_479, "expenses": -451_304_371},
+    "NOP": {"balance": 11_427_349, "revenue": 411_477_236, "expenses": -400_049_887},
+    "NYK": {"balance": 245_587_170, "revenue": 834_758_507, "expenses": -589_171_337},
+    "OKC": {"balance": 48_191_383, "revenue": 547_273_877, "expenses": -499_082_494},
+    "ORL": {"balance": 123_982_201, "revenue": 395_622_337, "expenses": -271_640_136},
+    "PHI": {"balance": 362_234, "revenue": 393_675_990, "expenses": -393_313_756},
+    "PHX": {"balance": 102_680_681, "revenue": 385_631_796, "expenses": -282_951_115},
+    "POR": {"balance": -2_020_711, "revenue": 319_379_550, "expenses": -321_400_262},
+    "SAC": {"balance": 46_630_060, "revenue": 335_185_585, "expenses": -288_555_525},
+    "SAS": {"balance": 114_538_993, "revenue": 437_211_980, "expenses": -322_672_987},
+    "TOR": {"balance": 18_099_517, "revenue": 319_379_550, "expenses": -301_280_033},
+    "UTA": {"balance": 149_600_215, "revenue": 416_369_384, "expenses": -266_769_169},
+    "WAS": {"balance": -26_571_779, "revenue": 355_917_635, "expenses": -382_489_415},
+}
 
 
 def load_env_file(path: Path) -> None:
@@ -114,15 +149,18 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
     if current_year < 2025 or current_year > 2030:
         current_year = 2025
     salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
-    return {
+    first_apron = parse_float(settings.get("first_apron")) or 195945000.0
+    second_apron = parse_float(settings.get("second_apron")) or 207824000.0
+    payload = {
         "salary_cap_2025": salary_cap,
         "current_year": current_year,
-        "first_apron": parse_float(settings.get("first_apron")) or 195945000.0,
-        "second_apron": parse_float(settings.get("second_apron")) or 207824000.0,
+        "first_apron": first_apron,
+        "second_apron": second_apron,
         "cash_limit_total": parse_float(settings.get("cash_limit_total")) or 0.0,
         "trade_move_limit_pre30": max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0),
         "trade_move_limit_post30": max(0, parse_int(settings.get("trade_move_limit_post30")) or 0),
         "trade_move_phase": normalize_move_phase(settings.get("trade_move_phase")),
+        "free_agency_mode": parse_bool(settings.get("free_agency_mode")),
         "roster_standard_min": settings_int(settings, "roster_standard_min", ROSTER_STANDARD_MIN_DEFAULT),
         "roster_standard_max": settings_int(settings, "roster_standard_max", ROSTER_STANDARD_MAX_DEFAULT),
         "roster_standard_offseason_max": settings_int(settings, "roster_standard_offseason_max", ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT),
@@ -131,6 +169,36 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
         "luxury_cap": salary_cap * 1.215,
         "minimum_cap_allowed": salary_cap * 0.9,
     }
+    for season in range(current_year, current_year + CAP_FORECAST_WINDOW):
+        season_cap = parse_float(settings.get(f"salary_cap_{season}")) or salary_cap
+        season_first_apron = parse_float(settings.get(f"first_apron_{season}")) or first_apron
+        season_second_apron = parse_float(settings.get(f"second_apron_{season}")) or second_apron
+        season_average_salary = parse_float(settings.get(f"average_salary_{season}"))
+        payload[f"salary_cap_{season}"] = season_cap
+        payload[f"first_apron_{season}"] = season_first_apron
+        payload[f"second_apron_{season}"] = season_second_apron
+        payload[f"average_salary_{season}"] = season_average_salary if season_average_salary and season_average_salary > 0 else 0.0
+    return payload
+
+
+def luxury_tax_amount(overage: float, repeater: bool) -> float:
+    remaining = max(0.0, float(overage or 0.0))
+    if remaining <= 0:
+        return 0.0
+    tier_size = 5_000_000.0
+    base_rates = [2.5, 2.75, 3.5, 4.25] if repeater else [1.5, 1.75, 2.5, 3.25]
+    tax = 0.0
+    tier_index = 0
+    while remaining > 0:
+        taxable = min(tier_size, remaining)
+        if tier_index < len(base_rates):
+            rate = base_rates[tier_index]
+        else:
+            rate = base_rates[-1] + ((tier_index - len(base_rates) + 1) * 0.5)
+        tax += taxable * rate
+        remaining -= taxable
+        tier_index += 1
+    return tax
 
 
 def parse_bool(value: Any) -> bool:
@@ -415,6 +483,13 @@ class LeagueDB:
                 """,
                 (now_iso(),),
             )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('free_agency_mode', '0', ?)
+                """,
+                (now_iso(),),
+            )
             roster_defaults = {
                 "roster_standard_min": ROSTER_STANDARD_MIN_DEFAULT,
                 "roster_standard_max": ROSTER_STANDARD_MAX_DEFAULT,
@@ -547,6 +622,20 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS team_economy (
+                    team_id INTEGER NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    balance REAL NOT NULL DEFAULT 0,
+                    revenue REAL NOT NULL DEFAULT 0,
+                    expenses REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (team_id, season_year),
+                    FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_token TEXT PRIMARY KEY,
                     data_json TEXT NOT NULL,
@@ -569,6 +658,26 @@ class LeagueDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_luxury_history_team_year ON team_luxury_history(team_id, season_year)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_team_start ON team_gm_history(team_id, start_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_order_year_round ON draft_order(draft_year, draft_round, pick_number)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_team_economy_season ON team_economy(season_year)")
+            economy_timestamp = now_iso()
+            for code, values in DEFAULT_TEAM_ECONOMY_2025.items():
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO team_economy (
+                        team_id, season_year, balance, revenue, expenses, updated_at
+                    )
+                    SELECT id, 2025, ?, ?, ?, ?
+                    FROM teams
+                    WHERE code = ?
+                    """,
+                    (
+                        float(values["balance"]),
+                        float(values["revenue"]),
+                        float(values["expenses"]),
+                        economy_timestamp,
+                        code,
+                    ),
+                )
             cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(players)").fetchall()
@@ -1266,6 +1375,9 @@ class LeagueDB:
                 )
                 dead_contracts = [row_to_dict(dead_cur, row) for row in dead_cur.fetchall()]
                 summary = self._calc_summary(team, players, assets, dead_contracts, settings)
+                luxury_cap = float(summary["salary_cap_2025"]) * 1.215
+                luxury_overage = max(0.0, float(summary["cap_figure"]) - luxury_cap)
+                luxury_repeater = self._team_luxury_repeater_for_season(conn, team_id, current_year)
                 draft_counts = draft_counts_for_tracker(assets)
                 rows.append(
                     {
@@ -1275,6 +1387,7 @@ class LeagueDB:
                         "gasto_total": float(summary["payroll"]),
                         "espacio_cap": float(summary["room_to_cap"]),
                         "espacio_luxury": float(summary["room_to_luxury"]),
+                        "luxury_tax": float(luxury_tax_amount(luxury_overage, luxury_repeater)),
                         "espacio_1er_apron": float(summary["room_to_first_apron"]),
                         "espacio_2do_apron": float(summary["room_to_second_apron"]),
                         "roster_standard_count": int(summary["roster_standard_count"]),
@@ -1284,6 +1397,97 @@ class LeagueDB:
                     }
                 )
             return rows
+
+    def list_team_economy(self, season_year: Optional[int] = None) -> Dict[str, Any]:
+        with self.connect() as conn:
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
+                current_year = 2025
+            season = season_year if season_year is not None else current_year
+            if season < 2000 or season > 2100:
+                season = current_year
+            seasons = {
+                current_year,
+                2025,
+                *[
+                    int(row["season_year"])
+                    for row in conn.execute(
+                        "SELECT DISTINCT season_year FROM team_economy ORDER BY season_year"
+                    ).fetchall()
+                ],
+            }
+            teams_cur = conn.execute(
+                """
+                SELECT
+                    t.id,
+                    t.code,
+                    t.name,
+                    COALESCE(e.balance, 0) AS balance,
+                    COALESCE(e.revenue, 0) AS revenue,
+                    COALESCE(e.expenses, 0) AS expenses
+                FROM teams t
+                LEFT JOIN team_economy e
+                  ON e.team_id = t.id AND e.season_year = ?
+                ORDER BY t.code
+                """,
+                (season,),
+            )
+            rows = [
+                {
+                    "team_code": row["code"],
+                    "team_name": row["name"],
+                    "season_year": season,
+                    "balance": float(row["balance"] or 0),
+                    "revenue": float(row["revenue"] or 0),
+                    "expenses": float(row["expenses"] or 0),
+                }
+                for row in teams_cur.fetchall()
+            ]
+            return {
+                "season_year": season,
+                "seasons": sorted(seasons),
+                "rows": rows,
+            }
+
+    def upsert_team_economy(self, season_year: int, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if season_year < 2000 or season_year > 2100:
+            raise ValueError("invalid_season_year")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            team_rows = conn.execute("SELECT id, code FROM teams").fetchall()
+            team_ids = {str(row["code"]).upper(): int(row["id"]) for row in team_rows}
+            for row in rows:
+                code = str(row.get("team_code") or row.get("code") or "").strip().upper()
+                if code not in team_ids:
+                    raise ValueError(f"invalid_team_code:{code}")
+                balance = parse_amount_like(row.get("balance"))
+                revenue = parse_amount_like(row.get("revenue"))
+                expenses = parse_amount_like(row.get("expenses"))
+                conn.execute(
+                    """
+                    INSERT INTO team_economy (
+                        team_id, season_year, balance, revenue, expenses, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(team_id, season_year) DO UPDATE SET
+                        balance = excluded.balance,
+                        revenue = excluded.revenue,
+                        expenses = excluded.expenses,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        team_ids[code],
+                        season_year,
+                        float(balance or 0),
+                        float(revenue or 0),
+                        float(expenses or 0),
+                        timestamp,
+                    ),
+                )
+            conn.commit()
+        return self.list_team_economy(season_year)
 
     def update_team_fields(self, code: str, payload: Dict[str, Any]) -> bool:
         assignments = []
@@ -1330,6 +1534,17 @@ class LeagueDB:
             }
             for year in years
         ]
+
+    def _team_luxury_repeater_for_season(self, conn: sqlite3.Connection, team_id: int, season_year: int) -> bool:
+        row = conn.execute(
+            """
+            SELECT repeater
+            FROM team_luxury_history
+            WHERE team_id = ? AND season_year = ?
+            """,
+            (team_id, season_year),
+        ).fetchone()
+        return bool(row["repeater"]) if row else False
 
     def update_team_luxury_history(self, code: str, season_year: int, repeater: bool) -> bool:
         with self.connect() as conn:
@@ -2912,6 +3127,16 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(200, {"tracker": self.db.list_tracker()})
             return
 
+        if parsed.path == "/api/tracker/economy":
+            qs = parse_qs(parsed.query)
+            raw_season = (qs.get("season") or [""])[0].strip()
+            season_year = parse_int(raw_season) if raw_season else None
+            if raw_season and season_year is None:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            self._json(200, self.db.list_team_economy(season_year))
+            return
+
         if parsed.path == "/api/free-agents":
             self._json(200, {"free_agents": self.db.list_free_agents()})
             return
@@ -3320,6 +3545,36 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         payload = self._read_json()
 
+        if parsed.path == "/api/tracker/economy":
+            parsed_season = parse_int(str(payload.get("season_year") or payload.get("season") or ""))
+            if parsed_season is None or parsed_season < 2000 or parsed_season > 2100:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            rows = payload.get("rows")
+            if not isinstance(rows, list):
+                self._json(400, {"error": "rows_required"})
+                return
+            try:
+                result = self.db.upsert_team_economy(parsed_season, rows)
+            except ValueError as err:
+                message = str(err)
+                if message.startswith("invalid_team_code:"):
+                    self._json(400, {"error": "invalid_team_code", "team_code": message.split(":", 1)[1]})
+                    return
+                if message == "invalid_season_year":
+                    self._json(400, {"error": "invalid_season_year"})
+                    return
+                raise
+            self._log_admin_action(
+                "update",
+                "team_economy",
+                str(parsed_season),
+                None,
+                {"season_year": parsed_season, "row_count": len(rows)},
+            )
+            self._json(200, {"ok": True, **result})
+            return
+
         if parsed.path == "/api/settings":
             next_salary_cap: Optional[float] = None
             next_current_year: Optional[int] = None
@@ -3329,11 +3584,13 @@ class Handler(SimpleHTTPRequestHandler):
             next_trade_move_limit_pre30: Optional[int] = None
             next_trade_move_limit_post30: Optional[int] = None
             next_trade_move_phase: Optional[str] = None
+            next_free_agency_mode: Optional[bool] = None
             next_roster_standard_min: Optional[int] = None
             next_roster_standard_max: Optional[int] = None
             next_roster_standard_offseason_max: Optional[int] = None
             next_roster_two_way_min: Optional[int] = None
             next_roster_two_way_max: Optional[int] = None
+            season_cap_updates: Dict[str, Optional[float]] = {}
 
             if "salary_cap_2025" in payload:
                 cap = payload.get("salary_cap_2025")
@@ -3388,6 +3645,29 @@ class Handler(SimpleHTTPRequestHandler):
             if "trade_move_phase" in payload:
                 next_trade_move_phase = normalize_move_phase(payload.get("trade_move_phase"))
 
+            if "free_agency_mode" in payload:
+                next_free_agency_mode = parse_bool(payload.get("free_agency_mode"))
+
+            for field, raw_value in payload.items():
+                match = re.fullmatch(r"(salary_cap|first_apron|second_apron|average_salary)_(\d{4})", str(field))
+                if not match:
+                    continue
+                if field == "salary_cap_2025":
+                    continue
+                setting_kind = match.group(1)
+                season_year = parse_int(match.group(2))
+                if season_year is None or season_year < CAP_FORECAST_MIN_YEAR or season_year > CAP_FORECAST_MAX_YEAR:
+                    self._json(400, {"error": f"invalid_{field}"})
+                    return
+                if setting_kind == "average_salary" and (raw_value is None or str(raw_value).strip() == ""):
+                    season_cap_updates[str(field)] = None
+                    continue
+                parsed_value = parse_float(str(raw_value))
+                if parsed_value is None or parsed_value <= 0:
+                    self._json(400, {"error": f"invalid_{field}"})
+                    return
+                season_cap_updates[str(field)] = parsed_value
+
             roster_int_fields = {
                 "roster_standard_min": "invalid_roster_standard_min",
                 "roster_standard_max": "invalid_roster_standard_max",
@@ -3441,6 +3721,8 @@ class Handler(SimpleHTTPRequestHandler):
                 and next_trade_move_limit_pre30 is None
                 and next_trade_move_limit_post30 is None
                 and next_trade_move_phase is None
+                and next_free_agency_mode is None
+                and not season_cap_updates
                 and next_roster_standard_min is None
                 and next_roster_standard_max is None
                 and next_roster_standard_offseason_max is None
@@ -3466,6 +3748,10 @@ class Handler(SimpleHTTPRequestHandler):
                 self.db.update_setting("trade_move_limit_post30", str(int(next_trade_move_limit_post30)))
             if next_trade_move_phase is not None:
                 self.db.update_setting("trade_move_phase", next_trade_move_phase)
+            if next_free_agency_mode is not None:
+                self.db.update_setting("free_agency_mode", "1" if next_free_agency_mode else "0")
+            for key, value in season_cap_updates.items():
+                self.db.update_setting(key, "" if value is None else str(int(value)))
             if next_roster_standard_min is not None:
                 self.db.update_setting("roster_standard_min", str(next_roster_standard_min))
             if next_roster_standard_max is not None:
@@ -3490,6 +3776,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "trade_move_limit_pre30": next_trade_move_limit_pre30,
                     "trade_move_limit_post30": next_trade_move_limit_post30,
                     "trade_move_phase": next_trade_move_phase,
+                    "free_agency_mode": next_free_agency_mode,
+                    "season_cap_updates": season_cap_updates,
                     "roster_standard_min": next_roster_standard_min,
                     "roster_standard_max": next_roster_standard_max,
                     "roster_standard_offseason_max": next_roster_standard_offseason_max,

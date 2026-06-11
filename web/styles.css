@@ -59,6 +59,12 @@ h1 {
   justify-items: center;
   text-align: center;
 }
+.page-title-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  justify-items: inherit;
+}
 .page-title-wrap h1 {
   text-transform: uppercase;
   letter-spacing: 0.01em;
@@ -392,6 +398,43 @@ h1 {
 .team-strip-section .page-shell {
   width: 100%;
 }
+.team-strip-nav {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.team-nav-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--team-primary-rgb), 0.3);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.82));
+  color: rgb(var(--team-primary-rgb));
+  box-shadow:
+    0 8px 18px rgba(15, 23, 42, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.8) inset;
+  font-size: 1.6rem;
+  font-weight: 900;
+  line-height: 1;
+  text-shadow: none;
+}
+.team-nav-btn:hover,
+.team-nav-btn:focus-visible {
+  color: #ffffff;
+  background: rgb(var(--team-primary-rgb));
+  border-color: rgba(var(--team-primary-rgb), 0.72);
+}
+.team-nav-btn[hidden] {
+  display: none !important;
+}
+.mobile-team-nav-btn {
+  display: none;
+}
 
 @media (min-width: 721px) {
   body.app-layout {
@@ -637,6 +680,7 @@ h1 {
   align-items: flex-start;
   justify-content: space-between;
   gap: clamp(3px, 0.25vw, 8px);
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: 2px;
@@ -721,6 +765,14 @@ h1 {
 .team-tab-btn[aria-selected="true"] .team-tab-icon {
   background: var(--team-primary);
   color: #ffffff;
+}
+.tracker-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+.tracker-economy-toolbar {
+  justify-content: flex-end;
+  margin: 0 0 10px;
 }
 .team-admin-controls-section {
   padding-top: 0;
@@ -3171,6 +3223,43 @@ th {
 .guest-roster-section #playersTable .salary-empty-wrap .salary-info-button {
   transform: translateY(-2px);
 }
+.guest-roster-section #playersTable tbody td:has(.salary-cap-hold-cell) {
+  position: relative;
+  z-index: 1;
+  overflow: visible;
+  background:
+    linear-gradient(90deg, rgba(124, 58, 237, 0.16), rgba(168, 85, 247, 0.07)) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(168, 85, 247, 0.22),
+    inset 0 0 18px rgba(168, 85, 247, 0.16);
+}
+.guest-roster-section #playersTable tbody td:has(.salary-info-button.show-detail) {
+  z-index: 80;
+}
+.guest-roster-section #playersTable tbody tr:has(.salary-info-button.show-detail) {
+  position: relative;
+  z-index: 140;
+}
+.guest-roster-section #playersTable tbody tr:has(.salary-info-button.show-detail) td {
+  position: relative;
+  z-index: 140;
+}
+.guest-roster-section #playersTable tbody tr:has(.salary-info-button.show-detail) td:has(.salary-info-button.show-detail) {
+  z-index: 180;
+}
+.guest-roster-section #playersTable tbody tr:has(.salary-info-button.show-detail) .salary-cap-hold-cell,
+.guest-roster-section #playersTable tbody tr:has(.salary-info-button.show-detail) .salary-cap-hold-side {
+  z-index: 190;
+}
+.guest-roster-section #playersTable tbody td:nth-child(-n+3) {
+  z-index: 24;
+}
+.guest-roster-section #playersTable thead th:nth-child(-n+3) {
+  z-index: 32;
+}
+.guest-roster-section #playersTable tbody tr:has(.salary-info-button.show-detail) td:nth-child(-n+3) {
+  z-index: 220;
+}
 .guest-roster-section #playersTable .player-cell {
   gap: 5px;
   min-width: 0;
@@ -3186,6 +3275,13 @@ th {
   overflow: hidden;
   text-overflow: ellipsis;
   vertical-align: top;
+}
+.guest-roster-section #playersTable tr.roster-row--cap-hold .player-name,
+.player-card.player-card--cap-hold .player-card-name {
+  color: #6d28d9;
+  text-shadow:
+    0 0 9px rgba(168, 85, 247, 0.54),
+    0 0 18px rgba(124, 58, 237, 0.26);
 }
 .guest-roster-section #playersTable .player-tags {
   gap: 4px;
@@ -3737,6 +3833,110 @@ th {
   font-weight: 700;
   background: rgba(255, 255, 255, 0.55);
 }
+.salary-chip-note {
+  margin-left: auto;
+  padding: 3px 7px;
+  border-left: 1px solid rgba(37, 99, 235, 0.18);
+  color: #1d4ed8;
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.68);
+}
+.salary-cap-hold-cell {
+  position: relative;
+  width: 100%;
+  max-width: 152px;
+  margin: 0 auto;
+  min-width: 0;
+  z-index: 16;
+}
+.salary-cap-hold-cell .salary-chip {
+  width: 100%;
+}
+.salary-cap-hold-side {
+  position: absolute;
+  left: calc(100% + 20px);
+  top: 50%;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: -10px;
+}
+.salary-cap-hold-side .salary-info-button {
+  margin: 0;
+}
+.salary-cap-hold-side .salary-info-pop {
+  right: auto;
+  left: 50%;
+  top: calc(100% + 10px);
+  width: 220px;
+  max-width: min(240px, 62vw);
+  transform: translate(-50%, 4px);
+}
+.salary-cap-hold-side .salary-info-button:hover .salary-info-pop,
+.salary-cap-hold-side .salary-info-button:focus-visible .salary-info-pop,
+.salary-cap-hold-side .salary-info-button.show-detail .salary-info-pop {
+  transform: translate(-50%, 0);
+}
+.salary-cap-hold-ref {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid rgba(124, 58, 237, 0.26);
+  border-radius: 999px;
+  background: rgba(245, 243, 255, 0.94);
+  color: #5b21b6;
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.salary-cap-hold-qo-value {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid rgba(34, 197, 94, 0.42);
+  border-radius: 999px;
+  background: rgba(220, 252, 231, 0.95);
+  color: #15803d;
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+  white-space: nowrap;
+  box-shadow:
+    0 0 0 1px rgba(34, 197, 94, 0.12),
+    0 0 12px rgba(34, 197, 94, 0.22);
+}
+.salary-chip--cap-hold {
+  border-color: rgba(168, 85, 247, 0.48);
+  background: linear-gradient(180deg, #f8f5ff, #eff6ff);
+  box-shadow:
+    inset 3px 0 0 #7c3aed,
+    0 0 0 1px rgba(168, 85, 247, 0.16),
+    0 0 14px rgba(168, 85, 247, 0.24);
+  overflow: visible;
+}
+.salary-chip--cap-hold .salary-chip-main {
+  color: #1e3a8a;
+}
+.salary-chip--cap-hold-pending {
+  border-color: #fbbf24;
+  background: #fffbeb;
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+.salary-chip--cap-hold-pending .salary-chip-main,
+.salary-chip--cap-hold-pending .salary-chip-note {
+  color: #92400e;
+}
+.salary-chip--cap-hold-pending ~ .salary-cap-hold-side .salary-cap-hold-ref {
+  border-color: rgba(245, 158, 11, 0.36);
+  background: #fffbeb;
+  color: #92400e;
+}
 .salary-chip.salary-chip-text {
   justify-content: flex-start;
 }
@@ -3806,13 +4006,16 @@ th {
   line-height: 1;
   cursor: pointer;
 }
+.salary-info-button.show-detail {
+  z-index: 90;
+}
 .salary-info-pop {
   position: absolute;
   right: -8px;
   top: calc(100% + 8px);
   z-index: 30;
-  width: max-content;
-  max-width: 180px;
+  width: 240px;
+  max-width: min(260px, 72vw);
   padding: 7px 9px;
   border-radius: 8px;
   background: #0f172a;
@@ -3820,6 +4023,9 @@ th {
   font-size: 0.74rem;
   font-weight: 700;
   line-height: 1.25;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: break-word;
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.28);
   opacity: 0;
   pointer-events: none;
@@ -3828,6 +4034,8 @@ th {
 }
 .salary-info-pop span {
   display: block;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 .salary-info-pop span + span {
   margin-top: 4px;
@@ -3837,8 +4045,20 @@ th {
 .salary-info-button:hover .salary-info-pop,
 .salary-info-button:focus-visible .salary-info-pop,
 .salary-info-button.show-detail .salary-info-pop {
+  z-index: 120;
   opacity: 1;
   transform: translateY(0);
+}
+.salary-info-pop.is-fixed {
+  position: fixed;
+  right: auto;
+  z-index: 10000 !important;
+  transform: none !important;
+}
+.salary-info-button:hover .salary-info-pop.is-fixed,
+.salary-info-button:focus-visible .salary-info-pop.is-fixed,
+.salary-info-button.show-detail .salary-info-pop.is-fixed {
+  transform: none !important;
 }
 
 .salary-pill {
@@ -4056,6 +4276,121 @@ td.salary-option--nb .salary-pct {
   gap: 10px;
   flex-wrap: wrap;
 }
+.settings-block {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.settings-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.settings-block-head h3 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 1rem;
+  font-weight: 900;
+}
+.settings-block-head p {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+.settings-cap-table {
+  width: 100%;
+  min-width: 920px;
+  table-layout: fixed;
+}
+.settings-cap-table th,
+.settings-cap-table td {
+  padding: 8px;
+  border-bottom: 1px solid #dbe3ee;
+  text-align: right;
+}
+.settings-cap-table th {
+  background: #eef2f7;
+  color: #334155;
+  font-weight: 900;
+}
+.settings-cap-table tbody th {
+  text-align: left;
+}
+.settings-cap-table th.is-current-year {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+.settings-cap-table th span {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.66rem;
+  color: #2563eb;
+}
+.settings-cap-table input {
+  width: 100%;
+  min-width: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.settings-economy-table {
+  width: 100%;
+  min-width: 760px;
+  table-layout: fixed;
+}
+.settings-economy-table th,
+.settings-economy-table td {
+  padding: 8px;
+  border-bottom: 1px solid #dbe3ee;
+}
+.settings-economy-table th {
+  background: #eef2f7;
+  color: #334155;
+  font-weight: 900;
+}
+.settings-economy-table td:not(:first-child) {
+  text-align: right;
+}
+.settings-economy-table input {
+  width: 100%;
+  min-width: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.settings-economy-team-cell {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.settings-economy-team-cell strong {
+  color: var(--team-primary);
+  font-weight: 900;
+}
+.settings-economy-team-cell span {
+  overflow: hidden;
+  color: #64748b;
+  text-overflow: ellipsis;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.settings-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-weight: 900;
+}
+.settings-check input {
+  width: 18px;
+  height: 18px;
+}
 .gm-timeline-section {
   display: grid;
   gap: 14px;
@@ -4257,6 +4592,177 @@ td.salary-option--nb .salary-pct {
 .balance-value.is-negative {
   color: #b91c1c;
 }
+.figures-board {
+  display: grid;
+  gap: 18px;
+  max-width: 1500px;
+}
+.figures-group {
+  display: grid;
+  gap: 8px;
+}
+.figures-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.figures-group-head h3 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+.figures-group-head p {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+.figures-note {
+  max-width: 900px;
+  padding: 10px 12px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+.figures-table-wrap {
+  max-width: 100%;
+}
+.figures-table {
+  width: 100%;
+  min-width: 900px;
+  table-layout: fixed;
+}
+.figures-table th,
+.figures-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #dbe3ee;
+  text-align: right;
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+}
+.figures-table thead th {
+  background: #4f9a91;
+  color: #ffffff;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.figures-table tbody th {
+  width: 260px;
+  background: #eef2f7;
+  color: #334155;
+  text-align: left;
+  font-weight: 900;
+}
+.figures-table tbody td {
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 800;
+}
+.figures-table .figures-current-season {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+.figures-table thead .figures-current-season {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+.figures-table thead span {
+  display: block;
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.66rem;
+}
+.figures-pending {
+  color: #b45309;
+  font-weight: 900;
+}
+.minimum-salary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
+  gap: 14px;
+  justify-items: start;
+}
+.minimum-salary-season {
+  width: min(100%, 760px);
+  min-width: 0;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+.minimum-salary-season.is-current-season {
+  border-color: rgba(29, 78, 216, 0.45);
+  box-shadow: 0 0 0 1px rgba(29, 78, 216, 0.12);
+}
+.minimum-salary-season-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #eef2f7;
+}
+.minimum-salary-season-head h4 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 0.92rem;
+  font-weight: 900;
+}
+.minimum-salary-season-head h4 span {
+  display: inline-flex;
+  margin-left: 6px;
+  color: #1d4ed8;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+}
+.minimum-two-way {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #991b1b;
+  font-size: 0.76rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.minimum-salary-table-wrap {
+  border-radius: 0;
+}
+.minimum-salary-table {
+  min-width: 520px;
+}
+.minimum-salary-table th,
+.minimum-salary-table td {
+  padding: 7px 8px;
+  font-size: 0.78rem;
+}
+.minimum-salary-table thead th {
+  background: #dc2626;
+  color: #ffffff;
+}
+.minimum-salary-table tbody th {
+  width: 86px;
+  background: #f1b9b9;
+  color: #111827;
+  text-align: center;
+}
+.minimum-salary-table tbody td {
+  background: #fde2e2;
+  color: #111827;
+}
+.minimum-salary-table tbody td.figures-empty-cell {
+  background: #fdecec;
+  color: transparent;
+}
 .roster-count-section {
   display: grid;
   gap: 10px;
@@ -4393,6 +4899,16 @@ td.salary-option--nb .salary-pct {
   color: #b91c1c;
 }
 .tracker-space-value.is-neutral {
+  color: #475569;
+}
+.tracker-tax-value {
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.tracker-tax-value.is-negative {
+  color: #b91c1c;
+}
+.tracker-tax-value.is-neutral {
   color: #475569;
 }
 .draft-count-chip {
@@ -4796,7 +5312,8 @@ td.salary-option--nb .salary-pct {
   color: #9a3412;
 }
 .type-pill--r,
-.type-pill--r2 {
+.type-pill--r2,
+.type-pill--gap {
   background: #fce7f3;
   border-color: #f9a8d4;
   color: #9d174d;
@@ -4838,7 +5355,8 @@ td.salary-option--nb .salary-pct {
   border: 1px solid #fdba74;
 }
 .inline-editor.type-edit.type-pill--r,
-.inline-editor.type-edit.type-pill--r2 {
+.inline-editor.type-edit.type-pill--r2,
+.inline-editor.type-edit.type-pill--gap {
   background: #fce7f3;
   border: 1px solid #f9a8d4;
 }
@@ -5100,15 +5618,42 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   }
   .page-title-wrap {
     grid-column: 2;
+    grid-template-columns: minmax(0, 1fr);
     justify-items: center;
+    width: 100%;
+    gap: 6px;
+  }
+  .page-title-wrap.has-team-nav {
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+  }
+  .page-title-wrap.has-team-nav .page-title-text {
+    grid-column: 2;
   }
   header h1 {
     text-align: center;
     font-size: 1.02rem;
     line-height: 1.2;
+    max-width: 100%;
   }
   .page-subtitle {
     font-size: 0.78rem;
+  }
+  .mobile-team-nav-btn {
+    display: inline-grid;
+    width: 32px;
+    height: 32px;
+    align-self: center;
+    border-color: rgba(255, 255, 255, 0.48);
+    background: rgba(255, 255, 255, 0.13);
+    color: #ffffff;
+    box-shadow: none;
+    font-size: 1.45rem;
+  }
+  .mobile-team-nav-btn:hover,
+  .mobile-team-nav-btn:focus-visible {
+    background: rgba(255, 255, 255, 0.24);
+    border-color: rgba(255, 255, 255, 0.72);
+    color: #ffffff;
   }
   .mobile-icon-btn {
     display: inline-grid;
@@ -5380,6 +5925,17 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
     min-height: 26px;
     max-width: 122px;
   }
+  .guest-roster-section #playersTable .salary-cap-hold-cell {
+    max-width: 122px;
+  }
+  .guest-roster-section #playersTable .salary-cap-hold-side {
+    left: calc(100% + 16px);
+    gap: 4px;
+  }
+  .guest-roster-section #playersTable .salary-cap-hold-ref {
+    padding: 2px 5px;
+    font-size: 0.58rem;
+  }
   .guest-roster-section #playersTable .salary-chip-main {
     padding: 4px 6px;
     font-size: 0.72rem;
@@ -5486,12 +6042,13 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   #trackerTable td:nth-child(3)::before { content: "GASTO Total"; }
   #trackerTable td:nth-child(4)::before { content: "Espacio CAP"; }
   #trackerTable td:nth-child(5)::before { content: "Espacio Luxury"; }
-  #trackerTable td:nth-child(6)::before { content: "Espacio 1er Apron"; }
-  #trackerTable td:nth-child(7)::before { content: "Espacio 2do Apron"; }
-  #trackerTable td:nth-child(8)::before { content: "Std"; }
-  #trackerTable td:nth-child(9)::before { content: "TW"; }
-  #trackerTable td:nth-child(10)::before { content: "1st Picks"; }
-  #trackerTable td:nth-child(11)::before { content: "2nd Picks"; }
+  #trackerTable td:nth-child(6)::before { content: "Luxury tax"; }
+  #trackerTable td:nth-child(7)::before { content: "Espacio 1er Apron"; }
+  #trackerTable td:nth-child(8)::before { content: "Espacio 2do Apron"; }
+  #trackerTable td:nth-child(9)::before { content: "Std"; }
+  #trackerTable td:nth-child(10)::before { content: "TW"; }
+  #trackerTable td:nth-child(11)::before { content: "1st Picks"; }
+  #trackerTable td:nth-child(12)::before { content: "2nd Picks"; }
   #deadContractsTable td:nth-child(1)::before { content: "Names"; }
   #deadContractsTable td:nth-child(2)::before { content: "2025-26"; }
   #deadContractsTable td:nth-child(3)::before { content: "2026-27"; }
@@ -5515,6 +6072,31 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   #deadContractsTable td > *,
   #exceptionsTable td > * {
     min-width: 0;
+  }
+  #trackerEconomyPanel .table-wrap {
+    overflow-x: auto;
+    border: 1px solid #d6dee9;
+    border-radius: 6px;
+    background: #ffffff;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+  }
+  #trackerEconomyTable {
+    min-width: 560px;
+    width: 100%;
+    table-layout: auto;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  #trackerEconomyTable th,
+  #trackerEconomyTable td {
+    padding: 8px 10px;
+    white-space: nowrap;
+  }
+  #trackerEconomyTable th {
+    font-size: 0.78rem;
+  }
+  #trackerEconomyTable td:not(:first-child) {
+    text-align: right;
   }
   .guest-dead-contracts-section #deadContractsTable td:nth-child(1),
   .guest-exceptions-section #exceptionsTable td:nth-child(1) {
