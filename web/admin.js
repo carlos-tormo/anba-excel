@@ -140,10 +140,12 @@ function contractOptionActionMessage(teamCode, playerName, season, optionValue, 
   const option = String(optionValue || '').toUpperCase();
   const verb = action === 'accepted' ? 'aceptar' : 'rechazar';
   if (option === 'TO') {
-    return `Confirmar que ${team} va a ${verb} su team option sobre ${player} para ${seasonLabel(season)}.`;
+    const suffix = action === 'accepted' ? ' La cantidad quedará garantizada y se retirará la marca TO de la celda.' : '';
+    return `Confirmar que ${team} va a ${verb} su team option sobre ${player} para ${seasonLabel(season)}.${suffix}`;
   }
   if (option === 'PO') {
-    return `Confirmar que ${player} va a ${verb} su player option con ${team} para ${seasonLabel(season)}.`;
+    const suffix = action === 'accepted' ? ' La cantidad quedará garantizada y se retirará la marca PO de la celda.' : '';
+    return `Confirmar que ${player} va a ${verb} su player option con ${team} para ${seasonLabel(season)}.${suffix}`;
   }
   if (option === 'QO') {
     return `Confirmar que ${team} va a ${verb} la qualifying offer de ${player} para ${seasonLabel(season)}.`;
@@ -4127,6 +4129,7 @@ function renderPlayers() {
           defaultNotify: true,
         });
         if (!decision.confirmed) return;
+        const nextOptionValue = action === 'accepted' && ['TO', 'PO'].includes(optionValue) ? '' : optionValue;
         saving = true;
         optionSelect.disabled = true;
         acceptBtn.disabled = true;
@@ -4135,14 +4138,15 @@ function renderPlayers() {
           await api(`/api/players/${p.id}`, {
             method: 'PATCH',
             body: JSON.stringify({
-              [optionField]: optionValue,
+              [optionField]: nextOptionValue || null,
               option_action: action,
               option_action_field: optionField,
               option_action_value: optionValue,
               notify_discord: decision.notifyDiscord,
             }),
           });
-          p[optionField] = optionValue;
+          p[optionField] = nextOptionValue || null;
+          optionSelect.value = nextOptionValue;
           applyOptionVisual();
         } catch (err) {
           alert(`No se pudo procesar la opción de contrato: ${err.message}`);

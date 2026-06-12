@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import json
 import math
 import os
@@ -2773,6 +2774,15 @@ class Handler(SimpleHTTPRequestHandler):
         "off",
     }
     discord_timeout_seconds = max(1, parse_int(os.getenv("DISCORD_WEBHOOK_TIMEOUT_SECONDS")) or 5)
+    discord_image_notifications_enabled = str(
+        os.getenv("DISCORD_IMAGE_NOTIFICATIONS_ENABLED", "false")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    openai_image_model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip() or "gpt-image-2"
+    openai_image_size = os.getenv("OPENAI_IMAGE_SIZE", "1536x1024").strip() or "1536x1024"
+    openai_image_quality = os.getenv("OPENAI_IMAGE_QUALITY", "high").strip() or "high"
+    openai_image_format = os.getenv("OPENAI_IMAGE_FORMAT", "jpeg").strip().lower() or "jpeg"
+    openai_image_timeout_seconds = max(10, parse_int(os.getenv("OPENAI_IMAGE_TIMEOUT_SECONDS")) or 120)
 
     pending_oauth_states: set[str] = set()
     login_attempts: Dict[str, Dict[str, Any]] = {}
@@ -3001,12 +3011,140 @@ class Handler(SimpleHTTPRequestHandler):
             return text
         return f"{text[: max(0, limit - 3)].rstrip()}..."
 
+    def _image_mime_type(self) -> tuple[str, str]:
+        image_format = self.openai_image_format.lower()
+        if image_format == "webp":
+            return "webp", "image/webp"
+        if image_format in {"jpg", "jpeg"}:
+            return "jpeg", "image/jpeg"
+        return "png", "image/png"
+
+    def _news_image_prompt(
+        self,
+        headline: str,
+        description: str,
+        *,
+        teams: Optional[List[str]] = None,
+        players: Optional[List[str]] = None,
+        context: Optional[str] = None,
+    ) -> str:
+        team_text = ", ".join(str(t).upper() for t in teams or [] if str(t or "").strip()) or "ANBA"
+        player_text = ", ".join(str(p) for p in players or [] if str(p or "").strip())
+        parts = [
+            "Create a landscape professional basketball news graphic for a Discord/social post.",
+            "Use an editorial transaction-news style with dramatic arena lighting, premium sports typography, and team-color accents.",
+            f"Main headline text exactly: {headline}",
+            f"Post context: {description}",
+            f"Relevant team(s): {team_text}.",
+            "Avoid official league marks, sponsor logos, watermarks, and unrelated extra text.",
+            "Do not include a fake scoreboard or stat table. Leave enough clean space around the headline for mobile readability.",
+        ]
+        if player_text:
+            parts.append(
+                f"Relevant player name(s): {player_text}. If showing a player, use a generic basketball player in team-inspired colors."
+            )
+        if context:
+            parts.append(f"Additional context: {context}")
+        return "\n".join(parts)
+
+    def _generate_openai_image(self, prompt: str) -> Optional[tuple[bytes, str, str]]:
+        if not prompt.strip() or not self.discord_image_notifications_enabled or not self.openai_api_key:
+            return None
+
+        image_ext, mime_type = self._image_mime_type()
+        request_payload: Dict[str, Any] = {
+            "model": self.openai_image_model,
+            "prompt": self._discord_text(prompt, 4000),
+            "size": self.openai_image_size,
+            "quality": self.openai_image_quality,
+            "n": 1,
+        }
+        if image_ext in {"jpeg", "png", "webp"}:
+            request_payload["output_format"] = image_ext
+
+        req = Request(
+            "https://api.openai.com/v1/images/generations",
+            data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=self.openai_image_timeout_seconds) as resp:
+                response = json.loads(resp.read().decode("utf-8"))
+            items = response.get("data") if isinstance(response, dict) else None
+            first = items[0] if isinstance(items, list) and items else {}
+            if first.get("b64_json"):
+                image_bytes = base64.b64decode(str(first["b64_json"]))
+            elif first.get("url"):
+                with urlopen(str(first["url"]), timeout=self.openai_image_timeout_seconds) as image_resp:
+                    image_bytes = image_resp.read()
+            else:
+                return None
+            return image_bytes, f"anba-news.{image_ext}", mime_type
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as err:
+            self.log_error("OpenAI image generation failed: %s", err)
+            return None
+
+    def _post_discord_json(self, payload: Dict[str, Any]) -> None:
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        req = Request(
+            self.discord_webhook_url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method="POST",
+        )
+        with urlopen(req, timeout=self.discord_timeout_seconds) as resp:
+            resp.read()
+
+    def _post_discord_multipart(
+        self,
+        payload: Dict[str, Any],
+        file_bytes: bytes,
+        filename: str,
+        mime_type: str,
+    ) -> None:
+        boundary = f"----anba-discord-{secrets.token_hex(16)}"
+        payload_json = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        chunks = [
+            f"--{boundary}\r\n".encode("utf-8"),
+            b'Content-Disposition: form-data; name="payload_json"\r\n',
+            b"Content-Type: application/json\r\n\r\n",
+            payload_json,
+            b"\r\n",
+            f"--{boundary}\r\n".encode("utf-8"),
+            f'Content-Disposition: form-data; name="files[0]"; filename="{filename}"\r\n'.encode("utf-8"),
+            f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"),
+            file_bytes,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode("utf-8"),
+        ]
+        body = b"".join(chunks)
+        req = Request(
+            self.discord_webhook_url,
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method="POST",
+        )
+        with urlopen(req, timeout=max(self.discord_timeout_seconds, 15)) as resp:
+            resp.read()
+
     def _notify_discord(
         self,
         title: str,
         description: str,
         fields: Optional[List[Dict[str, Any]]] = None,
         color: int = 0x0F766E,
+        image_prompt: Optional[str] = None,
     ) -> None:
         if not self.discord_notifications_enabled or not self.discord_webhook_url:
             return
@@ -3033,6 +3171,11 @@ class Handler(SimpleHTTPRequestHandler):
         if normalized_fields:
             embed["fields"] = normalized_fields[:25]
 
+        image_attachment = self._generate_openai_image(image_prompt or "")
+        if image_attachment:
+            _, filename, _ = image_attachment
+            embed["image"] = {"url": f"attachment://{filename}"}
+
         allowed_mentions: Dict[str, Any] = {"parse": []}
         payload: Dict[str, Any] = {
             "embeds": [embed],
@@ -3042,19 +3185,17 @@ class Handler(SimpleHTTPRequestHandler):
             payload["content"] = f"<@&{self.discord_role_id}>"
             allowed_mentions["roles"] = [self.discord_role_id]
 
-        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-        req = Request(
-            self.discord_webhook_url,
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "anba-excel/1.0",
-            },
-            method="POST",
-        )
         try:
-            with urlopen(req, timeout=self.discord_timeout_seconds) as resp:
-                resp.read()
+            if image_attachment:
+                file_bytes, filename, mime_type = image_attachment
+                try:
+                    self._post_discord_multipart(payload, file_bytes, filename, mime_type)
+                except (HTTPError, URLError, TimeoutError, OSError) as upload_err:
+                    self.log_error("Discord image notification failed; retrying text-only: %s", upload_err)
+                    embed.pop("image", None)
+                    self._post_discord_json(payload)
+            else:
+                self._post_discord_json(payload)
         except (HTTPError, URLError, TimeoutError, OSError) as err:
             self.log_error("Discord notification failed: %s", err)
 
@@ -3066,14 +3207,23 @@ class Handler(SimpleHTTPRequestHandler):
     def _notify_player_cut(self, result: Dict[str, Any]) -> None:
         team_code = str(result.get("team_code") or "").upper()
         player_name = str(result.get("player_name") or "Jugador")
+        headline = f"{team_code} corta a {player_name}"
+        description = "El jugador pasa a agentes libres y su contrato queda registrado como contrato muerto."
         self._notify_discord(
-            f"{team_code} corta a {player_name}",
-            "El jugador pasa a agentes libres y su contrato queda registrado como contrato muerto.",
+            headline,
+            description,
             fields=[
                 {"name": "Equipo", "value": team_code, "inline": True},
                 {"name": "Jugador", "value": player_name, "inline": True},
             ],
             color=0xB91C1C,
+            image_prompt=self._news_image_prompt(
+                headline,
+                description,
+                teams=[team_code],
+                players=[player_name],
+                context="Transaction: the team cuts the player. Visual should feel like a clean basketball news announcement.",
+            ),
         )
 
     def _trade_asset_summary(self, players: List[Any], pick_count: Any, right_count: Any) -> str:
@@ -3093,22 +3243,38 @@ class Handler(SimpleHTTPRequestHandler):
         team_b = str(result.get("team_b", {}).get("code") or "").upper()
         bucket = normalize_trade_bucket(result.get("trade_bucket"))
         bucket_label = "movimientos pre-30" if bucket == "pre30" else "movimientos post-30"
+        headline = f"{team_a} y {team_b} cierran un traspaso"
+        description = f"El movimiento queda registrado en la cuenta de {bucket_label}."
+        team_a_receives = self._trade_asset_summary(result.get("players_b") or [], result.get("pick_count_b"), result.get("right_count_b"))
+        team_b_receives = self._trade_asset_summary(result.get("players_a") or [], result.get("pick_count_a"), result.get("right_count_a"))
+        player_names = [
+            str(name)
+            for name in list(result.get("players_a") or []) + list(result.get("players_b") or [])
+            if str(name or "").strip()
+        ]
         self._notify_discord(
-            f"{team_a} y {team_b} cierran un traspaso",
-            f"El movimiento queda registrado en la cuenta de {bucket_label}.",
+            headline,
+            description,
             fields=[
                 {
                     "name": f"{team_a} recibe",
-                    "value": self._trade_asset_summary(result.get("players_b") or [], result.get("pick_count_b"), result.get("right_count_b")),
+                    "value": team_a_receives,
                     "inline": False,
                 },
                 {
                     "name": f"{team_b} recibe",
-                    "value": self._trade_asset_summary(result.get("players_a") or [], result.get("pick_count_a"), result.get("right_count_a")),
+                    "value": team_b_receives,
                     "inline": False,
                 },
             ],
             color=0x0F766E,
+            image_prompt=self._news_image_prompt(
+                headline,
+                description,
+                teams=[team_a, team_b],
+                players=player_names[:6],
+                context=f"{team_a} receives: {team_a_receives}. {team_b} receives: {team_b_receives}.",
+            ),
         )
 
     def _notify_contract_option_action(
@@ -3134,9 +3300,16 @@ class Handler(SimpleHTTPRequestHandler):
             headline = f"{team_code} {verb} la opción GAP de {player_name}"
         else:
             headline = f"{team_code} {verb} la opción {option_type} de {player_name}"
+        description = f"Decisión registrada para la temporada {season_text}."
+        option_context = {
+            "TO": "team option",
+            "PO": "player option",
+            "QO": "qualifying offer",
+            "GAP": "GAP option",
+        }.get(option_type, f"{option_type} option")
         self._notify_discord(
             headline,
-            f"Decisión registrada para la temporada {season_text}.",
+            description,
             fields=[
                 {"name": "Equipo", "value": team_code, "inline": True},
                 {"name": "Jugador", "value": player_name, "inline": True},
@@ -3144,6 +3317,13 @@ class Handler(SimpleHTTPRequestHandler):
                 {"name": "Opción", "value": option_type, "inline": True},
             ],
             color=0x7C3AED if normalized_action == "accepted" else 0xB91C1C,
+            image_prompt=self._news_image_prompt(
+                headline,
+                description,
+                teams=[team_code],
+                players=[player_name],
+                context=f"Contract decision: the {option_context} was {normalized_action} for season {season_text}.",
+            ),
         )
 
     def _exchange_google_code(self, code: str) -> Dict[str, Any]:
@@ -4036,6 +4216,8 @@ class Handler(SimpleHTTPRequestHandler):
                 if option_action_value not in {"TO", "PO", "QO", "GAP"}:
                     self._json(400, {"error": "invalid_option_action_value"})
                     return
+                if option_action == "accepted" and option_action_value in {"TO", "PO"}:
+                    payload[option_action_field] = None
             ok = self.db.update_player(player_id, payload)
             if ok:
                 log_details: Dict[str, Any] = {"fields": sorted(payload.keys())}
