@@ -657,10 +657,20 @@ function capHoldInfo(player, season) {
   }
 
   if (isTwoWayPlayer(player)) {
+    if (!isQualifyingOffer) {
+      return { active: false, displayable: false, amount: 0 };
+    }
+    const capHoldAmount = minimumSalaryForSeason(season, 1, 1);
+    const details = [
+      'Cap hold QO two-way: mínimo de veterano de un año.',
+      qualifyingOfferValue > 0 ? `QO visible: ${formatDots(qualifyingOfferValue)}.` : '',
+      `Cuenta CAP: ${formatDots(capHoldAmount)}.`,
+    ].filter(Boolean).join(' ');
     return calculatedCapHold(
-      minimumSalaryForSeason(season, 1, 1),
-      'TW hold',
-      'Cap hold two-way: mínimo de veterano de un año.',
+      capHoldAmount,
+      'QO hold',
+      details,
+      { displayAmount: qualifyingOfferValue || undefined },
     );
   }
 
