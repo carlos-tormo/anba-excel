@@ -134,6 +134,26 @@ function contractOptionClass(value) {
   return `salary-option--${v.toLowerCase()}`;
 }
 
+function contractOptionActionMessage(teamCode, playerName, season, optionValue, action) {
+  const team = String(teamCode || state.teamCode || '').toUpperCase();
+  const player = playerName || 'this player';
+  const option = String(optionValue || '').toUpperCase();
+  const verb = action === 'accepted' ? 'aceptar' : 'rechazar';
+  if (option === 'TO') {
+    return `Confirmar que ${team} va a ${verb} su team option sobre ${player} para ${seasonLabel(season)}.`;
+  }
+  if (option === 'PO') {
+    return `Confirmar que ${player} va a ${verb} su player option con ${team} para ${seasonLabel(season)}.`;
+  }
+  if (option === 'QO') {
+    return `Confirmar que ${team} va a ${verb} la qualifying offer de ${player} para ${seasonLabel(season)}.`;
+  }
+  if (option === 'GAP') {
+    return `Confirmar que ${team} va a ${verb} la opción GAP de ${player} para ${seasonLabel(season)}.`;
+  }
+  return `Confirmar que ${team} va a ${verb} la opción ${option} de ${player} para ${seasonLabel(season)}.`;
+}
+
 function salaryTextTagClass(value) {
   const v = String(value || '').trim().toUpperCase();
   if (v === 'FB') return 'salary-text-tag--fb';
@@ -447,6 +467,60 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function confirmWithDiscordNotification({
+  title,
+  message,
+  confirmLabel = 'Confirmar',
+  notifyLabel = 'Enviar notificación a Discord',
+  defaultNotify = true,
+  danger = false,
+} = {}) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop notification-confirm-backdrop';
+    backdrop.setAttribute('role', 'dialog');
+    backdrop.setAttribute('aria-modal', 'true');
+    backdrop.innerHTML = `
+      <div class="modal-card notification-confirm-modal">
+        <div class="modal-header">
+          <h2>${escapeHtml(title || 'Confirmar acción')}</h2>
+        </div>
+        <p class="notification-confirm-message">${escapeHtml(message || '').replaceAll('\n', '<br>')}</p>
+        <label class="notify-confirm-toggle">
+          <input type="checkbox" data-role="notify-discord" ${defaultNotify ? 'checked' : ''}>
+          <span>${escapeHtml(notifyLabel)}</span>
+        </label>
+        <div class="notification-confirm-actions">
+          <button type="button" data-action="cancel">Cancelar</button>
+          <button type="button" data-action="confirm" class="${danger ? 'danger' : ''}">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>
+    `;
+
+    const cleanup = (value) => {
+      document.removeEventListener('keydown', onKeyDown);
+      backdrop.remove();
+      resolve(value);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') cleanup({ confirmed: false, notifyDiscord: false });
+    };
+    document.addEventListener('keydown', onKeyDown);
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) cleanup({ confirmed: false, notifyDiscord: false });
+    });
+    backdrop.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+      cleanup({ confirmed: false, notifyDiscord: false });
+    });
+    backdrop.querySelector('[data-action="confirm"]').addEventListener('click', () => {
+      const notifyDiscord = Boolean(backdrop.querySelector('[data-role="notify-discord"]')?.checked);
+      cleanup({ confirmed: true, notifyDiscord });
+    });
+    document.body.appendChild(backdrop);
+    backdrop.querySelector('[data-action="confirm"]')?.focus();
+  });
 }
 
 function visibleSeasonYears() {
@@ -2155,10 +2229,13 @@ async function confirmTrade() {
   }
   const tradeBucket = normalizeMoveBucket(document.getElementById('tradeBucketSelect')?.value || state.settings.trade_move_phase);
 
-  const ok = confirm(
-    `Confirm trade:\n- ${teamA}: ${fromA.length} player(s), ${pickIdsA.length} pick(s), ${rightIdsA.length} right(s)\n- ${teamB}: ${fromB.length} player(s), ${pickIdsB.length} pick(s), ${rightIdsB.length} right(s)\n- Bucket: ${moveBucketLabel(tradeBucket)}`
-  );
-  if (!ok) return;
+  const decision = await confirmWithDiscordNotification({
+    title: 'Confirmar traspaso',
+    message: `${teamA}: ${fromA.length} jugador(es), ${pickIdsA.length} ronda(s), ${rightIdsA.length} derecho(s)\n${teamB}: ${fromB.length} jugador(es), ${pickIdsB.length} ronda(s), ${rightIdsB.length} derecho(s)\nCuenta como: ${moveBucketLabel(tradeBucket)}`,
+    confirmLabel: 'Confirmar traspaso',
+    defaultNotify: true,
+  });
+  if (!decision.confirmed) return;
 
   const btn = document.getElementById('confirmTradeBtn');
   btn.disabled = true;
@@ -2177,6 +2254,7 @@ async function confirmTrade() {
         no_count_players_a: Array.from(state.trade.noCountA),
         no_count_players_b: Array.from(state.trade.noCountB),
         trade_bucket: tradeBucket,
+        notify_discord: decision.notifyDiscord,
       }),
     });
     if (!result.ok) {
@@ -4016,9 +4094,74 @@ function renderPlayers() {
           saving = false;
         }
       };
+      const actionWrap = document.createElement('span');
+      actionWrap.className = 'option-action-buttons';
+      const acceptBtn = document.createElement('button');
+      acceptBtn.type = 'button';
+      acceptBtn.className = 'option-action-btn option-action-btn--accept';
+      acceptBtn.textContent = 'Accept';
+      const rejectBtn = document.createElement('button');
+      rejectBtn.type = 'button';
+      rejectBtn.className = 'option-action-btn option-action-btn--reject';
+      rejectBtn.textContent = 'Reject';
+      actionWrap.append(acceptBtn, rejectBtn);
+      optionSelect.insertAdjacentElement('afterend', actionWrap);
+
+      const syncOptionActions = () => {
+        const hasOption = ['TO', 'PO', 'QO', 'GAP'].includes(String(optionSelect.value || '').toUpperCase());
+        actionWrap.classList.toggle('section-hidden', !hasOption);
+        acceptBtn.disabled = saving || !hasOption;
+        rejectBtn.disabled = saving || !hasOption;
+      };
+      const processOptionAction = async (action) => {
+        const optionValue = String(optionSelect.value || '').toUpperCase();
+        if (!['TO', 'PO', 'QO', 'GAP'].includes(optionValue)) {
+          alert('Select an option type first.');
+          return;
+        }
+        const decision = await confirmWithDiscordNotification({
+          title: action === 'accepted' ? 'Aceptar opción' : 'Rechazar opción',
+          message: contractOptionActionMessage(state.teamCode, p.name, season, optionValue, action),
+          confirmLabel: action === 'accepted' ? 'Accept' : 'Reject',
+          danger: action === 'rejected',
+          defaultNotify: true,
+        });
+        if (!decision.confirmed) return;
+        saving = true;
+        optionSelect.disabled = true;
+        acceptBtn.disabled = true;
+        rejectBtn.disabled = true;
+        try {
+          await api(`/api/players/${p.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              [optionField]: optionValue,
+              option_action: action,
+              option_action_field: optionField,
+              option_action_value: optionValue,
+              notify_discord: decision.notifyDiscord,
+            }),
+          });
+          p[optionField] = optionValue;
+          applyOptionVisual();
+        } catch (err) {
+          alert(`No se pudo procesar la opción de contrato: ${err.message}`);
+        } finally {
+          optionSelect.disabled = false;
+          saving = false;
+          syncOptionActions();
+        }
+      };
       applyOptionVisual();
-      optionSelect.addEventListener('change', () => { void persistOption(); });
-      optionSelect.addEventListener('blur', () => { void persistOption(); });
+      syncOptionActions();
+      optionSelect.addEventListener('change', () => {
+        void persistOption().then(syncOptionActions);
+      });
+      optionSelect.addEventListener('blur', () => {
+        void persistOption().then(syncOptionActions);
+      });
+      acceptBtn.addEventListener('click', () => { void processOptionAction('accepted'); });
+      rejectBtn.addEventListener('click', () => { void processOptionAction('rejected'); });
     });
 
     const nameInput = tr.querySelector('input[data-field="name"]');
@@ -4046,8 +4189,18 @@ function renderPlayers() {
     }
 
     tr.querySelector('[data-action="cut"]').addEventListener('click', async () => {
-      if (!confirm(`Cut ${p.name || 'this player'}? This creates a dead contract and adds him to Free agents.`)) return;
-      await api(`/api/players/${p.id}/cut`, { method: 'POST', body: '{}' });
+      const decision = await confirmWithDiscordNotification({
+        title: 'Cortar jugador',
+        message: `Cut ${p.name || 'this player'}? This creates a dead contract and adds him to Free agents.`,
+        confirmLabel: 'Cut',
+        danger: true,
+        defaultNotify: true,
+      });
+      if (!decision.confirmed) return;
+      await api(`/api/players/${p.id}/cut`, {
+        method: 'POST',
+        body: JSON.stringify({ notify_discord: decision.notifyDiscord }),
+      });
       await loadTeam(state.teamCode);
     });
 
@@ -4241,10 +4394,20 @@ async function cutSelectedPlayersAction() {
     alert('Select at least one player.');
     return;
   }
-  if (!confirm(`Cut ${players.length} selected player(s)? This creates dead contracts, adds them to Free agents, and removes them from the roster.`)) return;
+  const decision = await confirmWithDiscordNotification({
+    title: 'Cortar jugadores',
+    message: `Cut ${players.length} selected player(s)? This creates dead contracts, adds them to Free agents, and removes them from the roster.`,
+    confirmLabel: 'Cut selected',
+    danger: true,
+    defaultNotify: true,
+  });
+  if (!decision.confirmed) return;
 
   for (const p of players) {
-    await api(`/api/players/${p.id}/cut`, { method: 'POST', body: '{}' });
+    await api(`/api/players/${p.id}/cut`, {
+      method: 'POST',
+      body: JSON.stringify({ notify_discord: decision.notifyDiscord }),
+    });
   }
   await loadTeam(state.teamCode);
 }

@@ -1244,6 +1244,20 @@ class LeagueDB:
                 "gm_history": gm_history,
             }
 
+    def get_player_record(self, player_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT p.*, t.code AS team_code, t.name AS team_name
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.id = ?
+                """,
+                (player_id,),
+            )
+            row = cur.fetchone()
+            return row_to_dict(cur, row) if row else None
+
     def list_gm_history(self, code: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         with self.connect() as conn:
             params: List[Any] = []
@@ -2750,6 +2764,15 @@ class Handler(SimpleHTTPRequestHandler):
     google_client_id = os.getenv("GOOGLE_CLIENT_ID", "")
     google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
     google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/auth/google/callback")
+    discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    discord_role_id = os.getenv("DISCORD_NOTIFY_ROLE_ID", "486604867293544458").strip()
+    discord_notifications_enabled = str(os.getenv("DISCORD_NOTIFICATIONS_ENABLED", "true")).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    discord_timeout_seconds = max(1, parse_int(os.getenv("DISCORD_WEBHOOK_TIMEOUT_SECONDS")) or 5)
 
     pending_oauth_states: set[str] = set()
     login_attempts: Dict[str, Dict[str, Any]] = {}
@@ -2970,6 +2993,157 @@ class Handler(SimpleHTTPRequestHandler):
             entity_id=entity_id,
             team_code=team_code,
             details=details or {},
+        )
+
+    def _discord_text(self, value: Any, limit: int) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[: max(0, limit - 3)].rstrip()}..."
+
+    def _notify_discord(
+        self,
+        title: str,
+        description: str,
+        fields: Optional[List[Dict[str, Any]]] = None,
+        color: int = 0x0F766E,
+    ) -> None:
+        if not self.discord_notifications_enabled or not self.discord_webhook_url:
+            return
+
+        normalized_fields: List[Dict[str, Any]] = []
+        for field in fields or []:
+            name = self._discord_text(field.get("name"), 256)
+            value = self._discord_text(field.get("value"), 1024)
+            if not name or not value:
+                continue
+            normalized_fields.append(
+                {
+                    "name": name,
+                    "value": value,
+                    "inline": bool(field.get("inline")),
+                }
+            )
+
+        embed: Dict[str, Any] = {
+            "title": self._discord_text(title, 256),
+            "description": self._discord_text(description, 4096),
+            "color": color,
+        }
+        if normalized_fields:
+            embed["fields"] = normalized_fields[:25]
+
+        allowed_mentions: Dict[str, Any] = {"parse": []}
+        payload: Dict[str, Any] = {
+            "embeds": [embed],
+            "allowed_mentions": allowed_mentions,
+        }
+        if re.fullmatch(r"\d+", self.discord_role_id):
+            payload["content"] = f"<@&{self.discord_role_id}>"
+            allowed_mentions["roles"] = [self.discord_role_id]
+
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        req = Request(
+            self.discord_webhook_url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=self.discord_timeout_seconds) as resp:
+                resp.read()
+        except (HTTPError, URLError, TimeoutError, OSError) as err:
+            self.log_error("Discord notification failed: %s", err)
+
+    def _discord_notify_requested(self, payload: Dict[str, Any]) -> bool:
+        if "notify_discord" not in payload:
+            return True
+        return parse_bool(payload.get("notify_discord"))
+
+    def _notify_player_cut(self, result: Dict[str, Any]) -> None:
+        team_code = str(result.get("team_code") or "").upper()
+        player_name = str(result.get("player_name") or "Jugador")
+        self._notify_discord(
+            f"{team_code} corta a {player_name}",
+            "El jugador pasa a agentes libres y su contrato queda registrado como contrato muerto.",
+            fields=[
+                {"name": "Equipo", "value": team_code, "inline": True},
+                {"name": "Jugador", "value": player_name, "inline": True},
+            ],
+            color=0xB91C1C,
+        )
+
+    def _trade_asset_summary(self, players: List[Any], pick_count: Any, right_count: Any) -> str:
+        items = [str(name) for name in players or [] if str(name or "").strip()]
+        picks = parse_int(str(pick_count))
+        rights = parse_int(str(right_count))
+        if picks and picks > 0:
+            items.append(f"{picks} ronda(s) del draft")
+        if rights and rights > 0:
+            items.append(f"{rights} derecho(s) de jugador")
+        if not items:
+            return "Sin activos registrados"
+        return "\n".join(f"- {item}" for item in items)
+
+    def _notify_trade_processed(self, result: Dict[str, Any]) -> None:
+        team_a = str(result.get("team_a", {}).get("code") or "").upper()
+        team_b = str(result.get("team_b", {}).get("code") or "").upper()
+        bucket = normalize_trade_bucket(result.get("trade_bucket"))
+        bucket_label = "movimientos pre-30" if bucket == "pre30" else "movimientos post-30"
+        self._notify_discord(
+            f"{team_a} y {team_b} cierran un traspaso",
+            f"El movimiento queda registrado en la cuenta de {bucket_label}.",
+            fields=[
+                {
+                    "name": f"{team_a} recibe",
+                    "value": self._trade_asset_summary(result.get("players_b") or [], result.get("pick_count_b"), result.get("right_count_b")),
+                    "inline": False,
+                },
+                {
+                    "name": f"{team_b} recibe",
+                    "value": self._trade_asset_summary(result.get("players_a") or [], result.get("pick_count_a"), result.get("right_count_a")),
+                    "inline": False,
+                },
+            ],
+            color=0x0F766E,
+        )
+
+    def _notify_contract_option_action(
+        self,
+        player: Dict[str, Any],
+        season: int,
+        option_value: str,
+        action: str,
+    ) -> None:
+        team_code = str(player.get("team_code") or "").upper()
+        player_name = str(player.get("name") or "Jugador")
+        option_type = option_value.strip().upper()
+        normalized_action = "accepted" if action == "accepted" else "rejected"
+        verb = "acepta" if normalized_action == "accepted" else "rechaza"
+        season_text = f"{season}-{(season + 1) % 100:02d}"
+        if option_type == "TO":
+            headline = f"{team_code} {verb} la team option de {player_name}"
+        elif option_type == "PO":
+            headline = f"{player_name} {verb} su player option con {team_code}"
+        elif option_type == "QO":
+            headline = f"{team_code} {verb} la qualifying offer de {player_name}"
+        elif option_type == "GAP":
+            headline = f"{team_code} {verb} la opción GAP de {player_name}"
+        else:
+            headline = f"{team_code} {verb} la opción {option_type} de {player_name}"
+        self._notify_discord(
+            headline,
+            f"Decisión registrada para la temporada {season_text}.",
+            fields=[
+                {"name": "Equipo", "value": team_code, "inline": True},
+                {"name": "Jugador", "value": player_name, "inline": True},
+                {"name": "Temporada", "value": season_text, "inline": True},
+                {"name": "Opción", "value": option_type, "inline": True},
+            ],
+            color=0x7C3AED if normalized_action == "accepted" else 0xB91C1C,
         )
 
     def _exchange_google_code(self, code: str) -> Dict[str, Any]:
@@ -3343,6 +3517,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "free_agent_id": result.get("free_agent_id"),
                 },
             )
+            if self._discord_notify_requested(payload):
+                self._notify_player_cut(result)
             self._json(200, {"ok": True, "result": result})
             return
 
@@ -3428,6 +3604,8 @@ class Handler(SimpleHTTPRequestHandler):
                         "move_count_b": result.get("team_b", {}).get("move_count"),
                     },
                 )
+                if self._discord_notify_requested(payload):
+                    self._notify_trade_processed(result)
             self._json(200 if result else 400, {"ok": bool(result), "result": result})
             return
 
@@ -3832,9 +4010,57 @@ class Handler(SimpleHTTPRequestHandler):
 
         if parsed.path.startswith("/api/players/"):
             player_id = int(parsed.path.split("/")[-1])
+            option_action = str(payload.get("option_action") or "").strip().lower()
+            option_action_field = str(payload.get("option_action_field") or "").strip()
+            option_action_value = str(payload.get("option_action_value") or "").strip().upper()
+            option_action_season: Optional[int] = None
+            player_before: Optional[Dict[str, Any]] = None
+            if option_action:
+                if option_action not in {"accepted", "rejected"}:
+                    self._json(400, {"error": "invalid_option_action"})
+                    return
+                match = re.fullmatch(r"option_(20\d{2})", option_action_field)
+                if not match:
+                    self._json(400, {"error": "invalid_option_action_field"})
+                    return
+                option_action_season = parse_int(match.group(1))
+                if option_action_season is None:
+                    self._json(400, {"error": "invalid_option_action_season"})
+                    return
+                player_before = self.db.get_player_record(player_id)
+                if not player_before:
+                    self._json(404, {"error": "player_not_found"})
+                    return
+                if not option_action_value:
+                    option_action_value = str(payload.get(option_action_field) or player_before.get(option_action_field) or "").strip().upper()
+                if option_action_value not in {"TO", "PO", "QO", "GAP"}:
+                    self._json(400, {"error": "invalid_option_action_value"})
+                    return
             ok = self.db.update_player(player_id, payload)
             if ok:
-                self._log_admin_action("update", "player", str(player_id), None, {"fields": sorted(payload.keys())})
+                log_details: Dict[str, Any] = {"fields": sorted(payload.keys())}
+                if option_action and option_action_season is not None:
+                    log_details.update(
+                        {
+                            "option_action": option_action,
+                            "option_action_field": option_action_field,
+                            "option_action_value": option_action_value,
+                            "option_action_season": option_action_season,
+                        }
+                    )
+                self._log_admin_action("update", "player", str(player_id), None, log_details)
+                if (
+                    option_action
+                    and option_action_season is not None
+                    and player_before
+                    and self._discord_notify_requested(payload)
+                ):
+                    self._notify_contract_option_action(
+                        player_before,
+                        option_action_season,
+                        option_action_value,
+                        option_action,
+                    )
             self._json(200 if ok else 404, {"ok": ok})
             return
 
