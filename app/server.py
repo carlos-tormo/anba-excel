@@ -27,6 +27,38 @@ ROSTER_TWO_WAY_MAX_DEFAULT = 3
 CAP_FORECAST_MIN_YEAR = 2025
 CAP_FORECAST_MAX_YEAR = 2035
 CAP_FORECAST_WINDOW = 6
+TEAM_IMAGE_COLORS = {
+    "ATL": "#E03A3E, #C1D32F",
+    "BKN": "#000000, #FFFFFF",
+    "BOS": "#007A33, #BA9653",
+    "CHA": "#1D1160, #00788C",
+    "CHI": "#CE1141, #000000",
+    "CLE": "#860038, #FDBB30",
+    "DAL": "#00538C, #002F5F",
+    "DEN": "#0E2240, #FEC524",
+    "DET": "#C8102E, #1D42BA",
+    "GSW": "#1D428A, #FFC72C",
+    "HOU": "#CE1141, #000000",
+    "IND": "#002D62, #FDBB30",
+    "LAC": "#C8102E, #1D428A",
+    "LAL": "#552583, #FDB927",
+    "MEM": "#12173F, #5D76A9",
+    "MIA": "#98002E, #000000",
+    "MIL": "#00471B, #EEE1C6",
+    "MIN": "#0C2340, #9EA2A2",
+    "NOP": "#0C2340, #C8102E",
+    "NYK": "#006BB6, #F58426",
+    "OKC": "#007AC1, #EF3B24",
+    "ORL": "#0077C0, #000000",
+    "PHI": "#006BB6, #ED174C",
+    "PHX": "#E56020, #1D1160",
+    "POR": "#E03A3E, #000000",
+    "SAC": "#5A2D81, #63727A",
+    "SAS": "#000000, #C4CED4",
+    "TOR": "#CE1141, #000000",
+    "UTA": "#002B5C, #00471B",
+    "WAS": "#002B5C, #E31837",
+}
 DEFAULT_TEAM_ECONOMY_2025 = {
     "ATL": {"balance": 49_905_105, "revenue": 372_450_359, "expenses": -322_545_254},
     "BKN": {"balance": 117_587_256, "revenue": 493_925_372, "expenses": -376_338_116},
@@ -723,6 +755,8 @@ class LeagueDB:
             for col in contract_note_text_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
+            if "reference_image_url" not in cols:
+                conn.execute("ALTER TABLE players ADD COLUMN reference_image_url TEXT")
             asset_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(assets)").fetchall()
@@ -1670,7 +1704,7 @@ class LeagueDB:
             "salary_2025_note_text", "salary_2026_note_text", "salary_2027_note_text",
             "salary_2028_note_text", "salary_2029_note_text", "salary_2030_note_text",
             "option_2025", "option_2026", "option_2027", "option_2028", "option_2029", "option_2030",
-            "notes",
+            "notes", "reference_image_url",
         ]
         bool_fields = [
             "provisional_amounts", "partially_guaranteed", "contract_notes",
@@ -1766,6 +1800,7 @@ class LeagueDB:
                 "option_2028": payload.get("option_2028"),
                 "option_2029": payload.get("option_2029"),
                 "option_2030": payload.get("option_2030"),
+                "reference_image_url": payload.get("reference_image_url"),
                 "provisional_amounts": 1 if parse_bool(payload.get("provisional_amounts")) else 0,
                 "partially_guaranteed": 1 if parse_bool(payload.get("partially_guaranteed")) else 0,
                 "salary_2025_provisional": 1 if parse_bool(payload.get("salary_2025_provisional")) else 0,
@@ -1800,8 +1835,8 @@ class LeagueDB:
                     salary_2028_partially_guaranteed, salary_2029_partially_guaranteed, salary_2030_partially_guaranteed,
                     salary_2025_guaranteed_text, salary_2026_guaranteed_text, salary_2027_guaranteed_text,
                     salary_2028_guaranteed_text, salary_2029_guaranteed_text, salary_2030_guaranteed_text,
-                    notes, is_two_way, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    notes, reference_image_url, is_two_way, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -1850,6 +1885,7 @@ class LeagueDB:
                     values["salary_2029_guaranteed_text"],
                     values["salary_2030_guaranteed_text"],
                     values["notes"],
+                    values["reference_image_url"],
                     1 if str(values["bird_rights"] or "").upper() == "TW" else 0,
                     now,
                     now,
@@ -1961,7 +1997,7 @@ class LeagueDB:
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                SELECT p.*, t.code AS team_code
+                SELECT p.*, t.code AS team_code, t.name AS team_name
                 FROM players p
                 JOIN teams t ON t.id = p.team_id
                 WHERE p.id = ?
@@ -2042,7 +2078,9 @@ class LeagueDB:
             conn.commit()
             return {
                 "team_code": team_code,
+                "team_name": player.get("team_name"),
                 "player_name": player.get("name"),
+                "reference_image_url": player.get("reference_image_url"),
                 "dead_contract_id": int(dead_cur.lastrowid),
                 "free_agent_id": int(free_cur.lastrowid),
             }
@@ -2783,6 +2821,14 @@ class Handler(SimpleHTTPRequestHandler):
     openai_image_quality = os.getenv("OPENAI_IMAGE_QUALITY", "high").strip() or "high"
     openai_image_format = os.getenv("OPENAI_IMAGE_FORMAT", "jpeg").strip().lower() or "jpeg"
     openai_image_timeout_seconds = max(10, parse_int(os.getenv("OPENAI_IMAGE_TIMEOUT_SECONDS")) or 120)
+    openai_reference_image_timeout_seconds = max(
+        5,
+        parse_int(os.getenv("OPENAI_REFERENCE_IMAGE_TIMEOUT_SECONDS")) or 20,
+    )
+    openai_reference_image_max_bytes = max(
+        250_000,
+        parse_int(os.getenv("OPENAI_REFERENCE_IMAGE_MAX_BYTES")) or 6_000_000,
+    )
 
     pending_oauth_states: set[str] = set()
     login_attempts: Dict[str, Dict[str, Any]] = {}
@@ -3019,6 +3065,77 @@ class Handler(SimpleHTTPRequestHandler):
             return "jpeg", "image/jpeg"
         return "png", "image/png"
 
+    def _team_image_colors(self, team_code: str) -> str:
+        return TEAM_IMAGE_COLORS.get(str(team_code or "").upper(), "#0F766E, #111827")
+
+    def _reference_image_mime_type(self, content_type: str, url_path: str) -> tuple[str, str]:
+        mime = (content_type or "").split(";", 1)[0].strip().lower()
+        if mime in {"image/jpeg", "image/jpg"}:
+            return "jpg", "image/jpeg"
+        if mime == "image/png":
+            return "png", "image/png"
+        if mime == "image/webp":
+            return "webp", "image/webp"
+        path = url_path.lower()
+        if path.endswith((".jpg", ".jpeg")):
+            return "jpg", "image/jpeg"
+        if path.endswith(".webp"):
+            return "webp", "image/webp"
+        return "png", "image/png"
+
+    def _openai_image_from_response(self, response: Dict[str, Any]) -> Optional[tuple[bytes, str, str]]:
+        image_ext, mime_type = self._image_mime_type()
+        items = response.get("data") if isinstance(response, dict) else None
+        first = items[0] if isinstance(items, list) and items else {}
+        if first.get("b64_json"):
+            image_bytes = base64.b64decode(str(first["b64_json"]))
+        elif first.get("url"):
+            with urlopen(str(first["url"]), timeout=self.openai_image_timeout_seconds) as image_resp:
+                image_bytes = image_resp.read()
+        else:
+            return None
+        return image_bytes, f"anba-news.{image_ext}", mime_type
+
+    def _http_error_excerpt(self, err: HTTPError, limit: int = 1200) -> str:
+        try:
+            body = err.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        if len(body) > limit:
+            body = f"{body[:limit].rstrip()}..."
+        return f"{err} {body}".strip()
+
+    def _fetch_reference_image(self, image_url: str) -> Optional[tuple[bytes, str, str]]:
+        image_url = str(image_url or "").strip()
+        if not image_url:
+            return None
+        parsed = urlparse(image_url)
+        if parsed.scheme not in {"http", "https"}:
+            self.log_error("OpenAI reference image skipped: unsupported URL scheme")
+            return None
+        req = Request(
+            image_url,
+            headers={"User-Agent": "anba-excel/1.0"},
+            method="GET",
+        )
+        try:
+            with urlopen(req, timeout=self.openai_reference_image_timeout_seconds) as resp:
+                content_type = str(resp.headers.get("Content-Type") or "")
+                image_bytes = resp.read(self.openai_reference_image_max_bytes + 1)
+            if len(image_bytes) > self.openai_reference_image_max_bytes:
+                self.log_error("OpenAI reference image skipped: file exceeds configured max size")
+                return None
+            image_ext, mime_type = self._reference_image_mime_type(content_type, parsed.path)
+            if not mime_type.startswith("image/"):
+                self.log_error("OpenAI reference image skipped: URL did not return an image")
+                return None
+            return image_bytes, f"reference.{image_ext}", mime_type
+        except HTTPError as err:
+            self.log_error("OpenAI reference image fetch failed: %s", self._http_error_excerpt(err))
+        except (URLError, TimeoutError, OSError, ValueError) as err:
+            self.log_error("OpenAI reference image fetch failed: %s", err)
+        return None
+
     def _news_image_prompt(
         self,
         headline: str,
@@ -3027,7 +3144,146 @@ class Handler(SimpleHTTPRequestHandler):
         teams: Optional[List[str]] = None,
         players: Optional[List[str]] = None,
         context: Optional[str] = None,
+        team_name: Optional[str] = None,
+        team_code: Optional[str] = None,
+        player_name: Optional[str] = None,
+        secondary_headline: Optional[str] = None,
+        additional_details: Optional[str] = None,
+        transaction_type: Optional[str] = None,
+        use_player_reference: bool = False,
     ) -> str:
+        if use_player_reference:
+            resolved_team_code = str(team_code or (teams or [""])[0] or "").upper()
+            resolved_team_name = str(team_name or resolved_team_code or "ANBA").strip()
+            resolved_player_name = str(player_name or (players or [""])[0] or "Jugador").strip()
+            return f"""Create a professional NBA social media breaking news graphic using the uploaded player image as the primary reference.
+
+IMPORTANT PLAYER REFERENCE INSTRUCTIONS
+
+- Use the uploaded photo as the source reference.
+- Preserve the player's facial features, hair, skin tone, expression, body proportions, and overall likeness accurately.
+- The player must remain clearly recognizable as the same person from the reference image.
+- Do not alter age, ethnicity, facial structure, hairstyle, or physical characteristics.
+- Remove the original team uniform and replace it with an authentic, realistic {resolved_team_name} uniform.
+- Jersey colors, typography, trim, logos, and styling should accurately reflect the team's current branding.
+- Maintain realistic jersey fabric, lighting, wrinkles, and athletic appearance.
+- The player should appear as if photographed professionally while playing for {resolved_team_name}.
+
+DESIGN OBJECTIVE
+
+Create a premium NBA transaction announcement graphic suitable for major basketball news accounts on Twitter/X, Instagram, Threads, and sports media websites.
+
+VISUAL STYLE
+
+- Professional NBA media graphic
+- Bleacher Report quality
+- ESPN social media quality
+- House of Highlights quality
+- Courtside Buzz style presentation
+- Modern sports marketing creative
+- Premium Photoshop compositing
+- Editorial sports poster
+- High-end sports journalism graphic
+- Viral social media design
+- Clean information hierarchy
+- Photorealistic athlete rendering
+- Ultra-sharp details
+- Dynamic contrast
+- Dramatic lighting
+- Premium typography
+
+LAYOUT
+
+- Landscape format (16:9)
+- Player positioned on the right side occupying approximately 50-60% of the composition
+- Large headline typography on the left side
+- Team logo integrated into the background at low opacity
+- Team branding incorporated throughout the design
+- Strong focal point on the player
+- Clean visual hierarchy optimized for mobile viewing
+- Professional spacing and alignment
+
+BACKGROUND
+
+- Dark textured sports background
+- Arena atmosphere
+- Subtle smoke and lighting effects
+- Team color gradients
+- Depth and cinematic lighting
+- Modern sports poster aesthetic
+
+TEAM BRANDING
+
+Team:
+{resolved_team_name}
+
+Primary Colors:
+{self._team_image_colors(resolved_team_code)}
+
+Use the team's visual identity consistently throughout:
+- Color palette
+- Logo integration
+- Background treatments
+- Typography accents
+- Graphic elements
+
+HEADLINE TEXT
+
+NBA NEWS
+
+{resolved_team_name}
+
+{headline}
+
+SUBHEADLINE
+
+{secondary_headline or description}
+
+PLAYER NAME
+
+{resolved_player_name}
+
+OPTIONAL DETAILS
+
+{additional_details or context or ""}
+
+TRANSACTION CONTEXT
+
+Transaction Type:
+{transaction_type or "Transaction"}
+
+Examples:
+- Trade
+- Signing
+- Re-signing
+- Contract Extension
+- Waived
+- Released
+- Team Option Exercised
+- Team Option Declined
+- Qualifying Offer Rejected
+- Two-Way Signing
+- Conversion to Standard Contract
+- Buyout
+- Draft Rights Acquired
+- Contract Guaranteed
+- Contract Non-Guaranteed
+- Free Agency Signing
+
+QUALITY REQUIREMENTS
+
+- Photorealistic
+- Sports media publication quality
+- Crisp typography
+- Authentic NBA branding aesthetic
+- Realistic jersey replacement
+- No distorted anatomy
+- No cartoon appearance
+- No AI-art look
+- Premium Photoshop-style finish
+- Suitable for posting directly by an NBA news account
+- Highly shareable social media design"""
+
         team_text = ", ".join(str(t).upper() for t in teams or [] if str(t or "").strip()) or "ANBA"
         player_text = ", ".join(str(p) for p in players or [] if str(p or "").strip())
         parts = [
@@ -3047,7 +3303,76 @@ class Handler(SimpleHTTPRequestHandler):
             parts.append(f"Additional context: {context}")
         return "\n".join(parts)
 
-    def _generate_openai_image(self, prompt: str) -> Optional[tuple[bytes, str, str]]:
+    def _openai_multipart_body(
+        self,
+        fields: Dict[str, Any],
+        files: List[tuple[str, str, str, bytes]],
+    ) -> tuple[bytes, str]:
+        boundary = f"----anba-openai-{secrets.token_hex(16)}"
+        chunks: List[bytes] = []
+        for name, value in fields.items():
+            if value in (None, ""):
+                continue
+            chunks.extend(
+                [
+                    f"--{boundary}\r\n".encode("utf-8"),
+                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+                    str(value).encode("utf-8"),
+                    b"\r\n",
+                ]
+            )
+        for field_name, filename, mime_type, file_bytes in files:
+            chunks.extend(
+                [
+                    f"--{boundary}\r\n".encode("utf-8"),
+                    f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'.encode("utf-8"),
+                    f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"),
+                    file_bytes,
+                    b"\r\n",
+                ]
+            )
+        chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+        return b"".join(chunks), boundary
+
+    def _generate_openai_image_from_reference(
+        self,
+        prompt: str,
+        reference_image: tuple[bytes, str, str],
+    ) -> Optional[tuple[bytes, str, str]]:
+        ref_bytes, ref_filename, ref_mime = reference_image
+        image_ext, _ = self._image_mime_type()
+        body, boundary = self._openai_multipart_body(
+            {
+                "model": self.openai_image_model,
+                "prompt": self._discord_text(prompt, 4000),
+                "size": self.openai_image_size,
+                "quality": self.openai_image_quality,
+                "n": 1,
+                "output_format": image_ext,
+            },
+            [("image[]", ref_filename, ref_mime, ref_bytes)],
+        )
+        req = Request(
+            "https://api.openai.com/v1/images/edits",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=self.openai_image_timeout_seconds) as resp:
+                response = json.loads(resp.read().decode("utf-8"))
+            return self._openai_image_from_response(response)
+        except HTTPError as err:
+            self.log_error("OpenAI reference image generation failed: %s", self._http_error_excerpt(err))
+        except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as err:
+            self.log_error("OpenAI reference image generation failed: %s", err)
+        return None
+
+    def _generate_openai_image_from_prompt(self, prompt: str) -> Optional[tuple[bytes, str, str]]:
         if not prompt.strip() or not self.discord_image_notifications_enabled or not self.openai_api_key:
             return None
 
@@ -3075,19 +3400,31 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             with urlopen(req, timeout=self.openai_image_timeout_seconds) as resp:
                 response = json.loads(resp.read().decode("utf-8"))
-            items = response.get("data") if isinstance(response, dict) else None
-            first = items[0] if isinstance(items, list) and items else {}
-            if first.get("b64_json"):
-                image_bytes = base64.b64decode(str(first["b64_json"]))
-            elif first.get("url"):
-                with urlopen(str(first["url"]), timeout=self.openai_image_timeout_seconds) as image_resp:
-                    image_bytes = image_resp.read()
-            else:
-                return None
-            return image_bytes, f"anba-news.{image_ext}", mime_type
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as err:
+            return self._openai_image_from_response(response)
+        except HTTPError as err:
+            self.log_error("OpenAI image generation failed: %s", self._http_error_excerpt(err))
+        except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as err:
             self.log_error("OpenAI image generation failed: %s", err)
+        return None
+
+    def _generate_openai_image(
+        self,
+        prompt: str,
+        *,
+        reference_image_url: Optional[str] = None,
+        fallback_prompt: Optional[str] = None,
+    ) -> Optional[tuple[bytes, str, str]]:
+        if not prompt.strip() or not self.discord_image_notifications_enabled or not self.openai_api_key:
             return None
+
+        if reference_image_url:
+            reference_image = self._fetch_reference_image(reference_image_url)
+            if reference_image:
+                generated = self._generate_openai_image_from_reference(prompt, reference_image)
+                if generated:
+                    return generated
+
+        return self._generate_openai_image_from_prompt(fallback_prompt or prompt)
 
     def _post_discord_json(self, payload: Dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
@@ -3145,6 +3482,8 @@ class Handler(SimpleHTTPRequestHandler):
         fields: Optional[List[Dict[str, Any]]] = None,
         color: int = 0x0F766E,
         image_prompt: Optional[str] = None,
+        image_reference_url: Optional[str] = None,
+        image_fallback_prompt: Optional[str] = None,
     ) -> None:
         if not self.discord_notifications_enabled or not self.discord_webhook_url:
             return
@@ -3171,7 +3510,11 @@ class Handler(SimpleHTTPRequestHandler):
         if normalized_fields:
             embed["fields"] = normalized_fields[:25]
 
-        image_attachment = self._generate_openai_image(image_prompt or "")
+        image_attachment = self._generate_openai_image(
+            image_prompt or "",
+            reference_image_url=image_reference_url,
+            fallback_prompt=image_fallback_prompt,
+        )
         if image_attachment:
             _, filename, _ = image_attachment
             embed["image"] = {"url": f"attachment://{filename}"}
@@ -3206,9 +3549,31 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _notify_player_cut(self, result: Dict[str, Any]) -> None:
         team_code = str(result.get("team_code") or "").upper()
+        team_name = str(result.get("team_name") or team_code)
         player_name = str(result.get("player_name") or "Jugador")
+        reference_url = str(result.get("reference_image_url") or "").strip()
         headline = f"{team_code} corta a {player_name}"
         description = "El jugador pasa a agentes libres y su contrato queda registrado como contrato muerto."
+        generic_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            context="Transaction: the team cuts the player. Visual should feel like a clean basketball news announcement.",
+        )
+        reference_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            team_name=team_name,
+            team_code=team_code,
+            player_name=player_name,
+            secondary_headline=description,
+            additional_details="El jugador pasa a agentes libres y su contrato queda registrado como contrato muerto.",
+            transaction_type="Released",
+            use_player_reference=bool(reference_url),
+        )
         self._notify_discord(
             headline,
             description,
@@ -3217,13 +3582,9 @@ class Handler(SimpleHTTPRequestHandler):
                 {"name": "Jugador", "value": player_name, "inline": True},
             ],
             color=0xB91C1C,
-            image_prompt=self._news_image_prompt(
-                headline,
-                description,
-                teams=[team_code],
-                players=[player_name],
-                context="Transaction: the team cuts the player. Visual should feel like a clean basketball news announcement.",
-            ),
+            image_prompt=reference_prompt,
+            image_reference_url=reference_url,
+            image_fallback_prompt=generic_prompt,
         )
 
     def _trade_asset_summary(self, players: List[Any], pick_count: Any, right_count: Any) -> str:
@@ -3285,7 +3646,9 @@ class Handler(SimpleHTTPRequestHandler):
         action: str,
     ) -> None:
         team_code = str(player.get("team_code") or "").upper()
+        team_name = str(player.get("team_name") or team_code)
         player_name = str(player.get("name") or "Jugador")
+        reference_url = str(player.get("reference_image_url") or "").strip()
         option_type = option_value.strip().upper()
         normalized_action = "accepted" if action == "accepted" else "rejected"
         verb = "acepta" if normalized_action == "accepted" else "rechaza"
@@ -3307,6 +3670,37 @@ class Handler(SimpleHTTPRequestHandler):
             "QO": "qualifying offer",
             "GAP": "GAP option",
         }.get(option_type, f"{option_type} option")
+        transaction_type_map = {
+            ("TO", "accepted"): "Team Option Exercised",
+            ("TO", "rejected"): "Team Option Declined",
+            ("PO", "accepted"): "Player Option Exercised",
+            ("PO", "rejected"): "Player Option Declined",
+            ("QO", "accepted"): "Qualifying Offer Accepted",
+            ("QO", "rejected"): "Qualifying Offer Rejected",
+            ("GAP", "accepted"): "Contract Guaranteed",
+            ("GAP", "rejected"): "Contract Non-Guaranteed",
+        }
+        transaction_type = transaction_type_map.get((option_type, normalized_action), "Contract Decision")
+        generic_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            context=f"Contract decision: the {option_context} was {normalized_action} for season {season_text}.",
+        )
+        reference_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            team_name=team_name,
+            team_code=team_code,
+            player_name=player_name,
+            secondary_headline=description,
+            additional_details=f"Temporada {season_text}. Opcion: {option_type}. Decision: {normalized_action}.",
+            transaction_type=transaction_type,
+            use_player_reference=bool(reference_url),
+        )
         self._notify_discord(
             headline,
             description,
@@ -3317,13 +3711,9 @@ class Handler(SimpleHTTPRequestHandler):
                 {"name": "Opción", "value": option_type, "inline": True},
             ],
             color=0x7C3AED if normalized_action == "accepted" else 0xB91C1C,
-            image_prompt=self._news_image_prompt(
-                headline,
-                description,
-                teams=[team_code],
-                players=[player_name],
-                context=f"Contract decision: the {option_context} was {normalized_action} for season {season_text}.",
-            ),
+            image_prompt=reference_prompt,
+            image_reference_url=reference_url,
+            image_fallback_prompt=generic_prompt,
         )
 
     def _exchange_google_code(self, code: str) -> Dict[str, Any]:

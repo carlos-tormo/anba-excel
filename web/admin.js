@@ -3801,7 +3801,7 @@ function cancelAddPlayerRow() {
 
 function playerDraftPayloadFromRow(row) {
   const payload = { team_code: state.teamCode };
-  const fields = ['name', 'position', 'bird_rights', 'rating', 'years_left'];
+  const fields = ['name', 'position', 'bird_rights', 'rating', 'years_left', 'reference_image_url'];
   fields.forEach((key) => {
     const el = row.querySelector(`[data-new-field="${key}"]`);
     const value = String(el?.value || '').trim();
@@ -3908,6 +3908,7 @@ function appendAddPlayerRow(tbody) {
     <td><div class="salary-cell-admin"><input data-new-field="salary_2030_text" placeholder="0"><select data-new-option-field="option_2030"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
     <td></td>
     <td class="table-add-actions-cell">
+      <input data-new-field="reference_image_url" placeholder="Ref image URL">
       <button type="button" class="inline-save" data-action="save-draft">✓</button>
       <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
     </td>
@@ -4054,6 +4055,9 @@ function renderPlayers() {
         };
         applyClass();
         fieldEl.addEventListener('change', applyClass);
+      }
+      if (key === 'reference_image_url') {
+        wrapper.classList.add('reference-image-edit');
       }
     });
 
