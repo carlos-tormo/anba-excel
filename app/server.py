@@ -3484,6 +3484,7 @@ QUALITY REQUIREMENTS
         image_prompt: Optional[str] = None,
         image_reference_url: Optional[str] = None,
         image_fallback_prompt: Optional[str] = None,
+        generate_image: bool = True,
     ) -> None:
         if not self.discord_notifications_enabled or not self.discord_webhook_url:
             return
@@ -3510,11 +3511,13 @@ QUALITY REQUIREMENTS
         if normalized_fields:
             embed["fields"] = normalized_fields[:25]
 
-        image_attachment = self._generate_openai_image(
-            image_prompt or "",
-            reference_image_url=image_reference_url,
-            fallback_prompt=image_fallback_prompt,
-        )
+        image_attachment = None
+        if generate_image:
+            image_attachment = self._generate_openai_image(
+                image_prompt or "",
+                reference_image_url=image_reference_url,
+                fallback_prompt=image_fallback_prompt,
+            )
         if image_attachment:
             _, filename, _ = image_attachment
             embed["image"] = {"url": f"attachment://{filename}"}
@@ -3547,7 +3550,12 @@ QUALITY REQUIREMENTS
             return True
         return parse_bool(payload.get("notify_discord"))
 
-    def _notify_player_cut(self, result: Dict[str, Any]) -> None:
+    def _discord_image_requested(self, payload: Dict[str, Any]) -> bool:
+        if "generate_discord_image" not in payload:
+            return True
+        return parse_bool(payload.get("generate_discord_image"))
+
+    def _notify_player_cut(self, result: Dict[str, Any], *, generate_image: bool = True) -> None:
         team_code = str(result.get("team_code") or "").upper()
         team_name = str(result.get("team_name") or team_code)
         player_name = str(result.get("player_name") or "Jugador")
@@ -3585,6 +3593,7 @@ QUALITY REQUIREMENTS
             image_prompt=reference_prompt,
             image_reference_url=reference_url,
             image_fallback_prompt=generic_prompt,
+            generate_image=generate_image,
         )
 
     def _trade_asset_summary(self, players: List[Any], pick_count: Any, right_count: Any) -> str:
@@ -3599,7 +3608,7 @@ QUALITY REQUIREMENTS
             return "Sin activos registrados"
         return "\n".join(f"- {item}" for item in items)
 
-    def _notify_trade_processed(self, result: Dict[str, Any]) -> None:
+    def _notify_trade_processed(self, result: Dict[str, Any], *, generate_image: bool = True) -> None:
         team_a = str(result.get("team_a", {}).get("code") or "").upper()
         team_b = str(result.get("team_b", {}).get("code") or "").upper()
         bucket = normalize_trade_bucket(result.get("trade_bucket"))
@@ -3636,6 +3645,7 @@ QUALITY REQUIREMENTS
                 players=player_names[:6],
                 context=f"{team_a} receives: {team_a_receives}. {team_b} receives: {team_b_receives}.",
             ),
+            generate_image=generate_image,
         )
 
     def _notify_contract_option_action(
@@ -3644,6 +3654,8 @@ QUALITY REQUIREMENTS
         season: int,
         option_value: str,
         action: str,
+        *,
+        generate_image: bool = True,
     ) -> None:
         team_code = str(player.get("team_code") or "").upper()
         team_name = str(player.get("team_name") or team_code)
@@ -3714,6 +3726,7 @@ QUALITY REQUIREMENTS
             image_prompt=reference_prompt,
             image_reference_url=reference_url,
             image_fallback_prompt=generic_prompt,
+            generate_image=generate_image,
         )
 
     def _exchange_google_code(self, code: str) -> Dict[str, Any]:
@@ -4088,7 +4101,7 @@ QUALITY REQUIREMENTS
                 },
             )
             if self._discord_notify_requested(payload):
-                self._notify_player_cut(result)
+                self._notify_player_cut(result, generate_image=self._discord_image_requested(payload))
             self._json(200, {"ok": True, "result": result})
             return
 
@@ -4175,7 +4188,7 @@ QUALITY REQUIREMENTS
                     },
                 )
                 if self._discord_notify_requested(payload):
-                    self._notify_trade_processed(result)
+                    self._notify_trade_processed(result, generate_image=self._discord_image_requested(payload))
             self._json(200 if result else 400, {"ok": bool(result), "result": result})
             return
 
@@ -4632,6 +4645,7 @@ QUALITY REQUIREMENTS
                         option_action_season,
                         option_action_value,
                         option_action,
+                        generate_image=self._discord_image_requested(payload),
                     )
             self._json(200 if ok else 404, {"ok": ok})
             return

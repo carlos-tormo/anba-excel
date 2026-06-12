@@ -1032,6 +1032,13 @@ function playerCapCountValue(player, season) {
   return salaryNumericValue(player, season);
 }
 
+function playerApronCountValue(player, season) {
+  const hold = capHoldInfo(player, season);
+  if (hold.displayable) return 0;
+  if (isTwoWayPlayer(player)) return 0;
+  return salaryNumericValue(player, season);
+}
+
 function amountNumericValue(row) {
   const direct = row?.amount_num;
   if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) {
@@ -1211,6 +1218,7 @@ function teamSeasonBalances(data, season) {
   const deadContracts = data?.dead_contracts || [];
   const playerTotal = players.reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
   const capPlayerTotal = players.reduce((sum, player) => sum + playerCapCountValue(player, season), 0);
+  const apronPlayerTotal = players.reduce((sum, player) => sum + playerApronCountValue(player, season), 0);
   const normalDeadCapTotal = deadContracts
     .filter((dead) => !isTwoWayDeadContract(dead) && !deadContractExcludedFromCap(dead))
     .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
@@ -1218,6 +1226,7 @@ function teamSeasonBalances(data, season) {
     .filter((dead) => !deadContractExcludedFromGasto(dead))
     .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
   const capTotal = capPlayerTotal + normalDeadCapTotal;
+  const apronAccount = apronPlayerTotal + normalDeadCapTotal;
   const gastoTotal = playerTotal + deadGastoTotal;
   const salaryCap = capForSeason(season);
   const luxuryCap = luxuryCapForSeason(season);
@@ -1225,7 +1234,7 @@ function teamSeasonBalances(data, season) {
   return {
     cap_total: capTotal,
     gasto_total: gastoTotal,
-    apron_account: capTotal,
+    apron_account: apronAccount,
     luxury_tax: luxuryTaxAmount(luxuryOverage, luxuryRepeaterForSeason(data, season)),
   };
 }
@@ -1252,8 +1261,8 @@ function summaryForBalanceSeason(data, season = displayBalanceSeason()) {
     payroll: balances.gasto_total,
     room_to_cap: salaryCap - balances.cap_total,
     room_to_luxury: luxuryCap - balances.cap_total,
-    room_to_first_apron: firstApron - balances.cap_total,
-    room_to_second_apron: secondApron - balances.cap_total,
+    room_to_first_apron: firstApron - balances.apron_account,
+    room_to_second_apron: secondApron - balances.apron_account,
   };
 }
 
@@ -1665,6 +1674,7 @@ function tradeMachineAssetMeta(key) {
     const player = (data.players || []).find((item) => Number(item.id) === id);
     if (!player) return null;
     const salary = salaryNumericValue(player, tradeMachineSeasonStart());
+    const capSalary = playerApronCountValue(player, tradeMachineSeasonStart());
     return {
       key,
       type,
@@ -1673,7 +1683,7 @@ function tradeMachineAssetMeta(key) {
       label: player.name || 'Jugador',
       detail: [player.position, player.bird_rights].filter(Boolean).join(' · '),
       salary,
-      capSalary: isTwoWayPlayer(player) ? 0 : salary,
+      capSalary,
       isTwoWay: isTwoWayPlayer(player),
       restricted: false,
       protected: false,
@@ -1798,10 +1808,13 @@ function tradeMachineFlowSkeleton(code) {
   const beforeCap = season === currentSeasonStart() && Number.isFinite(Number(summary.cap_figure))
     ? Number(summary.cap_figure)
     : Number(seasonTotals.cap_total || 0);
+  const beforeApronAccount = season === currentSeasonStart() && Number.isFinite(Number(summary.apron_account))
+    ? Number(summary.apron_account)
+    : Number(seasonTotals.apron_account || beforeCap);
   return {
     code,
     beforeCap,
-    beforeApronAccount: beforeCap,
+    beforeApronAccount,
     incomingSalary: 0,
     outgoingSalary: 0,
     incomingCapSalary: 0,
@@ -1809,13 +1822,13 @@ function tradeMachineFlowSkeleton(code) {
     incomingAssets: [],
     outgoingAssets: [],
     postCap: beforeCap,
-    postApronAccount: beforeCap,
+    postApronAccount: beforeApronAccount,
     beforeRosterStandard: rosterCounts.standard,
     beforeRosterTwoWay: rosterCounts.twoWay,
     postRosterStandard: rosterCounts.standard,
     postRosterTwoWay: rosterCounts.twoWay,
-    beforeBalances: tradeMachineBalanceSnapshot(beforeCap),
-    afterBalances: tradeMachineBalanceSnapshot(beforeCap),
+    beforeBalances: tradeMachineBalanceSnapshot(beforeCap, beforeApronAccount),
+    afterBalances: tradeMachineBalanceSnapshot(beforeCap, beforeApronAccount),
   };
 }
 
@@ -4664,8 +4677,8 @@ async function fetchTrackerRowsFallback() {
       espacio_cap: salaryCap - Number(balances.cap_total || 0),
       espacio_luxury: luxuryCap - Number(balances.cap_total || 0),
       luxury_tax: Number(balances.luxury_tax || 0),
-      espacio_1er_apron: firstApron - Number(balances.cap_total || 0),
-      espacio_2do_apron: secondApron - Number(balances.cap_total || 0),
+      espacio_1er_apron: firstApron - Number(balances.apron_account || 0),
+      espacio_2do_apron: secondApron - Number(balances.apron_account || 0),
       roster_standard_count: Number(s.roster_standard_count || rosterCountFromPlayers(data.players || []).standard),
       roster_two_way_count: Number(s.roster_two_way_count || rosterCountFromPlayers(data.players || []).twoWay),
       draft_first_count: draftCounts.first,

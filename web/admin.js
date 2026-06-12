@@ -477,6 +477,8 @@ function confirmWithDiscordNotification({
   confirmLabel = 'Confirmar',
   notifyLabel = 'Enviar notificación a Discord',
   defaultNotify = true,
+  imageLabel = 'Generar imagen con OpenAI',
+  defaultGenerateImage = true,
   danger = false,
 } = {}) {
   return new Promise((resolve) => {
@@ -494,6 +496,10 @@ function confirmWithDiscordNotification({
           <input type="checkbox" data-role="notify-discord" ${defaultNotify ? 'checked' : ''}>
           <span>${escapeHtml(notifyLabel)}</span>
         </label>
+        <label class="notify-confirm-toggle">
+          <input type="checkbox" data-role="generate-discord-image" ${(defaultNotify && defaultGenerateImage) ? 'checked' : ''} ${defaultNotify ? '' : 'disabled'}>
+          <span>${escapeHtml(imageLabel)}</span>
+        </label>
         <div class="notification-confirm-actions">
           <button type="button" data-action="cancel">Cancelar</button>
           <button type="button" data-action="confirm" class="${danger ? 'danger' : ''}">${escapeHtml(confirmLabel)}</button>
@@ -507,18 +513,29 @@ function confirmWithDiscordNotification({
       resolve(value);
     };
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') cleanup({ confirmed: false, notifyDiscord: false });
+      if (event.key === 'Escape') cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false });
     };
     document.addEventListener('keydown', onKeyDown);
     backdrop.addEventListener('click', (event) => {
-      if (event.target === backdrop) cleanup({ confirmed: false, notifyDiscord: false });
+      if (event.target === backdrop) cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false });
     });
     backdrop.querySelector('[data-action="cancel"]').addEventListener('click', () => {
-      cleanup({ confirmed: false, notifyDiscord: false });
+      cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false });
+    });
+    const notifyInput = backdrop.querySelector('[data-role="notify-discord"]');
+    const imageInput = backdrop.querySelector('[data-role="generate-discord-image"]');
+    notifyInput?.addEventListener('change', () => {
+      const notifyEnabled = Boolean(notifyInput.checked);
+      if (imageInput) {
+        imageInput.disabled = !notifyEnabled;
+        if (!notifyEnabled) imageInput.checked = false;
+        else if (defaultGenerateImage) imageInput.checked = true;
+      }
     });
     backdrop.querySelector('[data-action="confirm"]').addEventListener('click', () => {
-      const notifyDiscord = Boolean(backdrop.querySelector('[data-role="notify-discord"]')?.checked);
-      cleanup({ confirmed: true, notifyDiscord });
+      const notifyDiscord = Boolean(notifyInput?.checked);
+      const generateDiscordImage = notifyDiscord && Boolean(imageInput?.checked);
+      cleanup({ confirmed: true, notifyDiscord, generateDiscordImage });
     });
     document.body.appendChild(backdrop);
     backdrop.querySelector('[data-action="confirm"]')?.focus();
@@ -700,6 +717,13 @@ function salaryDisplayNumericValue(row, season) {
 function playerCapCountValue(player, season) {
   const hold = capHoldInfo(player, season);
   if (hold.displayable && hold.amount > 0) return hold.amount;
+  if (isTwoWayPlayer(player)) return 0;
+  return salaryNumericValue(player, season);
+}
+
+function playerApronCountValue(player, season) {
+  const hold = capHoldInfo(player, season);
+  if (hold.displayable) return 0;
   if (isTwoWayPlayer(player)) return 0;
   return salaryNumericValue(player, season);
 }
@@ -904,6 +928,7 @@ function teamSeasonBalances(data, season) {
   const deadContracts = data?.dead_contracts || [];
   const playerTotal = players.reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
   const capPlayerTotal = players.reduce((sum, player) => sum + playerCapCountValue(player, season), 0);
+  const apronPlayerTotal = players.reduce((sum, player) => sum + playerApronCountValue(player, season), 0);
   const normalDeadCapTotal = deadContracts
     .filter((dead) => !isTwoWayDeadContract(dead) && !deadContractExcludedFromCap(dead))
     .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
@@ -911,6 +936,7 @@ function teamSeasonBalances(data, season) {
     .filter((dead) => !deadContractExcludedFromGasto(dead))
     .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
   const capTotal = capPlayerTotal + normalDeadCapTotal;
+  const apronAccount = apronPlayerTotal + normalDeadCapTotal;
   const gastoTotal = playerTotal + deadGastoTotal;
   const salaryCap = capForSeason(season);
   const luxuryCap = luxuryCapForSeason(season);
@@ -918,7 +944,7 @@ function teamSeasonBalances(data, season) {
   return {
     cap_total: capTotal,
     gasto_total: gastoTotal,
-    apron_account: capTotal,
+    apron_account: apronAccount,
     luxury_tax: luxuryTaxAmount(luxuryOverage, luxuryRepeaterForSeason(data, season)),
   };
 }
@@ -945,8 +971,8 @@ function summaryForBalanceSeason(data, season = displayBalanceSeason()) {
     payroll: balances.gasto_total,
     room_to_cap: salaryCap - balances.cap_total,
     room_to_luxury: luxuryCap - balances.cap_total,
-    room_to_first_apron: firstApron - balances.cap_total,
-    room_to_second_apron: secondApron - balances.cap_total,
+    room_to_first_apron: firstApron - balances.apron_account,
+    room_to_second_apron: secondApron - balances.apron_account,
   };
 }
 
@@ -2257,6 +2283,7 @@ async function confirmTrade() {
         no_count_players_b: Array.from(state.trade.noCountB),
         trade_bucket: tradeBucket,
         notify_discord: decision.notifyDiscord,
+        generate_discord_image: decision.generateDiscordImage,
       }),
     });
     if (!result.ok) {
@@ -4147,6 +4174,7 @@ function renderPlayers() {
               option_action_field: optionField,
               option_action_value: optionValue,
               notify_discord: decision.notifyDiscord,
+              generate_discord_image: decision.generateDiscordImage,
             }),
           });
           p[optionField] = nextOptionValue || null;
@@ -4207,7 +4235,10 @@ function renderPlayers() {
       if (!decision.confirmed) return;
       await api(`/api/players/${p.id}/cut`, {
         method: 'POST',
-        body: JSON.stringify({ notify_discord: decision.notifyDiscord }),
+        body: JSON.stringify({
+          notify_discord: decision.notifyDiscord,
+          generate_discord_image: decision.generateDiscordImage,
+        }),
       });
       await loadTeam(state.teamCode);
     });
@@ -4414,7 +4445,10 @@ async function cutSelectedPlayersAction() {
   for (const p of players) {
     await api(`/api/players/${p.id}/cut`, {
       method: 'POST',
-      body: JSON.stringify({ notify_discord: decision.notifyDiscord }),
+      body: JSON.stringify({
+        notify_discord: decision.notifyDiscord,
+        generate_discord_image: decision.generateDiscordImage,
+      }),
     });
   }
   await loadTeam(state.teamCode);
@@ -5331,8 +5365,8 @@ async function fetchTrackerRowsFallback() {
       espacio_cap: salaryCap - Number(balances.cap_total || 0),
       espacio_luxury: luxuryCap - Number(balances.cap_total || 0),
       luxury_tax: Number(balances.luxury_tax || 0),
-      espacio_1er_apron: firstApron - Number(balances.cap_total || 0),
-      espacio_2do_apron: secondApron - Number(balances.cap_total || 0),
+      espacio_1er_apron: firstApron - Number(balances.apron_account || 0),
+      espacio_2do_apron: secondApron - Number(balances.apron_account || 0),
       roster_standard_count: Number(s.roster_standard_count || rosterCountFromPlayers(data.players || []).standard),
       roster_two_way_count: Number(s.roster_two_way_count || rosterCountFromPlayers(data.players || []).twoWay),
       draft_first_count: draftCounts.first,
