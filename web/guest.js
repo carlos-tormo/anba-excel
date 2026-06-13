@@ -77,6 +77,7 @@ const TRADE_MATCH_HIGH_BAND = 29_000_000;
 const TRADE_MATCH_CUSHION = 250_000;
 const TRADE_MATCH_EXPANDED_BUFFER_RATIO = 0.05513854478;
 const TRADE_MATCH_EXPANDED_BUFFER_FALLBACK = 8_527_000;
+const TRADE_ROOM_TPE_BUFFER = 250_000;
 const TRADE_PICK_ACTION_SEND = 'send_pick';
 const TRADE_PICK_ACTION_SWAP = 'swap_rights';
 const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
@@ -1696,6 +1697,7 @@ function tradeMachineAssetMeta(key) {
       capSalary,
       rating: Number(player.rating || 0) || 0,
       ratingText: String(player.rating || '').trim(),
+      isMinimumContract: salaryLooksLikeMinimum(salary, tradeMachineSeasonStart()),
       isTwoWay: isTwoWayPlayer(player),
       restricted: false,
       protected: false,
@@ -1885,12 +1887,127 @@ function tradeMachineExpandedBuffer(salaryCap) {
   return calculated > 0 ? calculated : TRADE_MATCH_EXPANDED_BUFFER_FALLBACK;
 }
 
-function tradeMachineSalaryMatchLimit(outgoingSalary, apronLimited, salaryCap) {
+function tradeMachineExpandedTpeLimit(outgoingSalary, salaryCap) {
   const outgoing = Number(outgoingSalary || 0);
-  if (apronLimited) return outgoing;
   if (outgoing < TRADE_MATCH_LOW_BAND) return outgoing * 2 + TRADE_MATCH_CUSHION;
   if (outgoing <= TRADE_MATCH_HIGH_BAND) return outgoing + tradeMachineExpandedBuffer(salaryCap);
   return outgoing * 1.25;
+}
+
+function tradeMachineAggregatedTpeLimit(outgoingSalary) {
+  return Number(outgoingSalary || 0) + TRADE_MATCH_CUSHION;
+}
+
+function tradeMachineSalaryMatchProfile(code, flow) {
+  const data = state.tradeMachine.teamDataByCode[code];
+  const summary = data?.summary || {};
+  const thresholds = tradeMachineThresholds();
+  const salaryCap = thresholds.salaryCap || Number(summary.salary_cap_2025 || 0);
+  const incoming = Number(flow?.incomingSalary || 0);
+  const outgoing = Number(flow?.outgoingSalary || 0);
+  const beforeCap = Number(flow?.beforeCap || 0);
+  const postCap = Number(flow?.postCap || 0);
+  const outgoingPlayers = (flow?.outgoingAssets || []).filter((asset) => asset.type === 'player').length;
+  const incomingPlayers = (flow?.incomingAssets || []).filter((asset) => asset.type === 'player').length;
+  const firstApronLimited = tradeMachineFirstApronLimited(code, flow);
+  const secondApronLimited = tradeMachineSecondApronLimited(code, flow);
+
+  if (incoming <= 0 || incoming <= outgoing) {
+    return {
+      legal: true,
+      tpe: 'none',
+      label: 'Sin TPE',
+      limit: outgoing,
+      message: incoming <= 0
+        ? 'No recibe salario de jugadores.'
+        : `Recibe ${formatBalanceMoney(incoming)} y envía ${formatBalanceMoney(outgoing)}; no necesita recibir más salario del que envía.`,
+    };
+  }
+
+  if (secondApronLimited) {
+    return {
+      legal: false,
+      tpe: 'second_apron_block',
+      label: 'Restricción 2do apron',
+      limit: outgoing,
+      message: `Está limitado por el 2do apron: no puede recibir más salario del que envía (${formatBalanceMoney(outgoing)}). Recibe ${formatBalanceMoney(incoming)}.`,
+    };
+  }
+
+  if (firstApronLimited) {
+    const limit = tradeMachineAggregatedTpeLimit(outgoing);
+    const label = outgoingPlayers > 1 ? 'TPE agregada' : 'TPE estándar/agregada';
+    return {
+      legal: outgoingPlayers > 0 && incomingPlayers > 0 && incoming <= limit,
+      tpe: 'aggregated',
+      label,
+      limit,
+      message: outgoingPlayers <= 0
+        ? `Necesita enviar al menos un jugador para usar ${label}.`
+        : incomingPlayers <= 0
+          ? `Necesita recibir al menos un jugador para usar ${label}.`
+          : incoming <= limit
+            ? `${label}: puede recibir hasta ${formatBalanceMoney(limit)} (100% del salario enviado + $250k).`
+            : `${label}: puede recibir hasta ${formatBalanceMoney(limit)} (100% del salario enviado + $250k), pero recibe ${formatBalanceMoney(incoming)}.`,
+    };
+  }
+
+  const roomLimit = outgoing + Math.max(0, salaryCap + TRADE_ROOM_TPE_BUFFER - beforeCap);
+  const capSpaceLegal = beforeCap < salaryCap
+    && incomingPlayers > 0
+    && postCap <= salaryCap;
+  const roomLegal = beforeCap < salaryCap
+    && outgoingPlayers > 0
+    && incomingPlayers > 0
+    && postCap <= salaryCap + TRADE_ROOM_TPE_BUFFER;
+  const expandedLimit = outgoingPlayers > 0
+    ? tradeMachineExpandedTpeLimit(outgoing, salaryCap)
+    : 0;
+  const expandedLegal = outgoingPlayers > 0 && incomingPlayers > 0 && incoming <= expandedLimit;
+
+  if (expandedLegal) {
+    return {
+      legal: true,
+      tpe: 'expanded',
+      label: 'TPE expandida',
+      limit: expandedLimit,
+      message: `TPE expandida: puede recibir hasta ${formatBalanceMoney(expandedLimit)} según el salario enviado.`,
+    };
+  }
+
+  if (capSpaceLegal) {
+    return {
+      legal: true,
+      tpe: 'cap_room',
+      label: 'Espacio salarial',
+      limit: roomLimit,
+      message: `Absorbe el salario con espacio salarial; límite ${formatBalanceMoney(roomLimit)} antes de usar el buffer Room TPE.`,
+    };
+  }
+
+  if (roomLegal) {
+    return {
+      legal: true,
+      tpe: 'room',
+      label: 'Room TPE',
+      limit: roomLimit,
+      message: `Room TPE: queda hasta $250k por encima del salary cap; límite ${formatBalanceMoney(roomLimit)} de salario recibido.`,
+    };
+  }
+
+  const bestLimit = Math.max(expandedLimit, beforeCap < salaryCap ? roomLimit : 0);
+  const reason = outgoingPlayers <= 0
+    ? 'no envía ningún jugador para crear una TPE'
+    : incomingPlayers <= 0
+      ? 'no recibe ningún jugador'
+      : 'supera los límites de TPE disponibles';
+  return {
+    legal: false,
+    tpe: 'none',
+    label: 'Sin TPE válida',
+    limit: bestLimit,
+    message: `No hay TPE válida: ${reason}. Puede recibir hasta ${formatBalanceMoney(bestLimit)}, pero recibe ${formatBalanceMoney(incoming)}.`,
+  };
 }
 
 function tradeMachineSalaryMatchIssue(code, flow) {
@@ -1898,7 +2015,6 @@ function tradeMachineSalaryMatchIssue(code, flow) {
   if (!data) return null;
   const summary = data.summary || {};
   const thresholds = tradeMachineThresholds();
-  const salaryCap = thresholds.salaryCap || Number(summary.salary_cap_2025 || 0);
   const firstApron = thresholds.firstApron;
   const secondApron = thresholds.secondApron;
   const hardCap = String(summary.apron_hard_cap || '').trim().toLowerCase();
@@ -1919,27 +2035,13 @@ function tradeMachineSalaryMatchIssue(code, flow) {
       message: 'Tiene límite duro en el 2do apron y acabaría por encima.',
     };
   }
-  const apronLimited = hardCap === 'first'
-    || hardCap === 'second'
-    || (firstApron > 0 && (Number(flow.beforeApronAccount ?? flow.beforeCap ?? 0) >= firstApron || postApronAccount >= firstApron));
-  if (flow.incomingSalary <= flow.outgoingSalary) return null;
-  const capRoom = Math.max(0, salaryCap - flow.beforeCap);
-  if (!apronLimited && flow.beforeCap < salaryCap && flow.incomingSalary <= flow.outgoingSalary + capRoom) return null;
-  if (flow.outgoingSalary <= 0) {
-    return {
-      severity: 'illegal',
-      rule: 'salary',
-      teamCode: code,
-      message: `Recibe ${formatBalanceMoney(flow.incomingSalary)} sin suficiente salario enviado ni margen salarial.`,
-    };
-  }
-  const limit = tradeMachineSalaryMatchLimit(flow.outgoingSalary, apronLimited, salaryCap);
-  if (flow.incomingSalary <= limit) return null;
+  const profile = tradeMachineSalaryMatchProfile(code, flow);
+  if (profile.legal) return null;
   return {
     severity: 'illegal',
     rule: 'salary',
     teamCode: code,
-    message: `Puede recibir hasta ${formatBalanceMoney(limit)} por la regla básica de cuadre salarial, pero recibe ${formatBalanceMoney(flow.incomingSalary)}.`,
+    message: profile.message,
   };
 }
 
@@ -2080,6 +2182,21 @@ function tradeMachineLeyRandleIssues(code, flow) {
   return issues;
 }
 
+function tradeMachineStackingMinimumIssues(code, flow) {
+  const outgoingPlayers = (flow?.outgoingAssets || []).filter((asset) => asset.type === 'player');
+  const incomingPlayers = (flow?.incomingAssets || []).filter((asset) => asset.type === 'player');
+  const minimumOutgoing = outgoingPlayers.filter((asset) => asset.isMinimumContract);
+  if (outgoingPlayers.length < 3 || incomingPlayers.length >= outgoingPlayers.length || minimumOutgoing.length <= 1) {
+    return [];
+  }
+  return [{
+    severity: 'warning',
+    rule: 'minimum_stacking',
+    teamCode: code,
+    message: `Envía ${outgoingPlayers.length} jugadores, ${minimumOutgoing.length} mínimos, y recibe menos jugadores. Puede ser ilegal fuera del periodo 15-Dic/deadline; falta configurar fecha de trade para convertirlo en bloqueo automático.`,
+  }];
+}
+
 function tradeMachineIssuesForRule(issues, rule) {
   return (issues || []).filter((issue) => issue.rule === rule);
 }
@@ -2089,12 +2206,28 @@ function tradeMachineIssueMessage(issue) {
   return `${teamPrefix}${issue.message}`;
 }
 
-function tradeMachineRuleChecklist(issues, selectedCount) {
+function tradeMachineSalaryPassMessages(flows) {
+  const messages = Object.entries(flows || {})
+    .map(([code, flow]) => {
+      if (!flow?.incomingAssets?.length && !flow?.outgoingAssets?.length) return '';
+      const profile = tradeMachineSalaryMatchProfile(code, flow);
+      if (!profile.legal) return '';
+      if (profile.tpe === 'none' && Number(flow.incomingSalary || 0) <= 0) return '';
+      return `${code}: ${profile.message}`;
+    })
+    .filter(Boolean);
+  return messages.length
+    ? messages
+    : ['El cuadre salarial básico pasa para todos los equipos seleccionados.'];
+}
+
+function tradeMachineRuleChecklist(issues, selectedCount, flows = {}) {
   const salaryIssues = tradeMachineIssuesForRule(issues, 'salary');
   const moveIssues = tradeMachineIssuesForRule(issues, 'moves');
   const multiTeamIssues = tradeMachineIssuesForRule(issues, 'multi_team');
   const hardCapIssues = tradeMachineIssuesForRule(issues, 'hard_cap');
   const secondApronAggregationIssues = tradeMachineIssuesForRule(issues, 'second_apron_aggregation');
+  const minimumStackingIssues = tradeMachineIssuesForRule(issues, 'minimum_stacking');
   const restrictedIssues = tradeMachineIssuesForRule(issues, 'restricted_pick');
   const manualIssues = tradeMachineIssuesForRule(issues, 'manual_review');
   const rosterIssues = tradeMachineIssuesForRule(issues, 'roster_count');
@@ -2107,7 +2240,7 @@ function tradeMachineRuleChecklist(issues, selectedCount) {
         ? ['Añade activos para evaluar el cuadre salarial.']
         : salaryIssues.length
           ? salaryIssues.map(tradeMachineIssueMessage)
-          : ['El cuadre salarial básico pasa para todos los equipos seleccionados.'],
+          : tradeMachineSalaryPassMessages(flows),
     },
     {
       key: 'moves',
@@ -2148,6 +2281,18 @@ function tradeMachineRuleChecklist(issues, selectedCount) {
       messages: secondApronAggregationIssues.length
         ? secondApronAggregationIssues.map(tradeMachineIssueMessage)
         : ['No se detecta agregación salarial prohibida para equipos en 2do apron.'],
+    },
+    {
+      key: 'minimum_stacking',
+      label: 'Stacking mínimos',
+      status: minimumStackingIssues.some((issue) => issue.severity === 'illegal')
+        ? 'fail'
+        : minimumStackingIssues.length
+          ? 'warning'
+          : 'pass',
+      messages: minimumStackingIssues.length
+        ? minimumStackingIssues.map(tradeMachineIssueMessage)
+        : ['No se detecta combinación de 3+ jugadores con múltiples contratos mínimos enviados por menos jugadores recibidos.'],
     },
     {
       key: 'restricted_pick',
@@ -2283,6 +2428,7 @@ function validateTradeMachine() {
     if (salaryIssue) issues.push(salaryIssue);
     tradeMachineMoveCountIssues(code, flow).forEach((issue) => issues.push(issue));
     tradeMachineSecondApronAggregationIssues(code, flow).forEach((issue) => issues.push(issue));
+    tradeMachineStackingMinimumIssues(code, flow).forEach((issue) => issues.push(issue));
     tradeMachineLeyRandleIssues(code, flow).forEach((issue) => issues.push(issue));
     tradeMachineApronManualReviewIssues(code, flow).forEach((issue) => issues.push(issue));
     tradeMachineRosterCountIssues(code, flow).forEach((issue) => issues.push(issue));
@@ -2292,7 +2438,7 @@ function validateTradeMachine() {
   return {
     status: hasIllegal ? 'illegal' : hasWarning ? 'review' : 'legal',
     issues,
-    checklist: tradeMachineRuleChecklist(issues, selectedEntries.length),
+    checklist: tradeMachineRuleChecklist(issues, selectedEntries.length, flows),
     flows,
   };
 }
