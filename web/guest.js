@@ -1694,6 +1694,8 @@ function tradeMachineAssetMeta(key) {
       detail: [player.position, player.bird_rights].filter(Boolean).join(' · '),
       salary,
       capSalary,
+      rating: Number(player.rating || 0) || 0,
+      ratingText: String(player.rating || '').trim(),
       isTwoWay: isTwoWayPlayer(player),
       restricted: false,
       protected: false,
@@ -1917,9 +1919,12 @@ function tradeMachineSalaryMatchIssue(code, flow) {
       message: 'Tiene límite duro en el 2do apron y acabaría por encima.',
     };
   }
+  const apronLimited = hardCap === 'first'
+    || hardCap === 'second'
+    || (firstApron > 0 && (Number(flow.beforeApronAccount ?? flow.beforeCap ?? 0) >= firstApron || postApronAccount >= firstApron));
   if (flow.incomingSalary <= flow.outgoingSalary) return null;
   const capRoom = Math.max(0, salaryCap - flow.beforeCap);
-  if (flow.beforeCap < salaryCap && flow.incomingSalary <= flow.outgoingSalary + capRoom) return null;
+  if (!apronLimited && flow.beforeCap < salaryCap && flow.incomingSalary <= flow.outgoingSalary + capRoom) return null;
   if (flow.outgoingSalary <= 0) {
     return {
       severity: 'illegal',
@@ -1928,9 +1933,6 @@ function tradeMachineSalaryMatchIssue(code, flow) {
       message: `Recibe ${formatBalanceMoney(flow.incomingSalary)} sin suficiente salario enviado ni margen salarial.`,
     };
   }
-  const apronLimited = hardCap === 'first'
-    || hardCap === 'second'
-    || (firstApron > 0 && (Number(flow.beforeApronAccount ?? flow.beforeCap ?? 0) >= firstApron || postApronAccount >= firstApron));
   const limit = tradeMachineSalaryMatchLimit(flow.outgoingSalary, apronLimited, salaryCap);
   if (flow.incomingSalary <= limit) return null;
   return {
@@ -1939,6 +1941,143 @@ function tradeMachineSalaryMatchIssue(code, flow) {
     teamCode: code,
     message: `Puede recibir hasta ${formatBalanceMoney(limit)} por la regla básica de cuadre salarial, pero recibe ${formatBalanceMoney(flow.incomingSalary)}.`,
   };
+}
+
+function tradeMachineFirstApronLimited(code, flow) {
+  const data = state.tradeMachine.teamDataByCode[code];
+  const summary = data?.summary || {};
+  const thresholds = tradeMachineThresholds();
+  const hardCap = String(summary.apron_hard_cap || '').trim().toLowerCase();
+  const firstApron = Number(thresholds.firstApron || 0);
+  const beforeApronAccount = Number(flow?.beforeApronAccount ?? flow?.beforeCap ?? 0);
+  const postApronAccount = Number(flow?.postApronAccount ?? flow?.postCap ?? 0);
+  return hardCap === 'first'
+    || hardCap === 'second'
+    || (firstApron > 0 && (beforeApronAccount >= firstApron || postApronAccount >= firstApron));
+}
+
+function tradeMachineSecondApronLimited(code, flow) {
+  const data = state.tradeMachine.teamDataByCode[code];
+  const summary = data?.summary || {};
+  const thresholds = tradeMachineThresholds();
+  const hardCap = String(summary.apron_hard_cap || '').trim().toLowerCase();
+  const secondApron = Number(thresholds.secondApron || 0);
+  const beforeApronAccount = Number(flow?.beforeApronAccount ?? flow?.beforeCap ?? 0);
+  const postApronAccount = Number(flow?.postApronAccount ?? flow?.postCap ?? 0);
+  return hardCap === 'second'
+    || (secondApron > 0 && (beforeApronAccount >= secondApron || postApronAccount >= secondApron));
+}
+
+function tradeMachineMoveBucket() {
+  return normalizeMoveBucket(state.settings.trade_move_phase || 'pre30');
+}
+
+function tradeMachineMoveCountIssues(code, flow) {
+  const outgoingCount = (flow?.outgoingAssets || []).length;
+  if (!outgoingCount) return [];
+  const data = state.tradeMachine.teamDataByCode[code] || {};
+  const moveSummary = data.move_summary || {};
+  const bucket = tradeMachineMoveBucket();
+  const remaining = Number(moveSummary[`remaining_${bucket}`]);
+  if (!Number.isFinite(remaining)) {
+    return [{
+      severity: 'warning',
+      rule: 'moves',
+      teamCode: code,
+      message: `Envía ${outgoingCount} activo(s); no se pudo leer el saldo de movimientos ${bucket === 'post30' ? 'post-30' : 'pre-30'}.`,
+    }];
+  }
+  if (outgoingCount > remaining) {
+    return [{
+      severity: 'illegal',
+      rule: 'moves',
+      teamCode: code,
+      message: `Necesita ${outgoingCount} movimiento(s) y solo tiene ${remaining} disponible(s) en ${bucket === 'post30' ? 'post-30' : 'pre-30'}.`,
+    }];
+  }
+  return [];
+}
+
+function tradeMachineMultiTeamParticipationIssue(code, flow, teamCount) {
+  if (teamCount <= 2) return null;
+  const incomingCount = (flow?.incomingAssets || []).length;
+  const outgoingCount = (flow?.outgoingAssets || []).length;
+  if (!incomingCount && !outgoingCount) {
+    return {
+      severity: 'illegal',
+      rule: 'multi_team',
+      teamCode: code,
+      message: 'En un traspaso de más de dos equipos, cada equipo seleccionado debe enviar y recibir algo.',
+    };
+  }
+  if (!incomingCount || !outgoingCount) {
+    return {
+      severity: 'illegal',
+      rule: 'multi_team',
+      teamCode: code,
+      message: `En un traspaso de más de dos equipos debe enviar y recibir algo; ahora ${incomingCount ? 'recibe' : 'no recibe'} y ${outgoingCount ? 'envía' : 'no envía'}.`,
+    };
+  }
+  return null;
+}
+
+function tradeMachineSecondApronAggregationIssues(code, flow) {
+  if (!tradeMachineSecondApronLimited(code, flow)) return [];
+  const outgoingPlayers = (flow?.outgoingAssets || []).filter((asset) => asset.type === 'player');
+  if (outgoingPlayers.length <= 1 || Number(flow?.incomingSalary || 0) <= 0) return [];
+  return [{
+    severity: 'illegal',
+    rule: 'second_apron_aggregation',
+    teamCode: code,
+    message: `Equipo en 2do apron: no puede agregar salarios de varios jugadores (${outgoingPlayers.length}) para recibir salario.`,
+  }];
+}
+
+function tradeMachineApronManualReviewIssues(code, flow) {
+  const issues = [];
+  if (!flow?.incomingAssets?.length && !flow?.outgoingAssets?.length) return issues;
+  if (tradeMachineFirstApronLimited(code, flow)) {
+    issues.push({
+      severity: 'warning',
+      rule: 'manual_review',
+      teamCode: code,
+      message: 'Equipo limitado por 1er apron: revisar manualmente TPE de temporada anterior, excepciones y jugadores cortados con salario previo > MID si aplican.',
+    });
+  }
+  if (tradeMachineSecondApronLimited(code, flow)) {
+    issues.push({
+      severity: 'warning',
+      rule: 'manual_review',
+      teamCode: code,
+      message: 'Equipo limitado por 2do apron: revisar manualmente que no haya cash, TPMID ni TPE creada mediante S&T.',
+    });
+  }
+  return issues;
+}
+
+function tradeMachineLeyRandleIssues(code, flow) {
+  const issues = [];
+  (flow?.outgoingAssets || [])
+    .filter((asset) => asset.type === 'player')
+    .forEach((asset) => {
+      const rating = Number(asset.rating || 0);
+      if (rating >= 85 && rating <= 90) {
+        issues.push({
+          severity: 'warning',
+          rule: 'manual_review',
+          teamCode: code,
+          message: `Ley Randle: ${asset.label} (${rating}) no puede salir si llegó vía trade esta temporada, salvo lesión de temporada.`,
+        });
+      } else if (rating >= 80 && rating < 85) {
+        issues.push({
+          severity: 'warning',
+          rule: 'manual_review',
+          teamCode: code,
+          message: `Ley Randle: ${asset.label} (${rating}) debe esperar 2 meses/preseason o 30 partidos/season desde su llegada vía trade.`,
+        });
+      }
+    });
+  return issues;
 }
 
 function tradeMachineIssuesForRule(issues, rule) {
@@ -1952,7 +2091,10 @@ function tradeMachineIssueMessage(issue) {
 
 function tradeMachineRuleChecklist(issues, selectedCount) {
   const salaryIssues = tradeMachineIssuesForRule(issues, 'salary');
+  const moveIssues = tradeMachineIssuesForRule(issues, 'moves');
+  const multiTeamIssues = tradeMachineIssuesForRule(issues, 'multi_team');
   const hardCapIssues = tradeMachineIssuesForRule(issues, 'hard_cap');
+  const secondApronAggregationIssues = tradeMachineIssuesForRule(issues, 'second_apron_aggregation');
   const restrictedIssues = tradeMachineIssuesForRule(issues, 'restricted_pick');
   const manualIssues = tradeMachineIssuesForRule(issues, 'manual_review');
   const rosterIssues = tradeMachineIssuesForRule(issues, 'roster_count');
@@ -1968,12 +2110,44 @@ function tradeMachineRuleChecklist(issues, selectedCount) {
           : ['El cuadre salarial básico pasa para todos los equipos seleccionados.'],
     },
     {
+      key: 'moves',
+      label: 'Movimientos disponibles',
+      status: !selectedCount
+        ? 'pending'
+        : moveIssues.some((issue) => issue.severity === 'illegal')
+          ? 'fail'
+          : moveIssues.some((issue) => issue.severity === 'warning')
+            ? 'warning'
+            : 'pass',
+      messages: !selectedCount
+        ? ['Añade activos para evaluar los movimientos disponibles.']
+        : moveIssues.length
+          ? moveIssues.map(tradeMachineIssueMessage)
+          : ['Todos los equipos tienen movimientos suficientes para los activos que envían.'],
+    },
+    {
+      key: 'multi_team',
+      label: 'Traspaso multi-equipo',
+      status: multiTeamIssues.length ? 'fail' : 'pass',
+      messages: multiTeamIssues.length
+        ? multiTeamIssues.map(tradeMachineIssueMessage)
+        : ['Si hay más de dos equipos, todos envían y reciben algo.'],
+    },
+    {
       key: 'hard_cap',
       label: 'Límite duro',
       status: hardCapIssues.length ? 'fail' : 'pass',
       messages: hardCapIssues.length
         ? hardCapIssues.map(tradeMachineIssueMessage)
         : ['No se detecta conflicto de límite duro en el 1er/2do apron.'],
+    },
+    {
+      key: 'second_apron_aggregation',
+      label: 'Agregación 2do apron',
+      status: secondApronAggregationIssues.length ? 'fail' : 'pass',
+      messages: secondApronAggregationIssues.length
+        ? secondApronAggregationIssues.map(tradeMachineIssueMessage)
+        : ['No se detecta agregación salarial prohibida para equipos en 2do apron.'],
     },
     {
       key: 'restricted_pick',
@@ -1985,11 +2159,11 @@ function tradeMachineRuleChecklist(issues, selectedCount) {
     },
     {
       key: 'manual_review',
-      label: 'Stepien/revisión manual',
+      label: 'Revisión manual ANBA',
       status: manualIssues.length ? 'warning' : 'pass',
       messages: manualIssues.length
         ? manualIssues.map(tradeMachineIssueMessage)
-        : ['No se activa revisión por protecciones, condiciones, Stepien ni agregación/aprons.'],
+        : ['No se activa revisión por protecciones, condiciones, Stepien, Ley Randle, BYC/S&T ni restricciones de aprons no modeladas.'],
     },
     {
       key: 'roster_count',
@@ -2090,25 +2264,28 @@ function validateTradeMachine() {
       issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label} necesita revisión de la regla Stepien.` });
     }
   });
+  if (selectedEntries.some(([key]) => tradeMachineAssetMeta(key)?.type === 'player')) {
+    issues.push({
+      severity: 'warning',
+      rule: 'manual_review',
+      message: 'Revisar manualmente si algún jugador es extendido o BYC/S&T: la máquina todavía no tiene campos estructurados para aplicar salario promedio, 30 partidos o 50%/100%.',
+    });
+  }
   teams.forEach((code) => {
     const flow = flows[code];
     if (!flow) return;
-    if (!flow.incomingAssets.length && !flow.outgoingAssets.length) {
+    const multiTeamIssue = tradeMachineMultiTeamParticipationIssue(code, flow, teams.length);
+    if (multiTeamIssue) issues.push(multiTeamIssue);
+    if (teams.length <= 2 && !flow.incomingAssets.length && !flow.outgoingAssets.length) {
       issues.push({ severity: 'warning', rule: 'setup', teamCode: code, message: 'Seleccionado, pero todavía no participa.' });
     }
     const salaryIssue = tradeMachineSalaryMatchIssue(code, flow);
     if (salaryIssue) issues.push(salaryIssue);
+    tradeMachineMoveCountIssues(code, flow).forEach((issue) => issues.push(issue));
+    tradeMachineSecondApronAggregationIssues(code, flow).forEach((issue) => issues.push(issue));
+    tradeMachineLeyRandleIssues(code, flow).forEach((issue) => issues.push(issue));
+    tradeMachineApronManualReviewIssues(code, flow).forEach((issue) => issues.push(issue));
     tradeMachineRosterCountIssues(code, flow).forEach((issue) => issues.push(issue));
-    const secondApron = secondApronForSeason(tradeMachineSeasonStart());
-    const beforeApronAccount = Number(flow.beforeApronAccount ?? flow.beforeCap ?? 0);
-    const postApronAccount = Number(flow.postApronAccount ?? flow.postCap ?? 0);
-    if (
-      secondApron > 0
-      && (flow.incomingAssets.length || flow.outgoingAssets.length)
-      && (beforeApronAccount >= secondApron || postApronAccount >= secondApron)
-    ) {
-      issues.push({ severity: 'warning', rule: 'manual_review', teamCode: code, message: 'Cerca/por encima del 2do apron; las restricciones de agregación y excepciones todavía no están completamente validadas.' });
-    }
   });
   const hasIllegal = issues.some((issue) => issue.severity === 'illegal');
   const hasWarning = issues.some((issue) => issue.severity === 'warning');
