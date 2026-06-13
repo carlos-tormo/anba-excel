@@ -2046,28 +2046,19 @@ function tradeMachineSalaryMatchIssue(code, flow) {
 }
 
 function tradeMachineFirstApronLimited(code, flow) {
-  const data = state.tradeMachine.teamDataByCode[code];
-  const summary = data?.summary || {};
   const thresholds = tradeMachineThresholds();
-  const hardCap = String(summary.apron_hard_cap || '').trim().toLowerCase();
   const firstApron = Number(thresholds.firstApron || 0);
   const beforeApronAccount = Number(flow?.beforeApronAccount ?? flow?.beforeCap ?? 0);
   const postApronAccount = Number(flow?.postApronAccount ?? flow?.postCap ?? 0);
-  return hardCap === 'first'
-    || hardCap === 'second'
-    || (firstApron > 0 && (beforeApronAccount >= firstApron || postApronAccount >= firstApron));
+  return firstApron > 0 && (beforeApronAccount >= firstApron || postApronAccount >= firstApron);
 }
 
 function tradeMachineSecondApronLimited(code, flow) {
-  const data = state.tradeMachine.teamDataByCode[code];
-  const summary = data?.summary || {};
   const thresholds = tradeMachineThresholds();
-  const hardCap = String(summary.apron_hard_cap || '').trim().toLowerCase();
   const secondApron = Number(thresholds.secondApron || 0);
   const beforeApronAccount = Number(flow?.beforeApronAccount ?? flow?.beforeCap ?? 0);
   const postApronAccount = Number(flow?.postApronAccount ?? flow?.postCap ?? 0);
-  return hardCap === 'second'
-    || (secondApron > 0 && (beforeApronAccount >= secondApron || postApronAccount >= secondApron));
+  return secondApron > 0 && (beforeApronAccount >= secondApron || postApronAccount >= secondApron);
 }
 
 function tradeMachineMoveBucket() {
