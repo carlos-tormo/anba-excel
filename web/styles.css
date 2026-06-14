@@ -3495,8 +3495,49 @@ th {
   background: #eff6ff;
   color: #1d4ed8;
 }
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: #b91c1c;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+}
 #adminUsersTable select {
   min-width: 220px;
+}
+
+.gm-request-action {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  font-size: 0.74rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.gm-request-action--accept {
+  border-color: #86efac;
+  background: #dcfce7;
+  color: #166534;
+}
+.gm-request-action--reject {
+  border-color: #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
+}
+.gm-request-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 #playersTable tbody tr:nth-child(odd) td,
@@ -4168,6 +4209,53 @@ th {
   background: #fee2e2;
   border-color: #fca5a5;
   color: #991b1b;
+}
+.gm-option-request-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  flex: 0 0 auto;
+}
+.salary-chip .gm-option-request-actions,
+.salary-empty-wrap .gm-option-request-actions {
+  margin-left: auto;
+  padding-right: 4px;
+}
+.salary-cap-hold-side .gm-option-request-actions {
+  margin-left: 2px;
+}
+.gm-option-request-actions button {
+  border-radius: 999px;
+  padding: 3px 7px;
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+.gm-option-request-actions button[data-gm-option-action="accepted"] {
+  border-color: #86efac;
+  background: #dcfce7;
+  color: #166534;
+}
+.gm-option-request-actions button[data-gm-option-action="rejected"] {
+  border-color: #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
+}
+.gm-option-request-sent {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.68rem;
+  font-weight: 900;
+  white-space: nowrap;
 }
 .salary-cell-admin > .salary-info-button {
   margin-right: 0;

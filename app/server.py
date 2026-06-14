@@ -493,6 +493,41 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS gm_option_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    requester_email TEXT,
+                    requester_name TEXT,
+                    option_field TEXT NOT NULL,
+                    option_value TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    admin_email TEXT,
+                    admin_name TEXT,
+                    admin_decision_note TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    decided_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_gm_option_requests_status
+                ON gm_option_requests (status, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_gm_option_requests_pending_unique
+                ON gm_option_requests (player_id, option_field)
+                WHERE status = 'pending'
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -1148,6 +1183,209 @@ class LeagueDB:
             conn.commit()
 
         return next((user for user in self.list_users() if int(user.get("id") or 0) == int(user_id)), None)
+
+    def _gm_option_request_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
+        item = row_to_dict(cursor, row)
+        raw_field = str(item.get("option_field") or "")
+        match = re.fullmatch(r"option_(20\d{2})", raw_field)
+        season_year = parse_int(match.group(1)) if match else None
+        item["season_year"] = season_year
+        item["season_label"] = f"{season_year}-{(season_year + 1) % 100:02d}" if season_year else ""
+        return item
+
+    def get_gm_option_request(self, request_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    r.*,
+                    p.name AS player_name,
+                    t.code AS team_code,
+                    t.name AS team_name
+                FROM gm_option_requests r
+                JOIN players p ON p.id = r.player_id
+                JOIN teams t ON t.id = r.team_id
+                WHERE r.id = ?
+                """,
+                (int(request_id),),
+            )
+            row = cur.fetchone()
+            return self._gm_option_request_from_row(cur, row) if row else None
+
+    def list_gm_option_requests(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        normalized_status = str(status or "").strip().lower()
+        params: List[Any] = []
+        where = ""
+        if normalized_status and normalized_status != "all":
+            where = "WHERE r.status = ?"
+            params.append(normalized_status)
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                SELECT
+                    r.*,
+                    p.name AS player_name,
+                    t.code AS team_code,
+                    t.name AS team_name
+                FROM gm_option_requests r
+                JOIN players p ON p.id = r.player_id
+                JOIN teams t ON t.id = r.team_id
+                {where}
+                ORDER BY
+                    CASE r.status WHEN 'pending' THEN 0 ELSE 1 END,
+                    r.created_at DESC,
+                    r.id DESC
+                """,
+                params,
+            )
+            return [self._gm_option_request_from_row(cur, row) for row in cur.fetchall()]
+
+    def create_gm_option_request(
+        self,
+        player_id: int,
+        option_field: str,
+        option_value: str,
+        action: str,
+        requester: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        field = str(option_field or "").strip()
+        match = re.fullmatch(r"option_(20\d{2})", field)
+        if not match:
+            raise ValueError("invalid_option_field")
+        option = str(option_value or "").strip().upper()
+        if option not in {"TO", "QO", "GAP"}:
+            raise ValueError("invalid_option_value")
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"accepted", "rejected"}:
+            raise ValueError("invalid_option_action")
+
+        timestamp = now_iso()
+        request_id: Optional[int] = None
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                SELECT p.id, p.name, p.team_id, p.{field} AS current_option, t.code AS team_code
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.id = ?
+                """,
+                (int(player_id),),
+            )
+            player = cur.fetchone()
+            if not player:
+                return None
+            current_option = str(player["current_option"] or "").strip().upper()
+            if current_option != option:
+                raise ValueError("option_mismatch")
+
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM gm_option_requests
+                WHERE player_id = ? AND option_field = ? AND status = 'pending'
+                """,
+                (int(player_id), field),
+            ).fetchone()
+            if existing:
+                request_id = int(existing["id"])
+                requester_user_id = parse_int(str(requester.get("user_id") or "")) if requester else None
+                conn.execute(
+                    """
+                    UPDATE gm_option_requests
+                    SET
+                        requester_user_id = ?,
+                        requester_email = ?,
+                        requester_name = ?,
+                        option_value = ?,
+                        action = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        requester_user_id,
+                        str(requester.get("email") or "").strip() if requester else None,
+                        str(requester.get("name") or "").strip() if requester else None,
+                        option,
+                        normalized_action,
+                        timestamp,
+                        request_id,
+                    ),
+                )
+            else:
+                requester_user_id = parse_int(str(requester.get("user_id") or "")) if requester else None
+                req_cur = conn.execute(
+                    """
+                    INSERT INTO gm_option_requests (
+                        player_id,
+                        team_id,
+                        requester_user_id,
+                        requester_email,
+                        requester_name,
+                        option_field,
+                        option_value,
+                        action,
+                        status,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (
+                        int(player_id),
+                        int(player["team_id"]),
+                        requester_user_id,
+                        str(requester.get("email") or "").strip() if requester else None,
+                        str(requester.get("name") or "").strip() if requester else None,
+                        field,
+                        option,
+                        normalized_action,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                request_id = int(req_cur.lastrowid)
+            conn.commit()
+
+        return self.get_gm_option_request(request_id) if request_id is not None else None
+
+    def mark_gm_option_request_decided(
+        self,
+        request_id: int,
+        status: str,
+        admin: Dict[str, Any],
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"approved", "rejected"}:
+            raise ValueError("invalid_status")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE gm_option_requests
+                SET
+                    status = ?,
+                    admin_email = ?,
+                    admin_name = ?,
+                    admin_decision_note = ?,
+                    updated_at = ?,
+                    decided_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (
+                    normalized_status,
+                    str(admin.get("email") or "").strip() if admin else None,
+                    str(admin.get("name") or "").strip() if admin else None,
+                    note,
+                    timestamp,
+                    timestamp,
+                    int(request_id),
+                ),
+            )
+            conn.commit()
+            if cur.rowcount < 1:
+                return None
+        return self.get_gm_option_request(request_id)
 
     def create_session(self, token: str, payload: Dict[str, Any], created_at: str, expires_at: int) -> bool:
         with self.connect() as conn:
@@ -3098,6 +3336,12 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(401, {"error": "admin_auth_required"})
         return False
 
+    def _require_authenticated(self) -> bool:
+        if self._is_authenticated():
+            return True
+        self._json(401, {"error": "auth_required"})
+        return False
+
     def _route_html(self, filename: str) -> None:
         self.path = f"/{filename}"
         super().do_GET()
@@ -4144,6 +4388,14 @@ QUALITY REQUIREMENTS
             self._json(200, {"users": users})
             return
 
+        if parsed.path == "/api/admin/gm-option-requests":
+            if not self._require_admin():
+                return
+            qs = parse_qs(parsed.query)
+            status = (qs.get("status") or ["pending"])[0].strip().lower() or "pending"
+            self._json(200, {"requests": self.db.list_gm_option_requests(status=status)})
+            return
+
         if parsed.path.startswith("/api/teams/"):
             code = parsed.path.split("/")[-1]
             data = self.db.get_team(code)
@@ -4193,6 +4445,57 @@ QUALITY REQUIREMENTS
             self._rate_limit_success(ip)
             cookie = self._session_cookie(token)
             self._json(200, {"ok": True, "csrf_token": csrf_token}, headers={"Set-Cookie": cookie})
+            return
+
+        if parsed.path == "/api/gm/option-requests":
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            player_id = parse_int(payload.get("player_id"))
+            if player_id is None:
+                self._json(400, {"error": "invalid_player_id"})
+                return
+            option_field = str(payload.get("option_field") or "").strip()
+            option_value = str(payload.get("option_value") or "").strip().upper()
+            option_action = str(payload.get("action") or "").strip().lower()
+            player = self.db.get_player_record(player_id)
+            if not player:
+                self._json(404, {"error": "player_not_found"})
+                return
+            if not self._can_manage_team(player.get("team_code")):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                request = self.db.create_gm_option_request(
+                    player_id,
+                    option_field,
+                    option_value,
+                    option_action,
+                    self._current_session() or {},
+                )
+            except ValueError as err:
+                message = str(err)
+                if message == "invalid_option_field":
+                    self._json(400, {"error": "invalid_option_field"})
+                    return
+                if message == "invalid_option_value":
+                    self._json(400, {"error": "invalid_option_value"})
+                    return
+                if message == "invalid_option_action":
+                    self._json(400, {"error": "invalid_option_action"})
+                    return
+                if message == "option_mismatch":
+                    self._json(409, {"error": "option_changed"})
+                    return
+                raise
+            if not request:
+                self._json(404, {"error": "player_not_found"})
+                return
+            self._json(201, {"ok": True, "request": request})
             return
 
         if not self._require_admin():
@@ -4538,6 +4841,105 @@ QUALITY REQUIREMENTS
                 {"season_year": parsed_season, "row_count": len(rows)},
             )
             self._json(200, {"ok": True, **result})
+            return
+
+        if parsed.path.startswith("/api/admin/gm-option-requests/"):
+            try:
+                request_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_request_id"})
+                return
+            admin_decision = str(payload.get("decision") or "").strip().lower()
+            if admin_decision not in {"approved", "rejected"}:
+                self._json(400, {"error": "invalid_decision"})
+                return
+            request = self.db.get_gm_option_request(request_id)
+            if not request:
+                self._json(404, {"error": "request_not_found"})
+                return
+            if str(request.get("status") or "").lower() != "pending":
+                self._json(409, {"error": "request_already_decided", "request": request})
+                return
+
+            if admin_decision == "rejected":
+                updated = self.db.mark_gm_option_request_decided(
+                    request_id,
+                    "rejected",
+                    self._current_session() or {},
+                    str(payload.get("note") or "").strip() or None,
+                )
+                if not updated:
+                    self._json(409, {"error": "request_already_decided"})
+                    return
+                self._log_admin_action(
+                    "reject",
+                    "gm_option_request",
+                    str(request_id),
+                    request.get("team_code"),
+                    {
+                        "player_id": request.get("player_id"),
+                        "player_name": request.get("player_name"),
+                        "option_action": request.get("action"),
+                        "option_field": request.get("option_field"),
+                        "option_value": request.get("option_value"),
+                    },
+                )
+                self._json(200, {"ok": True, "request": updated})
+                return
+
+            option_field = str(request.get("option_field") or "").strip()
+            option_value = str(request.get("option_value") or "").strip().upper()
+            option_action = str(request.get("action") or "").strip().lower()
+            player_id = parse_int(str(request.get("player_id") or ""))
+            if player_id is None:
+                self._json(400, {"error": "invalid_player_id"})
+                return
+            player_before = self.db.get_player_record(player_id)
+            if not player_before:
+                self._json(404, {"error": "player_not_found"})
+                return
+            current_option = str(player_before.get(option_field) or "").strip().upper()
+            if current_option != option_value:
+                self._json(409, {"error": "option_changed", "current_option": current_option})
+                return
+
+            player_payload: Dict[str, Any] = {}
+            if option_action == "accepted" and option_value == "TO":
+                player_payload[option_field] = None
+            elif option_action in {"accepted", "rejected"}:
+                player_payload[option_field] = option_value
+            else:
+                self._json(400, {"error": "invalid_option_action"})
+                return
+
+            ok = self.db.update_player(player_id, player_payload)
+            if not ok:
+                self._json(404, {"error": "player_not_found"})
+                return
+            updated = self.db.mark_gm_option_request_decided(
+                request_id,
+                "approved",
+                self._current_session() or {},
+                str(payload.get("note") or "").strip() or None,
+            )
+            if not updated:
+                self._json(409, {"error": "request_already_decided"})
+                return
+            self._log_admin_action(
+                "approve",
+                "gm_option_request",
+                str(request_id),
+                request.get("team_code"),
+                {
+                    "player_id": player_id,
+                    "player_name": request.get("player_name"),
+                    "option_action": option_action,
+                    "option_field": option_field,
+                    "option_value": option_value,
+                    "applied_fields": sorted(player_payload.keys()),
+                },
+            )
+            self._json(200, {"ok": True, "request": updated})
             return
 
         if parsed.path.startswith("/api/admin/users/"):

@@ -722,6 +722,7 @@ function playerHasVisibleCapHold(player) {
 function salaryCellHtml(obj, season, showEmptyYears = true) {
   const capHold = capHoldInfo(obj, season);
   if (capHold.displayable) {
+    const gmActions = gmOptionRequestActionsHtml(obj, season, seasonOptionCode(obj, season));
     const seasonCap = capForSeason(season);
     const capHoldAmount = Number(capHold.amount || 0);
     const qoValue = Number(capHold.displayAmount || 0);
@@ -743,6 +744,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
           <span class="salary-cap-hold-ref">${escapeHtml(capHold.shortLabel || 'Cap hold')}</span>
           ${salaryInfoHtml([message])}
           ${qoValueHtml}
+          ${gmActions}
         </div>
       </div>
     `;
@@ -762,6 +764,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   const hasContractNote = playerSeasonHasContractNote(obj, season);
   const infoMessages = salaryInfoMessages(obj, season);
   const infoHtml = salaryInfoHtml(infoMessages);
+  const gmActions = gmOptionRequestActionsHtml(obj, season, optionCode);
   const salaryStateClasses = [
     isProvisional ? 'salary-chip--provisional' : '',
     isPartiallyGuaranteed ? 'salary-chip--partial-guarantee' : '',
@@ -776,6 +779,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
         <span class="salary-chip-main">${formatDots(val)}</span>
         <span class="salary-chip-pct">${pct}</span>
         ${infoHtml}
+        ${gmActions}
       </div>
     `;
   }
@@ -786,15 +790,17 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
       <div class="salary-chip salary-chip-text ${textTagClass} ${hideOptionTag ? '' : optClass} ${salaryStateClasses}">
         <span class="salary-chip-main">${upper}</span>
         ${infoHtml}
+        ${gmActions}
       </div>
     `;
   }
 
-  if (!showEmptyYears) return '';
+  if (!showEmptyYears && !gmActions) return '';
   return `
     <div class="salary-empty-wrap ${isProvisional ? 'salary-empty-wrap--provisional' : ''} ${isPartiallyGuaranteed ? 'salary-empty-wrap--partial-guarantee' : ''} ${hasContractNote ? 'salary-empty-wrap--note' : ''}">
       <div class="salary-empty-bar" aria-hidden="true"></div>
       ${infoHtml}
+      ${gmActions}
     </div>
   `;
 }
@@ -873,6 +879,65 @@ function seasonSalaryTextCode(row, season) {
 
 function seasonOptionCode(row, season) {
   return String(row?.[`option_${season}`] || '').trim().toUpperCase();
+}
+
+function canSubmitGmOptionRequest(row, season, optionCode) {
+  if (!row?.id) return false;
+  const option = String(optionCode || '').trim().toUpperCase();
+  if (!['TO', 'QO', 'GAP'].includes(option)) return false;
+  const auth = state.auth || {};
+  if (!auth.authenticated || auth.role !== 'gm') return false;
+  const teamCodes = Array.isArray(auth.team_codes)
+    ? auth.team_codes.map((code) => String(code || '').toUpperCase()).filter(Boolean)
+    : [];
+  return teamCodes.includes(String(state.teamCode || '').toUpperCase());
+}
+
+function gmOptionRequestActionsHtml(row, season, optionCode) {
+  const option = String(optionCode || '').trim().toUpperCase();
+  if (!canSubmitGmOptionRequest(row, season, option)) return '';
+  return `
+    <span class="gm-option-request-actions" data-player-id="${escapeHtml(row.id)}" data-option-field="option_${escapeHtml(season)}" data-option-value="${escapeHtml(option)}">
+      <button type="button" data-gm-option-action="accepted">Aceptar</button>
+      <button type="button" data-gm-option-action="rejected">Rechazar</button>
+    </span>
+  `;
+}
+
+async function submitGmOptionRequest(button) {
+  const wrap = button.closest('.gm-option-request-actions');
+  if (!wrap) return;
+  const action = String(button.dataset.gmOptionAction || '').trim();
+  const playerId = Number(wrap.dataset.playerId);
+  const optionField = String(wrap.dataset.optionField || '').trim();
+  const optionValue = String(wrap.dataset.optionValue || '').trim().toUpperCase();
+  if (!Number.isInteger(playerId) || playerId <= 0 || !optionField || !optionValue || !action) return;
+  const buttons = Array.from(wrap.querySelectorAll('button'));
+  buttons.forEach((btn) => { btn.disabled = true; });
+  try {
+    await api('/api/gm/option-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        player_id: playerId,
+        option_field: optionField,
+        option_value: optionValue,
+        action,
+      }),
+    });
+    wrap.innerHTML = '<span class="gm-option-request-sent">Solicitud enviada</span>';
+  } catch (err) {
+    alert(`No se pudo enviar la solicitud: ${err.message || err}`);
+    buttons.forEach((btn) => { btn.disabled = false; });
+  }
+}
+
+function bindGmOptionRequestButtons(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-gm-option-action]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void submitGmOptionRequest(button);
+    });
+  });
 }
 
 function hasNumericSeasonSalary(row, season) {
@@ -4647,6 +4712,8 @@ function renderPlayers() {
   });
   bindSalaryInfoToggles(tbody);
   bindSalaryInfoToggles(cardsWrap);
+  bindGmOptionRequestButtons(tbody);
+  bindGmOptionRequestButtons(cardsWrap);
   renderRosterTotals(rows, seasons);
 }
 

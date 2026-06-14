@@ -26,10 +26,14 @@
       <button id="reloadBtn" class="sidebar-icon-btn" type="button" aria-label="Reload" title="Reload">↻</button>
       <div class="admin-nav-group admin-nav-bottom">
         <a href="/" class="ghost-link sidebar-nav-item">Guest View</a>
+        <button id="gmOptionRequestsBtn" class="sidebar-nav-item" type="button">
+          GM Requests <span id="gmOptionRequestsBadge" class="nav-badge" hidden>0</span>
+        </button>
         <button id="adminMenuBtn" class="sidebar-nav-item" type="button">Admin Menu</button>
         <div id="adminMenuPopover" class="add-entry-popover section-hidden" role="menu" aria-label="Admin menu">
           <button id="openAdminLogPageBtn" type="button">Admin Log</button>
           <button id="openAdminUsersPageBtn" type="button">Users</button>
+          <button id="openGmOptionRequestsPageBtn" type="button">GM Requests</button>
           <button id="openLeagueSettingsPageBtn" type="button">League Settings</button>
         </div>
         <button id="processTradeBtn" class="sidebar-nav-item" type="button">Process Trade</button>
@@ -57,6 +61,7 @@
         <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡">Admin Log</button>
         <button id="adminMobileUsersBtn" type="button" class="mobile-nav-btn" data-icon="☉">Users</button>
+        <button id="adminMobileGmOptionRequestsBtn" type="button" class="mobile-nav-btn" data-icon="!">GM Requests <span id="mobileGmOptionRequestsBadge" class="nav-badge" hidden>0</span></button>
         <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙">League Settings</button>
         <a href="/" class="mobile-nav-link" data-icon="↗">Guest View</a>
         <button id="adminMobileLogoutBtn" type="button" class="danger mobile-nav-btn" data-icon="↗">Logout</button>
@@ -99,6 +104,7 @@
           <option value="free_agent">free_agent</option>
           <option value="draft_order">draft_order</option>
           <option value="team_economy">team_economy</option>
+          <option value="gm_option_request">gm_option_request</option>
           <option value="asset">asset</option>
           <option value="dead_contract">dead_contract</option>
           <option value="team">team</option>
@@ -145,6 +151,35 @@
               <th>Team assignment</th>
               <th>Created</th>
               <th>Updated</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="gmOptionRequestsSection" class="section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>GM Requests</h2>
+          <div class="section-subtitle">Pending TO, QO and GAP option decisions submitted by assigned GMs.</div>
+        </div>
+        <div class="section-actions">
+          <button id="refreshGmOptionRequestsBtn" type="button">Refresh Requests</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="gmOptionRequestsTable">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Player</th>
+              <th>Season</th>
+              <th>Option</th>
+              <th>GM request</th>
+              <th>Submitted by</th>
+              <th>Created</th>
               <th>Actions</th>
             </tr>
           </thead>

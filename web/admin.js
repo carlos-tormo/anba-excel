@@ -10,6 +10,7 @@ const state = {
   economySettingsSeasons: [],
   economySettingsSeason: null,
   adminUsers: [],
+  gmOptionRequests: [],
   freeAgents: [],
   draftOrder: {
     draft_year: null,
@@ -2479,6 +2480,91 @@ async function loadAdminUsers() {
   renderAdminUsers();
 }
 
+function optionRequestActionLabel(action) {
+  return action === 'accepted' ? 'Aceptar opción' : 'Rechazar opción';
+}
+
+function updateGmOptionRequestBadges() {
+  const count = (state.gmOptionRequests || []).filter((request) => request.status === 'pending').length;
+  ['gmOptionRequestsBadge', 'mobileGmOptionRequestsBadge'].forEach((id) => {
+    const badge = document.getElementById(id);
+    if (!badge) return;
+    badge.textContent = String(count);
+    badge.hidden = count < 1;
+  });
+}
+
+function renderGmOptionRequests() {
+  const tbody = document.querySelector('#gmOptionRequestsTable tbody');
+  if (!tbody) return;
+  const requests = state.gmOptionRequests || [];
+  tbody.innerHTML = '';
+  if (!requests.length) {
+    tbody.innerHTML = '<tr><td colspan="8">No pending GM option requests.</td></tr>';
+    return;
+  }
+
+  requests.forEach((request) => {
+    const requestId = Number(request.id);
+    const created = request.created_at ? new Date(request.created_at).toLocaleString() : '';
+    const submittedBy = request.requester_name || request.requester_email || 'GM';
+    const actionClass = request.action === 'accepted' ? 'gm-request-action--accept' : 'gm-request-action--reject';
+    const tr = document.createElement('tr');
+    tr.dataset.gmOptionRequestId = String(requestId);
+    tr.innerHTML = `
+      <td><strong>${escapeHtml(request.team_code || '')}</strong><div class="muted">${escapeHtml(request.team_name || '')}</div></td>
+      <td>${escapeHtml(request.player_name || '')}</td>
+      <td>${escapeHtml(request.season_label || '')}</td>
+      <td><span class="contract-opt-pill ${contractOptionClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span></td>
+      <td><span class="gm-request-action ${actionClass}">${escapeHtml(optionRequestActionLabel(request.action))}</span></td>
+      <td><strong>${escapeHtml(submittedBy)}</strong><div class="muted">${escapeHtml(request.requester_email || '')}</div></td>
+      <td>${escapeHtml(created)}</td>
+      <td class="gm-request-actions">
+        <button type="button" data-gm-request-approve="${requestId}">Approve</button>
+        <button type="button" class="danger" data-gm-request-reject="${requestId}">Reject</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('[data-gm-request-approve]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await decideGmOptionRequest(Number(button.dataset.gmRequestApprove), 'approved', button);
+    });
+  });
+  tbody.querySelectorAll('[data-gm-request-reject]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await decideGmOptionRequest(Number(button.dataset.gmRequestReject), 'rejected', button);
+    });
+  });
+}
+
+async function loadGmOptionRequests() {
+  const res = await api('/api/admin/gm-option-requests?status=pending');
+  state.gmOptionRequests = res.requests || [];
+  updateGmOptionRequestBadges();
+  renderGmOptionRequests();
+}
+
+async function decideGmOptionRequest(requestId, decision, button) {
+  if (!Number.isInteger(requestId) || requestId <= 0) return;
+  const label = decision === 'approved' ? 'aprobar' : 'rechazar';
+  if (!window.confirm(`¿Confirmas ${label} esta solicitud del GM?`)) return;
+  const row = button?.closest('tr');
+  const buttons = row ? Array.from(row.querySelectorAll('button')) : [];
+  buttons.forEach((btn) => { btn.disabled = true; });
+  try {
+    await api(`/api/admin/gm-option-requests/${requestId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ decision }),
+    });
+    await loadGmOptionRequests();
+  } catch (err) {
+    alert(`GM request update failed: ${err.message || err}`);
+    buttons.forEach((btn) => { btn.disabled = false; });
+  }
+}
+
 async function saveAdminUserAccess(userId, button) {
   if (!Number.isInteger(userId) || userId <= 0) return;
   const select = document.querySelector(`[data-admin-user-team="${userId}"]`);
@@ -2605,6 +2691,7 @@ function setViewMode(mode) {
   const showFreeAgents = mode === 'free-agents';
   const showAdminLog = mode === 'admin-log';
   const showAdminUsers = mode === 'admin-users';
+  const showGmOptionRequests = mode === 'gm-option-requests';
   const showLeagueSettings = mode === 'admin-settings';
 
   const toggleSection = (id, hidden) => {
@@ -2622,6 +2709,7 @@ function setViewMode(mode) {
   toggleSection('settingsSection', !showLeagueSettings);
   toggleSection('adminLogsSection', !showAdminLog);
   toggleSection('adminUsersSection', !showAdminUsers);
+  toggleSection('gmOptionRequestsSection', !showGmOptionRequests);
   toggleSection('rosterSection', !showTeam);
   toggleSection('deadContractsSection', !showTeam);
   toggleSection('exceptionsSection', !showTeam);
@@ -2654,7 +2742,9 @@ function setupAdminMenu() {
   const menu = document.getElementById('adminMenuPopover');
   const openLogBtn = document.getElementById('openAdminLogPageBtn');
   const openUsersBtn = document.getElementById('openAdminUsersPageBtn');
+  const openGmRequestsBtn = document.getElementById('openGmOptionRequestsPageBtn');
   const openSettingsBtn = document.getElementById('openLeagueSettingsPageBtn');
+  const gmRequestsBtn = document.getElementById('gmOptionRequestsBtn');
 
   menuBtn.addEventListener('click', () => {
     const isHidden = menu.classList.contains('section-hidden');
@@ -2675,6 +2765,16 @@ function setupAdminMenu() {
     renderCapStatusPills({});
     await loadAdminUsers();
   });
+
+  const openGmRequests = async () => {
+    setViewMode('gm-option-requests');
+    setPageHeading('GM Requests', '');
+    renderCapStatusPills({});
+    await loadGmOptionRequests();
+  };
+
+  openGmRequestsBtn?.addEventListener('click', openGmRequests);
+  gmRequestsBtn?.addEventListener('click', openGmRequests);
 
   openSettingsBtn.addEventListener('click', () => {
     setViewMode('admin-settings');
@@ -2926,6 +3026,7 @@ function setupAdminMobileNav() {
   const freeAgentsBtn = document.getElementById('adminMobileFreeAgentsBtn');
   const logBtn = document.getElementById('adminMobileLogBtn');
   const usersBtn = document.getElementById('adminMobileUsersBtn');
+  const gmRequestsBtn = document.getElementById('adminMobileGmOptionRequestsBtn');
   const settingsBtn = document.getElementById('adminMobileSettingsBtn');
   const logoutBtn = document.getElementById('adminMobileLogoutBtn');
   const infoBtn = document.getElementById('mobileInfoBtn');
@@ -2979,6 +3080,15 @@ function setupAdminMobileNav() {
       setPageHeading('ANBA Users', '');
       renderCapStatusPills({});
       await loadAdminUsers();
+    });
+  }
+  if (gmRequestsBtn) {
+    gmRequestsBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      setViewMode('gm-option-requests');
+      setPageHeading('GM Requests', '');
+      renderCapStatusPills({});
+      await loadGmOptionRequests();
     });
   }
   if (settingsBtn) {
@@ -6527,6 +6637,8 @@ async function init() {
   document.getElementById('logEntityFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('refreshLogsBtn').addEventListener('click', () => { void loadAdminLogs(); });
   document.getElementById('refreshUsersBtn')?.addEventListener('click', () => { void loadAdminUsers(); });
+  document.getElementById('refreshGmOptionRequestsBtn')?.addEventListener('click', () => { void loadGmOptionRequests(); });
+  await loadGmOptionRequests();
 
   document.getElementById('reloadBtn').addEventListener('click', async () => {
     if (!state.teamCode) return;
