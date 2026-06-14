@@ -1898,6 +1898,10 @@ function tradeMachineAggregatedTpeLimit(outgoingSalary) {
   return Number(outgoingSalary || 0) + TRADE_MATCH_CUSHION;
 }
 
+function tradeMachineStandardOrAggregatedTpeLabel(outgoingPlayers) {
+  return Number(outgoingPlayers || 0) > 1 ? 'TPE agregada' : 'TPE estándar';
+}
+
 function tradeMachineSalaryMatchProfile(code, flow) {
   const data = state.tradeMachine.teamDataByCode[code];
   const summary = data?.summary || {};
@@ -1911,6 +1915,9 @@ function tradeMachineSalaryMatchProfile(code, flow) {
   const incomingPlayers = (flow?.incomingAssets || []).filter((asset) => asset.type === 'player').length;
   const firstApronLimited = tradeMachineFirstApronLimited(code, flow);
   const secondApronLimited = tradeMachineSecondApronLimited(code, flow);
+  const standardLimit = outgoingPlayers > 0 && incomingPlayers > 0
+    ? tradeMachineAggregatedTpeLimit(outgoing)
+    : 0;
 
   if (incoming <= 0 || incoming <= outgoing) {
     return {
@@ -1935,20 +1942,21 @@ function tradeMachineSalaryMatchProfile(code, flow) {
   }
 
   if (firstApronLimited) {
-    const limit = tradeMachineAggregatedTpeLimit(outgoing);
-    const label = outgoingPlayers > 1 ? 'TPE agregada' : 'TPE estándar/agregada';
+    const label = tradeMachineStandardOrAggregatedTpeLabel(outgoingPlayers);
+    const hardCapTrigger = outgoingPlayers > 1 ? 'second' : '';
     return {
-      legal: outgoingPlayers > 0 && incomingPlayers > 0 && incoming <= limit,
-      tpe: 'aggregated',
+      legal: outgoingPlayers > 0 && incomingPlayers > 0 && incoming <= standardLimit,
+      tpe: outgoingPlayers > 1 ? 'aggregated' : 'standard',
       label,
-      limit,
+      limit: standardLimit,
+      hardCapTrigger,
       message: outgoingPlayers <= 0
         ? `Necesita enviar al menos un jugador para usar ${label}.`
         : incomingPlayers <= 0
           ? `Necesita recibir al menos un jugador para usar ${label}.`
-          : incoming <= limit
-            ? `${label}: puede recibir hasta ${formatBalanceMoney(limit)} (100% del salario enviado + $250k).`
-            : `${label}: puede recibir hasta ${formatBalanceMoney(limit)} (100% del salario enviado + $250k), pero recibe ${formatBalanceMoney(incoming)}.`,
+          : incoming <= standardLimit
+            ? `${label}: puede recibir hasta ${formatBalanceMoney(standardLimit)} (100% del salario enviado + $250k).`
+            : `${label}: puede recibir hasta ${formatBalanceMoney(standardLimit)} (100% del salario enviado + $250k), pero recibe ${formatBalanceMoney(incoming)}.`,
     };
   }
 
@@ -1965,16 +1973,6 @@ function tradeMachineSalaryMatchProfile(code, flow) {
     : 0;
   const expandedLegal = outgoingPlayers > 0 && incomingPlayers > 0 && incoming <= expandedLimit;
 
-  if (expandedLegal) {
-    return {
-      legal: true,
-      tpe: 'expanded',
-      label: 'TPE expandida',
-      limit: expandedLimit,
-      message: `TPE expandida: puede recibir hasta ${formatBalanceMoney(expandedLimit)} según el salario enviado.`,
-    };
-  }
-
   if (capSpaceLegal) {
     return {
       legal: true,
@@ -1982,6 +1980,30 @@ function tradeMachineSalaryMatchProfile(code, flow) {
       label: 'Espacio salarial',
       limit: roomLimit,
       message: `Absorbe el salario con espacio salarial; límite ${formatBalanceMoney(roomLimit)} antes de usar el buffer Room TPE.`,
+    };
+  }
+
+  if (standardLimit > 0 && incoming <= standardLimit) {
+    const label = tradeMachineStandardOrAggregatedTpeLabel(outgoingPlayers);
+    const hardCapTrigger = outgoingPlayers > 1 ? 'second' : '';
+    return {
+      legal: true,
+      tpe: outgoingPlayers > 1 ? 'aggregated' : 'standard',
+      label,
+      limit: standardLimit,
+      hardCapTrigger,
+      message: `${label}: puede recibir hasta ${formatBalanceMoney(standardLimit)} (100% del salario enviado + $250k).`,
+    };
+  }
+
+  if (expandedLegal) {
+    return {
+      legal: true,
+      tpe: 'expanded',
+      label: 'TPE expandida',
+      limit: expandedLimit,
+      hardCapTrigger: 'first',
+      message: `TPE expandida: puede recibir hasta ${formatBalanceMoney(expandedLimit)} según el salario enviado.`,
     };
   }
 
@@ -2188,6 +2210,32 @@ function tradeMachineStackingMinimumIssues(code, flow) {
   }];
 }
 
+function tradeMachineHardCapRank(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'first') return 2;
+  if (normalized === 'second') return 1;
+  return 0;
+}
+
+function tradeMachineHardCapTriggerIssues(code, flow) {
+  const data = state.tradeMachine.teamDataByCode[code] || {};
+  const currentHardCap = String(data.summary?.apron_hard_cap || '').trim().toLowerCase();
+  const profile = tradeMachineSalaryMatchProfile(code, flow);
+  const trigger = String(profile.hardCapTrigger || '').trim().toLowerCase();
+  if (!profile.legal || !['first', 'second'].includes(trigger)) return [];
+  if (tradeMachineHardCapRank(currentHardCap) >= tradeMachineHardCapRank(trigger)) return [];
+  const apronLabel = trigger === 'first' ? '1er apron' : '2do apron';
+  const reason = trigger === 'first'
+    ? 'usar la TPE expandida'
+    : 'agregar salarios de varios jugadores';
+  return [{
+    severity: 'warning',
+    rule: 'hard_cap_trigger',
+    teamCode: code,
+    message: `El traspaso dejaría al equipo hard-capped en el ${apronLabel} por ${reason}.`,
+  }];
+}
+
 function tradeMachineIssuesForRule(issues, rule) {
   return (issues || []).filter((issue) => issue.rule === rule);
 }
@@ -2217,6 +2265,7 @@ function tradeMachineRuleChecklist(issues, selectedCount, flows = {}) {
   const moveIssues = tradeMachineIssuesForRule(issues, 'moves');
   const multiTeamIssues = tradeMachineIssuesForRule(issues, 'multi_team');
   const hardCapIssues = tradeMachineIssuesForRule(issues, 'hard_cap');
+  const hardCapTriggerIssues = tradeMachineIssuesForRule(issues, 'hard_cap_trigger');
   const secondApronAggregationIssues = tradeMachineIssuesForRule(issues, 'second_apron_aggregation');
   const minimumStackingIssues = tradeMachineIssuesForRule(issues, 'minimum_stacking');
   const restrictedIssues = tradeMachineIssuesForRule(issues, 'restricted_pick');
@@ -2264,6 +2313,14 @@ function tradeMachineRuleChecklist(issues, selectedCount, flows = {}) {
       messages: hardCapIssues.length
         ? hardCapIssues.map(tradeMachineIssueMessage)
         : ['No se detecta conflicto de límite duro en el 1er/2do apron.'],
+    },
+    {
+      key: 'hard_cap_trigger',
+      label: 'Hard cap generado',
+      status: hardCapTriggerIssues.length ? 'warning' : 'pass',
+      messages: hardCapTriggerIssues.length
+        ? hardCapTriggerIssues.map(tradeMachineIssueMessage)
+        : ['El traspaso no genera un nuevo hard cap de apron para los equipos seleccionados.'],
     },
     {
       key: 'second_apron_aggregation',
@@ -2417,6 +2474,7 @@ function validateTradeMachine() {
     }
     const salaryIssue = tradeMachineSalaryMatchIssue(code, flow);
     if (salaryIssue) issues.push(salaryIssue);
+    tradeMachineHardCapTriggerIssues(code, flow).forEach((issue) => issues.push(issue));
     tradeMachineMoveCountIssues(code, flow).forEach((issue) => issues.push(issue));
     tradeMachineSecondApronAggregationIssues(code, flow).forEach((issue) => issues.push(issue));
     tradeMachineStackingMinimumIssues(code, flow).forEach((issue) => issues.push(issue));
@@ -3293,7 +3351,11 @@ function renderAuthControls() {
   }
 
   const userName = auth.user?.name || auth.user?.email || 'Signed In';
-  badge.textContent = `${userName} (${auth.role})`;
+  const teamCodes = Array.isArray(auth.team_codes) ? auth.team_codes.filter(Boolean) : [];
+  const roleLabel = auth.role === 'gm' && teamCodes.length
+    ? `GM ${teamCodes.join('/')}`
+    : auth.role;
+  badge.textContent = `${userName} (${roleLabel})`;
   loginLink.hidden = true;
   adminLink.hidden = auth.role !== 'admin';
   logoutBtn.hidden = false;
@@ -5578,7 +5640,7 @@ async function init() {
   setRosterView(initialRosterView, false);
   renderTeamStrip();
   renderMobileTeamGrid();
-  const initialTeam = readInitialTeamCode();
+  const initialTeam = readInitialTeamCode() || (state.auth?.role === 'gm' ? state.auth?.team_code : '');
   if (initialTeam && state.teams.some((t) => t.code === initialTeam)) {
     await loadTeam(initialTeam);
   } else {

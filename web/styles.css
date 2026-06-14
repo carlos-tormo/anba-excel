@@ -3462,6 +3462,42 @@ th {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 0.75rem;
 }
+.muted {
+  color: #64748b;
+  font-size: 0.78rem;
+}
+.user-role-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 62px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.user-role-pill--admin {
+  border-color: rgba(180, 35, 24, 0.32);
+  background: #fef2f2;
+  color: #991b1b;
+}
+.user-role-pill--gm {
+  border-color: rgba(var(--team-primary-rgb), 0.26);
+  background: rgba(var(--team-primary-rgb), 0.08);
+  color: rgb(var(--team-primary-rgb));
+}
+.user-role-pill--guest {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+#adminUsersTable select {
+  min-width: 220px;
+}
 
 #playersTable tbody tr:nth-child(odd) td,
 #deadContractsTable tbody tr:nth-child(odd) td,
@@ -5678,11 +5714,16 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
     overflow-x: hidden;
   }
   header {
+    position: sticky;
+    top: 0;
+    z-index: 38;
     display: grid;
     grid-template-columns: 34px minmax(0, 1fr) 34px;
     align-items: center;
     gap: 8px;
     padding: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.18);
   }
   .page-title-wrap {
     grid-column: 2;

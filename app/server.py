@@ -323,6 +323,51 @@ def normalize_team_codes(value: Any) -> List[str]:
     return codes
 
 
+def parse_gm_account_map(value: Any) -> Dict[str, List[str]]:
+    if value is None:
+        return {}
+    raw = str(value or "").strip()
+    if not raw:
+        return {}
+
+    parsed_items: List[Any]
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        parsed_items = [{"email": email, "teams": teams} for email, teams in parsed.items()]
+    elif isinstance(parsed, list):
+        parsed_items = parsed
+    else:
+        parsed_items = re.split(r"[\n,]+", raw)
+
+    mapping: Dict[str, List[str]] = {}
+    for item in parsed_items:
+        if isinstance(item, dict):
+            email = str(item.get("email") or "").strip().lower()
+            teams_value = item.get("teams") or item.get("team_codes") or item.get("team_code")
+        else:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if "=" in text:
+                email, teams_value = text.split("=", 1)
+            elif ":" in text:
+                email, teams_value = text.split(":", 1)
+            else:
+                continue
+            email = email.strip().lower()
+
+        if not email or "@" not in email:
+            continue
+        team_codes = normalize_team_codes(teams_value)
+        if team_codes:
+            mapping[email] = team_codes
+    return mapping
+
+
 def serialize_team_codes(value: Any) -> Optional[str]:
     codes = normalize_team_codes(value)
     return json.dumps(codes, ensure_ascii=True) if codes else None
@@ -432,6 +477,17 @@ class LeagueDB:
                     avatar_url TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_team_assignments (
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, team_id)
                 )
                 """
             )
@@ -1013,6 +1069,85 @@ class LeagueDB:
             if not row:
                 raise RuntimeError("Failed to load Google user after upsert")
             return dict(row)
+
+    def get_user_team_codes_by_email(self, email: str) -> List[str]:
+        normalized = str(email or "").strip().lower()
+        if not normalized:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.code
+                FROM users u
+                JOIN user_team_assignments a ON a.user_id = u.id
+                JOIN teams t ON t.id = a.team_id
+                WHERE lower(u.email) = ?
+                ORDER BY t.code
+                """,
+                (normalized,),
+            ).fetchall()
+            return [str(row["code"]).upper() for row in rows]
+
+    def list_users(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    u.id,
+                    u.email,
+                    u.display_name,
+                    u.avatar_url,
+                    u.created_at,
+                    u.updated_at,
+                    GROUP_CONCAT(t.code, ',') AS team_codes
+                FROM users u
+                LEFT JOIN user_team_assignments a ON a.user_id = u.id
+                LEFT JOIN teams t ON t.id = a.team_id
+                GROUP BY u.id
+                ORDER BY lower(u.email)
+                """
+            )
+            rows = []
+            for row in cur.fetchall():
+                item = row_to_dict(cur, row)
+                item["team_codes"] = normalize_team_codes(item.get("team_codes"))
+                rows.append(item)
+            return rows
+
+    def replace_user_team_assignments(self, user_id: int, team_codes: Any) -> Optional[Dict[str, Any]]:
+        normalized_codes = normalize_team_codes(team_codes)
+        timestamp = now_iso()
+        with self.connect() as conn:
+            user_row = conn.execute("SELECT id FROM users WHERE id = ?", (int(user_id),)).fetchone()
+            if not user_row:
+                return None
+
+            team_rows_by_code: Dict[str, sqlite3.Row] = {}
+            if normalized_codes:
+                placeholders = ",".join("?" for _ in normalized_codes)
+                team_rows = conn.execute(
+                    f"SELECT id, code FROM teams WHERE code IN ({placeholders})",
+                    normalized_codes,
+                ).fetchall()
+                team_rows_by_code = {str(row["code"]).upper(): row for row in team_rows}
+                missing = [code for code in normalized_codes if code not in team_rows_by_code]
+                if missing:
+                    raise ValueError(f"invalid_team_code:{missing[0]}")
+
+            conn.execute("DELETE FROM user_team_assignments WHERE user_id = ?", (int(user_id),))
+            for code in normalized_codes:
+                team_row = team_rows_by_code[code]
+                conn.execute(
+                    """
+                    INSERT INTO user_team_assignments (user_id, team_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (int(user_id), int(team_row["id"]), timestamp, timestamp),
+                )
+            conn.execute("UPDATE users SET updated_at = ? WHERE id = ?", (timestamp, int(user_id)))
+            conn.commit()
+
+        return next((user for user in self.list_users() if int(user.get("id") or 0) == int(user_id)), None)
 
     def create_session(self, token: str, payload: Dict[str, Any], created_at: str, expires_at: int) -> bool:
         with self.connect() as conn:
@@ -2795,6 +2930,12 @@ class Handler(SimpleHTTPRequestHandler):
     admin_user = os.getenv("ADMIN_USER", "admin")
     admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
     admin_emails = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+    gm_accounts = parse_gm_account_map(
+        os.getenv("GM_ACCOUNTS")
+        or os.getenv("GM_EMAILS")
+        or os.getenv("GM_EMAIL_MAP")
+        or ""
+    )
     session_ttl_seconds = max(300, parse_int(os.getenv("SESSION_TTL_SECONDS")) or 28800)
     cookie_secure = str(os.getenv("COOKIE_SECURE", "false")).strip().lower() in {"1", "true", "yes", "on"}
     cookie_same_site = str(os.getenv("COOKIE_SAMESITE", "Lax")).strip() or "Lax"
@@ -2919,7 +3060,13 @@ class Handler(SimpleHTTPRequestHandler):
         token = self._cookie_dict().get("session")
         if not token:
             return None
-        return self.db.get_session(token)
+        sess = self.db.get_session(token)
+        if sess and sess.get("provider") == "google":
+            role, team_codes = self._google_role_for_email(str(sess.get("email") or ""))
+            sess["role"] = role
+            sess["team_codes"] = team_codes
+            sess["team_code"] = team_codes[0] if team_codes else None
+        return sess
 
     def _is_authenticated(self) -> bool:
         return self._current_session() is not None
@@ -2927,6 +3074,23 @@ class Handler(SimpleHTTPRequestHandler):
     def _is_admin(self) -> bool:
         sess = self._current_session()
         return bool(sess and sess.get("role") == "admin")
+
+    def _is_gm(self) -> bool:
+        sess = self._current_session()
+        return bool(sess and sess.get("role") == "gm")
+
+    def _current_session_team_codes(self) -> List[str]:
+        sess = self._current_session() or {}
+        raw_codes = sess.get("team_codes")
+        if isinstance(raw_codes, list):
+            return [str(code).strip().upper() for code in raw_codes if str(code or "").strip()]
+        return []
+
+    def _can_manage_team(self, team_code: Any) -> bool:
+        if self._is_admin():
+            return True
+        normalized = normalize_team_code(team_code)
+        return bool(normalized and normalized in self._current_session_team_codes())
 
     def _require_admin(self) -> bool:
         if self._is_admin():
@@ -3029,6 +3193,27 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _google_enabled(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret and self.google_redirect_uri)
+
+    def _google_role_for_email(self, email: str) -> tuple[str, List[str]]:
+        normalized = str(email or "").strip().lower()
+        if normalized in self.admin_emails:
+            return "admin", []
+        db_team_codes = self.db.get_user_team_codes_by_email(normalized)
+        if db_team_codes:
+            return "gm", db_team_codes
+        team_codes = self.gm_accounts.get(normalized, [])
+        if team_codes:
+            return "gm", team_codes
+        return "guest", []
+
+    def _landing_path_for_session(self, role: Any, team_codes: Optional[List[str]] = None) -> str:
+        if role == "admin":
+            return "/admin"
+        if role == "gm":
+            team_code = (team_codes or [None])[0]
+            if team_code:
+                return f"/?team={team_code}"
+        return "/"
 
     def _log_admin_action(
         self,
@@ -3830,7 +4015,7 @@ QUALITY REQUIREMENTS
                 return
 
             user = self.db.upsert_google_user(google_sub, email, name, picture)
-            role = "admin" if email in self.admin_emails else "viewer"
+            role, team_codes = self._google_role_for_email(email)
 
             token, _ = self._start_session(
                 {
@@ -3839,11 +4024,13 @@ QUALITY REQUIREMENTS
                     "email": email,
                     "name": user.get("display_name") or email,
                     "role": role,
+                    "team_codes": team_codes,
+                    "team_code": team_codes[0] if team_codes else None,
                     "logged_in_at": now_iso(),
                 }
             )
             cookie = self._session_cookie(token)
-            self._redirect("/admin" if role == "admin" else "/", headers={"Set-Cookie": cookie})
+            self._redirect(self._landing_path_for_session(role, team_codes), headers={"Set-Cookie": cookie})
             return
 
         if parsed.path == "/api/auth/status":
@@ -3857,6 +4044,8 @@ QUALITY REQUIREMENTS
                         "user": None,
                         "google_enabled": self._google_enabled(),
                         "csrf_token": None,
+                        "team_code": None,
+                        "team_codes": [],
                     },
                 )
                 return
@@ -3870,6 +4059,8 @@ QUALITY REQUIREMENTS
                         "name": sess.get("name"),
                         "provider": sess.get("provider"),
                     },
+                    "team_code": sess.get("team_code"),
+                    "team_codes": sess.get("team_codes") if isinstance(sess.get("team_codes"), list) else [],
                     "google_enabled": self._google_enabled(),
                     "csrf_token": sess.get("csrf_token"),
                 },
@@ -3938,6 +4129,19 @@ QUALITY REQUIREMENTS
             entity = (qs.get("entity") or [""])[0].strip() or None
             limit = parse_int((qs.get("limit") or ["200"])[0]) or 200
             self._json(200, {"logs": self.db.list_admin_logs(action=action, entity=entity, limit=limit)})
+            return
+
+        if parsed.path == "/api/admin/users":
+            if not self._require_admin():
+                return
+            users = self.db.list_users()
+            for user in users:
+                email = str(user.get("email") or "").strip().lower()
+                team_codes = normalize_team_codes(user.get("team_codes"))
+                user["role"] = "admin" if email in self.admin_emails else ("gm" if team_codes else "guest")
+                user["team_code"] = team_codes[0] if team_codes else None
+                user["team_codes"] = team_codes
+            self._json(200, {"users": users})
             return
 
         if parsed.path.startswith("/api/teams/"):
@@ -4334,6 +4538,45 @@ QUALITY REQUIREMENTS
                 {"season_year": parsed_season, "row_count": len(rows)},
             )
             self._json(200, {"ok": True, **result})
+            return
+
+        if parsed.path.startswith("/api/admin/users/"):
+            try:
+                user_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_user_id"})
+                return
+            team_codes = payload.get("team_codes")
+            if team_codes is None and "team_code" in payload:
+                team_code = str(payload.get("team_code") or "").strip()
+                team_codes = [team_code] if team_code else []
+            if team_codes is None:
+                self._json(400, {"error": "team_codes_required"})
+                return
+            try:
+                user = self.db.replace_user_team_assignments(user_id, team_codes)
+            except ValueError as err:
+                message = str(err)
+                if message.startswith("invalid_team_code:"):
+                    self._json(400, {"error": "invalid_team_code", "team_code": message.split(":", 1)[1]})
+                    return
+                raise
+            if user is None:
+                self._json(404, {"error": "user_not_found"})
+                return
+            assigned_codes = normalize_team_codes(user.get("team_codes"))
+            email = str(user.get("email") or "").strip().lower()
+            user["role"] = "admin" if email in self.admin_emails else ("gm" if assigned_codes else "guest")
+            user["team_code"] = assigned_codes[0] if assigned_codes else None
+            user["team_codes"] = assigned_codes
+            self._log_admin_action(
+                "update",
+                "user_access",
+                str(user_id),
+                assigned_codes[0] if assigned_codes else None,
+                {"email": user.get("email"), "team_codes": assigned_codes},
+            )
+            self._json(200, {"ok": True, "user": user})
             return
 
         if parsed.path == "/api/settings":

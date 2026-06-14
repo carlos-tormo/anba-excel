@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260612b">
+  <link rel="stylesheet" href="/styles.css?v=20260614a">
 </head>
 <body class="app-layout">
   <header>
@@ -29,6 +29,7 @@
         <button id="adminMenuBtn" class="sidebar-nav-item" type="button">Admin Menu</button>
         <div id="adminMenuPopover" class="add-entry-popover section-hidden" role="menu" aria-label="Admin menu">
           <button id="openAdminLogPageBtn" type="button">Admin Log</button>
+          <button id="openAdminUsersPageBtn" type="button">Users</button>
           <button id="openLeagueSettingsPageBtn" type="button">League Settings</button>
         </div>
         <button id="processTradeBtn" class="sidebar-nav-item" type="button">Process Trade</button>
@@ -55,6 +56,7 @@
         <button id="adminMobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈">Draft</button>
         <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡">Admin Log</button>
+        <button id="adminMobileUsersBtn" type="button" class="mobile-nav-btn" data-icon="☉">Users</button>
         <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙">League Settings</button>
         <a href="/" class="mobile-nav-link" data-icon="↗">Guest View</a>
         <button id="adminMobileLogoutBtn" type="button" class="danger mobile-nav-btn" data-icon="↗">Logout</button>
@@ -100,6 +102,7 @@
           <option value="asset">asset</option>
           <option value="dead_contract">dead_contract</option>
           <option value="team">team</option>
+          <option value="user_access">user_access</option>
           <option value="settings">settings</option>
           <option value="trade">trade</option>
         </select>
@@ -116,6 +119,33 @@
               <th>Entity ID</th>
               <th>Team</th>
               <th>Details</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="adminUsersSection" class="section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Users</h2>
+          <div class="section-subtitle">Signed-up Google users start as guests. Assign a team to enable GM access.</div>
+        </div>
+        <div class="section-actions">
+          <button id="refreshUsersBtn" type="button">Refresh Users</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="adminUsersTable">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Team assignment</th>
+              <th>Created</th>
+              <th>Updated</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -813,6 +843,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260612e" defer></script>
+  <script src="/admin.js?v=20260614b" defer></script>
 </body>
 </html>

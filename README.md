@@ -40,7 +40,9 @@ Local roster management app that replicates the team-tab workflow from `ROSTERS.
 - If `ADMIN_USER` and `ADMIN_PASSWORD` are not set, defaults are `admin` / `admin123` (change these in real usage).
 - Google OAuth sign-in is optional. If configured, users can sign in with Google:
   - Emails in `ADMIN_EMAILS` get `admin` role.
-  - Other Google users get `viewer` role (read-only).
+  - Signed-in users start with `guest` role.
+  - Admins can assign signed-up users to a team from Admin Menu > Users, which gives them `gm` role scoped to that team.
+  - Emails mapped in optional `GM_ACCOUNTS` also get `gm` role scoped to their team code(s), for example `gm@example.com:ATL`.
 - Admin panel includes a global `Salary Cap 25/26` setting used across views for salary `% of cap` and cap-room calculations.
 - The server auto-loads `.env` from project root. You can override file path with `ENV_FILE=/path/to/.env`.
 

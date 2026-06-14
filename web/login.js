@@ -38,10 +38,16 @@ function getErrorMessageFromQuery() {
   return map[code] || 'Authentication failed.';
 }
 
+function authLandingPath(status) {
+  if (status.role === 'admin') return '/admin';
+  if (status.role === 'gm' && status.team_code) return `/?team=${encodeURIComponent(status.team_code)}`;
+  return '/';
+}
+
 async function init() {
   const status = await api('/api/auth/status');
   if (status.authenticated) {
-    window.location.href = status.role === 'admin' ? '/admin' : '/';
+    window.location.href = authLandingPath(status);
     return;
   }
 

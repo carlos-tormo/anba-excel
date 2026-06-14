@@ -9,6 +9,7 @@ const state = {
   economySettingsRows: [],
   economySettingsSeasons: [],
   economySettingsSeason: null,
+  adminUsers: [],
   freeAgents: [],
   draftOrder: {
     draft_year: null,
@@ -2411,6 +2412,106 @@ async function refreshAdminLogsSafe() {
   }
 }
 
+function formatUserRole(role) {
+  const normalized = String(role || '').trim().toLowerCase();
+  if (normalized === 'admin') return 'Admin';
+  if (normalized === 'gm') return 'GM';
+  return 'Guest';
+}
+
+function adminUserTeamOptions(selectedCode) {
+  const selected = String(selectedCode || '').toUpperCase();
+  return [
+    `<option value="" ${selected ? '' : 'selected'}>Guest - no team</option>`,
+    ...state.teams.map((team) => {
+      const code = String(team.code || '').toUpperCase();
+      return `<option value="${escapeHtml(code)}" ${code === selected ? 'selected' : ''}>${escapeHtml(code)} - ${escapeHtml(team.name || code)}</option>`;
+    }),
+  ].join('');
+}
+
+function renderAdminUsers() {
+  const tbody = document.querySelector('#adminUsersTable tbody');
+  if (!tbody) return;
+  const users = state.adminUsers || [];
+  tbody.innerHTML = '';
+  if (!users.length) {
+    tbody.innerHTML = '<tr><td colspan="6">No signed-up users yet.</td></tr>';
+    return;
+  }
+
+  users.forEach((user) => {
+    const tr = document.createElement('tr');
+    const userId = Number(user.id);
+    const teamCodes = Array.isArray(user.team_codes) ? user.team_codes.filter(Boolean) : [];
+    const selectedTeam = user.team_code || teamCodes[0] || '';
+    const created = user.created_at ? new Date(user.created_at).toLocaleString() : '';
+    const updated = user.updated_at ? new Date(user.updated_at).toLocaleString() : '';
+    tr.dataset.adminUserId = String(userId);
+    tr.innerHTML = `
+      <td>
+        <strong>${escapeHtml(user.display_name || user.email || 'User')}</strong>
+        <div class="muted">${escapeHtml(user.email || '')}</div>
+      </td>
+      <td><span class="user-role-pill user-role-pill--${escapeHtml(user.role || 'guest')}">${escapeHtml(formatUserRole(user.role))}</span></td>
+      <td>
+        <select data-admin-user-team="${userId}" aria-label="Team assignment for ${escapeHtml(user.email || 'user')}">
+          ${adminUserTeamOptions(selectedTeam)}
+        </select>
+      </td>
+      <td>${escapeHtml(created)}</td>
+      <td>${escapeHtml(updated)}</td>
+      <td><button type="button" data-admin-user-save="${userId}">Save</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('[data-admin-user-save]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await saveAdminUserAccess(Number(button.dataset.adminUserSave), button);
+    });
+  });
+}
+
+async function loadAdminUsers() {
+  const res = await api('/api/admin/users');
+  state.adminUsers = res.users || [];
+  renderAdminUsers();
+}
+
+async function saveAdminUserAccess(userId, button) {
+  if (!Number.isInteger(userId) || userId <= 0) return;
+  const select = document.querySelector(`[data-admin-user-team="${userId}"]`);
+  const teamCode = String(select?.value || '').trim().toUpperCase();
+  const originalText = button?.textContent || 'Save';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Saving...';
+  }
+  try {
+    const result = await api(`/api/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ team_code: teamCode }),
+    });
+    const updatedUser = result.user;
+    if (updatedUser) {
+      state.adminUsers = (state.adminUsers || []).map((user) => (
+        Number(user.id) === userId ? updatedUser : user
+      ));
+      renderAdminUsers();
+    } else {
+      await loadAdminUsers();
+    }
+  } catch (err) {
+    alert(`User save failed: ${err.message || err}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
 function teamTabForSection(sectionId) {
   return TEAM_TABS.find((tab) => tab.sections.includes(sectionId))?.id || null;
 }
@@ -2503,6 +2604,7 @@ function setViewMode(mode) {
   const showDraftOrder = mode === 'draft-order';
   const showFreeAgents = mode === 'free-agents';
   const showAdminLog = mode === 'admin-log';
+  const showAdminUsers = mode === 'admin-users';
   const showLeagueSettings = mode === 'admin-settings';
 
   const toggleSection = (id, hidden) => {
@@ -2519,6 +2621,7 @@ function setViewMode(mode) {
   toggleSection('adminTeamControlsSection', !showTeam);
   toggleSection('settingsSection', !showLeagueSettings);
   toggleSection('adminLogsSection', !showAdminLog);
+  toggleSection('adminUsersSection', !showAdminUsers);
   toggleSection('rosterSection', !showTeam);
   toggleSection('deadContractsSection', !showTeam);
   toggleSection('exceptionsSection', !showTeam);
@@ -2550,6 +2653,7 @@ function setupAdminMenu() {
   const menuBtn = document.getElementById('adminMenuBtn');
   const menu = document.getElementById('adminMenuPopover');
   const openLogBtn = document.getElementById('openAdminLogPageBtn');
+  const openUsersBtn = document.getElementById('openAdminUsersPageBtn');
   const openSettingsBtn = document.getElementById('openLeagueSettingsPageBtn');
 
   menuBtn.addEventListener('click', () => {
@@ -2563,6 +2667,13 @@ function setupAdminMenu() {
     setPageHeading('ANBA Admin Log', '');
     renderCapStatusPills({});
     await loadAdminLogs();
+  });
+
+  openUsersBtn.addEventListener('click', async () => {
+    setViewMode('admin-users');
+    setPageHeading('ANBA Users', '');
+    renderCapStatusPills({});
+    await loadAdminUsers();
   });
 
   openSettingsBtn.addEventListener('click', () => {
@@ -2814,6 +2925,7 @@ function setupAdminMobileNav() {
   const draftBtn = document.getElementById('adminMobileDraftBtn');
   const freeAgentsBtn = document.getElementById('adminMobileFreeAgentsBtn');
   const logBtn = document.getElementById('adminMobileLogBtn');
+  const usersBtn = document.getElementById('adminMobileUsersBtn');
   const settingsBtn = document.getElementById('adminMobileSettingsBtn');
   const logoutBtn = document.getElementById('adminMobileLogoutBtn');
   const infoBtn = document.getElementById('mobileInfoBtn');
@@ -2858,6 +2970,15 @@ function setupAdminMobileNav() {
       setPageHeading('ANBA Admin Log', '');
       renderCapStatusPills({});
       await loadAdminLogs();
+    });
+  }
+  if (usersBtn) {
+    usersBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      setViewMode('admin-users');
+      setPageHeading('ANBA Users', '');
+      renderCapStatusPills({});
+      await loadAdminUsers();
     });
   }
   if (settingsBtn) {
@@ -6405,6 +6526,7 @@ async function init() {
   document.getElementById('logActionFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('logEntityFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('refreshLogsBtn').addEventListener('click', () => { void loadAdminLogs(); });
+  document.getElementById('refreshUsersBtn')?.addEventListener('click', () => { void loadAdminUsers(); });
 
   document.getElementById('reloadBtn').addEventListener('click', async () => {
     if (!state.teamCode) return;
