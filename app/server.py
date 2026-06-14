@@ -760,6 +760,24 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS team_owner_office (
+                    team_id INTEGER NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    confidence_current TEXT,
+                    confidence_change TEXT,
+                    revenue TEXT,
+                    expenses TEXT,
+                    balance TEXT,
+                    income_json TEXT NOT NULL DEFAULT '[]',
+                    expenses_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (team_id, season_year),
+                    FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_token TEXT PRIMARY KEY,
                     data_json TEXT NOT NULL,
@@ -1872,6 +1890,185 @@ class LeagueDB:
                 "seasons": sorted(seasons),
                 "rows": rows,
             }
+
+    def _owner_office_rows_from_json(self, value: Any) -> List[Dict[str, Any]]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        rows: List[Dict[str, Any]] = []
+        for raw in parsed:
+            if not isinstance(raw, dict):
+                continue
+            key = str(raw.get("key") or "").strip()
+            label = str(raw.get("label") or "").strip()
+            row_type = str(raw.get("type") or "field").strip().lower()
+            if row_type not in {"category", "field"}:
+                row_type = "field"
+            if not key or not label:
+                continue
+            rows.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "type": row_type,
+                    "value": "" if raw.get("value") is None else str(raw.get("value")),
+                }
+            )
+        return rows
+
+    def _normalize_owner_office_rows(self, rows: Any) -> List[Dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        normalized: List[Dict[str, Any]] = []
+        for idx, raw in enumerate(rows):
+            if not isinstance(raw, dict):
+                continue
+            label = str(raw.get("label") or "").strip()
+            if not label:
+                continue
+            key = str(raw.get("key") or "").strip() or re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or f"row_{idx}"
+            row_type = str(raw.get("type") or "field").strip().lower()
+            if row_type not in {"category", "field"}:
+                row_type = "field"
+            normalized.append(
+                {
+                    "key": key[:80],
+                    "label": label[:160],
+                    "type": row_type,
+                    "value": "" if raw.get("value") is None else str(raw.get("value")).strip()[:500],
+                }
+            )
+        return normalized
+
+    def get_team_owner_office(self, code: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            team = conn.execute("SELECT id, code, name FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not team:
+                return None
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
+                current_year = 2025
+            team_id = int(team["id"])
+            saved_rows = conn.execute(
+                """
+                SELECT *
+                FROM team_owner_office
+                WHERE team_id = ?
+                ORDER BY season_year
+                """,
+                (team_id,),
+            ).fetchall()
+            years = {
+                *range(current_year, current_year + CAP_FORECAST_WINDOW),
+                *[int(row["season_year"]) for row in saved_rows],
+                *[
+                    int(row["season_year"])
+                    for row in conn.execute("SELECT DISTINCT season_year FROM team_economy").fetchall()
+                ],
+            }
+            saved_by_year = {int(row["season_year"]): row for row in saved_rows}
+            entries: Dict[str, Dict[str, Any]] = {}
+            for year in sorted(years):
+                economy = conn.execute(
+                    """
+                    SELECT COALESCE(balance, 0) AS balance,
+                           COALESCE(revenue, 0) AS revenue,
+                           COALESCE(expenses, 0) AS expenses
+                    FROM team_economy
+                    WHERE team_id = ? AND season_year = ?
+                    """,
+                    (team_id, int(year)),
+                ).fetchone()
+                economy_balance = float(economy["balance"] or 0) if economy else 0.0
+                economy_revenue = float(economy["revenue"] or 0) if economy else 0.0
+                economy_expenses = float(economy["expenses"] or 0) if economy else 0.0
+                rank_rows = conn.execute(
+                    """
+                    SELECT t.id, COALESCE(e.balance, 0) AS balance
+                    FROM teams t
+                    LEFT JOIN team_economy e
+                      ON e.team_id = t.id AND e.season_year = ?
+                    ORDER BY COALESCE(e.balance, 0) DESC, t.code ASC
+                    """,
+                    (int(year),),
+                ).fetchall()
+                balance_rank = next((idx + 1 for idx, row in enumerate(rank_rows) if int(row["id"]) == team_id), None)
+                saved = saved_by_year.get(int(year))
+                entries[str(year)] = {
+                    "season_year": int(year),
+                    "confidence_current": str(saved["confidence_current"] or "") if saved else "",
+                    "confidence_change": str(saved["confidence_change"] or "") if saved else "",
+                    "revenue": str(saved["revenue"]) if saved and saved["revenue"] is not None else economy_revenue,
+                    "expenses": str(saved["expenses"]) if saved and saved["expenses"] is not None else economy_expenses,
+                    "balance": str(saved["balance"]) if saved and saved["balance"] is not None else economy_balance,
+                    "balance_rank": balance_rank,
+                    "balance_rank_total": len(rank_rows),
+                    "income_rows": self._owner_office_rows_from_json(saved["income_json"]) if saved else [],
+                    "expenses_rows": self._owner_office_rows_from_json(saved["expenses_json"]) if saved else [],
+                    "updated_at": str(saved["updated_at"] or "") if saved else "",
+                }
+            return {
+                "team_code": str(team["code"]),
+                "team_name": str(team["name"]),
+                "current_year": current_year,
+                "seasons": sorted(years),
+                "entries": entries,
+            }
+
+    def update_team_owner_office(self, code: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        season_year = parse_int(payload.get("season_year"))
+        if season_year is None or season_year < 2000 or season_year > 2100:
+            raise ValueError("invalid_season_year")
+        with self.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not team:
+                return None
+            timestamp = now_iso()
+            conn.execute(
+                """
+                INSERT INTO team_owner_office (
+                    team_id,
+                    season_year,
+                    confidence_current,
+                    confidence_change,
+                    revenue,
+                    expenses,
+                    balance,
+                    income_json,
+                    expenses_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(team_id, season_year) DO UPDATE SET
+                    confidence_current = excluded.confidence_current,
+                    confidence_change = excluded.confidence_change,
+                    revenue = excluded.revenue,
+                    expenses = excluded.expenses,
+                    balance = excluded.balance,
+                    income_json = excluded.income_json,
+                    expenses_json = excluded.expenses_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(team["id"]),
+                    int(season_year),
+                    str(payload.get("confidence_current") or "").strip(),
+                    str(payload.get("confidence_change") or "").strip(),
+                    str(payload.get("revenue") or "").strip(),
+                    str(payload.get("expenses") or "").strip(),
+                    str(payload.get("balance") or "").strip(),
+                    json.dumps(self._normalize_owner_office_rows(payload.get("income_rows")), ensure_ascii=True),
+                    json.dumps(self._normalize_owner_office_rows(payload.get("expenses_rows")), ensure_ascii=True),
+                    timestamp,
+                ),
+            )
+            conn.commit()
+        return self.get_team_owner_office(code)
 
     def upsert_team_economy(self, season_year: int, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         if season_year < 2000 or season_year > 2100:
@@ -4396,6 +4593,24 @@ QUALITY REQUIREMENTS
             self._json(200, {"requests": self.db.list_gm_option_requests(status=status)})
             return
 
+        if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/owner-office"):
+            parts = parsed.path.split("/")
+            if len(parts) < 5:
+                self._json(404, {"error": "not_found"})
+                return
+            code = parts[3]
+            if not self._require_authenticated():
+                return
+            if not self._can_manage_team(code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            data = self.db.get_team_owner_office(code)
+            if not data:
+                self._json(404, {"error": "team_not_found"})
+                return
+            self._json(200, {"owner_office": data})
+            return
+
         if parsed.path.startswith("/api/teams/"):
             code = parsed.path.split("/")[-1]
             data = self.db.get_team(code)
@@ -5316,6 +5531,32 @@ QUALITY REQUIREMENTS
                     {"season_year": season_year, "repeater": repeater},
                 )
             self._json(200 if ok else 404, {"ok": ok})
+            return
+
+        if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/owner-office"):
+            parts = parsed.path.split("/")
+            if len(parts) < 5:
+                self._json(404, {"error": "not_found"})
+                return
+            code = parts[3]
+            try:
+                owner_office = self.db.update_team_owner_office(code, payload)
+            except ValueError as err:
+                if str(err) == "invalid_season_year":
+                    self._json(400, {"error": "invalid_season_year"})
+                    return
+                raise
+            if not owner_office:
+                self._json(404, {"error": "team_not_found"})
+                return
+            self._log_admin_action(
+                "update",
+                "team_owner_office",
+                f"{code.upper()}:{payload.get('season_year')}",
+                code.upper(),
+                {"season_year": payload.get("season_year")},
+            )
+            self._json(200, {"ok": True, "owner_office": owner_office})
             return
 
         if parsed.path.startswith("/api/teams/"):

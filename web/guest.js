@@ -46,6 +46,7 @@ const state = {
     rosterView: 'list',
     seasonViewStart: null,
     figuresSeasonStart: null,
+    ownerOfficeSeason: null,
     trackerEconomySeason: null,
     statusPills: [],
     mobileSidebarOpen: false,
@@ -113,6 +114,64 @@ const TEAM_TABS = [
     id: 'draft',
     sections: ['assetsSection'],
   },
+  {
+    id: 'owner-office',
+    sections: ['ownerOfficeSection'],
+    requiresOwnerOffice: true,
+  },
+];
+
+const OWNER_OFFICE_INCOME_ROWS = [
+  { key: 'recaudacion', label: 'Recaudación', type: 'category' },
+  { key: 'media_espectadores', label: 'Media espectadores', type: 'field' },
+  { key: 'entradas_regular_season', label: 'Entradas Regular Season', type: 'field' },
+  { key: 'partidos_playoffs', label: 'Partidos playoffs', type: 'field' },
+  { key: 'entradas_playoffs', label: 'Entradas Playoffs', type: 'field' },
+  { key: 'precio_medio_entrada', label: 'Precio medio entrada', type: 'field' },
+  { key: 'consumiciones', label: 'Consumiciones', type: 'field' },
+  { key: 'merchandising', label: 'Merchandising', type: 'category' },
+  { key: 'ventas_camisetas_ropa', label: 'Ventas de camisetas y ropa', type: 'field' },
+  { key: 'precio_medio_articulo', label: 'Precio medio artículo', type: 'field' },
+  { key: 'derechos', label: 'Derechos', type: 'category' },
+  { key: 'tv_globales', label: 'TV globales', type: 'field' },
+  { key: 'tv_local', label: 'TV local', type: 'field' },
+  { key: 'licencias', label: 'Licencias', type: 'field' },
+  { key: 'sponsor', label: 'Sponsor', type: 'category' },
+  { key: 'patrocinador_jersey', label: 'Patrocinador jersey', type: 'field' },
+  { key: 'patrocinador_estadio', label: 'Patrocinador estadio', type: 'field' },
+  { key: 'patrocinadores_generales', label: 'Patrocinadores generales', type: 'field' },
+  { key: 'flujos_caja_positivos', label: 'Flujos de caja positivos', type: 'category' },
+  { key: 'traspasos_positivos', label: 'Traspasos', type: 'field' },
+  { key: 'bonificaciones', label: 'Bonificaciones', type: 'field' },
+  { key: 'reparto_beneficios_positivo', label: 'Reparto beneficios', type: 'field' },
+  { key: 'reparto_impuesto_lujo', label: 'Reparto impuesto de lujo', type: 'field' },
+];
+
+const OWNER_OFFICE_EXPENSE_ROWS = [
+  { key: 'coste_plantilla', label: 'Coste plantilla', type: 'category' },
+  { key: 'salarios', label: 'Salarios', type: 'field' },
+  { key: 'multa', label: 'Multa', type: 'field' },
+  { key: 'cuerpo_tecnico', label: 'Cuerpo técnico', type: 'category' },
+  { key: 'multiplicador_exitos', label: 'Multiplicador éxitos', type: 'field' },
+  { key: 'gastos_cuerpo_tecnico', label: 'Gastos', type: 'field' },
+  { key: 'gastos_estadio', label: 'Gastos de estadio', type: 'category' },
+  { key: 'partidos', label: 'Partidos', type: 'field' },
+  { key: 'gastos_partido', label: 'Gastos partido', type: 'field' },
+  { key: 'indice_coste_estadio', label: 'Índice coste', type: 'field' },
+  { key: 'gastos_television', label: 'Gastos de televisión', type: 'category' },
+  { key: 'produccion', label: 'Producción', type: 'field' },
+  { key: 'costes_marketing', label: 'Costes de marketing', type: 'category' },
+  { key: 'indice_coste_marketing', label: 'Índice coste', type: 'field' },
+  { key: 'costes_ineficiencia', label: 'Costes ineficiencia', type: 'field' },
+  { key: 'unidades', label: 'Unidades', type: 'field' },
+  { key: 'coste_por_unidad', label: 'Coste por unidad', type: 'field' },
+  { key: 'gastos_operativos', label: 'Gastos operativos', type: 'category' },
+  { key: 'gastos_operativos_valor', label: 'Gastos', type: 'field' },
+  { key: 'indice_coste_operativo', label: 'Índice coste', type: 'field' },
+  { key: 'flujos_caja_negativos', label: 'Flujos de caja negativos', type: 'category' },
+  { key: 'traspasos_negativos', label: 'Traspasos', type: 'field' },
+  { key: 'sanciones', label: 'Sanciones', type: 'field' },
+  { key: 'reparto_beneficios_negativo', label: 'Reparto beneficios', type: 'field' },
 ];
 
 const PLAYER_SORT_CYCLE = [
@@ -457,14 +516,30 @@ function visibleSeasonYears() {
   return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => start + idx);
 }
 
+function canViewOwnerOfficeForTeam(code = state.teamCode) {
+  const auth = state.auth || {};
+  if (!auth.authenticated) return false;
+  if (auth.role === 'admin') return true;
+  if (auth.role !== 'gm') return false;
+  const teamCodes = Array.isArray(auth.team_codes)
+    ? auth.team_codes.map((teamCode) => String(teamCode || '').toUpperCase()).filter(Boolean)
+    : [];
+  return teamCodes.includes(String(code || '').toUpperCase());
+}
+
+function visibleTeamTabs() {
+  return TEAM_TABS.filter((tab) => !tab.requiresOwnerOffice || canViewOwnerOfficeForTeam());
+}
+
 function teamTabForSection(sectionId) {
-  return TEAM_TABS.find((tab) => tab.sections.includes(sectionId))?.id || null;
+  return visibleTeamTabs().find((tab) => tab.sections.includes(sectionId))?.id || null;
 }
 
 function activeTeamTab() {
-  return TEAM_TABS.some((tab) => tab.id === state.ui.activeTeamTab)
+  const tabs = visibleTeamTabs();
+  return tabs.some((tab) => tab.id === state.ui.activeTeamTab)
     ? state.ui.activeTeamTab
-    : TEAM_TABS[0].id;
+    : (tabs[0]?.id || TEAM_TABS[0].id);
 }
 
 function syncTeamTabs() {
@@ -474,17 +549,21 @@ function syncTeamTabs() {
   if (tabs) tabs.classList.toggle('section-hidden', !showTeam);
 
   document.querySelectorAll('[data-team-tab]').forEach((btn) => {
-    const isActive = btn.dataset.teamTab === active;
+    const tab = TEAM_TABS.find((item) => item.id === btn.dataset.teamTab);
+    const allowed = Boolean(tab && (!tab.requiresOwnerOffice || canViewOwnerOfficeForTeam()));
+    btn.classList.toggle('section-hidden', !showTeam || !allowed);
+    const isActive = allowed && btn.dataset.teamTab === active;
     btn.classList.toggle('is-active', isActive);
     btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
   });
 
   TEAM_TABS.forEach((tab) => {
+    const allowed = !tab.requiresOwnerOffice || canViewOwnerOfficeForTeam();
     tab.sections.forEach((sectionId) => {
       const section = document.getElementById(sectionId);
       if (!section) return;
       const forceHidden = sectionId === 'gmTimelineSection' && !hasTeamGmTimelineEntries();
-      section.classList.toggle('section-hidden', !showTeam || tab.id !== active || forceHidden);
+      section.classList.toggle('section-hidden', !showTeam || !allowed || tab.id !== active || forceHidden);
     });
   });
 }
@@ -529,7 +608,8 @@ function setupTrackerTabs() {
 }
 
 function setTeamTab(tabId) {
-  state.ui.activeTeamTab = TEAM_TABS.some((tab) => tab.id === tabId) ? tabId : TEAM_TABS[0].id;
+  const tabs = visibleTeamTabs();
+  state.ui.activeTeamTab = tabs.some((tab) => tab.id === tabId) ? tabId : (tabs[0]?.id || TEAM_TABS[0].id);
   syncTeamTabs();
 }
 
@@ -4124,6 +4204,164 @@ function renderDraftOrder() {
   `;
 }
 
+function ownerOfficeSeasonOptions() {
+  const seasons = new Set(availableSeasonViewStarts());
+  (state.teamData?.owner_office?.seasons || []).forEach((season) => {
+    const parsed = Number(season);
+    if (Number.isInteger(parsed) && parsed >= 2000 && parsed <= 2100) seasons.add(parsed);
+  });
+  return Array.from(seasons).sort((a, b) => a - b);
+}
+
+function selectedOwnerOfficeSeason() {
+  const options = ownerOfficeSeasonOptions();
+  const requested = Number(state.ui.ownerOfficeSeason);
+  const fallback = selectedSeasonStart();
+  const selected = options.includes(requested)
+    ? requested
+    : (options.includes(fallback) ? fallback : (options[0] || currentSeasonStart()));
+  state.ui.ownerOfficeSeason = selected;
+  return selected;
+}
+
+function ownerOfficeEntryForSeason(season) {
+  return state.teamData?.owner_office?.entries?.[String(season)] || {};
+}
+
+function ownerOfficeDisplayValue(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number' && Number.isFinite(value)) return formatMoneyDots(value);
+  const parsed = parseAmountLike(value);
+  if (parsed !== null && String(value).trim().match(/^[\s€$0-9.,-]+$/)) return formatMoneyDots(parsed);
+  return String(value);
+}
+
+function ownerOfficeMergedRows(defaultRows, savedRows) {
+  const savedByKey = new Map((savedRows || []).map((row) => [String(row.key || ''), row]));
+  return defaultRows.map((row) => ({
+    ...row,
+    value: savedByKey.get(row.key)?.value || '',
+  }));
+}
+
+function ownerOfficeReadonlyCell(value, extraHtml = '') {
+  return `
+    <div class="owner-office-value">
+      <strong>${escapeHtml(ownerOfficeDisplayValue(value))}</strong>
+      ${extraHtml}
+    </div>
+  `;
+}
+
+function ownerOfficeBreakdownTable(title, kind, rows) {
+  const tableClass = kind === 'income' ? 'owner-office-table--income' : 'owner-office-table--expenses';
+  return `
+    <article class="owner-office-panel">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="table-wrap owner-office-table-wrap">
+        <table class="owner-office-table ${tableClass}">
+          <thead>
+            <tr>
+              <th>Concepto</th>
+              <th>Valor</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr class="${row.type === 'category' ? 'owner-office-category-row' : ''}">
+                <td>${escapeHtml(row.label)}</td>
+                <td>${row.type === 'category' ? '' : ownerOfficeReadonlyCell(row.value)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+async function loadOwnerOfficeForTeam(code) {
+  if (!state.teamData) return;
+  if (!canViewOwnerOfficeForTeam(code)) {
+    state.teamData.owner_office = null;
+    return;
+  }
+  try {
+    const res = await api(`/api/teams/${encodeURIComponent(code)}/owner-office`);
+    state.teamData.owner_office = res.owner_office || null;
+  } catch (err) {
+    state.teamData.owner_office = null;
+  }
+}
+
+function renderOwnerOffice() {
+  const section = document.getElementById('ownerOfficeSection');
+  const content = document.getElementById('ownerOfficeContent');
+  const subtitle = document.getElementById('ownerOfficeSubtitle');
+  const select = document.getElementById('ownerOfficeSeasonSelect');
+  if (!section || !content || !select) return;
+  if (!canViewOwnerOfficeForTeam()) {
+    content.innerHTML = '';
+    section.classList.add('section-hidden');
+    syncTeamTabs();
+    return;
+  }
+  const season = selectedOwnerOfficeSeason();
+  const entry = ownerOfficeEntryForSeason(season);
+  select.innerHTML = ownerOfficeSeasonOptions()
+    .map((year) => `<option value="${year}" ${year === season ? 'selected' : ''}>${seasonLabel(year)}</option>`)
+    .join('');
+  if (subtitle) subtitle.textContent = `${state.teamCode || ''} · ${seasonLabel(season)}`;
+  const rank = entry.balance_rank && entry.balance_rank_total
+    ? `<span class="owner-office-rank">#${entry.balance_rank} de ${entry.balance_rank_total}</span>`
+    : '';
+  const incomeRows = ownerOfficeMergedRows(OWNER_OFFICE_INCOME_ROWS, entry.income_rows);
+  const expenseRows = ownerOfficeMergedRows(OWNER_OFFICE_EXPENSE_ROWS, entry.expenses_rows);
+  content.innerHTML = `
+    <div class="owner-office-overview">
+      <article class="owner-office-panel">
+        <h3>Confianza</h3>
+        <table class="owner-office-table owner-office-mini-table">
+          <tbody>
+            <tr>
+              <th>Confianza actual</th>
+              <td>${ownerOfficeReadonlyCell(entry.confidence_current)}</td>
+            </tr>
+            <tr>
+              <th>Cambio ${escapeHtml(seasonLabel(season))}</th>
+              <td>${ownerOfficeReadonlyCell(entry.confidence_change)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+      <article class="owner-office-panel">
+        <h3>Resultados económicos</h3>
+        <table class="owner-office-table owner-office-mini-table">
+          <tbody>
+            <tr>
+              <th>Ingresos</th>
+              <td>${ownerOfficeReadonlyCell(entry.revenue)}</td>
+            </tr>
+            <tr>
+              <th>Gastos</th>
+              <td>${ownerOfficeReadonlyCell(entry.expenses)}</td>
+            </tr>
+            <tr>
+              <th>Balance</th>
+              <td>${ownerOfficeReadonlyCell(entry.balance, rank)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </div>
+    <div class="owner-office-breakdowns">
+      ${ownerOfficeBreakdownTable('Ingresos', 'income', incomeRows)}
+      ${ownerOfficeBreakdownTable('Gastos', 'expenses', expenseRows)}
+    </div>
+  `;
+  syncTeamTabs();
+}
+
 function renderCards() {
   const wrap = document.getElementById('teamMeta');
   const t = state.teamData.team;
@@ -4582,6 +4820,7 @@ function setSeasonViewStart(startYear) {
   renderExceptions();
   renderAssets();
   renderImportantFigures();
+  renderOwnerOffice();
 }
 
 function setupSeasonViewControl() {
@@ -4590,6 +4829,15 @@ function setupSeasonViewControl() {
   renderSeasonViewControl();
   select.addEventListener('change', () => {
     setSeasonViewStart(select.value);
+  });
+}
+
+function setupOwnerOfficeControls() {
+  const select = document.getElementById('ownerOfficeSeasonSelect');
+  if (!select) return;
+  select.addEventListener('change', () => {
+    state.ui.ownerOfficeSeason = Number(select.value);
+    renderOwnerOffice();
   });
 }
 
@@ -5090,6 +5338,7 @@ async function loadTeam(code) {
   const data = await api(`/api/teams/${code}`);
   state.teamCode = code;
   state.teamData = data;
+  await loadOwnerOfficeForTeam(code);
   setTeamInUrl(code);
   try {
     window.localStorage.setItem(LAST_TEAM_STORAGE_KEY, code);
@@ -5108,6 +5357,7 @@ async function loadTeam(code) {
   renderAssets();
   renderPlayerRights();
   renderImportantFigures();
+  renderOwnerOffice();
   renderGmTimelineSection();
 }
 
@@ -5693,6 +5943,7 @@ async function init() {
   setupTeamNavControls();
   setupRosterViewControl();
   setupSeasonViewControl();
+  setupOwnerOfficeControls();
   setupFiguresSeasonControl();
   setupRosterFilters();
   let savedRosterView = null;

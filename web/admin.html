@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260614a">
+  <link rel="stylesheet" href="/styles.css?v=20260614b">
 </head>
 <body class="app-layout">
   <header>
@@ -104,6 +104,7 @@
           <option value="free_agent">free_agent</option>
           <option value="draft_order">draft_order</option>
           <option value="team_economy">team_economy</option>
+          <option value="team_owner_office">team_owner_office</option>
           <option value="gm_option_request">gm_option_request</option>
           <option value="asset">asset</option>
           <option value="dead_contract">dead_contract</option>
@@ -342,9 +343,29 @@
         <span class="team-tab-icon" aria-hidden="true">✦</span>
         <span>Draft</span>
       </button>
+      <button type="button" class="team-tab-btn" data-team-tab="owner-office" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">⌂</span>
+        <span>Despacho del propietario</span>
+      </button>
     </nav>
 
     <section id="teamMeta" class="cards team-summary-grid"></section>
+    <section id="ownerOfficeSection" class="owner-office-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Despacho del propietario</h2>
+          <div id="ownerOfficeSubtitle" class="section-subtitle"></div>
+        </div>
+        <div class="section-actions">
+          <label class="season-view-control" for="ownerOfficeSeasonSelect">
+            <span>Temporada</span>
+            <select id="ownerOfficeSeasonSelect"></select>
+          </label>
+          <button id="saveOwnerOfficeBtn" type="button">Save owner office</button>
+        </div>
+      </div>
+      <div id="ownerOfficeContent"></div>
+    </section>
     <section id="adminTeamControlsSection" class="team-admin-controls-section">
       <div id="teamGmInlineRow" class="settings-row">
         <label for="teamGmInlineInput">GM</label>
@@ -878,6 +899,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260614b" defer></script>
+  <script src="/admin.js?v=20260614c" defer></script>
 </body>
 </html>
