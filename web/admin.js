@@ -2614,15 +2614,40 @@ async function loadGmOptionRequests() {
 
 async function decideGmOptionRequest(requestId, decision, button) {
   if (!Number.isInteger(requestId) || requestId <= 0) return;
-  const label = decision === 'approved' ? 'aprobar' : 'rechazar';
-  if (!window.confirm(`¿Confirmas ${label} esta solicitud del GM?`)) return;
+  const request = (state.gmOptionRequests || []).find((item) => Number(item.id) === requestId) || null;
+  let payload = { decision };
+  if (decision === 'approved' && request) {
+    const result = await confirmWithDiscordNotification({
+      title: 'Aprobar solicitud del GM',
+      message: `${contractOptionActionMessage(
+        request.team_code,
+        request.player_name,
+        Number(request.season_year),
+        request.option_value,
+        request.action
+      )}\n\nAl aprobarla, la marca ${String(request.option_value || '').toUpperCase()} se retirará de la celda del contrato.`,
+      confirmLabel: 'Aprobar y aplicar',
+      defaultNotify: true,
+      defaultGenerateImage: true,
+      danger: request.action === 'rejected',
+    });
+    if (!result.confirmed) return;
+    payload = {
+      decision,
+      notify_discord: result.notifyDiscord,
+      generate_discord_image: result.generateDiscordImage,
+    };
+  } else {
+    const label = decision === 'approved' ? 'aprobar' : 'rechazar';
+    if (!window.confirm(`¿Confirmas ${label} esta solicitud del GM?`)) return;
+  }
   const row = button?.closest('tr');
   const buttons = row ? Array.from(row.querySelectorAll('button')) : [];
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
     await api(`/api/admin/gm-option-requests/${requestId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify(payload),
     });
     await loadGmOptionRequests();
   } catch (err) {

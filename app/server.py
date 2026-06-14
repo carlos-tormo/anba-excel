@@ -5228,6 +5228,17 @@ QUALITY REQUIREMENTS
             option_field = str(request.get("option_field") or "").strip()
             option_value = str(request.get("option_value") or "").strip().upper()
             option_action = str(request.get("action") or "").strip().lower()
+            match = re.fullmatch(r"option_(20\d{2})", option_field)
+            option_action_season = parse_int(match.group(1)) if match else None
+            if option_action_season is None:
+                self._json(400, {"error": "invalid_option_field"})
+                return
+            if option_value not in {"TO", "PO", "QO", "GAP"}:
+                self._json(400, {"error": "invalid_option_value"})
+                return
+            if option_action not in {"accepted", "rejected"}:
+                self._json(400, {"error": "invalid_option_action"})
+                return
             player_id = parse_int(str(request.get("player_id") or ""))
             if player_id is None:
                 self._json(400, {"error": "invalid_player_id"})
@@ -5242,13 +5253,9 @@ QUALITY REQUIREMENTS
                 return
 
             player_payload: Dict[str, Any] = {}
-            if option_action == "accepted" and option_value == "TO":
-                player_payload[option_field] = None
-            elif option_action in {"accepted", "rejected"}:
-                player_payload[option_field] = option_value
-            else:
-                self._json(400, {"error": "invalid_option_action"})
-                return
+            # Once an approved GM decision is applied, the pending option marker
+            # should disappear from the roster cell. Salary text is left intact.
+            player_payload[option_field] = None
 
             ok = self.db.update_player(player_id, player_payload)
             if not ok:
@@ -5274,9 +5281,18 @@ QUALITY REQUIREMENTS
                     "option_action": option_action,
                     "option_field": option_field,
                     "option_value": option_value,
+                    "option_action_season": option_action_season,
                     "applied_fields": sorted(player_payload.keys()),
                 },
             )
+            if self._discord_notify_requested(payload):
+                self._notify_contract_option_action(
+                    player_before,
+                    option_action_season,
+                    option_value,
+                    option_action,
+                    generate_image=self._discord_image_requested(payload),
+                )
             self._json(200, {"ok": True, "request": updated})
             return
 
