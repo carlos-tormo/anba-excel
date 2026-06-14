@@ -778,6 +778,24 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS team_owner_profiles (
+                    team_id INTEGER PRIMARY KEY,
+                    owner_name TEXT,
+                    owner_birth_date TEXT,
+                    owner_photo_url TEXT,
+                    owner_bio TEXT,
+                    ambicion_competitiva INTEGER,
+                    paciencia INTEGER,
+                    intervencionismo INTEGER,
+                    orientacion_financiera INTEGER,
+                    orientacion_marca INTEGER,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_token TEXT PRIMARY KEY,
                     data_json TEXT NOT NULL,
@@ -1943,7 +1961,59 @@ class LeagueDB:
             )
         return normalized
 
-    def get_team_owner_office(self, code: str) -> Optional[Dict[str, Any]]:
+    def _owner_attribute_value(self, value: Any) -> Optional[int]:
+        parsed = parse_int(value)
+        if parsed is None:
+            return None
+        return max(1, min(10, parsed))
+
+    def _owner_profile_from_row(self, row: Optional[sqlite3.Row], include_private: bool = False) -> Dict[str, Any]:
+        profile: Dict[str, Any] = {
+            "owner_name": "",
+            "owner_birth_date": "",
+            "owner_photo_url": "",
+            "owner_bio": "",
+        }
+        if row:
+            profile.update(
+                {
+                    "owner_name": str(row["owner_name"] or ""),
+                    "owner_birth_date": str(row["owner_birth_date"] or ""),
+                    "owner_photo_url": str(row["owner_photo_url"] or ""),
+                    "owner_bio": str(row["owner_bio"] or ""),
+                }
+            )
+        if include_private:
+            profile["attributes"] = {
+                "ambicion_competitiva": self._owner_attribute_value(row["ambicion_competitiva"]) if row else None,
+                "paciencia": self._owner_attribute_value(row["paciencia"]) if row else None,
+                "intervencionismo": self._owner_attribute_value(row["intervencionismo"]) if row else None,
+                "orientacion_financiera": self._owner_attribute_value(row["orientacion_financiera"]) if row else None,
+                "orientacion_marca": self._owner_attribute_value(row["orientacion_marca"]) if row else None,
+            }
+        return profile
+
+    def _normalize_owner_profile_payload(self, payload: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return None
+
+        def text_value(key: str, limit: int) -> str:
+            return str(payload.get(key) or "").strip()[:limit]
+
+        attributes = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
+        return {
+            "owner_name": text_value("owner_name", 120),
+            "owner_birth_date": text_value("owner_birth_date", 32),
+            "owner_photo_url": text_value("owner_photo_url", 1000),
+            "owner_bio": text_value("owner_bio", 2000),
+            "ambicion_competitiva": self._owner_attribute_value(attributes.get("ambicion_competitiva")),
+            "paciencia": self._owner_attribute_value(attributes.get("paciencia")),
+            "intervencionismo": self._owner_attribute_value(attributes.get("intervencionismo")),
+            "orientacion_financiera": self._owner_attribute_value(attributes.get("orientacion_financiera")),
+            "orientacion_marca": self._owner_attribute_value(attributes.get("orientacion_marca")),
+        }
+
+    def get_team_owner_office(self, code: str, include_private: bool = False) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             team = conn.execute("SELECT id, code, name FROM teams WHERE code = ?", (code.upper(),)).fetchone()
             if not team:
@@ -1954,6 +2024,14 @@ class LeagueDB:
             if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
                 current_year = 2025
             team_id = int(team["id"])
+            profile_row = conn.execute(
+                """
+                SELECT *
+                FROM team_owner_profiles
+                WHERE team_id = ?
+                """,
+                (team_id,),
+            ).fetchone()
             saved_rows = conn.execute(
                 """
                 SELECT *
@@ -2016,6 +2094,7 @@ class LeagueDB:
                 "team_code": str(team["code"]),
                 "team_name": str(team["name"]),
                 "current_year": current_year,
+                "owner_profile": self._owner_profile_from_row(profile_row, include_private=include_private),
                 "seasons": sorted(years),
                 "entries": entries,
             }
@@ -2029,6 +2108,50 @@ class LeagueDB:
             if not team:
                 return None
             timestamp = now_iso()
+            profile_payload = self._normalize_owner_profile_payload(payload.get("owner_profile"))
+            if profile_payload is not None:
+                conn.execute(
+                    """
+                    INSERT INTO team_owner_profiles (
+                        team_id,
+                        owner_name,
+                        owner_birth_date,
+                        owner_photo_url,
+                        owner_bio,
+                        ambicion_competitiva,
+                        paciencia,
+                        intervencionismo,
+                        orientacion_financiera,
+                        orientacion_marca,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(team_id) DO UPDATE SET
+                        owner_name = excluded.owner_name,
+                        owner_birth_date = excluded.owner_birth_date,
+                        owner_photo_url = excluded.owner_photo_url,
+                        owner_bio = excluded.owner_bio,
+                        ambicion_competitiva = excluded.ambicion_competitiva,
+                        paciencia = excluded.paciencia,
+                        intervencionismo = excluded.intervencionismo,
+                        orientacion_financiera = excluded.orientacion_financiera,
+                        orientacion_marca = excluded.orientacion_marca,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        int(team["id"]),
+                        profile_payload["owner_name"],
+                        profile_payload["owner_birth_date"],
+                        profile_payload["owner_photo_url"],
+                        profile_payload["owner_bio"],
+                        profile_payload["ambicion_competitiva"],
+                        profile_payload["paciencia"],
+                        profile_payload["intervencionismo"],
+                        profile_payload["orientacion_financiera"],
+                        profile_payload["orientacion_marca"],
+                        timestamp,
+                    ),
+                )
             conn.execute(
                 """
                 INSERT INTO team_owner_office (
@@ -2068,7 +2191,7 @@ class LeagueDB:
                 ),
             )
             conn.commit()
-        return self.get_team_owner_office(code)
+        return self.get_team_owner_office(code, include_private=True)
 
     def upsert_team_economy(self, season_year: int, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         if season_year < 2000 or season_year > 2100:
@@ -4604,7 +4727,7 @@ QUALITY REQUIREMENTS
             if not self._can_manage_team(code):
                 self._json(403, {"error": "team_access_required"})
                 return
-            data = self.db.get_team_owner_office(code)
+            data = self.db.get_team_owner_office(code, include_private=self._is_admin())
             if not data:
                 self._json(404, {"error": "team_not_found"})
                 return

@@ -3553,6 +3553,12 @@ th {
   gap: 16px;
 }
 
+.owner-office-profile-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.85fr);
+  gap: 16px;
+}
+
 .owner-office-panel {
   border: 1px solid #d6e0ec;
   border-radius: 10px;
@@ -3569,6 +3575,145 @@ th {
   font-weight: 900;
   border-bottom: 1px solid #dbe4ef;
   background: #f8fafc;
+}
+
+.owner-office-profile-card {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+.owner-office-avatar {
+  width: 120px;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  border: 1px solid #d6e0ec;
+  background: linear-gradient(145deg, rgba(var(--team-primary-rgb), 0.18), rgba(var(--team-secondary-rgb), 0.28));
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: #172033;
+  font-size: 2rem;
+  font-weight: 950;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+.owner-office-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.owner-office-avatar-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+}
+
+.owner-office-profile-fields,
+.owner-office-attributes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.owner-office-profile-fields label,
+.owner-office-attributes-grid label,
+.owner-office-bio-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.owner-office-profile-fields label:first-child,
+.owner-office-bio-field {
+  grid-column: 1 / -1;
+}
+
+.owner-office-profile-age {
+  border: 1px solid #d6e0ec;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 54px;
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.owner-office-profile-age strong {
+  color: #172033;
+  font-size: 1rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.owner-office-bio-field {
+  padding: 0 16px 16px;
+}
+
+.owner-office-textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.35;
+}
+
+.owner-office-attributes-panel {
+  background: #fbfdff;
+}
+
+.owner-office-attributes-grid {
+  padding: 16px;
+}
+
+.owner-office-attribute-input {
+  max-width: 92px;
+}
+
+.owner-office-profile-panel--readonly .owner-office-profile-card {
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+}
+
+.owner-office-profile-panel--readonly .owner-office-avatar {
+  width: 96px;
+  border-radius: 50%;
+}
+
+.owner-office-profile-copy {
+  min-width: 0;
+}
+
+.owner-office-owner-name {
+  color: #172033;
+  font-size: 1.35rem;
+  font-weight: 950;
+  line-height: 1.1;
+}
+
+.owner-office-owner-meta {
+  margin-top: 4px;
+  color: #64748b;
+  font-weight: 850;
+}
+
+.owner-office-profile-copy p {
+  margin: 10px 0 0;
+  color: #334155;
+  line-height: 1.45;
 }
 
 .owner-office-table-wrap {
@@ -5927,8 +6072,33 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
     display: none !important;
   }
   .owner-office-overview,
+  .owner-office-profile-grid,
   .owner-office-breakdowns {
     grid-template-columns: 1fr;
+  }
+  .owner-office-profile-card,
+  .owner-office-profile-panel--readonly .owner-office-profile-card {
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px;
+  }
+  .owner-office-avatar,
+  .owner-office-profile-panel--readonly .owner-office-avatar {
+    width: 72px;
+    font-size: 1.2rem;
+  }
+  .owner-office-profile-fields,
+  .owner-office-attributes-grid {
+    grid-template-columns: 1fr;
+  }
+  .owner-office-bio-field {
+    padding: 0 12px 12px;
+  }
+  .owner-office-attributes-grid {
+    padding: 12px;
+  }
+  .owner-office-owner-name {
+    font-size: 1.05rem;
   }
   .owner-office-table {
     min-width: 440px;

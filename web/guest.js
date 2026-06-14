@@ -4236,6 +4236,55 @@ function ownerOfficeDisplayValue(value) {
   return String(value);
 }
 
+function ownerOfficeAgeFromBirthDate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const birthDate = new Date(`${raw}T00:00:00`);
+  if (Number.isNaN(birthDate.getTime())) return '';
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const birthdayPassed = today.getMonth() > birthDate.getMonth()
+    || (today.getMonth() === birthDate.getMonth() && today.getDate() >= birthDate.getDate());
+  if (!birthdayPassed) age -= 1;
+  return age >= 0 && age < 130 ? String(age) : '';
+}
+
+function ownerOfficeProfileAvatarHtml(profile) {
+  const name = String(profile?.owner_name || state.teamCode || 'AN').trim();
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .join('') || 'AN';
+  const photoUrl = String(profile?.owner_photo_url || '').trim();
+  return `
+    <div class="owner-office-avatar" aria-hidden="true">
+      <span class="owner-office-avatar-fallback">${escapeHtml(initials)}</span>
+      ${photoUrl ? `<img src="${escapeHtml(photoUrl)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='grid'">` : ''}
+    </div>
+  `;
+}
+
+function ownerOfficeProfileSummary(profile) {
+  const name = String(profile?.owner_name || '').trim() || 'Propietario';
+  const age = ownerOfficeAgeFromBirthDate(profile?.owner_birth_date);
+  const bio = String(profile?.owner_bio || '').trim();
+  return `
+    <article class="owner-office-panel owner-office-profile-panel owner-office-profile-panel--readonly">
+      <h3>Perfil del propietario</h3>
+      <div class="owner-office-profile-card">
+        ${ownerOfficeProfileAvatarHtml(profile)}
+        <div class="owner-office-profile-copy">
+          <div class="owner-office-owner-name">${escapeHtml(name)}</div>
+          <div class="owner-office-owner-meta">${age ? `${escapeHtml(age)} años` : 'Edad no configurada'}</div>
+          <p>${bio ? escapeHtml(bio) : 'Descripción pendiente.'}</p>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
 function ownerOfficeMergedRows(defaultRows, savedRows) {
   const savedByKey = new Map((savedRows || []).map((row) => [String(row.key || ''), row]));
   return defaultRows.map((row) => ({
@@ -4317,7 +4366,9 @@ function renderOwnerOffice() {
     : '';
   const incomeRows = ownerOfficeMergedRows(OWNER_OFFICE_INCOME_ROWS, entry.income_rows);
   const expenseRows = ownerOfficeMergedRows(OWNER_OFFICE_EXPENSE_ROWS, entry.expenses_rows);
+  const profile = state.teamData?.owner_office?.owner_profile || {};
   content.innerHTML = `
+    ${ownerOfficeProfileSummary(profile)}
     <div class="owner-office-overview">
       <article class="owner-office-panel">
         <h3>Confianza</h3>
