@@ -803,6 +803,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   const capHold = capHoldInfo(obj, season);
   if (capHold.displayable) {
     const gmActions = gmOptionRequestActionsHtml(obj, season, seasonOptionCode(obj, season));
+    const qoAcceptedHtml = qoAcceptedIndicatorHtml(obj, season);
     const seasonCap = capForSeason(season);
     const capHoldAmount = Number(capHold.amount || 0);
     const qoValue = Number(capHold.displayAmount || 0);
@@ -824,6 +825,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
           <span class="salary-cap-hold-ref">${escapeHtml(capHold.shortLabel || 'Cap hold')}</span>
           ${salaryInfoHtml([message])}
           ${qoValueHtml}
+          ${qoAcceptedHtml}
           ${gmActions}
         </div>
       </div>
@@ -845,6 +847,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   const infoMessages = salaryInfoMessages(obj, season);
   const infoHtml = salaryInfoHtml(infoMessages);
   const gmActions = gmOptionRequestActionsHtml(obj, season, optionCode);
+  const qoAcceptedHtml = qoAcceptedIndicatorHtml(obj, season);
   const salaryStateClasses = [
     isProvisional ? 'salary-chip--provisional' : '',
     isPartiallyGuaranteed ? 'salary-chip--partial-guarantee' : '',
@@ -854,33 +857,42 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   if (num !== null && num !== undefined && Number.isFinite(Number(num))) {
     const val = Number(num);
     const pct = cap > 0 ? `${((val / cap) * 100).toFixed(1)}%` : '';
+    const sideHtml = `${qoAcceptedHtml}${gmActions}`;
     return `
-      <div class="salary-chip ${optClass} ${salaryStateClasses}">
-        <span class="salary-chip-main">${formatDots(val)}</span>
-        <span class="salary-chip-pct">${pct}</span>
-        ${infoHtml}
-        ${gmActions}
+      <div class="salary-cell-with-side">
+        <div class="salary-chip ${optClass} ${salaryStateClasses}">
+          <span class="salary-chip-main">${formatDots(val)}</span>
+          <span class="salary-chip-pct">${pct}</span>
+          ${infoHtml}
+        </div>
+        ${sideHtml ? `<div class="salary-cell-side">${sideHtml}</div>` : ''}
       </div>
     `;
   }
 
   if (text !== null && text !== undefined && String(text).trim() !== '') {
     const upper = escapeHtml(String(text).trim().toUpperCase());
+    const sideHtml = `${qoAcceptedHtml}${gmActions}`;
     return `
-      <div class="salary-chip salary-chip-text ${textTagClass} ${hideOptionTag ? '' : optClass} ${salaryStateClasses}">
-        <span class="salary-chip-main">${upper}</span>
-        ${infoHtml}
-        ${gmActions}
+      <div class="salary-cell-with-side">
+        <div class="salary-chip salary-chip-text ${textTagClass} ${hideOptionTag ? '' : optClass} ${salaryStateClasses}">
+          <span class="salary-chip-main">${upper}</span>
+          ${infoHtml}
+        </div>
+        ${sideHtml ? `<div class="salary-cell-side">${sideHtml}</div>` : ''}
       </div>
     `;
   }
 
-  if (!showEmptyYears && !gmActions) return '';
+  if (!showEmptyYears && !gmActions && !qoAcceptedHtml) return '';
+  const sideHtml = `${qoAcceptedHtml}${gmActions}`;
   return `
-    <div class="salary-empty-wrap ${isProvisional ? 'salary-empty-wrap--provisional' : ''} ${isPartiallyGuaranteed ? 'salary-empty-wrap--partial-guarantee' : ''} ${hasContractNote ? 'salary-empty-wrap--note' : ''}">
-      <div class="salary-empty-bar" aria-hidden="true"></div>
-      ${infoHtml}
-      ${gmActions}
+    <div class="salary-cell-with-side salary-cell-with-side--empty">
+      <div class="salary-empty-wrap ${isProvisional ? 'salary-empty-wrap--provisional' : ''} ${isPartiallyGuaranteed ? 'salary-empty-wrap--partial-guarantee' : ''} ${hasContractNote ? 'salary-empty-wrap--note' : ''}">
+        <div class="salary-empty-bar" aria-hidden="true"></div>
+        ${infoHtml}
+      </div>
+      ${sideHtml ? `<div class="salary-cell-side">${sideHtml}</div>` : ''}
     </div>
   `;
 }
@@ -961,6 +973,27 @@ function seasonOptionCode(row, season) {
   return String(row?.[`option_${season}`] || '').trim().toUpperCase();
 }
 
+function optionDecisionForSeason(row, season) {
+  return row?.option_decisions?.[`option_${season}`] || null;
+}
+
+function qoAcceptedByTeam(row, season) {
+  const option = seasonOptionCode(row, season);
+  const decision = optionDecisionForSeason(row, season);
+  if (option !== 'QO' || !decision) return false;
+  const decisionOption = String(decision.option_value || '').trim().toUpperCase();
+  const action = String(decision.action || '').trim().toLowerCase();
+  const status = String(decision.status || '').trim().toLowerCase();
+  return decisionOption === 'QO'
+    && action === 'accepted'
+    && ['pending', 'approved'].includes(status);
+}
+
+function qoAcceptedIndicatorHtml(row, season) {
+  if (!qoAcceptedByTeam(row, season)) return '';
+  return '<span class="qo-accepted-indicator" title="QO aceptada por el equipo" aria-label="QO aceptada por el equipo">✓</span>';
+}
+
 function canSubmitGmOptionRequest(row, season, optionCode) {
   if (!row?.id) return false;
   const option = String(optionCode || '').trim().toUpperCase();
@@ -976,9 +1009,10 @@ function canSubmitGmOptionRequest(row, season, optionCode) {
 function gmOptionRequestActionsHtml(row, season, optionCode) {
   const option = String(optionCode || '').trim().toUpperCase();
   if (!canSubmitGmOptionRequest(row, season, option)) return '';
+  const hideAccept = option === 'QO' && qoAcceptedByTeam(row, season);
   return `
     <span class="gm-option-request-actions" data-player-id="${escapeHtml(row.id)}" data-option-field="option_${escapeHtml(season)}" data-option-value="${escapeHtml(option)}">
-      <button type="button" data-gm-option-action="accepted">Aceptar</button>
+      ${hideAccept ? '' : '<button type="button" data-gm-option-action="accepted">Aceptar</button>'}
       <button type="button" data-gm-option-action="rejected">Rechazar</button>
     </span>
   `;
@@ -1004,7 +1038,15 @@ async function submitGmOptionRequest(button) {
         action,
       }),
     });
-    wrap.innerHTML = '<span class="gm-option-request-sent">Solicitud enviada</span>';
+    if (action === 'accepted' && optionValue === 'QO') {
+      wrap.innerHTML = `
+        <span class="qo-accepted-indicator" title="QO aceptada por el equipo" aria-label="QO aceptada por el equipo">✓</span>
+        <button type="button" data-gm-option-action="rejected">Rechazar</button>
+      `;
+      bindGmOptionRequestButtons(wrap);
+    } else {
+      wrap.innerHTML = '<span class="gm-option-request-sent">Solicitud enviada</span>';
+    }
   } catch (err) {
     alert(`No se pudo enviar la solicitud: ${err.message || err}`);
     buttons.forEach((btn) => { btn.disabled = false; });

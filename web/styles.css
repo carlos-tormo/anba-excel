@@ -3164,6 +3164,36 @@ th {
     0 1px 2px rgba(15, 23, 42, 0.08),
     0 0 0 1px rgba(255, 255, 255, 0.65) inset;
 }
+.guest-roster-section #playersTable .salary-cell-with-side {
+  position: relative;
+  width: 100%;
+  max-width: 152px;
+  min-height: 28px;
+  margin: 0 auto;
+  z-index: 16;
+}
+.guest-roster-section #playersTable .salary-cell-with-side > .salary-chip {
+  width: 100%;
+  margin: 0;
+}
+.guest-roster-section #playersTable .salary-cell-side {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  z-index: 42;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transform: translateY(-50%);
+}
+.guest-roster-section #playersTable .salary-cell-side .gm-option-request-actions {
+  margin-left: 0;
+  padding-right: 0;
+}
+.guest-roster-section #playersTable tbody td:has(.salary-cell-with-side) {
+  position: relative;
+  overflow: visible;
+}
 .guest-roster-section #playersTable .salary-chip-main {
   flex: 1;
   min-width: 0;
@@ -3185,10 +3215,13 @@ th {
   font-size: 0.64rem;
   font-weight: 800;
 }
-.guest-roster-section #playersTable .salary-chip.salary-option--po,
-.guest-roster-section #playersTable .salary-chip.salary-option--gap {
+.guest-roster-section #playersTable .salary-chip.salary-option--po {
   background: #1295db;
   border-color: #0b83c2;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--gap {
+  background: #ec4899;
+  border-color: #be185d;
 }
 .guest-roster-section #playersTable .salary-chip.salary-option--to {
   background: #ff1010;
@@ -3208,9 +3241,11 @@ th {
 .guest-roster-section #playersTable .salary-chip.salary-option--qo .salary-chip-pct {
   color: #ffffff;
 }
-.guest-roster-section #playersTable .salary-chip.salary-option--po .salary-chip-pct,
-.guest-roster-section #playersTable .salary-chip.salary-option--gap .salary-chip-pct {
+.guest-roster-section #playersTable .salary-chip.salary-option--po .salary-chip-pct {
   background: #075985;
+}
+.guest-roster-section #playersTable .salary-chip.salary-option--gap .salary-chip-pct {
+  background: #9d174d;
 }
 .guest-roster-section #playersTable .salary-chip.salary-option--to .salary-chip-pct {
   background: #b00000;
@@ -4466,6 +4501,31 @@ th {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+.qo-accepted-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 1px solid #86efac;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 0.78rem;
+  font-weight: 950;
+  line-height: 1;
+  box-shadow:
+    0 0 0 2px rgba(34, 197, 94, 0.12),
+    0 0 10px rgba(34, 197, 94, 0.18);
+}
+.salary-chip .qo-accepted-indicator,
+.salary-empty-wrap .qo-accepted-indicator {
+  margin-left: 4px;
+}
+.salary-cap-hold-side .qo-accepted-indicator {
+  margin-left: 2px;
 }
 .option-action-btn {
   border-radius: 5px;
@@ -6433,6 +6493,14 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .guest-roster-section #playersTable .salary-chip {
     min-height: 26px;
     max-width: 122px;
+  }
+  .guest-roster-section #playersTable .salary-cell-with-side {
+    max-width: 122px;
+    min-height: 26px;
+  }
+  .guest-roster-section #playersTable .salary-cell-side {
+    left: calc(100% + 8px);
+    gap: 4px;
   }
   .guest-roster-section #playersTable .salary-cap-hold-cell {
     max-width: 122px;

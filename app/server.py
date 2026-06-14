@@ -1630,6 +1630,56 @@ class LeagueDB:
             conn.commit()
             return cur.rowcount > 0
 
+    def _attach_option_decisions(self, conn: sqlite3.Connection, players: List[Dict[str, Any]], team_id: int) -> None:
+        if not players:
+            return
+        player_ids = {int(player["id"]) for player in players if parse_int(player.get("id")) is not None}
+        if not player_ids:
+            return
+        latest_by_key: Dict[tuple[int, str], Dict[str, Any]] = {}
+        cur = conn.execute(
+            """
+            SELECT
+                id,
+                player_id,
+                option_field,
+                option_value,
+                action,
+                status,
+                created_at,
+                updated_at,
+                decided_at
+            FROM gm_option_requests
+            WHERE team_id = ?
+            ORDER BY
+                COALESCE(decided_at, updated_at, created_at) DESC,
+                id DESC
+            """,
+            (int(team_id),),
+        )
+        for row in cur.fetchall():
+            player_id = int(row["player_id"])
+            if player_id not in player_ids:
+                continue
+            option_field = str(row["option_field"] or "").strip()
+            key = (player_id, option_field)
+            if key in latest_by_key:
+                continue
+            latest_by_key[key] = {
+                "request_id": int(row["id"]),
+                "option_value": str(row["option_value"] or "").strip().upper(),
+                "action": str(row["action"] or "").strip().lower(),
+                "status": str(row["status"] or "").strip().lower(),
+            }
+        for player in players:
+            player_id = parse_int(player.get("id"))
+            player["option_decisions"] = {}
+            if player_id is None:
+                continue
+            for (decision_player_id, option_field), decision in latest_by_key.items():
+                if decision_player_id == player_id:
+                    player["option_decisions"][option_field] = decision
+
     def get_team(self, code: str) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             team_cur = conn.execute("SELECT * FROM teams WHERE code = ?", (code.upper(),))
@@ -1640,6 +1690,7 @@ class LeagueDB:
 
             player_cur = conn.execute("SELECT * FROM players WHERE team_id = ? ORDER BY row_order, id", (team["id"],))
             players = [row_to_dict(player_cur, r) for r in player_cur.fetchall()]
+            self._attach_option_decisions(conn, players, int(team["id"]))
 
             assets_cur = conn.execute(
                 "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
@@ -5253,9 +5304,13 @@ QUALITY REQUIREMENTS
                 return
 
             player_payload: Dict[str, Any] = {}
-            # Once an approved GM decision is applied, the pending option marker
-            # should disappear from the roster cell. Salary text is left intact.
-            player_payload[option_field] = None
+            if option_action == "accepted" and option_value == "QO":
+                # Keep the QO marker so cap-hold calculations continue to work.
+                player_payload[option_field] = option_value
+            else:
+                # Rejected options, and accepted non-QO options, remove the
+                # pending option marker from the roster cell.
+                player_payload[option_field] = None
 
             ok = self.db.update_player(player_id, player_payload)
             if not ok:

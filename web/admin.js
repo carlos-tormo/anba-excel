@@ -202,6 +202,31 @@ function contractOptionClass(value) {
   return `salary-option--${v.toLowerCase()}`;
 }
 
+function optionDecisionForSeason(row, season) {
+  return row?.option_decisions?.[`option_${season}`] || null;
+}
+
+function qoAcceptedByTeam(row, season) {
+  const option = String(row?.[`option_${season}`] || '').trim().toUpperCase();
+  const decision = optionDecisionForSeason(row, season);
+  if (option !== 'QO' || !decision) return false;
+  const decisionOption = String(decision.option_value || '').trim().toUpperCase();
+  const action = String(decision.action || '').trim().toLowerCase();
+  const status = String(decision.status || '').trim().toLowerCase();
+  return decisionOption === 'QO'
+    && action === 'accepted'
+    && ['pending', 'approved'].includes(status);
+}
+
+function buildQoAcceptedIndicator() {
+  const indicator = document.createElement('span');
+  indicator.className = 'qo-accepted-indicator';
+  indicator.title = 'QO aceptada por el equipo';
+  indicator.setAttribute('aria-label', 'QO aceptada por el equipo');
+  indicator.textContent = '✓';
+  return indicator;
+}
+
 function contractOptionActionMessage(teamCode, playerName, season, optionValue, action) {
   const team = String(teamCode || state.teamCode || '').toUpperCase();
   const player = playerName || 'this player';
@@ -4757,6 +4782,9 @@ function renderPlayers() {
             body: JSON.stringify({ [optionField]: optionSelect.value || null }),
           });
           p[optionField] = optionSelect.value || null;
+          if (p.option_decisions && (!p[optionField] || String(p[optionField]).toUpperCase() !== 'QO')) {
+            delete p.option_decisions[optionField];
+          }
           applyOptionVisual();
         } catch (err) {
           alert(`No se pudo guardar la opción de contrato: ${err.message}`);
@@ -4775,13 +4803,18 @@ function renderPlayers() {
       rejectBtn.type = 'button';
       rejectBtn.className = 'option-action-btn option-action-btn--reject';
       rejectBtn.textContent = 'Reject';
-      actionWrap.append(acceptBtn, rejectBtn);
+      const qoAcceptedIndicator = buildQoAcceptedIndicator();
+      actionWrap.append(acceptBtn, qoAcceptedIndicator, rejectBtn);
       optionSelect.insertAdjacentElement('afterend', actionWrap);
 
       const syncOptionActions = () => {
-        const hasOption = ['TO', 'PO', 'QO', 'GAP'].includes(String(optionSelect.value || '').toUpperCase());
+        const option = String(optionSelect.value || '').toUpperCase();
+        const hasOption = ['TO', 'PO', 'QO', 'GAP'].includes(option);
+        const qoAccepted = option === 'QO' && qoAcceptedByTeam(p, season);
         actionWrap.classList.toggle('section-hidden', !hasOption);
-        acceptBtn.disabled = saving || !hasOption;
+        acceptBtn.classList.toggle('section-hidden', qoAccepted);
+        qoAcceptedIndicator.classList.toggle('section-hidden', !qoAccepted);
+        acceptBtn.disabled = saving || !hasOption || qoAccepted;
         rejectBtn.disabled = saving || !hasOption;
       };
       const processOptionAction = async (action) => {
@@ -4798,7 +4831,9 @@ function renderPlayers() {
           defaultNotify: true,
         });
         if (!decision.confirmed) return;
-        const nextOptionValue = action === 'accepted' && ['TO', 'PO'].includes(optionValue) ? '' : optionValue;
+        const nextOptionValue = action === 'rejected' || (action === 'accepted' && ['TO', 'PO'].includes(optionValue))
+          ? ''
+          : optionValue;
         saving = true;
         optionSelect.disabled = true;
         acceptBtn.disabled = true;
@@ -4817,6 +4852,18 @@ function renderPlayers() {
           });
           p[optionField] = nextOptionValue || null;
           optionSelect.value = nextOptionValue;
+          if (action === 'accepted' && optionValue === 'QO') {
+            p.option_decisions = {
+              ...(p.option_decisions || {}),
+              [optionField]: {
+                option_value: 'QO',
+                action: 'accepted',
+                status: 'approved',
+              },
+            };
+          } else if (action === 'rejected' && p.option_decisions) {
+            delete p.option_decisions[optionField];
+          }
           applyOptionVisual();
         } catch (err) {
           alert(`No se pudo procesar la opción de contrato: ${err.message}`);
