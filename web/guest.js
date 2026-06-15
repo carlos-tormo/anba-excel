@@ -986,7 +986,7 @@ function qoAcceptedByTeam(row, season) {
   const status = String(decision.status || '').trim().toLowerCase();
   return decisionOption === 'QO'
     && action === 'accepted'
-    && ['pending', 'approved'].includes(status);
+    && status === 'approved';
 }
 
 function qoAcceptedIndicatorHtml(row, season) {
@@ -1038,15 +1038,7 @@ async function submitGmOptionRequest(button) {
         action,
       }),
     });
-    if (action === 'accepted' && optionValue === 'QO') {
-      wrap.innerHTML = `
-        <span class="qo-accepted-indicator" title="QO aceptada por el equipo" aria-label="QO aceptada por el equipo">✓</span>
-        <button type="button" data-gm-option-action="rejected">Rechazar</button>
-      `;
-      bindGmOptionRequestButtons(wrap);
-    } else {
-      wrap.innerHTML = '<span class="gm-option-request-sent">Solicitud enviada</span>';
-    }
+    wrap.innerHTML = '<span class="gm-option-request-sent">Solicitud enviada</span>';
   } catch (err) {
     alert(`No se pudo enviar la solicitud: ${err.message || err}`);
     buttons.forEach((btn) => { btn.disabled = false; });

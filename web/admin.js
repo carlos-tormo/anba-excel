@@ -215,7 +215,7 @@ function qoAcceptedByTeam(row, season) {
   const status = String(decision.status || '').trim().toLowerCase();
   return decisionOption === 'QO'
     && action === 'accepted'
-    && ['pending', 'approved'].includes(status);
+    && status === 'approved';
 }
 
 function buildQoAcceptedIndicator() {

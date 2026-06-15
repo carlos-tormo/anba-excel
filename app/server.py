@@ -1650,7 +1650,7 @@ class LeagueDB:
                 updated_at,
                 decided_at
             FROM gm_option_requests
-            WHERE team_id = ?
+            WHERE team_id = ? AND status = 'approved'
             ORDER BY
                 COALESCE(decided_at, updated_at, created_at) DESC,
                 id DESC
