@@ -2344,6 +2344,53 @@ class LeagueDB:
             ).fetchone()
             return self._owner_exit_interview_from_row(updated)
 
+    def reset_owner_exit_interview(self, code: str, season_year: int) -> bool:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not team:
+                return False
+            team_id = int(team["id"])
+            row = conn.execute(
+                """
+                SELECT status, trust_delta
+                FROM owner_exit_interviews
+                WHERE team_id = ? AND season_year = ?
+                """,
+                (team_id, int(season_year)),
+            ).fetchone()
+            if row:
+                status = str(row["status"] or "").lower()
+                trust_delta = parse_int(row["trust_delta"])
+                if status == "completed" and trust_delta:
+                    office_row = conn.execute(
+                        """
+                        SELECT confidence_current
+                        FROM team_owner_office
+                        WHERE team_id = ? AND season_year = ?
+                        """,
+                        (team_id, int(season_year)),
+                    ).fetchone()
+                    reverted_confidence = self._owner_confidence_with_delta(
+                        office_row["confidence_current"] if office_row else None,
+                        -trust_delta,
+                    )
+                    if reverted_confidence is not None:
+                        conn.execute(
+                            """
+                            UPDATE team_owner_office
+                            SET confidence_current = ?, updated_at = ?
+                            WHERE team_id = ? AND season_year = ?
+                            """,
+                            (reverted_confidence, timestamp, team_id, int(season_year)),
+                        )
+                conn.execute(
+                    "DELETE FROM owner_exit_interviews WHERE team_id = ? AND season_year = ?",
+                    (team_id, int(season_year)),
+                )
+                conn.commit()
+            return True
+
     def get_team_owner_office(self, code: str, include_private: bool = False) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             team = conn.execute("SELECT id, code, name FROM teams WHERE code = ?", (code.upper(),)).fetchone()
@@ -2373,15 +2420,6 @@ class LeagueDB:
                 """,
                 (team_id,),
             ).fetchall()
-            years = {
-                *range(current_year, current_year + CAP_FORECAST_WINDOW),
-                *[int(row["season_year"]) for row in saved_rows],
-                *[
-                    int(row["season_year"])
-                    for row in conn.execute("SELECT DISTINCT season_year FROM team_economy").fetchall()
-                ],
-            }
-            saved_by_year = {int(row["season_year"]): row for row in saved_rows}
             interview_rows = conn.execute(
                 """
                 SELECT *
@@ -2390,6 +2428,16 @@ class LeagueDB:
                 """,
                 (team_id,),
             ).fetchall()
+            years = {
+                *range(current_year, current_year + CAP_FORECAST_WINDOW),
+                *[int(row["season_year"]) for row in saved_rows],
+                *[int(row["season_year"]) for row in interview_rows],
+                *[
+                    int(row["season_year"])
+                    for row in conn.execute("SELECT DISTINCT season_year FROM team_economy").fetchall()
+                ],
+            }
+            saved_by_year = {int(row["season_year"]): row for row in saved_rows}
             interviews_by_year = {
                 int(row["season_year"]): self._owner_exit_interview_from_row(row)
                 for row in interview_rows
@@ -4594,11 +4642,20 @@ QUALITY REQUIREMENTS
         entries = owner_office.get("entries") if isinstance(owner_office.get("entries"), dict) else {}
         return entries.get(str(season_year), {}) if isinstance(entries, dict) else {}
 
-    def _owner_interview_context_text(self, owner_office: Dict[str, Any], season_year: int) -> str:
+    def _owner_interview_context_text(
+        self,
+        owner_office: Dict[str, Any],
+        season_year: int,
+        session: Optional[Dict[str, Any]] = None,
+    ) -> str:
         profile = owner_office.get("owner_profile") if isinstance(owner_office.get("owner_profile"), dict) else {}
         attrs = profile.get("attributes") if isinstance(profile.get("attributes"), dict) else {}
         entry = self._owner_interview_entry(owner_office, season_year)
         performance_rows = entry.get("performance_rows") if isinstance(entry.get("performance_rows"), list) else []
+        session = session if isinstance(session, dict) else {}
+        gm_name = str(session.get("name") or "").strip()
+        gm_email = str(session.get("email") or "").strip()
+        gm_reference = gm_name or gm_email or "GM"
         perf_lines = []
         for row in performance_rows:
             if not isinstance(row, dict):
@@ -4614,6 +4671,8 @@ QUALITY REQUIREMENTS
                 f"Temporada revisada: {season_label(season_year)}",
                 f"Propietario: {profile.get('owner_name') or 'Propietario'}",
                 f"Biografia propietario: {profile.get('owner_bio') or 'No configurada'}",
+                f"GM evaluado: {gm_reference}",
+                "Regla de voz: el propietario habla en primera persona; el nombre del propietario NO es el nombre del GM y no debe usarse como destinatario.",
                 f"Atributos internos propietario: {json.dumps(attrs, ensure_ascii=False)}",
                 f"Confianza actual: {entry.get('confidence_current') or 'No configurada'}",
                 f"Cambio confianza temporada: {entry.get('confidence_change') or 'No configurado'}",
@@ -4626,13 +4685,20 @@ QUALITY REQUIREMENTS
             ]
         )
 
-    def _owner_interview_opening_message(self, owner_office: Dict[str, Any], season_year: int) -> str:
-        context = self._owner_interview_context_text(owner_office, season_year)
+    def _owner_interview_opening_message(
+        self,
+        owner_office: Dict[str, Any],
+        season_year: int,
+        session: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        context = self._owner_interview_context_text(owner_office, season_year, session=session)
         system_prompt = (
             "Eres el propietario de una franquicia de la liga ANBA. "
             "Escribe en espanol, con tono conversacional de despacho, directo y creible. "
-            "No inventes datos fuera del contexto. Haz una sola intervencion inicial de 2 a 4 frases, "
-            "cerrando con una pregunta concreta al GM sobre su evaluacion de la temporada."
+            "Habla siempre en primera persona como propietario y dirigete al GM evaluado, nunca al propietario. "
+            "No uses el nombre del propietario como si fuera el nombre del GM. No inventes datos fuera del contexto. "
+            "Haz una sola intervencion inicial de 2 a 4 frases, cerrando con una pregunta concreta al GM "
+            "sobre su evaluacion de la temporada."
         )
         user_prompt = f"Contexto para la entrevista de salida:\n{context}"
         generated = self._openai_text_response(system_prompt, user_prompt, max_output_tokens=450)
@@ -4676,14 +4742,15 @@ QUALITY REQUIREMENTS
         season_year: int,
         owner_message: str,
         gm_response: str,
+        session: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, int]:
-        context = self._owner_interview_context_text(owner_office, season_year)
+        context = self._owner_interview_context_text(owner_office, season_year, session=session)
         system_prompt = (
             "Eres el propietario de una franquicia de la liga ANBA. "
             "Evalua la respuesta del GM en espanol. Debes responder SOLO JSON valido con estas claves: "
             "\"message\" y \"trust_delta\". trust_delta debe ser exactamente 1 o -1. "
-            "message debe ser una respuesta final de 2 a 4 frases, profesional y directa, explicando brevemente "
-            "por que la confianza sube o baja."
+            "message debe ser una respuesta final de 2 a 4 frases, profesional y directa, en primera persona como propietario, "
+            "explicando brevemente por que la confianza sube o baja. No trates el nombre del propietario como si fuera el GM."
         )
         user_prompt = (
             f"Contexto:\n{context}\n\n"
@@ -5362,7 +5429,7 @@ QUALITY REQUIREMENTS
                 return
             code = parts[3]
             action = parts[-1]
-            if action not in {"start", "reply"}:
+            if action not in {"start", "reply", "reset"}:
                 self._json(404, {"error": "not_found"})
                 return
             if not self._require_authenticated():
@@ -5376,13 +5443,31 @@ QUALITY REQUIREMENTS
                 self._json(403, {"error": "team_access_required"})
                 return
             settings = self.db.get_settings()
-            if not parse_bool(settings.get("free_agency_mode")):
-                self._json(409, {"error": "free_agency_mode_required"})
-                return
             current_year = parse_int(settings.get("current_year")) or 2025
             season_year = parse_int(payload.get("season_year")) or current_year
             if season_year != current_year:
                 self._json(400, {"error": "invalid_exit_interview_season", "season_year": current_year})
+                return
+            if action == "reset":
+                if not self._is_admin():
+                    self._json(403, {"error": "admin_required"})
+                    return
+                ok = self.db.reset_owner_exit_interview(code, season_year)
+                if not ok:
+                    self._json(404, {"error": "team_not_found"})
+                    return
+                refreshed = self.db.get_team_owner_office(code, include_private=True)
+                self._log_admin_action(
+                    "reset",
+                    "owner_exit_interview",
+                    f"{code.upper()}:{season_year}",
+                    code.upper(),
+                    {"season_year": season_year},
+                )
+                self._json(200, {"ok": True, "owner_office": refreshed})
+                return
+            if not parse_bool(settings.get("free_agency_mode")):
+                self._json(409, {"error": "free_agency_mode_required"})
                 return
             owner_office = self.db.get_team_owner_office(code, include_private=True)
             if not owner_office:
@@ -5393,12 +5478,13 @@ QUALITY REQUIREMENTS
                 existing = self.db.get_owner_exit_interview(code, season_year)
                 owner_message = str(existing.get("owner_message") or "").strip() if existing else ""
                 if not owner_message:
-                    owner_message = self._owner_interview_opening_message(owner_office, season_year)
+                    owner_message = self._owner_interview_opening_message(owner_office, season_year, session=session)
                 interview = self.db.start_owner_exit_interview(code, season_year, session, owner_message)
                 if not interview:
                     self._json(404, {"error": "team_not_found"})
                     return
-                self._json(200, {"ok": True, "interview": interview})
+                refreshed = self.db.get_team_owner_office(code, include_private=self._is_admin())
+                self._json(200, {"ok": True, "interview": interview, "owner_office": refreshed})
                 return
 
             gm_response = str(payload.get("gm_response") or "").strip()
@@ -5420,6 +5506,7 @@ QUALITY REQUIREMENTS
                 season_year,
                 str(existing.get("owner_message") or ""),
                 gm_response,
+                session=session,
             )
             interview = self.db.complete_owner_exit_interview(
                 code,
@@ -5432,7 +5519,8 @@ QUALITY REQUIREMENTS
             if not interview:
                 self._json(404, {"error": "interview_not_found"})
                 return
-            self._json(200, {"ok": True, "interview": interview})
+            refreshed = self.db.get_team_owner_office(code, include_private=self._is_admin())
+            self._json(200, {"ok": True, "interview": interview, "owner_office": refreshed})
             return
 
         if not self._require_admin():

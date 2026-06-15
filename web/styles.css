@@ -90,10 +90,12 @@ h1 {
 .mobile-sidebar-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 12000;
   background: rgba(15, 23, 42, 0.55);
 }
 .mobile-sidebar {
+  position: relative;
+  z-index: 1;
   width: min(86vw, 330px);
   max-width: 330px;
   height: 100%;
@@ -3893,11 +3895,21 @@ th {
   color: #475569;
   font-weight: 800;
 }
+.owner-exit-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
 .owner-exit-open-btn {
   flex: 0 0 auto;
   border-color: rgba(var(--team-primary-rgb), 0.45);
   background: rgb(var(--team-primary-rgb));
   color: #fff;
+}
+.owner-exit-open-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .owner-exit-modal {
   width: min(760px, 96vw);

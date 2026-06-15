@@ -4003,6 +4003,121 @@ function ownerOfficePerformanceTable(entry, season) {
   `;
 }
 
+function ownerExitInterviewSeason() {
+  return currentSeasonStart();
+}
+
+function ownerExitInterviewForSeason(season = ownerExitInterviewSeason()) {
+  return ownerOfficeEntryForSeason(season)?.exit_interview || null;
+}
+
+function ownerExitTrustDeltaHtml(interview) {
+  if (!interview || String(interview.status || '').toLowerCase() !== 'completed') return '';
+  const delta = Number(interview.trust_delta || 0);
+  const cls = delta > 0 ? 'owner-exit-delta--positive' : 'owner-exit-delta--negative';
+  const label = delta > 0 ? '+1 confianza' : '-1 confianza';
+  return `<span class="owner-exit-delta ${cls}">${escapeHtml(label)}</span>`;
+}
+
+function ownerExitHasConversation(interview) {
+  return Boolean(
+    String(interview?.owner_message || '').trim()
+    || String(interview?.gm_response || '').trim()
+    || String(interview?.owner_final_message || '').trim()
+  );
+}
+
+function ownerOfficeExitInterviewCard(entry, season) {
+  const interview = entry?.exit_interview || { status: 'available' };
+  const hasConversation = ownerExitHasConversation(interview);
+  if ((!freeAgencyModeActive() && !hasConversation) || Number(season) !== currentSeasonStart()) return '';
+  const status = String(interview.status || 'available').toLowerCase();
+  const completed = status === 'completed';
+  const awaiting = status === 'awaiting_gm';
+  const trustDelta = Number(interview.trust_delta || 0);
+  const statusText = completed
+    ? `Entrevista completada · impacto confianza ${trustDelta > 0 ? '+1' : '-1'}`
+    : (awaiting ? 'Entrevista iniciada · respuesta pendiente del GM' : 'Sin entrevista iniciada');
+  return `
+    <article class="owner-office-panel owner-exit-card">
+      <div>
+        <h3>Entrevista de salida</h3>
+        <p>${escapeHtml(statusText)}</p>
+      </div>
+      <div class="owner-exit-card-actions">
+        <button type="button" class="owner-exit-open-btn" data-owner-exit-open ${hasConversation ? '' : 'disabled'}>Ver conversación</button>
+        ${hasConversation ? '<button type="button" class="danger" data-owner-exit-reset>Resetear</button>' : ''}
+      </div>
+    </article>
+  `;
+}
+
+function ownerExitBubbleHtml(kind, text, profile = {}, interview = {}) {
+  const owner = kind === 'owner';
+  const gmLabel = String(interview.gm_name || interview.gm_email || 'GM').trim();
+  return `
+    <div class="owner-exit-message owner-exit-message--${owner ? 'owner' : 'gm'}">
+      ${owner ? ownerOfficeProfileAvatarHtml(profile) : '<div class="owner-exit-gm-avatar" aria-hidden="true">GM</div>'}
+      <div class="owner-exit-bubble">
+        <span>${owner ? 'Propietario' : escapeHtml(gmLabel)}</span>
+        <p>${escapeHtml(text || '')}</p>
+      </div>
+    </div>
+  `;
+}
+
+function renderOwnerExitModal(interview) {
+  const modal = document.getElementById('ownerExitModal');
+  const content = document.getElementById('ownerExitModalContent');
+  if (!modal || !content) return;
+  const profile = ownerOfficeProfile();
+  const ownerMessage = String(interview?.owner_message || '');
+  const gmResponse = String(interview?.gm_response || '');
+  const ownerFinal = String(interview?.owner_final_message || '');
+  content.innerHTML = `
+    <div class="owner-exit-chat">
+      ${ownerMessage ? ownerExitBubbleHtml('owner', ownerMessage, profile, interview) : ''}
+      ${gmResponse ? ownerExitBubbleHtml('gm', gmResponse, profile, interview) : ''}
+      ${ownerFinal ? ownerExitBubbleHtml('owner', ownerFinal, profile, interview) : ''}
+      ${!ownerExitHasConversation(interview) ? '<p class="owner-exit-empty">No hay conversación registrada todavía.</p>' : ''}
+    </div>
+    ${String(interview?.status || '').toLowerCase() === 'completed' ? `
+      <div class="owner-exit-summary">
+        ${ownerExitTrustDeltaHtml(interview)}
+      </div>
+    ` : ''}
+  `;
+  modal.classList.remove('section-hidden');
+}
+
+function closeOwnerExitModal() {
+  document.getElementById('ownerExitModal')?.classList.add('section-hidden');
+}
+
+function openOwnerExitInterview() {
+  const interview = ownerExitInterviewForSeason(ownerExitInterviewSeason());
+  renderOwnerExitModal(interview || { status: 'available', season_year: ownerExitInterviewSeason() });
+}
+
+async function resetOwnerExitInterview() {
+  if (!state.teamCode) return;
+  const season = ownerExitInterviewSeason();
+  if (!confirm('¿Seguro que quieres resetear esta entrevista? Si ya había aplicado un cambio de confianza, se revertirá para que la nueva entrevista no duplique el impacto.')) {
+    return;
+  }
+  try {
+    const result = await api(`/api/teams/${encodeURIComponent(state.teamCode)}/owner-exit-interview/reset`, {
+      method: 'POST',
+      body: JSON.stringify({ season_year: season }),
+    });
+    state.teamData.owner_office = result.owner_office || state.teamData.owner_office;
+    closeOwnerExitModal();
+    renderOwnerOffice();
+  } catch (err) {
+    alert(`Owner interview reset failed: ${err.message || err}`);
+  }
+}
+
 function renderOwnerOffice() {
   const content = document.getElementById('ownerOfficeContent');
   const subtitle = document.getElementById('ownerOfficeSubtitle');
@@ -4020,7 +4135,10 @@ function renderOwnerOffice() {
   const incomeRows = ownerOfficeMergedRows(OWNER_OFFICE_INCOME_ROWS, entry.income_rows);
   const expenseRows = ownerOfficeMergedRows(OWNER_OFFICE_EXPENSE_ROWS, entry.expenses_rows);
   const profile = ownerOfficeProfile();
+  const exitSeason = ownerExitInterviewSeason();
+  const exitEntry = ownerOfficeEntryForSeason(exitSeason);
   content.innerHTML = `
+    ${ownerOfficeExitInterviewCard(exitEntry, exitSeason)}
     ${ownerOfficeProfileEditor(profile)}
     <div class="owner-office-overview">
       <article class="owner-office-panel">
@@ -4064,6 +4182,12 @@ function renderOwnerOffice() {
       ${ownerOfficeBreakdownTable('Gastos', 'expenses', expenseRows)}
     </div>
   `;
+  content.querySelector('[data-owner-exit-open]')?.addEventListener('click', () => {
+    openOwnerExitInterview();
+  });
+  content.querySelector('[data-owner-exit-reset]')?.addEventListener('click', () => {
+    void resetOwnerExitInterview();
+  });
 }
 
 async function loadOwnerOfficeForTeam(code) {
@@ -4157,6 +4281,10 @@ function setupOwnerOfficeControls() {
   }
   document.getElementById('saveOwnerOfficeBtn')?.addEventListener('click', () => {
     void saveOwnerOffice();
+  });
+  document.getElementById('ownerExitCloseBtn')?.addEventListener('click', closeOwnerExitModal);
+  document.getElementById('ownerExitModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeOwnerExitModal();
   });
 }
 

@@ -1064,6 +1064,8 @@ async function submitGmOptionRequest(button) {
 function bindGmOptionRequestButtons(root) {
   if (!root) return;
   root.querySelectorAll('[data-gm-option-action]').forEach((button) => {
+    if (button.dataset.gmOptionBound === '1') return;
+    button.dataset.gmOptionBound = '1';
     button.addEventListener('click', () => {
       void submitGmOptionRequest(button);
     });
@@ -4548,7 +4550,8 @@ async function openOwnerExitInterview() {
       method: 'POST',
       body: JSON.stringify({ season_year: season }),
     });
-    updateOwnerExitInterviewState(result.interview);
+    if (result.owner_office) state.teamData.owner_office = result.owner_office;
+    else updateOwnerExitInterviewState(result.interview);
     renderOwnerOffice();
     renderOwnerExitModal(result.interview);
   } catch (err) {
@@ -4575,7 +4578,8 @@ async function submitOwnerExitResponse() {
         gm_response: response,
       }),
     });
-    updateOwnerExitInterviewState(result.interview);
+    if (result.owner_office) state.teamData.owner_office = result.owner_office;
+    else updateOwnerExitInterviewState(result.interview);
     renderOwnerOffice();
     renderOwnerExitModal(result.interview);
   } catch (err) {
@@ -5072,6 +5076,7 @@ function setRosterView(nextView, savePreference = true) {
   if (cardsWrap) cardsWrap.classList.toggle('section-hidden', view !== 'cards');
   if (listBtn) listBtn.classList.toggle('active', view === 'list');
   if (cardsBtn) cardsBtn.classList.toggle('active', view === 'cards');
+  if (view === 'cards') bindGmOptionRequestButtons(cardsWrap);
   if (!savePreference) return;
   try {
     window.localStorage.setItem('anba_roster_view', view);
