@@ -4024,6 +4024,7 @@ function ownerExitHasConversation(interview) {
     String(interview?.owner_message || '').trim()
     || String(interview?.gm_response || '').trim()
     || String(interview?.owner_final_message || '').trim()
+    || String(interview?.owner_conclusion_message || '').trim()
   );
 }
 
@@ -4074,11 +4075,13 @@ function renderOwnerExitModal(interview) {
   const ownerMessage = String(interview?.owner_message || '');
   const gmResponse = String(interview?.gm_response || '');
   const ownerFinal = String(interview?.owner_final_message || '');
+  const ownerConclusion = String(interview?.owner_conclusion_message || '');
   content.innerHTML = `
     <div class="owner-exit-chat">
       ${ownerMessage ? ownerExitBubbleHtml('owner', ownerMessage, profile, interview) : ''}
       ${gmResponse ? ownerExitBubbleHtml('gm', gmResponse, profile, interview) : ''}
       ${ownerFinal ? ownerExitBubbleHtml('owner', ownerFinal, profile, interview) : ''}
+      ${ownerConclusion ? ownerExitBubbleHtml('owner', ownerConclusion, profile, interview) : ''}
       ${!ownerExitHasConversation(interview) ? '<p class="owner-exit-empty">No hay conversación registrada todavía.</p>' : ''}
     </div>
     ${String(interview?.status || '').toLowerCase() === 'completed' ? `

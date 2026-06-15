@@ -812,6 +812,7 @@ class LeagueDB:
                     owner_message TEXT,
                     gm_response TEXT,
                     owner_final_message TEXT,
+                    owner_conclusion_message TEXT,
                     trust_delta INTEGER,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -884,8 +885,14 @@ class LeagueDB:
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(team_owner_office)").fetchall()
             }
+            owner_exit_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(owner_exit_interviews)").fetchall()
+            }
             if "performance_json" not in owner_office_cols:
                 conn.execute("ALTER TABLE team_owner_office ADD COLUMN performance_json TEXT NOT NULL DEFAULT '[]'")
+            if "owner_conclusion_message" not in owner_exit_cols:
+                conn.execute("ALTER TABLE owner_exit_interviews ADD COLUMN owner_conclusion_message TEXT")
             if "cash_received" not in team_cols:
                 conn.execute("ALTER TABLE teams ADD COLUMN cash_received REAL NOT NULL DEFAULT 0")
             if "cash_sent" not in team_cols:
@@ -2164,6 +2171,7 @@ class LeagueDB:
             "owner_message": str(row["owner_message"] or ""),
             "gm_response": str(row["gm_response"] or ""),
             "owner_final_message": str(row["owner_final_message"] or ""),
+            "owner_conclusion_message": str(row["owner_conclusion_message"] or ""),
             "trust_delta": parse_int(row["trust_delta"]),
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
@@ -2262,6 +2270,7 @@ class LeagueDB:
         session: Dict[str, Any],
         gm_response: str,
         owner_final_message: str,
+        owner_conclusion_message: str,
         trust_delta: int,
     ) -> Optional[Dict[str, Any]]:
         timestamp = now_iso()
@@ -2294,6 +2303,7 @@ class LeagueDB:
                     status = 'completed',
                     gm_response = ?,
                     owner_final_message = ?,
+                    owner_conclusion_message = ?,
                     trust_delta = ?,
                     updated_at = ?,
                     completed_at = ?
@@ -2305,6 +2315,7 @@ class LeagueDB:
                     str(session.get("name") or "").strip(),
                     str(gm_response or "").strip()[:4000],
                     str(owner_final_message or "").strip()[:4000],
+                    str(owner_conclusion_message or "").strip()[:4000],
                     normalized_delta,
                     timestamp,
                     timestamp,
@@ -2477,6 +2488,7 @@ class LeagueDB:
                         "owner_message": "",
                         "gm_response": "",
                         "owner_final_message": "",
+                        "owner_conclusion_message": "",
                         "trust_delta": None,
                     }
                 entries[str(year)] = {
@@ -4697,6 +4709,8 @@ QUALITY REQUIREMENTS
             "Escribe en espanol, con tono conversacional de despacho, directo y creible. "
             "Habla siempre en primera persona como propietario y dirigete al GM evaluado, nunca al propietario. "
             "No uses el nombre del propietario como si fuera el nombre del GM. No inventes datos fuera del contexto. "
+            "Deja una pista clara de por que la confianza del propietario ha subido o bajado durante la temporada, "
+            "usando el cambio de confianza del contexto si esta configurado. "
             "Haz una sola intervencion inicial de 2 a 4 frases, cerrando con una pregunta concreta al GM "
             "sobre su evaluacion de la temporada."
         )
@@ -4707,11 +4721,11 @@ QUALITY REQUIREMENTS
         team = owner_office.get("team_code") or "el equipo"
         return (
             f"Terminada la temporada {season_label(season_year)}, quiero entender tu lectura de lo que ha pasado con {team}. "
-            "Tenemos que valorar resultados deportivos, confianza y situacion economica antes de planificar la agencia libre. "
+            "Los resultados, la confianza y la situacion economica han movido mi evaluacion del proyecto, y quiero saber si lees igual ese cambio. "
             "Dime con claridad que ha funcionado, que no, y cual es tu plan para corregirlo."
         )
 
-    def _owner_interview_parse_final(self, raw_text: Optional[str], gm_response: str) -> tuple[str, int]:
+    def _owner_interview_parse_final(self, raw_text: Optional[str], gm_response: str) -> tuple[str, str, int]:
         text = str(raw_text or "").strip()
         parsed: Dict[str, Any] = {}
         if text:
@@ -4725,6 +4739,12 @@ QUALITY REQUIREMENTS
             except json.JSONDecodeError:
                 parsed = {}
         message = str(parsed.get("message") or parsed.get("owner_reply") or text or "").strip()
+        conclusion = str(
+            parsed.get("conclusion")
+            or parsed.get("owner_conclusion")
+            or parsed.get("next_year_message")
+            or ""
+        ).strip()
         trust_delta = parse_int(parsed.get("trust_delta"))
         if trust_delta is None or trust_delta == 0:
             trust_delta = 1 if len(str(gm_response or "").strip()) >= 80 else -1
@@ -4734,7 +4754,12 @@ QUALITY REQUIREMENTS
                 message = "Tu respuesta me da confianza. Veo un plan claro y una lectura responsable de la temporada. Sumaremos un punto de confianza y espero que lo conviertas en decisiones concretas."
             else:
                 message = "No termino de ver suficiente claridad en tu respuesta. Necesitaba un diagnostico mas preciso y un plan mas convincente. Restaremos un punto de confianza y tendremos que ver mejoras pronto."
-        return message[:2000], trust_delta
+        if not conclusion:
+            if trust_delta > 0:
+                conclusion = "De cara al proximo ano quiero que conviertas esta lectura en prioridades concretas desde el primer dia. Despues del verano nos sentaremos para fijar objetivos especificos y medir si el proyecto avanza en la direccion correcta."
+            else:
+                conclusion = "De cara al proximo ano el margen de error sera menor. Despues del verano nos sentaremos para fijar objetivos especificos, pero necesito ver un plan mas claro y decisiones que recuperen mi confianza."
+        return message[:2000], conclusion[:2000], trust_delta
 
     def _owner_interview_final_reply(
         self,
@@ -4743,14 +4768,18 @@ QUALITY REQUIREMENTS
         owner_message: str,
         gm_response: str,
         session: Optional[Dict[str, Any]] = None,
-    ) -> tuple[str, int]:
+    ) -> tuple[str, str, int]:
         context = self._owner_interview_context_text(owner_office, season_year, session=session)
         system_prompt = (
             "Eres el propietario de una franquicia de la liga ANBA. "
             "Evalua la respuesta del GM en espanol. Debes responder SOLO JSON valido con estas claves: "
-            "\"message\" y \"trust_delta\". trust_delta debe ser exactamente 1 o -1. "
-            "message debe ser una respuesta final de 2 a 4 frases, profesional y directa, en primera persona como propietario, "
-            "explicando brevemente por que la confianza sube o baja. No trates el nombre del propietario como si fuera el GM."
+            "\"message\", \"conclusion\" y \"trust_delta\". trust_delta debe ser exactamente 1 o -1. "
+            "message debe ser una respuesta corta, de 1 a 2 frases, profesional y directa, que conteste al punto principal del GM "
+            "y comunique claramente si la confianza sube o baja. "
+            "conclusion debe ser un cierre separado, de 2 a 4 frases, con un mensaje para el proximo ano. "
+            "Ese cierre puede ser duro, optimista, satisfecho o exigente segun resultados, economia, direccion de la franquicia "
+            "y atributos del propietario. Debe insinuar que despues del verano propietario y GM se sentaran a definir objetivos concretos. "
+            "No trates el nombre del propietario como si fuera el GM."
         )
         user_prompt = (
             f"Contexto:\n{context}\n\n"
@@ -4758,7 +4787,7 @@ QUALITY REQUIREMENTS
             f"Respuesta del GM:\n{gm_response}\n\n"
             "Devuelve el JSON solicitado."
         )
-        generated = self._openai_text_response(system_prompt, user_prompt, max_output_tokens=600)
+        generated = self._openai_text_response(system_prompt, user_prompt, max_output_tokens=900)
         return self._owner_interview_parse_final(generated, gm_response)
 
     def _post_discord_json(self, payload: Dict[str, Any]) -> None:
@@ -5501,7 +5530,7 @@ QUALITY REQUIREMENTS
             if str(existing.get("status") or "").lower() == "completed":
                 self._json(200, {"ok": True, "interview": existing})
                 return
-            final_message, trust_delta = self._owner_interview_final_reply(
+            final_message, conclusion_message, trust_delta = self._owner_interview_final_reply(
                 owner_office,
                 season_year,
                 str(existing.get("owner_message") or ""),
@@ -5514,6 +5543,7 @@ QUALITY REQUIREMENTS
                 session,
                 gm_response,
                 final_message,
+                conclusion_message,
                 trust_delta,
             )
             if not interview:

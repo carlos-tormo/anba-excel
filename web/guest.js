@@ -4267,10 +4267,16 @@ function ownerOfficeSeasonOptions() {
   return Array.from(seasons).sort((a, b) => a - b);
 }
 
+function ownerOfficeDefaultSeason() {
+  const configured = Number(state.teamData?.owner_office?.exit_interview_season);
+  if (Number.isInteger(configured) && configured >= 2000 && configured <= 2100) return configured;
+  return currentSeasonStart();
+}
+
 function selectedOwnerOfficeSeason() {
   const options = ownerOfficeSeasonOptions();
   const requested = Number(state.ui.ownerOfficeSeason);
-  const fallback = selectedSeasonStart();
+  const fallback = ownerOfficeDefaultSeason();
   const selected = options.includes(requested)
     ? requested
     : (options.includes(fallback) ? fallback : (options[0] || currentSeasonStart()));
@@ -4504,11 +4510,13 @@ function renderOwnerExitModal(interview, options = {}) {
   const ownerMessage = String(interview?.owner_message || '');
   const gmResponse = String(interview?.gm_response || '');
   const ownerFinal = String(interview?.owner_final_message || '');
+  const ownerConclusion = String(interview?.owner_conclusion_message || '');
   content.innerHTML = `
     <div class="owner-exit-chat">
       ${ownerMessage ? ownerExitBubbleHtml('owner', ownerMessage, profile) : ''}
       ${gmResponse ? ownerExitBubbleHtml('gm', gmResponse, profile) : ''}
       ${ownerFinal ? ownerExitBubbleHtml('owner', ownerFinal, profile) : ''}
+      ${ownerConclusion ? ownerExitBubbleHtml('owner', ownerConclusion, profile) : ''}
       ${loading ? '<div class="owner-exit-typing">El propietario está escribiendo...</div>' : ''}
     </div>
     ${status === 'completed' ? `
@@ -5660,6 +5668,7 @@ async function loadTeam(code) {
   const data = await api(`/api/teams/${code}`);
   state.teamCode = code;
   state.teamData = data;
+  state.ui.ownerOfficeSeason = null;
   await loadOwnerOfficeForTeam(code);
   setTeamInUrl(code);
   try {
