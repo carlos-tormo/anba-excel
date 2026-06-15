@@ -3373,9 +3373,11 @@ function appendRosterPositionSeparator(tbody, positionKey, count, colspan) {
   tr.className = 'roster-position-row';
   tr.innerHTML = `
     <td colspan="${colspan}">
-      <span class="roster-position-code">${escapeHtml(positionKey === 'NA' ? '-' : positionKey)}</span>
-      <span class="roster-position-name">${escapeHtml(rosterPositionLabel(positionKey))}</span>
-      <span class="roster-position-count">${count} ${count === 1 ? 'player' : 'players'}</span>
+      <div class="roster-position-sticky-content">
+        <span class="roster-position-code">${escapeHtml(positionKey === 'NA' ? '-' : positionKey)}</span>
+        <span class="roster-position-name">${escapeHtml(rosterPositionLabel(positionKey))}</span>
+        <span class="roster-position-count">${count} ${count === 1 ? 'player' : 'players'}</span>
+      </div>
     </td>
   `;
   tbody.appendChild(tr);
