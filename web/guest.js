@@ -174,6 +174,18 @@ const OWNER_OFFICE_EXPENSE_ROWS = [
   { key: 'reparto_beneficios_negativo', label: 'Reparto beneficios', type: 'field' },
 ];
 
+const OWNER_OFFICE_RESULT_OPTIONS = [
+  '',
+  'Campeón',
+  'Finalista',
+  'Final de conferencia',
+  'Semifinal de conferencia',
+  'Primera ronda',
+  'Play-in',
+  'Lotería',
+  'Reconstrucción',
+];
+
 const PLAYER_SORT_CYCLE = [
   { key: 'position', dir: 'asc' },
   { key: 'position', dir: 'desc' },
@@ -1026,6 +1038,9 @@ async function submitGmOptionRequest(button) {
   const optionField = String(wrap.dataset.optionField || '').trim();
   const optionValue = String(wrap.dataset.optionValue || '').trim().toUpperCase();
   if (!Number.isInteger(playerId) || playerId <= 0 || !optionField || !optionValue || !action) return;
+  const actionText = action === 'accepted' ? 'aceptar' : 'rechazar';
+  const confirmed = window.confirm(`¿Seguro que quieres ${actionText} esta opción ${optionValue}?`);
+  if (!confirmed) return;
   const buttons = Array.from(wrap.querySelectorAll('button'));
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
@@ -1039,6 +1054,7 @@ async function submitGmOptionRequest(button) {
       }),
     });
     wrap.innerHTML = '<span class="gm-option-request-sent">Solicitud enviada</span>';
+    alert('Tu petición ha sido enviada a la administración. Será procesada pronto.');
   } catch (err) {
     alert(`No se pudo enviar la solicitud: ${err.message || err}`);
     buttons.forEach((btn) => { btn.disabled = false; });
@@ -4363,6 +4379,209 @@ function ownerOfficeBreakdownTable(title, kind, rows) {
   `;
 }
 
+function ownerOfficePerformanceRows(entry, season) {
+  const savedRows = Array.isArray(entry?.performance_rows) ? entry.performance_rows : [];
+  return Array.from({ length: 5 }, (_, idx) => {
+    const fallbackYear = Number(season) - 4 + idx;
+    const saved = savedRows[idx] || {};
+    return {
+      season_year: Number(saved.season_year) || fallbackYear,
+      wins: saved.wins ?? '',
+      losses: saved.losses ?? '',
+      result: saved.result || '',
+    };
+  });
+}
+
+function ownerOfficePerformanceTable(entry, season) {
+  const rows = ownerOfficePerformanceRows(entry, season);
+  return `
+    <article class="owner-office-panel owner-office-performance-panel">
+      <h3>Historial deportivo</h3>
+      <div class="table-wrap owner-office-table-wrap">
+        <table class="owner-office-table owner-office-performance-table">
+          <thead>
+            <tr>
+              <th>Temporada</th>
+              <th>Victorias</th>
+              <th>Derrotas</th>
+              <th>Resultado</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${escapeHtml(seasonLabel(row.season_year))}</td>
+                <td>${ownerOfficeReadonlyCell(row.wins)}</td>
+                <td>${ownerOfficeReadonlyCell(row.losses)}</td>
+                <td>${ownerOfficeReadonlyCell(row.result)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function ownerOfficeExitInterviewCard(entry, season) {
+  if (!freeAgencyModeActive() || Number(season) !== currentSeasonStart()) return '';
+  const auth = state.auth || {};
+  if (auth.role !== 'gm') return '';
+  const interview = entry?.exit_interview || { status: 'available' };
+  const status = String(interview.status || 'available').toLowerCase();
+  const completed = status === 'completed';
+  const awaiting = status === 'awaiting_gm';
+  const trustDelta = Number(interview.trust_delta || 0);
+  const statusText = completed
+    ? `Entrevista completada · impacto confianza ${trustDelta > 0 ? '+1' : '-1'}`
+    : (awaiting ? 'Entrevista iniciada · respuesta pendiente' : 'Entrevista de salida disponible');
+  const buttonText = completed ? 'Ver entrevista' : (awaiting ? 'Continuar entrevista' : 'Abrir entrevista');
+  return `
+    <article class="owner-office-panel owner-exit-card">
+      <div>
+        <h3>Entrevista de salida</h3>
+        <p>${escapeHtml(statusText)}</p>
+      </div>
+      <button type="button" class="owner-exit-open-btn" data-owner-exit-open>${escapeHtml(buttonText)}</button>
+    </article>
+  `;
+}
+
+function ownerExitInterviewSeason() {
+  return currentSeasonStart();
+}
+
+function ownerExitInterviewForSeason(season = ownerExitInterviewSeason()) {
+  return ownerOfficeEntryForSeason(season)?.exit_interview || null;
+}
+
+function updateOwnerExitInterviewState(interview) {
+  if (!state.teamData?.owner_office || !interview) return;
+  const season = Number(interview.season_year || ownerExitInterviewSeason());
+  const entries = state.teamData.owner_office.entries || {};
+  const key = String(season);
+  entries[key] = {
+    ...(entries[key] || {}),
+    season_year: season,
+    exit_interview: interview,
+  };
+  state.teamData.owner_office.entries = entries;
+}
+
+function ownerExitTrustDeltaHtml(interview) {
+  if (!interview || String(interview.status || '').toLowerCase() !== 'completed') return '';
+  const delta = Number(interview.trust_delta || 0);
+  const cls = delta > 0 ? 'owner-exit-delta--positive' : 'owner-exit-delta--negative';
+  const label = delta > 0 ? '+1 confianza' : '-1 confianza';
+  return `<span class="owner-exit-delta ${cls}">${escapeHtml(label)}</span>`;
+}
+
+function ownerExitBubbleHtml(kind, text, profile = {}) {
+  const owner = kind === 'owner';
+  return `
+    <div class="owner-exit-message owner-exit-message--${owner ? 'owner' : 'gm'}">
+      ${owner ? ownerOfficeProfileAvatarHtml(profile) : '<div class="owner-exit-gm-avatar" aria-hidden="true">GM</div>'}
+      <div class="owner-exit-bubble">
+        <span>${owner ? 'Propietario' : 'GM'}</span>
+        <p>${escapeHtml(text || '')}</p>
+      </div>
+    </div>
+  `;
+}
+
+function renderOwnerExitModal(interview, options = {}) {
+  const modal = document.getElementById('ownerExitModal');
+  const content = document.getElementById('ownerExitModalContent');
+  if (!modal || !content) return;
+  const profile = state.teamData?.owner_office?.owner_profile || {};
+  const status = String(interview?.status || 'available').toLowerCase();
+  const loading = Boolean(options.loading);
+  const ownerMessage = String(interview?.owner_message || '');
+  const gmResponse = String(interview?.gm_response || '');
+  const ownerFinal = String(interview?.owner_final_message || '');
+  content.innerHTML = `
+    <div class="owner-exit-chat">
+      ${ownerMessage ? ownerExitBubbleHtml('owner', ownerMessage, profile) : ''}
+      ${gmResponse ? ownerExitBubbleHtml('gm', gmResponse, profile) : ''}
+      ${ownerFinal ? ownerExitBubbleHtml('owner', ownerFinal, profile) : ''}
+      ${loading ? '<div class="owner-exit-typing">El propietario está escribiendo...</div>' : ''}
+    </div>
+    ${status === 'completed' ? `
+      <div class="owner-exit-summary">
+        ${ownerExitTrustDeltaHtml(interview)}
+      </div>
+    ` : ''}
+    ${status === 'awaiting_gm' && !loading ? `
+      <form id="ownerExitResponseForm" class="owner-exit-form">
+        <label for="ownerExitResponseText">Respuesta del GM</label>
+        <textarea id="ownerExitResponseText" rows="5" maxlength="4000" placeholder="Escribe tu respuesta al propietario..."></textarea>
+        <div class="owner-exit-actions">
+          <button type="submit">Enviar respuesta</button>
+        </div>
+      </form>
+    ` : ''}
+    ${!ownerMessage && !loading ? '<p class="owner-exit-empty">La entrevista todavía no ha empezado.</p>' : ''}
+  `;
+  modal.classList.remove('section-hidden');
+  document.getElementById('ownerExitResponseForm')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void submitOwnerExitResponse();
+  });
+}
+
+function closeOwnerExitModal() {
+  document.getElementById('ownerExitModal')?.classList.add('section-hidden');
+}
+
+async function openOwnerExitInterview() {
+  if (!state.teamCode) return;
+  const season = ownerExitInterviewSeason();
+  const existing = ownerExitInterviewForSeason(season);
+  const status = String(existing?.status || 'available').toLowerCase();
+  renderOwnerExitModal(existing || { status: 'available', season_year: season }, { loading: status === 'available' });
+  if (status !== 'available' || existing?.owner_message) return;
+  try {
+    const result = await api(`/api/teams/${encodeURIComponent(state.teamCode)}/owner-exit-interview/start`, {
+      method: 'POST',
+      body: JSON.stringify({ season_year: season }),
+    });
+    updateOwnerExitInterviewState(result.interview);
+    renderOwnerOffice();
+    renderOwnerExitModal(result.interview);
+  } catch (err) {
+    renderOwnerExitModal(existing || { status: 'available', season_year: season });
+    alert(`No se pudo iniciar la entrevista: ${err.message || err}`);
+  }
+}
+
+async function submitOwnerExitResponse() {
+  const textarea = document.getElementById('ownerExitResponseText');
+  const response = String(textarea?.value || '').trim();
+  if (!response) {
+    alert('Escribe una respuesta antes de enviarla.');
+    return;
+  }
+  const season = ownerExitInterviewSeason();
+  const current = ownerExitInterviewForSeason(season);
+  renderOwnerExitModal({ ...(current || {}), gm_response: response, status: 'awaiting_gm' }, { loading: true });
+  try {
+    const result = await api(`/api/teams/${encodeURIComponent(state.teamCode)}/owner-exit-interview/reply`, {
+      method: 'POST',
+      body: JSON.stringify({
+        season_year: season,
+        gm_response: response,
+      }),
+    });
+    updateOwnerExitInterviewState(result.interview);
+    renderOwnerOffice();
+    renderOwnerExitModal(result.interview);
+  } catch (err) {
+    renderOwnerExitModal(current || { status: 'awaiting_gm', season_year: season });
+    alert(`No se pudo enviar la respuesta: ${err.message || err}`);
+  }
+}
+
 async function loadOwnerOfficeForTeam(code) {
   if (!state.teamData) return;
   if (!canViewOwnerOfficeForTeam(code)) {
@@ -4401,7 +4620,10 @@ function renderOwnerOffice() {
   const incomeRows = ownerOfficeMergedRows(OWNER_OFFICE_INCOME_ROWS, entry.income_rows);
   const expenseRows = ownerOfficeMergedRows(OWNER_OFFICE_EXPENSE_ROWS, entry.expenses_rows);
   const profile = state.teamData?.owner_office?.owner_profile || {};
+  const exitSeason = ownerExitInterviewSeason();
+  const exitEntry = ownerOfficeEntryForSeason(exitSeason);
   content.innerHTML = `
+    ${ownerOfficeExitInterviewCard(exitEntry, exitSeason)}
     ${ownerOfficeProfileSummary(profile)}
     <div class="owner-office-overview">
       <article class="owner-office-panel">
@@ -4439,11 +4661,15 @@ function renderOwnerOffice() {
         </table>
       </article>
     </div>
+    ${ownerOfficePerformanceTable(entry, season)}
     <div class="owner-office-breakdowns">
       ${ownerOfficeBreakdownTable('Ingresos', 'income', incomeRows)}
       ${ownerOfficeBreakdownTable('Gastos', 'expenses', expenseRows)}
     </div>
   `;
+  content.querySelector('[data-owner-exit-open]')?.addEventListener('click', () => {
+    void openOwnerExitInterview();
+  });
   syncTeamTabs();
 }
 
@@ -4923,6 +5149,10 @@ function setupOwnerOfficeControls() {
   select.addEventListener('change', () => {
     state.ui.ownerOfficeSeason = Number(select.value);
     renderOwnerOffice();
+  });
+  document.getElementById('ownerExitCloseBtn')?.addEventListener('click', closeOwnerExitModal);
+  document.getElementById('ownerExitModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeOwnerExitModal();
   });
 }
 

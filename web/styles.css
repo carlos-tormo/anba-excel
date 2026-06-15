@@ -3021,27 +3021,27 @@ th {
   position: sticky;
   left: 0;
   min-width: 280px;
-  z-index: 5;
-  background-clip: padding-box;
+  z-index: 80;
+  background-clip: border-box;
 }
 .guest-roster-section #playersTable th:nth-child(2),
 .guest-roster-section #playersTable td:nth-child(2) {
   position: sticky;
   left: 280px;
   min-width: 86px;
-  z-index: 5;
+  z-index: 80;
 }
 .guest-roster-section #playersTable th:nth-child(3),
 .guest-roster-section #playersTable td:nth-child(3) {
   position: sticky;
   left: 366px;
   min-width: 72px;
-  z-index: 5;
+  z-index: 80;
 }
 .guest-roster-section #playersTable thead th:nth-child(1),
 .guest-roster-section #playersTable thead th:nth-child(2),
 .guest-roster-section #playersTable thead th:nth-child(3) {
-  z-index: 7;
+  z-index: 100;
 }
 .guest-roster-section #playersTable thead th:nth-child(1) {
   background: rgb(var(--team-primary-rgb));
@@ -3180,7 +3180,7 @@ th {
   position: absolute;
   left: calc(100% + 10px);
   top: 50%;
-  z-index: 42;
+  z-index: 18;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -3314,10 +3314,11 @@ th {
   z-index: 190;
 }
 .guest-roster-section #playersTable tbody td:nth-child(-n+3) {
-  z-index: 24;
+  z-index: 90;
+  background-clip: border-box;
 }
 .guest-roster-section #playersTable thead th:nth-child(-n+3) {
-  z-index: 32;
+  z-index: 110;
 }
 .guest-roster-section #playersTable tbody tr:has(.salary-info-button.show-detail) td:nth-child(-n+3) {
   z-index: 220;
@@ -3846,6 +3847,165 @@ th {
 .owner-office-input:focus {
   outline: 2px solid rgba(var(--team-primary-rgb), 0.24);
   border-color: rgba(var(--team-primary-rgb), 0.55);
+}
+
+.owner-office-performance-panel {
+  margin: 16px 0;
+}
+.owner-office-performance-table th:first-child,
+.owner-office-performance-table td:first-child {
+  width: auto;
+}
+.owner-office-performance-table input[type="number"] {
+  min-width: 78px;
+}
+.owner-exit-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border-color: rgba(var(--team-primary-rgb), 0.28);
+  background:
+    linear-gradient(135deg, rgba(var(--team-primary-rgb), 0.10), rgba(var(--team-secondary-rgb), 0.16)),
+    #ffffff;
+}
+.owner-exit-card h3 {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.owner-exit-card p {
+  margin: 4px 0 0;
+  color: #475569;
+  font-weight: 800;
+}
+.owner-exit-open-btn {
+  flex: 0 0 auto;
+  border-color: rgba(var(--team-primary-rgb), 0.45);
+  background: rgb(var(--team-primary-rgb));
+  color: #fff;
+}
+.owner-exit-modal {
+  width: min(760px, 96vw);
+}
+.owner-exit-modal-content {
+  display: grid;
+  gap: 14px;
+}
+.owner-exit-chat {
+  display: grid;
+  gap: 12px;
+  max-height: min(58vh, 560px);
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #dbe4ef;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.owner-exit-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.owner-exit-message--gm {
+  justify-content: flex-end;
+}
+.owner-exit-message--gm .owner-exit-bubble {
+  order: 1;
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+}
+.owner-exit-message--gm .owner-exit-gm-avatar {
+  order: 2;
+}
+.owner-exit-chat .owner-office-avatar,
+.owner-exit-gm-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  font-size: 0.82rem;
+}
+.owner-exit-gm-avatar {
+  display: grid;
+  place-items: center;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  font-weight: 950;
+}
+.owner-exit-bubble {
+  max-width: min(560px, 78%);
+  border: 1px solid #d6e0ec;
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+.owner-exit-bubble span {
+  display: block;
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.owner-exit-bubble p {
+  margin: 0;
+  color: #172033;
+  line-height: 1.42;
+  font-weight: 700;
+  white-space: pre-wrap;
+}
+.owner-exit-typing,
+.owner-exit-empty {
+  margin: 0;
+  color: #64748b;
+  font-weight: 800;
+}
+.owner-exit-form {
+  display: grid;
+  gap: 8px;
+}
+.owner-exit-form label {
+  color: #334155;
+  font-weight: 900;
+}
+.owner-exit-form textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 10px;
+  font: inherit;
+  resize: vertical;
+}
+.owner-exit-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.owner-exit-summary {
+  display: flex;
+  justify-content: flex-end;
+}
+.owner-exit-delta {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-weight: 950;
+}
+.owner-exit-delta--positive {
+  border: 1px solid #86efac;
+  background: #dcfce7;
+  color: #166534;
+}
+.owner-exit-delta--negative {
+  border: 1px solid #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 #playersTable tbody tr:nth-child(odd) td,
@@ -6166,6 +6326,21 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .owner-office-mini-table {
     min-width: 0;
   }
+  .owner-exit-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .owner-exit-open-btn {
+    width: 100%;
+  }
+  .owner-exit-bubble {
+    max-width: calc(100% - 52px);
+  }
+  .owner-exit-chat .owner-office-avatar,
+  .owner-exit-gm-avatar {
+    width: 36px;
+    height: 36px;
+  }
   .owner-office-table th,
   .owner-office-table td {
     padding: 8px 10px;
@@ -6437,7 +6612,11 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   }
   .guest-roster-section #playersTable thead th:nth-child(1),
   .guest-roster-section #playersTable tbody td:nth-child(1) {
-    z-index: 7;
+    z-index: 100;
+    background-clip: border-box;
+  }
+  .guest-roster-section #playersTable thead th:nth-child(1) {
+    z-index: 120;
   }
   .guest-roster-section #playersTable thead th:nth-child(1) {
     background: rgb(var(--team-primary-rgb));
@@ -6501,6 +6680,7 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .guest-roster-section #playersTable .salary-cell-side {
     left: calc(100% + 8px);
     gap: 4px;
+    z-index: 18;
   }
   .guest-roster-section #playersTable .salary-cap-hold-cell {
     max-width: 122px;

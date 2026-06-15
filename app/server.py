@@ -170,6 +170,11 @@ def parse_int(value: Optional[str]) -> Optional[int]:
         return None
 
 
+def season_label(start_year: Any) -> str:
+    year = parse_int(str(start_year)) or 2025
+    return f"{year}-{(year + 1) % 100:02d}"
+
+
 def settings_int(settings: Dict[str, str], key: str, default: int) -> int:
     parsed = parse_int(settings.get(key))
     if parsed is None or parsed < 0:
@@ -796,6 +801,29 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS owner_exit_interviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id INTEGER NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    gm_user_id INTEGER,
+                    gm_email TEXT,
+                    gm_name TEXT,
+                    status TEXT NOT NULL DEFAULT 'available',
+                    owner_message TEXT,
+                    gm_response TEXT,
+                    owner_final_message TEXT,
+                    trust_delta INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    UNIQUE(team_id, season_year),
+                    FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE,
+                    FOREIGN KEY(gm_user_id) REFERENCES users(id) ON DELETE SET NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_token TEXT PRIMARY KEY,
                     data_json TEXT NOT NULL,
@@ -819,6 +847,12 @@ class LeagueDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_team_start ON team_gm_history(team_id, start_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_order_year_round ON draft_order(draft_year, draft_round, pick_number)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_economy_season ON team_economy(season_year)")
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_owner_exit_interviews_team_season
+                ON owner_exit_interviews(team_id, season_year)
+                """
+            )
             economy_timestamp = now_iso()
             for code, values in DEFAULT_TEAM_ECONOMY_2025.items():
                 conn.execute(
@@ -846,6 +880,12 @@ class LeagueDB:
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(teams)").fetchall()
             }
+            owner_office_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(team_owner_office)").fetchall()
+            }
+            if "performance_json" not in owner_office_cols:
+                conn.execute("ALTER TABLE team_owner_office ADD COLUMN performance_json TEXT NOT NULL DEFAULT '[]'")
             if "cash_received" not in team_cols:
                 conn.execute("ALTER TABLE teams ADD COLUMN cash_received REAL NOT NULL DEFAULT 0")
             if "cash_sent" not in team_cols:
@@ -2012,6 +2052,53 @@ class LeagueDB:
             )
         return normalized
 
+    def _owner_performance_rows_from_json(self, value: Any) -> List[Dict[str, Any]]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        rows: List[Dict[str, Any]] = []
+        for raw in parsed:
+            if not isinstance(raw, dict):
+                continue
+            season_year = parse_int(raw.get("season_year"))
+            wins = parse_int(raw.get("wins"))
+            losses = parse_int(raw.get("losses"))
+            result = str(raw.get("result") or "").strip()[:80]
+            if season_year is None:
+                continue
+            rows.append(
+                {
+                    "season_year": season_year,
+                    "wins": "" if wins is None else wins,
+                    "losses": "" if losses is None else losses,
+                    "result": result,
+                }
+            )
+        return rows
+
+    def _normalize_owner_performance_rows(self, rows: Any, season_year: int) -> List[Dict[str, Any]]:
+        raw_rows = rows if isinstance(rows, list) else []
+        normalized: List[Dict[str, Any]] = []
+        for idx in range(5):
+            raw = raw_rows[idx] if idx < len(raw_rows) and isinstance(raw_rows[idx], dict) else {}
+            fallback_year = int(season_year) - 4 + idx
+            row_year = parse_int(raw.get("season_year")) or fallback_year
+            wins = parse_int(raw.get("wins"))
+            losses = parse_int(raw.get("losses"))
+            result = str(raw.get("result") or "").strip()[:80]
+            normalized.append(
+                {
+                    "season_year": max(2000, min(2100, row_year)),
+                    "wins": "" if wins is None else max(0, min(100, wins)),
+                    "losses": "" if losses is None else max(0, min(100, losses)),
+                    "result": result,
+                }
+            )
+        return normalized
+
     def _owner_attribute_value(self, value: Any) -> Optional[int]:
         parsed = parse_int(value)
         if parsed is None:
@@ -2064,6 +2151,199 @@ class LeagueDB:
             "orientacion_marca": self._owner_attribute_value(attributes.get("orientacion_marca")),
         }
 
+    def _owner_exit_interview_from_row(self, row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        return {
+            "id": int(row["id"]),
+            "team_id": int(row["team_id"]),
+            "season_year": int(row["season_year"]),
+            "gm_email": str(row["gm_email"] or ""),
+            "gm_name": str(row["gm_name"] or ""),
+            "status": str(row["status"] or "available"),
+            "owner_message": str(row["owner_message"] or ""),
+            "gm_response": str(row["gm_response"] or ""),
+            "owner_final_message": str(row["owner_final_message"] or ""),
+            "trust_delta": parse_int(row["trust_delta"]),
+            "created_at": str(row["created_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+            "completed_at": str(row["completed_at"] or ""),
+        }
+
+    def _owner_confidence_with_delta(self, value: Any, delta: int) -> Optional[str]:
+        parsed = parse_float(str(value) if value is not None else None)
+        if parsed is None:
+            return None
+        updated = parsed + int(delta)
+        if float(updated).is_integer():
+            return str(int(updated))
+        return f"{updated:g}"
+
+    def get_owner_exit_interview(self, code: str, season_year: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not team:
+                return None
+            row = conn.execute(
+                """
+                SELECT *
+                FROM owner_exit_interviews
+                WHERE team_id = ? AND season_year = ?
+                """,
+                (int(team["id"]), int(season_year)),
+            ).fetchone()
+            return self._owner_exit_interview_from_row(row)
+
+    def start_owner_exit_interview(
+        self,
+        code: str,
+        season_year: int,
+        session: Dict[str, Any],
+        owner_message: str,
+    ) -> Optional[Dict[str, Any]]:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not team:
+                return None
+            team_id = int(team["id"])
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM owner_exit_interviews
+                WHERE team_id = ? AND season_year = ?
+                """,
+                (team_id, int(season_year)),
+            ).fetchone()
+            if existing:
+                return self._owner_exit_interview_from_row(existing)
+            gm_user_id = parse_int(session.get("user_id"))
+            conn.execute(
+                """
+                INSERT INTO owner_exit_interviews (
+                    team_id,
+                    season_year,
+                    gm_user_id,
+                    gm_email,
+                    gm_name,
+                    status,
+                    owner_message,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'awaiting_gm', ?, ?, ?)
+                """,
+                (
+                    team_id,
+                    int(season_year),
+                    gm_user_id,
+                    str(session.get("email") or "").strip(),
+                    str(session.get("name") or "").strip(),
+                    str(owner_message or "").strip()[:4000],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT *
+                FROM owner_exit_interviews
+                WHERE team_id = ? AND season_year = ?
+                """,
+                (team_id, int(season_year)),
+            ).fetchone()
+            return self._owner_exit_interview_from_row(row)
+
+    def complete_owner_exit_interview(
+        self,
+        code: str,
+        season_year: int,
+        session: Dict[str, Any],
+        gm_response: str,
+        owner_final_message: str,
+        trust_delta: int,
+    ) -> Optional[Dict[str, Any]]:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not team:
+                return None
+            team_id = int(team["id"])
+            row = conn.execute(
+                """
+                SELECT *
+                FROM owner_exit_interviews
+                WHERE team_id = ? AND season_year = ?
+                """,
+                (team_id, int(season_year)),
+            ).fetchone()
+            if not row:
+                return None
+            if str(row["status"] or "").lower() == "completed":
+                return self._owner_exit_interview_from_row(row)
+            gm_user_id = parse_int(session.get("user_id"))
+            normalized_delta = max(-1, min(1, int(trust_delta)))
+            conn.execute(
+                """
+                UPDATE owner_exit_interviews
+                SET
+                    gm_user_id = COALESCE(?, gm_user_id),
+                    gm_email = ?,
+                    gm_name = ?,
+                    status = 'completed',
+                    gm_response = ?,
+                    owner_final_message = ?,
+                    trust_delta = ?,
+                    updated_at = ?,
+                    completed_at = ?
+                WHERE team_id = ? AND season_year = ?
+                """,
+                (
+                    gm_user_id,
+                    str(session.get("email") or "").strip(),
+                    str(session.get("name") or "").strip(),
+                    str(gm_response or "").strip()[:4000],
+                    str(owner_final_message or "").strip()[:4000],
+                    normalized_delta,
+                    timestamp,
+                    timestamp,
+                    team_id,
+                    int(season_year),
+                ),
+            )
+            office_row = conn.execute(
+                """
+                SELECT confidence_current
+                FROM team_owner_office
+                WHERE team_id = ? AND season_year = ?
+                """,
+                (team_id, int(season_year)),
+            ).fetchone()
+            updated_confidence = self._owner_confidence_with_delta(
+                office_row["confidence_current"] if office_row else None,
+                normalized_delta,
+            )
+            if updated_confidence is not None:
+                conn.execute(
+                    """
+                    UPDATE team_owner_office
+                    SET confidence_current = ?, updated_at = ?
+                    WHERE team_id = ? AND season_year = ?
+                    """,
+                    (updated_confidence, timestamp, team_id, int(season_year)),
+                )
+            conn.commit()
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM owner_exit_interviews
+                WHERE team_id = ? AND season_year = ?
+                """,
+                (team_id, int(season_year)),
+            ).fetchone()
+            return self._owner_exit_interview_from_row(updated)
+
     def get_team_owner_office(self, code: str, include_private: bool = False) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             team = conn.execute("SELECT id, code, name FROM teams WHERE code = ?", (code.upper(),)).fetchone()
@@ -2074,6 +2354,7 @@ class LeagueDB:
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
                 current_year = 2025
+            free_agency_mode = parse_bool(settings.get("free_agency_mode"))
             team_id = int(team["id"])
             profile_row = conn.execute(
                 """
@@ -2101,6 +2382,18 @@ class LeagueDB:
                 ],
             }
             saved_by_year = {int(row["season_year"]): row for row in saved_rows}
+            interview_rows = conn.execute(
+                """
+                SELECT *
+                FROM owner_exit_interviews
+                WHERE team_id = ?
+                """,
+                (team_id,),
+            ).fetchall()
+            interviews_by_year = {
+                int(row["season_year"]): self._owner_exit_interview_from_row(row)
+                for row in interview_rows
+            }
             entries: Dict[str, Dict[str, Any]] = {}
             for year in sorted(years):
                 economy = conn.execute(
@@ -2128,6 +2421,16 @@ class LeagueDB:
                 ).fetchall()
                 balance_rank = next((idx + 1 for idx, row in enumerate(rank_rows) if int(row["id"]) == team_id), None)
                 saved = saved_by_year.get(int(year))
+                interview = interviews_by_year.get(int(year))
+                if not interview and free_agency_mode and int(year) == current_year:
+                    interview = {
+                        "season_year": int(year),
+                        "status": "available",
+                        "owner_message": "",
+                        "gm_response": "",
+                        "owner_final_message": "",
+                        "trust_delta": None,
+                    }
                 entries[str(year)] = {
                     "season_year": int(year),
                     "confidence_current": str(saved["confidence_current"] or "") if saved else "",
@@ -2139,12 +2442,16 @@ class LeagueDB:
                     "balance_rank_total": len(rank_rows),
                     "income_rows": self._owner_office_rows_from_json(saved["income_json"]) if saved else [],
                     "expenses_rows": self._owner_office_rows_from_json(saved["expenses_json"]) if saved else [],
+                    "performance_rows": self._owner_performance_rows_from_json(saved["performance_json"]) if saved else self._normalize_owner_performance_rows([], int(year)),
+                    "exit_interview": interview,
                     "updated_at": str(saved["updated_at"] or "") if saved else "",
                 }
             return {
                 "team_code": str(team["code"]),
                 "team_name": str(team["name"]),
                 "current_year": current_year,
+                "free_agency_mode": free_agency_mode,
+                "exit_interview_season": current_year,
                 "owner_profile": self._owner_profile_from_row(profile_row, include_private=include_private),
                 "seasons": sorted(years),
                 "entries": entries,
@@ -2215,9 +2522,10 @@ class LeagueDB:
                     balance,
                     income_json,
                     expenses_json,
+                    performance_json,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(team_id, season_year) DO UPDATE SET
                     confidence_current = excluded.confidence_current,
                     confidence_change = excluded.confidence_change,
@@ -2226,6 +2534,7 @@ class LeagueDB:
                     balance = excluded.balance,
                     income_json = excluded.income_json,
                     expenses_json = excluded.expenses_json,
+                    performance_json = excluded.performance_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -2238,6 +2547,10 @@ class LeagueDB:
                     str(payload.get("balance") or "").strip(),
                     json.dumps(self._normalize_owner_office_rows(payload.get("income_rows")), ensure_ascii=True),
                     json.dumps(self._normalize_owner_office_rows(payload.get("expenses_rows")), ensure_ascii=True),
+                    json.dumps(
+                        self._normalize_owner_performance_rows(payload.get("performance_rows"), int(season_year)),
+                        ensure_ascii=True,
+                    ),
                     timestamp,
                 ),
             )
@@ -3566,6 +3879,8 @@ class Handler(SimpleHTTPRequestHandler):
         os.getenv("DISCORD_IMAGE_NOTIFICATIONS_ENABLED", "false")
     ).strip().lower() in {"1", "true", "yes", "on"}
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    openai_text_model = os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini"
+    openai_text_timeout_seconds = max(10, parse_int(os.getenv("OPENAI_TEXT_TIMEOUT_SECONDS")) or 45)
     openai_image_model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip() or "gpt-image-2"
     openai_image_size = os.getenv("OPENAI_IMAGE_SIZE", "1536x1024").strip() or "1536x1024"
     openai_image_quality = os.getenv("OPENAI_IMAGE_QUALITY", "high").strip() or "high"
@@ -4226,6 +4541,159 @@ QUALITY REQUIREMENTS
 
         return self._generate_openai_image_from_prompt(fallback_prompt or prompt)
 
+    def _openai_text_response(self, system_prompt: str, user_prompt: str, max_output_tokens: int = 700) -> Optional[str]:
+        if not self.openai_api_key:
+            return None
+        request_payload: Dict[str, Any] = {
+            "model": self.openai_text_model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+            "max_output_tokens": max(100, min(2000, int(max_output_tokens))),
+        }
+        req = Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=self.openai_text_timeout_seconds) as resp:
+                response = json.loads(resp.read().decode("utf-8"))
+            direct = str(response.get("output_text") or "").strip() if isinstance(response, dict) else ""
+            if direct:
+                return direct
+            for item in response.get("output", []) if isinstance(response, dict) else []:
+                if not isinstance(item, dict):
+                    continue
+                for content in item.get("content", []) or []:
+                    if not isinstance(content, dict):
+                        continue
+                    text = str(content.get("text") or "").strip()
+                    if text:
+                        return text
+            return None
+        except HTTPError as err:
+            self.log_error("OpenAI owner interview text generation failed: %s", self._http_error_excerpt(err))
+        except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as err:
+            self.log_error("OpenAI owner interview text generation failed: %s", err)
+        return None
+
+    def _owner_interview_entry(self, owner_office: Dict[str, Any], season_year: int) -> Dict[str, Any]:
+        entries = owner_office.get("entries") if isinstance(owner_office.get("entries"), dict) else {}
+        return entries.get(str(season_year), {}) if isinstance(entries, dict) else {}
+
+    def _owner_interview_context_text(self, owner_office: Dict[str, Any], season_year: int) -> str:
+        profile = owner_office.get("owner_profile") if isinstance(owner_office.get("owner_profile"), dict) else {}
+        attrs = profile.get("attributes") if isinstance(profile.get("attributes"), dict) else {}
+        entry = self._owner_interview_entry(owner_office, season_year)
+        performance_rows = entry.get("performance_rows") if isinstance(entry.get("performance_rows"), list) else []
+        perf_lines = []
+        for row in performance_rows:
+            if not isinstance(row, dict):
+                continue
+            perf_lines.append(
+                f"{season_label(row.get('season_year'))}: "
+                f"{row.get('wins') or '-'}-{row.get('losses') or '-'}, "
+                f"{row.get('result') or 'sin resultado'}"
+            )
+        return "\n".join(
+            [
+                f"Equipo: {owner_office.get('team_code') or ''} - {owner_office.get('team_name') or ''}",
+                f"Temporada revisada: {season_label(season_year)}",
+                f"Propietario: {profile.get('owner_name') or 'Propietario'}",
+                f"Biografia propietario: {profile.get('owner_bio') or 'No configurada'}",
+                f"Atributos internos propietario: {json.dumps(attrs, ensure_ascii=False)}",
+                f"Confianza actual: {entry.get('confidence_current') or 'No configurada'}",
+                f"Cambio confianza temporada: {entry.get('confidence_change') or 'No configurado'}",
+                f"Ingresos: {entry.get('revenue') or 'No configurado'}",
+                f"Gastos: {entry.get('expenses') or 'No configurado'}",
+                f"Balance: {entry.get('balance') or 'No configurado'}",
+                f"Ranking balance: #{entry.get('balance_rank') or '-'} de {entry.get('balance_rank_total') or '-'}",
+                "Ultimos cinco anos:",
+                "\n".join(perf_lines) or "No configurado",
+            ]
+        )
+
+    def _owner_interview_opening_message(self, owner_office: Dict[str, Any], season_year: int) -> str:
+        context = self._owner_interview_context_text(owner_office, season_year)
+        system_prompt = (
+            "Eres el propietario de una franquicia de la liga ANBA. "
+            "Escribe en espanol, con tono conversacional de despacho, directo y creible. "
+            "No inventes datos fuera del contexto. Haz una sola intervencion inicial de 2 a 4 frases, "
+            "cerrando con una pregunta concreta al GM sobre su evaluacion de la temporada."
+        )
+        user_prompt = f"Contexto para la entrevista de salida:\n{context}"
+        generated = self._openai_text_response(system_prompt, user_prompt, max_output_tokens=450)
+        if generated:
+            return generated[:2000]
+        team = owner_office.get("team_code") or "el equipo"
+        return (
+            f"Terminada la temporada {season_label(season_year)}, quiero entender tu lectura de lo que ha pasado con {team}. "
+            "Tenemos que valorar resultados deportivos, confianza y situacion economica antes de planificar la agencia libre. "
+            "Dime con claridad que ha funcionado, que no, y cual es tu plan para corregirlo."
+        )
+
+    def _owner_interview_parse_final(self, raw_text: Optional[str], gm_response: str) -> tuple[str, int]:
+        text = str(raw_text or "").strip()
+        parsed: Dict[str, Any] = {}
+        if text:
+            cleaned = re.sub(r"^```(?:json)?|```$", "", text, flags=re.IGNORECASE | re.MULTILINE).strip()
+            match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+            candidate = match.group(0) if match else cleaned
+            try:
+                loaded = json.loads(candidate)
+                if isinstance(loaded, dict):
+                    parsed = loaded
+            except json.JSONDecodeError:
+                parsed = {}
+        message = str(parsed.get("message") or parsed.get("owner_reply") or text or "").strip()
+        trust_delta = parse_int(parsed.get("trust_delta"))
+        if trust_delta is None or trust_delta == 0:
+            trust_delta = 1 if len(str(gm_response or "").strip()) >= 80 else -1
+        trust_delta = 1 if trust_delta > 0 else -1
+        if not message:
+            if trust_delta > 0:
+                message = "Tu respuesta me da confianza. Veo un plan claro y una lectura responsable de la temporada. Sumaremos un punto de confianza y espero que lo conviertas en decisiones concretas."
+            else:
+                message = "No termino de ver suficiente claridad en tu respuesta. Necesitaba un diagnostico mas preciso y un plan mas convincente. Restaremos un punto de confianza y tendremos que ver mejoras pronto."
+        return message[:2000], trust_delta
+
+    def _owner_interview_final_reply(
+        self,
+        owner_office: Dict[str, Any],
+        season_year: int,
+        owner_message: str,
+        gm_response: str,
+    ) -> tuple[str, int]:
+        context = self._owner_interview_context_text(owner_office, season_year)
+        system_prompt = (
+            "Eres el propietario de una franquicia de la liga ANBA. "
+            "Evalua la respuesta del GM en espanol. Debes responder SOLO JSON valido con estas claves: "
+            "\"message\" y \"trust_delta\". trust_delta debe ser exactamente 1 o -1. "
+            "message debe ser una respuesta final de 2 a 4 frases, profesional y directa, explicando brevemente "
+            "por que la confianza sube o baja."
+        )
+        user_prompt = (
+            f"Contexto:\n{context}\n\n"
+            f"Mensaje inicial del propietario:\n{owner_message}\n\n"
+            f"Respuesta del GM:\n{gm_response}\n\n"
+            "Devuelve el JSON solicitado."
+        )
+        generated = self._openai_text_response(system_prompt, user_prompt, max_output_tokens=600)
+        return self._owner_interview_parse_final(generated, gm_response)
+
     def _post_discord_json(self, payload: Dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
         req = Request(
@@ -4885,6 +5353,86 @@ QUALITY REQUIREMENTS
                 self._json(404, {"error": "player_not_found"})
                 return
             self._json(201, {"ok": True, "request": request})
+            return
+
+        if parsed.path.startswith("/api/teams/") and "/owner-exit-interview/" in parsed.path:
+            parts = parsed.path.split("/")
+            if len(parts) < 6:
+                self._json(404, {"error": "not_found"})
+                return
+            code = parts[3]
+            action = parts[-1]
+            if action not in {"start", "reply"}:
+                self._json(404, {"error": "not_found"})
+                return
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            if not self._can_manage_team(code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            settings = self.db.get_settings()
+            if not parse_bool(settings.get("free_agency_mode")):
+                self._json(409, {"error": "free_agency_mode_required"})
+                return
+            current_year = parse_int(settings.get("current_year")) or 2025
+            season_year = parse_int(payload.get("season_year")) or current_year
+            if season_year != current_year:
+                self._json(400, {"error": "invalid_exit_interview_season", "season_year": current_year})
+                return
+            owner_office = self.db.get_team_owner_office(code, include_private=True)
+            if not owner_office:
+                self._json(404, {"error": "team_not_found"})
+                return
+            session = self._current_session() or {}
+            if action == "start":
+                existing = self.db.get_owner_exit_interview(code, season_year)
+                owner_message = str(existing.get("owner_message") or "").strip() if existing else ""
+                if not owner_message:
+                    owner_message = self._owner_interview_opening_message(owner_office, season_year)
+                interview = self.db.start_owner_exit_interview(code, season_year, session, owner_message)
+                if not interview:
+                    self._json(404, {"error": "team_not_found"})
+                    return
+                self._json(200, {"ok": True, "interview": interview})
+                return
+
+            gm_response = str(payload.get("gm_response") or "").strip()
+            if not gm_response:
+                self._json(400, {"error": "gm_response_required"})
+                return
+            if len(gm_response) > 4000:
+                self._json(400, {"error": "gm_response_too_long"})
+                return
+            existing = self.db.get_owner_exit_interview(code, season_year)
+            if not existing or not str(existing.get("owner_message") or "").strip():
+                self._json(409, {"error": "interview_not_started"})
+                return
+            if str(existing.get("status") or "").lower() == "completed":
+                self._json(200, {"ok": True, "interview": existing})
+                return
+            final_message, trust_delta = self._owner_interview_final_reply(
+                owner_office,
+                season_year,
+                str(existing.get("owner_message") or ""),
+                gm_response,
+            )
+            interview = self.db.complete_owner_exit_interview(
+                code,
+                season_year,
+                session,
+                gm_response,
+                final_message,
+                trust_delta,
+            )
+            if not interview:
+                self._json(404, {"error": "interview_not_found"})
+                return
+            self._json(200, {"ok": True, "interview": interview})
             return
 
         if not self._require_admin():

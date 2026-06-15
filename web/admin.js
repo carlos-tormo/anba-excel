@@ -183,6 +183,18 @@ const OWNER_OFFICE_EXPENSE_ROWS = [
   { key: 'reparto_beneficios_negativo', label: 'Reparto beneficios', type: 'field' },
 ];
 
+const OWNER_OFFICE_RESULT_OPTIONS = [
+  '',
+  'Campeón',
+  'Finalista',
+  'Final de conferencia',
+  'Semifinal de conferencia',
+  'Primera ronda',
+  'Play-in',
+  'Lotería',
+  'Reconstrucción',
+];
+
 const OWNER_ATTRIBUTE_FIELDS = [
   { key: 'ambicion_competitiva', label: 'Ambición Competitiva' },
   { key: 'paciencia', label: 'Paciencia' },
@@ -3939,6 +3951,58 @@ function ownerOfficeBreakdownTable(title, kind, rows) {
   `;
 }
 
+function ownerOfficePerformanceRows(entry, season) {
+  const savedRows = Array.isArray(entry?.performance_rows) ? entry.performance_rows : [];
+  return Array.from({ length: 5 }, (_, idx) => {
+    const fallbackYear = Number(season) - 4 + idx;
+    const saved = savedRows[idx] || {};
+    return {
+      season_year: Number(saved.season_year) || fallbackYear,
+      wins: saved.wins ?? '',
+      losses: saved.losses ?? '',
+      result: saved.result || '',
+    };
+  });
+}
+
+function ownerOfficeResultOptionsHtml(selected) {
+  const selectedValue = String(selected || '');
+  return OWNER_OFFICE_RESULT_OPTIONS.map((option) => (
+    `<option value="${escapeHtml(option)}" ${option === selectedValue ? 'selected' : ''}>${option ? escapeHtml(option) : 'Seleccionar'}</option>`
+  )).join('');
+}
+
+function ownerOfficePerformanceTable(entry, season) {
+  const rows = ownerOfficePerformanceRows(entry, season);
+  return `
+    <article class="owner-office-panel owner-office-performance-panel">
+      <h3>Historial deportivo</h3>
+      <div class="table-wrap owner-office-table-wrap">
+        <table class="owner-office-table owner-office-performance-table">
+          <thead>
+            <tr>
+              <th>Temporada</th>
+              <th>Victorias</th>
+              <th>Derrotas</th>
+              <th>Resultado</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row, idx) => `
+              <tr data-owner-performance-row="${idx}">
+                <td><input class="owner-office-input" data-owner-performance-field="season_year" value="${escapeHtml(row.season_year)}"></td>
+                <td><input class="owner-office-input" type="number" min="0" max="100" step="1" data-owner-performance-field="wins" value="${escapeHtml(row.wins)}"></td>
+                <td><input class="owner-office-input" type="number" min="0" max="100" step="1" data-owner-performance-field="losses" value="${escapeHtml(row.losses)}"></td>
+                <td><select class="owner-office-input" data-owner-performance-field="result">${ownerOfficeResultOptionsHtml(row.result)}</select></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
 function renderOwnerOffice() {
   const content = document.getElementById('ownerOfficeContent');
   const subtitle = document.getElementById('ownerOfficeSubtitle');
@@ -3994,6 +4058,7 @@ function renderOwnerOffice() {
         </table>
       </article>
     </div>
+    ${ownerOfficePerformanceTable(entry, season)}
     <div class="owner-office-breakdowns">
       ${ownerOfficeBreakdownTable('Ingresos', 'income', incomeRows)}
       ${ownerOfficeBreakdownTable('Gastos', 'expenses', expenseRows)}
@@ -4039,6 +4104,18 @@ function collectOwnerProfile() {
   };
 }
 
+function collectOwnerPerformanceRows() {
+  return Array.from(document.querySelectorAll('[data-owner-performance-row]')).map((row) => {
+    const fieldValue = (field) => row.querySelector(`[data-owner-performance-field="${field}"]`)?.value?.trim() || '';
+    return {
+      season_year: fieldValue('season_year'),
+      wins: fieldValue('wins'),
+      losses: fieldValue('losses'),
+      result: fieldValue('result'),
+    };
+  });
+}
+
 async function saveOwnerOffice() {
   if (!state.teamCode) return;
   const button = document.getElementById('saveOwnerOfficeBtn');
@@ -4056,6 +4133,7 @@ async function saveOwnerOffice() {
         expenses: valueFor('expenses'),
         balance: valueFor('balance'),
         owner_profile: collectOwnerProfile(),
+        performance_rows: collectOwnerPerformanceRows(),
         income_rows: collectOwnerOfficeRows('income', OWNER_OFFICE_INCOME_ROWS),
         expenses_rows: collectOwnerOfficeRows('expenses', OWNER_OFFICE_EXPENSE_ROWS),
       }),
