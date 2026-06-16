@@ -788,6 +788,7 @@ class LeagueDB:
                     owner_name TEXT,
                     owner_birth_date TEXT,
                     owner_photo_url TEXT,
+                    owner_office_background_url TEXT,
                     owner_bio TEXT,
                     ambicion_competitiva INTEGER,
                     paciencia INTEGER,
@@ -889,10 +890,16 @@ class LeagueDB:
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(owner_exit_interviews)").fetchall()
             }
+            owner_profile_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(team_owner_profiles)").fetchall()
+            }
             if "performance_json" not in owner_office_cols:
                 conn.execute("ALTER TABLE team_owner_office ADD COLUMN performance_json TEXT NOT NULL DEFAULT '[]'")
             if "owner_conclusion_message" not in owner_exit_cols:
                 conn.execute("ALTER TABLE owner_exit_interviews ADD COLUMN owner_conclusion_message TEXT")
+            if "owner_office_background_url" not in owner_profile_cols:
+                conn.execute("ALTER TABLE team_owner_profiles ADD COLUMN owner_office_background_url TEXT")
             if "cash_received" not in team_cols:
                 conn.execute("ALTER TABLE teams ADD COLUMN cash_received REAL NOT NULL DEFAULT 0")
             if "cash_sent" not in team_cols:
@@ -2117,6 +2124,7 @@ class LeagueDB:
             "owner_name": "",
             "owner_birth_date": "",
             "owner_photo_url": "",
+            "owner_office_background_url": "",
             "owner_bio": "",
         }
         if row:
@@ -2125,6 +2133,7 @@ class LeagueDB:
                     "owner_name": str(row["owner_name"] or ""),
                     "owner_birth_date": str(row["owner_birth_date"] or ""),
                     "owner_photo_url": str(row["owner_photo_url"] or ""),
+                    "owner_office_background_url": str(row["owner_office_background_url"] or ""),
                     "owner_bio": str(row["owner_bio"] or ""),
                 }
             )
@@ -2150,6 +2159,7 @@ class LeagueDB:
             "owner_name": text_value("owner_name", 120),
             "owner_birth_date": text_value("owner_birth_date", 32),
             "owner_photo_url": text_value("owner_photo_url", 1000),
+            "owner_office_background_url": text_value("owner_office_background_url", 1000),
             "owner_bio": text_value("owner_bio", 2000),
             "ambicion_competitiva": self._owner_attribute_value(attributes.get("ambicion_competitiva")),
             "paciencia": self._owner_attribute_value(attributes.get("paciencia")),
@@ -2535,6 +2545,7 @@ class LeagueDB:
                         owner_name,
                         owner_birth_date,
                         owner_photo_url,
+                        owner_office_background_url,
                         owner_bio,
                         ambicion_competitiva,
                         paciencia,
@@ -2543,11 +2554,12 @@ class LeagueDB:
                         orientacion_marca,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(team_id) DO UPDATE SET
                         owner_name = excluded.owner_name,
                         owner_birth_date = excluded.owner_birth_date,
                         owner_photo_url = excluded.owner_photo_url,
+                        owner_office_background_url = excluded.owner_office_background_url,
                         owner_bio = excluded.owner_bio,
                         ambicion_competitiva = excluded.ambicion_competitiva,
                         paciencia = excluded.paciencia,
@@ -2561,6 +2573,7 @@ class LeagueDB:
                         profile_payload["owner_name"],
                         profile_payload["owner_birth_date"],
                         profile_payload["owner_photo_url"],
+                        profile_payload["owner_office_background_url"],
                         profile_payload["owner_bio"],
                         profile_payload["ambicion_competitiva"],
                         profile_payload["paciencia"],

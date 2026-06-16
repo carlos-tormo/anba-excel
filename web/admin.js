@@ -3879,6 +3879,10 @@ function ownerOfficeProfileEditor(profile) {
               ${ownerOfficeProfileInput('owner_photo_url', profile?.owner_photo_url, 'placeholder="https://..."')}
             </label>
             <label>
+              <span>Fondo despacho URL</span>
+              ${ownerOfficeProfileInput('owner_office_background_url', profile?.owner_office_background_url, 'placeholder="https://..."')}
+            </label>
+            <label>
               <span>Nombre</span>
               ${ownerOfficeProfileInput('owner_name', profile?.owner_name)}
             </label>
@@ -4053,16 +4057,33 @@ function ownerOfficeExitInterviewCard(entry, season) {
   `;
 }
 
-function ownerExitBubbleHtml(kind, text, profile = {}, interview = {}) {
+function ownerExitDialogueHtml(kind, text, profile = {}, interview = {}) {
   const owner = kind === 'owner';
   const gmLabel = String(interview.gm_name || interview.gm_email || 'GM').trim();
   return `
-    <div class="owner-exit-message owner-exit-message--${owner ? 'owner' : 'gm'}">
-      ${owner ? ownerOfficeProfileAvatarHtml(profile) : '<div class="owner-exit-gm-avatar" aria-hidden="true">GM</div>'}
-      <div class="owner-exit-bubble">
-        <span>${owner ? 'Propietario' : escapeHtml(gmLabel)}</span>
+    <div class="owner-exit-dialogue owner-exit-dialogue--${owner ? 'owner' : 'gm'}">
+      <div class="owner-exit-speaker">
+        ${owner ? ownerOfficeProfileAvatarHtml(profile) : '<div class="owner-exit-gm-avatar" aria-hidden="true">GM</div>'}
+        <span>${owner ? escapeHtml(profile?.owner_name || 'Propietario') : escapeHtml(gmLabel)}</span>
+      </div>
+      <div class="owner-exit-bubble" role="log">
         <p>${escapeHtml(text || '')}</p>
       </div>
+    </div>
+  `;
+}
+
+function ownerExitBackgroundHtml(profile) {
+  const backgroundUrl = String(profile?.owner_office_background_url || '').trim();
+  if (backgroundUrl) {
+    return `<img class="owner-exit-background-image" src="${escapeHtml(backgroundUrl)}" alt="" loading="lazy">`;
+  }
+  const teamName = String(state.teamData?.team?.name || state.teamData?.owner_office?.team_name || state.teamCode || 'ANBA').trim();
+  const logo = teamIconCandidates(state.teamCode)[0] || '';
+  return `
+    <div class="owner-exit-background-fallback">
+      ${logo ? `<img src="${escapeHtml(logo)}" alt="">` : ''}
+      <span>${escapeHtml(teamName)}</span>
     </div>
   `;
 }
@@ -4076,25 +4097,40 @@ function renderOwnerExitModal(interview) {
   const gmResponse = String(interview?.gm_response || '');
   const ownerFinal = String(interview?.owner_final_message || '');
   const ownerConclusion = String(interview?.owner_conclusion_message || '');
+  const status = String(interview?.status || '').toLowerCase();
+  const teamName = String(state.teamData?.team?.name || state.teamData?.owner_office?.team_name || state.teamCode || '').trim();
+  const logo = teamIconCandidates(state.teamCode)[0] || '';
   content.innerHTML = `
-    <div class="owner-exit-chat">
-      ${ownerMessage ? ownerExitBubbleHtml('owner', ownerMessage, profile, interview) : ''}
-      ${gmResponse ? ownerExitBubbleHtml('gm', gmResponse, profile, interview) : ''}
-      ${ownerFinal ? ownerExitBubbleHtml('owner', ownerFinal, profile, interview) : ''}
-      ${ownerConclusion ? ownerExitBubbleHtml('owner', ownerConclusion, profile, interview) : ''}
-      ${!ownerExitHasConversation(interview) ? '<p class="owner-exit-empty">No hay conversación registrada todavía.</p>' : ''}
-    </div>
-    ${String(interview?.status || '').toLowerCase() === 'completed' ? `
-      <div class="owner-exit-summary">
-        ${ownerExitTrustDeltaHtml(interview)}
+    <div class="owner-exit-game">
+      <div class="owner-exit-background" aria-hidden="true">
+        ${ownerExitBackgroundHtml(profile)}
       </div>
-    ` : ''}
+      <div class="owner-exit-scene-shade" aria-hidden="true"></div>
+      <div class="owner-exit-scene-hud">
+        <div class="owner-exit-scene-team">
+          ${logo ? `<img src="${escapeHtml(logo)}" alt="">` : ''}
+          <span>${escapeHtml(teamName || 'Despacho del propietario')}</span>
+        </div>
+        ${status === 'completed' ? ownerExitTrustDeltaHtml(interview) : ''}
+      </div>
+      <div class="owner-exit-dialogue-panel">
+        <div class="owner-exit-chat">
+          ${ownerMessage ? ownerExitDialogueHtml('owner', ownerMessage, profile, interview) : ''}
+          ${gmResponse ? ownerExitDialogueHtml('gm', gmResponse, profile, interview) : ''}
+          ${ownerFinal ? ownerExitDialogueHtml('owner', ownerFinal, profile, interview) : ''}
+          ${ownerConclusion ? ownerExitDialogueHtml('owner', ownerConclusion, profile, interview) : ''}
+          ${!ownerExitHasConversation(interview) ? '<p class="owner-exit-empty">No hay conversación registrada todavía.</p>' : ''}
+        </div>
+      </div>
+    </div>
   `;
+  modal.classList.add('owner-exit-backdrop');
   modal.classList.remove('section-hidden');
 }
 
 function closeOwnerExitModal() {
-  document.getElementById('ownerExitModal')?.classList.add('section-hidden');
+  const modal = document.getElementById('ownerExitModal');
+  modal?.classList.add('section-hidden');
 }
 
 function openOwnerExitInterview() {
@@ -4224,6 +4260,7 @@ function collectOwnerProfile() {
   });
   return {
     owner_photo_url: fieldValue('owner_photo_url'),
+    owner_office_background_url: fieldValue('owner_office_background_url'),
     owner_name: fieldValue('owner_name'),
     owner_birth_date: fieldValue('owner_birth_date'),
     owner_bio: fieldValue('owner_bio'),

@@ -3684,6 +3684,7 @@ th {
 }
 
 .owner-office-profile-fields label:first-child,
+.owner-office-profile-fields label:nth-child(2),
 .owner-office-bio-field {
   grid-column: 1 / -1;
 }
@@ -3911,108 +3912,276 @@ th {
   cursor: not-allowed;
   opacity: 0.55;
 }
+.modal-backdrop.owner-exit-backdrop {
+  padding: 0;
+  background: #020617;
+}
 .owner-exit-modal {
-  width: min(760px, 96vw);
+  position: relative;
+  width: 100vw;
+  height: 100dvh;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #020617;
+}
+.owner-exit-modal .modal-header {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  left: max(16px, env(safe-area-inset-left));
+  right: max(16px, env(safe-area-inset-right));
+  z-index: 8;
+  margin: 0;
+  padding: 0;
+  color: #f8fafc;
+  text-shadow: 0 2px 0 #020617;
+}
+.owner-exit-modal .modal-header h2 {
+  color: #f8fafc;
+  font-size: clamp(1.25rem, 2.2vw, 2rem);
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.owner-exit-modal .modal-header .danger {
+  border: 2px solid rgba(255, 255, 255, 0.72);
+  background: rgba(127, 29, 29, 0.88);
+  color: #fff;
+  box-shadow: 0 4px 0 rgba(69, 10, 10, 0.9);
 }
 .owner-exit-modal-content {
+  width: 100%;
+  height: 100%;
+}
+.owner-exit-game {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  background: #020617;
+  color: #f8fafc;
+}
+.owner-exit-background,
+.owner-exit-background-image,
+.owner-exit-background-fallback,
+.owner-exit-scene-shade {
+  position: absolute;
+  inset: 0;
+}
+.owner-exit-background-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.owner-exit-background-fallback {
   display: grid;
+  place-items: center;
+  gap: 18px;
+  background:
+    radial-gradient(circle at 22% 30%, rgba(var(--team-secondary-rgb), 0.32), transparent 32%),
+    linear-gradient(135deg, rgba(var(--team-primary-rgb), 0.92), #020617 66%);
+}
+.owner-exit-background-fallback img {
+  width: min(28vw, 240px);
+  opacity: 0.35;
+  filter: drop-shadow(0 16px 28px rgba(0, 0, 0, 0.45));
+}
+.owner-exit-background-fallback span {
+  color: rgba(248, 250, 252, 0.35);
+  font-size: clamp(2.5rem, 8vw, 8rem);
+  font-weight: 950;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.owner-exit-scene-shade {
+  background:
+    linear-gradient(180deg, rgba(2, 6, 23, 0.36), rgba(2, 6, 23, 0.08) 38%, rgba(2, 6, 23, 0.86)),
+    radial-gradient(circle at 50% 42%, transparent 0, rgba(2, 6, 23, 0.26) 72%);
+}
+.owner-exit-scene-hud {
+  position: absolute;
+  top: calc(max(14px, env(safe-area-inset-top)) + 64px);
+  left: max(20px, env(safe-area-inset-left));
+  right: max(20px, env(safe-area-inset-right));
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 14px;
+  pointer-events: none;
+}
+.owner-exit-scene-team {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 2px solid rgba(255, 255, 255, 0.78);
+  border-radius: 4px;
+  background: rgba(2, 6, 23, 0.68);
+  box-shadow: 0 4px 0 rgba(2, 6, 23, 0.78);
+  color: #f8fafc;
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.owner-exit-scene-team img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+.owner-exit-scene-team span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.owner-exit-dialogue-panel {
+  position: absolute;
+  left: max(28px, env(safe-area-inset-left));
+  right: max(28px, env(safe-area-inset-right));
+  bottom: max(24px, env(safe-area-inset-bottom));
+  z-index: 6;
+  display: grid;
+  gap: 10px;
+  max-height: min(48vh, 430px);
 }
 .owner-exit-chat {
   display: grid;
-  gap: 12px;
-  max-height: min(58vh, 560px);
-  overflow: auto;
-  padding: 10px;
-  border: 1px solid #dbe4ef;
-  border-radius: 12px;
-  background: #f8fafc;
-}
-.owner-exit-message {
-  display: flex;
-  align-items: flex-start;
   gap: 10px;
+  overflow: auto;
+  max-height: min(36vh, 320px);
+  padding-right: 4px;
 }
-.owner-exit-message--gm {
-  justify-content: flex-end;
+.owner-exit-dialogue {
+  display: grid;
+  grid-template-columns: minmax(116px, 170px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
 }
-.owner-exit-message--gm .owner-exit-bubble {
-  order: 1;
-  background: #e0f2fe;
-  border-color: #7dd3fc;
+.owner-exit-dialogue--gm {
+  grid-template-columns: minmax(0, 1fr) minmax(116px, 170px);
 }
-.owner-exit-message--gm .owner-exit-gm-avatar {
-  order: 2;
+.owner-exit-dialogue--gm .owner-exit-speaker {
+  grid-column: 2;
 }
-.owner-exit-chat .owner-office-avatar,
+.owner-exit-dialogue--gm .owner-exit-bubble {
+  grid-column: 1;
+  grid-row: 1;
+  border-color: #93c5fd;
+  background: rgba(12, 41, 82, 0.92);
+}
+.owner-exit-speaker {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  align-self: stretch;
+}
+.owner-exit-speaker .owner-office-avatar,
 .owner-exit-gm-avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
+  width: 74px;
+  height: 74px;
+  border: 3px solid #fef3c7;
+  border-radius: 6px;
+  box-shadow: 0 5px 0 rgba(2, 6, 23, 0.75);
   flex: 0 0 auto;
-  font-size: 0.82rem;
+  font-size: 1.1rem;
+}
+.owner-exit-speaker .owner-office-avatar {
+  background: #0f172a;
 }
 .owner-exit-gm-avatar {
   display: grid;
   place-items: center;
-  border: 1px solid #cbd5e1;
-  background: #fff;
+  background: linear-gradient(145deg, #dbeafe, #f8fafc);
   color: #0f172a;
   font-weight: 950;
 }
-.owner-exit-bubble {
-  max-width: min(560px, 78%);
-  border: 1px solid #d6e0ec;
-  border-radius: 14px;
-  padding: 10px 12px;
-  background: #ffffff;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+.owner-exit-speaker > span {
+  max-width: 100%;
+  padding: 5px 10px;
+  border: 2px solid #b45309;
+  border-radius: 3px;
+  background: #fef3c7;
+  color: #171717;
+  font-size: 0.8rem;
+  font-weight: 950;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  white-space: nowrap;
+  box-shadow: 0 3px 0 rgba(69, 26, 3, 0.65);
 }
-.owner-exit-bubble span {
-  display: block;
-  margin-bottom: 4px;
-  color: #64748b;
-  font-size: 0.72rem;
-  font-weight: 900;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+.owner-exit-bubble {
+  min-height: 96px;
+  border: 3px solid #38bdf8;
+  border-radius: 6px;
+  padding: 18px 20px;
+  background: rgba(5, 47, 67, 0.92);
+  box-shadow:
+    0 6px 0 rgba(3, 7, 18, 0.82),
+    0 0 0 2px rgba(2, 132, 199, 0.38) inset;
 }
 .owner-exit-bubble p {
   margin: 0;
-  color: #172033;
+  color: #f8fafc;
+  font-size: clamp(1rem, 1.55vw, 1.34rem);
+  font-weight: 850;
   line-height: 1.42;
-  font-weight: 700;
+  text-shadow: 0 2px 0 rgba(2, 6, 23, 0.8);
   white-space: pre-wrap;
 }
 .owner-exit-typing,
 .owner-exit-empty {
   margin: 0;
-  color: #64748b;
-  font-weight: 800;
+  padding: 18px 20px;
+  border: 3px solid #38bdf8;
+  border-radius: 6px;
+  background: rgba(5, 47, 67, 0.92);
+  color: #e0f2fe;
+  font-weight: 900;
+  box-shadow: 0 6px 0 rgba(3, 7, 18, 0.82);
 }
 .owner-exit-form {
   display: grid;
   gap: 8px;
+  padding: 12px;
+  border: 3px solid rgba(254, 243, 199, 0.92);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.84);
+  box-shadow: 0 6px 0 rgba(3, 7, 18, 0.82);
 }
 .owner-exit-form label {
-  color: #334155;
-  font-weight: 900;
+  color: #fef3c7;
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 .owner-exit-form textarea {
   width: 100%;
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
+  min-height: 92px;
+  border: 2px solid #bae6fd;
+  border-radius: 4px;
   padding: 10px;
+  background: rgba(248, 250, 252, 0.96);
+  color: #0f172a;
   font: inherit;
+  font-weight: 750;
   resize: vertical;
 }
 .owner-exit-actions {
   display: flex;
   justify-content: flex-end;
 }
-.owner-exit-summary {
-  display: flex;
-  justify-content: flex-end;
+.owner-exit-actions button {
+  border: 2px solid #fef3c7;
+  border-radius: 4px;
+  background: #0f766e;
+  box-shadow: 0 4px 0 #064e3b;
 }
 .owner-exit-delta {
   display: inline-flex;
@@ -4020,6 +4189,7 @@ th {
   padding: 5px 10px;
   border-radius: 999px;
   font-weight: 950;
+  white-space: nowrap;
 }
 .owner-exit-delta--positive {
   border: 1px solid #86efac;
@@ -6399,13 +6569,74 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   .owner-exit-open-btn {
     width: 100%;
   }
-  .owner-exit-bubble {
-    max-width: calc(100% - 52px);
+  .owner-exit-modal .modal-header {
+    left: max(10px, env(safe-area-inset-left));
+    right: max(10px, env(safe-area-inset-right));
   }
-  .owner-exit-chat .owner-office-avatar,
+  .owner-exit-modal .modal-header h2 {
+    max-width: 58vw;
+    overflow: hidden;
+    font-size: 1rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .owner-exit-scene-hud {
+    top: calc(max(12px, env(safe-area-inset-top)) + 54px);
+    left: max(10px, env(safe-area-inset-left));
+    right: max(10px, env(safe-area-inset-right));
+  }
+  .owner-exit-scene-team {
+    max-width: calc(100vw - 20px);
+    padding: 6px 8px;
+    font-size: 0.78rem;
+  }
+  .owner-exit-scene-team img {
+    width: 28px;
+    height: 28px;
+  }
+  .owner-exit-dialogue-panel {
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    bottom: max(8px, env(safe-area-inset-bottom));
+    max-height: 62vh;
+  }
+  .owner-exit-chat {
+    max-height: 42vh;
+  }
+  .owner-exit-dialogue,
+  .owner-exit-dialogue--gm {
+    grid-template-columns: 1fr;
+  }
+  .owner-exit-dialogue--gm .owner-exit-speaker,
+  .owner-exit-dialogue--gm .owner-exit-bubble {
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .owner-exit-speaker {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+  }
+  .owner-exit-speaker .owner-office-avatar,
   .owner-exit-gm-avatar {
-    width: 36px;
-    height: 36px;
+    width: 46px;
+    height: 46px;
+    border-width: 2px;
+  }
+  .owner-exit-bubble {
+    min-height: 74px;
+    padding: 12px 13px;
+    border-width: 2px;
+  }
+  .owner-exit-bubble p {
+    font-size: 0.94rem;
+  }
+  .owner-exit-form {
+    padding: 9px;
+    border-width: 2px;
+  }
+  .owner-exit-form textarea {
+    min-height: 76px;
   }
   .owner-office-table th,
   .owner-office-table td {

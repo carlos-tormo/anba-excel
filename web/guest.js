@@ -4487,15 +4487,33 @@ function ownerExitTrustDeltaHtml(interview) {
   return `<span class="owner-exit-delta ${cls}">${escapeHtml(label)}</span>`;
 }
 
-function ownerExitBubbleHtml(kind, text, profile = {}) {
+function ownerExitDialogueHtml(kind, text, profile = {}, interview = {}) {
   const owner = kind === 'owner';
+  const speaker = owner ? String(profile?.owner_name || 'Propietario').trim() : String(interview?.gm_name || 'GM').trim();
   return `
-    <div class="owner-exit-message owner-exit-message--${owner ? 'owner' : 'gm'}">
-      ${owner ? ownerOfficeProfileAvatarHtml(profile) : '<div class="owner-exit-gm-avatar" aria-hidden="true">GM</div>'}
-      <div class="owner-exit-bubble">
-        <span>${owner ? 'Propietario' : 'GM'}</span>
+    <div class="owner-exit-dialogue owner-exit-dialogue--${owner ? 'owner' : 'gm'}">
+      <div class="owner-exit-speaker">
+        ${owner ? ownerOfficeProfileAvatarHtml(profile) : '<div class="owner-exit-gm-avatar" aria-hidden="true">GM</div>'}
+        <span>${escapeHtml(speaker || (owner ? 'Propietario' : 'GM'))}</span>
+      </div>
+      <div class="owner-exit-bubble" role="log">
         <p>${escapeHtml(text || '')}</p>
       </div>
+    </div>
+  `;
+}
+
+function ownerExitBackgroundHtml(profile) {
+  const backgroundUrl = String(profile?.owner_office_background_url || '').trim();
+  if (backgroundUrl) {
+    return `<img class="owner-exit-background-image" src="${escapeHtml(backgroundUrl)}" alt="" loading="lazy">`;
+  }
+  const teamName = String(state.teamData?.team?.name || state.teamData?.owner_office?.team_name || state.teamCode || 'ANBA').trim();
+  const logo = teamIconCandidates(state.teamCode)[0] || '';
+  return `
+    <div class="owner-exit-background-fallback">
+      ${logo ? `<img src="${escapeHtml(logo)}" alt="">` : ''}
+      <span>${escapeHtml(teamName)}</span>
     </div>
   `;
 }
@@ -4511,30 +4529,43 @@ function renderOwnerExitModal(interview, options = {}) {
   const gmResponse = String(interview?.gm_response || '');
   const ownerFinal = String(interview?.owner_final_message || '');
   const ownerConclusion = String(interview?.owner_conclusion_message || '');
+  const teamName = String(state.teamData?.team?.name || state.teamData?.owner_office?.team_name || state.teamCode || '').trim();
+  const logo = teamIconCandidates(state.teamCode)[0] || '';
   content.innerHTML = `
-    <div class="owner-exit-chat">
-      ${ownerMessage ? ownerExitBubbleHtml('owner', ownerMessage, profile) : ''}
-      ${gmResponse ? ownerExitBubbleHtml('gm', gmResponse, profile) : ''}
-      ${ownerFinal ? ownerExitBubbleHtml('owner', ownerFinal, profile) : ''}
-      ${ownerConclusion ? ownerExitBubbleHtml('owner', ownerConclusion, profile) : ''}
-      ${loading ? '<div class="owner-exit-typing">El propietario está escribiendo...</div>' : ''}
-    </div>
-    ${status === 'completed' ? `
-      <div class="owner-exit-summary">
-        ${ownerExitTrustDeltaHtml(interview)}
+    <div class="owner-exit-game">
+      <div class="owner-exit-background" aria-hidden="true">
+        ${ownerExitBackgroundHtml(profile)}
       </div>
-    ` : ''}
-    ${status === 'awaiting_gm' && !loading ? `
-      <form id="ownerExitResponseForm" class="owner-exit-form">
-        <label for="ownerExitResponseText">Respuesta del GM</label>
-        <textarea id="ownerExitResponseText" rows="5" maxlength="4000" placeholder="Escribe tu respuesta al propietario..."></textarea>
-        <div class="owner-exit-actions">
-          <button type="submit">Enviar respuesta</button>
+      <div class="owner-exit-scene-shade" aria-hidden="true"></div>
+      <div class="owner-exit-scene-hud">
+        <div class="owner-exit-scene-team">
+          ${logo ? `<img src="${escapeHtml(logo)}" alt="">` : ''}
+          <span>${escapeHtml(teamName || 'Despacho del propietario')}</span>
         </div>
-      </form>
-    ` : ''}
-    ${!ownerMessage && !loading ? '<p class="owner-exit-empty">La entrevista todavía no ha empezado.</p>' : ''}
+        ${status === 'completed' ? ownerExitTrustDeltaHtml(interview) : ''}
+      </div>
+      <div class="owner-exit-dialogue-panel">
+        <div class="owner-exit-chat">
+          ${ownerMessage ? ownerExitDialogueHtml('owner', ownerMessage, profile, interview) : ''}
+          ${gmResponse ? ownerExitDialogueHtml('gm', gmResponse, profile, interview) : ''}
+          ${ownerFinal ? ownerExitDialogueHtml('owner', ownerFinal, profile, interview) : ''}
+          ${ownerConclusion ? ownerExitDialogueHtml('owner', ownerConclusion, profile, interview) : ''}
+          ${loading ? '<div class="owner-exit-typing">El propietario está escribiendo...</div>' : ''}
+          ${!ownerMessage && !loading ? '<p class="owner-exit-empty">La entrevista todavía no ha empezado.</p>' : ''}
+        </div>
+        ${status === 'awaiting_gm' && !loading ? `
+          <form id="ownerExitResponseForm" class="owner-exit-form">
+            <label for="ownerExitResponseText">Respuesta del GM</label>
+            <textarea id="ownerExitResponseText" rows="4" maxlength="4000" placeholder="Escribe tu respuesta al propietario..."></textarea>
+            <div class="owner-exit-actions">
+              <button type="submit">Enviar respuesta</button>
+            </div>
+          </form>
+        ` : ''}
+      </div>
+    </div>
   `;
+  modal.classList.add('owner-exit-backdrop');
   modal.classList.remove('section-hidden');
   document.getElementById('ownerExitResponseForm')?.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -4543,7 +4574,8 @@ function renderOwnerExitModal(interview, options = {}) {
 }
 
 function closeOwnerExitModal() {
-  document.getElementById('ownerExitModal')?.classList.add('section-hidden');
+  const modal = document.getElementById('ownerExitModal');
+  modal?.classList.add('section-hidden');
 }
 
 async function openOwnerExitInterview() {
