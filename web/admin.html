@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260616f">
+  <link rel="stylesheet" href="/styles.css?v=20260616g">
 </head>
 <body class="app-layout">
   <header>
@@ -405,7 +405,9 @@
           <input id="economySettingsSeasonInput" type="text" inputmode="numeric" placeholder="2025">
           <button id="loadEconomySettingsBtn" type="button">Load season</button>
           <button id="saveEconomySettingsBtn" type="button">Save economy data</button>
+          <button id="openEconomyImportBtn" type="button" class="ghost">Importar economía CSV</button>
         </div>
+        <p class="settings-help-text">CSV long format: season, team, section, key, value. Section accepts income/ingresos or expenses/gastos.</p>
         <div class="table-wrap settings-economy-table-wrap">
           <table id="economySettingsTable" class="settings-economy-table">
             <thead>
@@ -780,6 +782,31 @@
     </div>
   </div>
 
+  <div id="economyImportModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="economyImportModalTitle">
+    <div class="modal-card economy-import-modal">
+      <div class="modal-header">
+        <h2 id="economyImportModalTitle">Importar economía CSV</h2>
+        <button id="economyImportCloseBtn" type="button" class="danger">Cerrar</button>
+      </div>
+      <div class="economy-import-body">
+        <div class="economy-import-instructions">
+          <p>Formato recomendado:</p>
+          <pre>season,team,section,key,value
+2025,ATL,income,tv_local,123456
+2025,ATL,expenses,salarios,-194746479</pre>
+          <p>Usa <strong>key</strong> para evitar ambigüedades. Gastos se guardan como negativos aunque el CSV venga en positivo.</p>
+        </div>
+        <div class="settings-row economy-import-controls">
+          <input id="economyImportCsvInput" type="file" accept=".csv,text/csv">
+          <button id="economyImportPreviewBtn" type="button">Previsualizar</button>
+          <button id="economyImportConfirmBtn" type="button" disabled>Confirmar importación</button>
+        </div>
+        <div id="economyImportStatus" class="economy-import-status"></div>
+        <div id="economyImportPreview" class="economy-import-preview"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="tradeModal" class="modal-backdrop section-hidden" role="dialog" aria-label="Process trade">
     <div class="modal-card trade-modal">
       <div class="modal-header">
@@ -909,6 +936,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260616d" defer></script>
+  <script src="/admin.js?v=20260616e" defer></script>
 </body>
 </html>

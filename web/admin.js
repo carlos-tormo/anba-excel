@@ -9,6 +9,7 @@ const state = {
   economySettingsRows: [],
   economySettingsSeasons: [],
   economySettingsSeason: null,
+  economyImportPreview: null,
   adminUsers: [],
   gmOptionRequests: [],
   freeAgents: [],
@@ -7376,6 +7377,209 @@ async function saveEconomySettingsSeason() {
   alert(`Economy data saved for ${seasonLabel(state.economySettingsSeason)}.`);
 }
 
+function setEconomyImportStatus(message, tone = '') {
+  const status = document.getElementById('economyImportStatus');
+  if (!status) return;
+  status.className = `economy-import-status${tone ? ` economy-import-status--${tone}` : ''}`;
+  status.textContent = message || '';
+}
+
+function openEconomyImportModal() {
+  const modal = document.getElementById('economyImportModal');
+  const input = document.getElementById('economyImportCsvInput');
+  const preview = document.getElementById('economyImportPreview');
+  const confirm = document.getElementById('economyImportConfirmBtn');
+  state.economyImportPreview = null;
+  if (input) input.value = '';
+  if (preview) preview.innerHTML = '';
+  if (confirm) confirm.disabled = true;
+  setEconomyImportStatus('');
+  modal?.classList.remove('section-hidden');
+}
+
+function closeEconomyImportModal() {
+  document.getElementById('economyImportModal')?.classList.add('section-hidden');
+}
+
+function economyImportAmountHtml(value) {
+  const num = Number(value || 0);
+  const cls = num < 0 ? 'negative' : (num > 0 ? 'positive' : '');
+  return `<span class="economy-import-amount ${cls}">${formatMoneyDots(num)}</span>`;
+}
+
+function economyImportErrorsHtml(errors = []) {
+  if (!errors.length) return '';
+  return `
+    <div class="economy-import-errors">
+      <h3>Errores encontrados</h3>
+      <ul>
+        ${errors.map((error) => `
+          <li>${error.line ? `Línea ${escapeHtml(error.line)}: ` : ''}${escapeHtml(error.message || 'Error desconocido')}</li>
+        `).join('')}
+      </ul>
+    </div>
+  `;
+}
+
+function economyImportSchemaHtml(schema = {}) {
+  const sectionLabel = (section) => (section === 'income' ? 'Ingresos' : 'Gastos');
+  return `
+    <details class="economy-import-schema">
+      <summary>Ver keys disponibles</summary>
+      ${Object.entries(schema).map(([section, rows]) => `
+        <div>
+          <h4>${sectionLabel(section)}</h4>
+          <div class="economy-import-key-grid">
+            ${(rows || []).filter((row) => row.type === 'field').map((row) => `
+              <code>${escapeHtml(row.key)}</code><span>${escapeHtml(row.label)}${row.category_label ? ` · ${escapeHtml(row.category_label)}` : ''}</span>
+            `).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </details>
+  `;
+}
+
+function renderEconomyImportPreview(preview) {
+  const container = document.getElementById('economyImportPreview');
+  const confirm = document.getElementById('economyImportConfirmBtn');
+  if (!container) return;
+  const errors = preview?.errors || [];
+  const summary = preview?.summary || [];
+  const records = preview?.records || [];
+  if (confirm) confirm.disabled = Boolean(errors.length) || !records.length;
+  const summaryHtml = summary.length ? `
+    <div class="table-wrap economy-import-table-wrap">
+      <table class="economy-import-table">
+        <thead>
+          <tr>
+            <th>Temporada</th>
+            <th>Equipo</th>
+            <th>Ingresos</th>
+            <th>Gastos</th>
+            <th>Balance</th>
+            <th>Filas</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${summary.map((row) => `
+            <tr>
+              <td>${escapeHtml(seasonLabel(row.season_year))}</td>
+              <td><strong>${escapeHtml(row.team_code)}</strong> ${escapeHtml(row.team_name || '')}</td>
+              <td>${economyImportAmountHtml(row.revenue)}</td>
+              <td>${economyImportAmountHtml(row.expenses)}</td>
+              <td>${economyImportAmountHtml(row.balance)}</td>
+              <td>${escapeHtml(row.income_rows || 0)} ingresos · ${escapeHtml(row.expenses_rows || 0)} gastos</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  ` : '<p class="economy-import-empty">No hay filas válidas para importar todavía.</p>';
+  container.innerHTML = `
+    ${economyImportErrorsHtml(errors)}
+    <div class="economy-import-summary">
+      <h3>Previsualización</h3>
+      <p>${escapeHtml(records.length)} filas válidas · ${escapeHtml(summary.length)} equipo/temporada</p>
+      ${summaryHtml}
+    </div>
+    ${economyImportSchemaHtml(preview?.schema || {})}
+  `;
+  if (errors.length) {
+    setEconomyImportStatus('Corrige los errores del CSV antes de confirmar.', 'error');
+  } else if (records.length) {
+    setEconomyImportStatus('Previsualización lista. Revisa los totales antes de confirmar.', 'success');
+  } else {
+    setEconomyImportStatus('No se encontraron filas válidas.', 'error');
+  }
+}
+
+async function previewEconomyImportCsv() {
+  const input = document.getElementById('economyImportCsvInput');
+  const file = input?.files?.[0];
+  if (!file) {
+    alert('Selecciona un archivo CSV.');
+    return;
+  }
+  const button = document.getElementById('economyImportPreviewBtn');
+  const confirm = document.getElementById('economyImportConfirmBtn');
+  if (button) button.disabled = true;
+  if (confirm) confirm.disabled = true;
+  setEconomyImportStatus('Leyendo y validando CSV...');
+  try {
+    const csvText = await file.text();
+    const result = await api('/api/admin/economy-import/preview', {
+      method: 'POST',
+      body: JSON.stringify({ csv_text: csvText }),
+    });
+    state.economyImportPreview = result;
+    renderEconomyImportPreview(result);
+  } catch (err) {
+    state.economyImportPreview = null;
+    setEconomyImportStatus('Error validando CSV.', 'error');
+    alert(`Economy import preview failed: ${err.message || err}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function confirmEconomyImport() {
+  const preview = state.economyImportPreview;
+  if (!preview || !Array.isArray(preview.records) || preview.errors?.length) return;
+  const button = document.getElementById('economyImportConfirmBtn');
+  if (button) button.disabled = true;
+  setEconomyImportStatus('Importando datos...');
+  try {
+    const result = await api('/api/admin/economy-import/import', {
+      method: 'POST',
+      body: JSON.stringify({ records: preview.records }),
+    });
+    const seasons = Array.isArray(result.seasons) ? result.seasons : [];
+    const currentSettingsSeason = document.getElementById('economySettingsSeasonInput')?.value || seasons[0] || state.economySettingsSeason;
+    await loadEconomySettingsSeason(currentSettingsSeason);
+    if (state.ui.activeTrackerTab === 'economy') {
+      await loadTrackerEconomy(state.ui.trackerEconomySeason || seasons[0]);
+    }
+    if (state.teamCode) {
+      await loadOwnerOfficeForTeam(state.teamCode);
+      renderOwnerOffice();
+    }
+    await refreshAdminLogsSafe();
+    setEconomyImportStatus(`Importadas ${result.record_count || 0} filas en ${result.group_count || 0} equipo/temporada.`, 'success');
+    alert('Economy CSV imported.');
+  } catch (err) {
+    setEconomyImportStatus('Error importando CSV.', 'error');
+    alert(`Economy import failed: ${err.message || err}`);
+  } finally {
+    if (button && state.economyImportPreview && !state.economyImportPreview.errors?.length) button.disabled = false;
+  }
+}
+
+function setupEconomyImportControls() {
+  document.getElementById('openEconomyImportBtn')?.addEventListener('click', () => {
+    openEconomyImportModal();
+  });
+  document.getElementById('economyImportCloseBtn')?.addEventListener('click', () => {
+    closeEconomyImportModal();
+  });
+  document.getElementById('economyImportModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeEconomyImportModal();
+  });
+  document.getElementById('economyImportPreviewBtn')?.addEventListener('click', async () => {
+    await previewEconomyImportCsv();
+  });
+  document.getElementById('economyImportConfirmBtn')?.addEventListener('click', async () => {
+    await confirmEconomyImport();
+  });
+  document.getElementById('economyImportCsvInput')?.addEventListener('change', () => {
+    state.economyImportPreview = null;
+    document.getElementById('economyImportConfirmBtn')?.setAttribute('disabled', 'disabled');
+    const preview = document.getElementById('economyImportPreview');
+    if (preview) preview.innerHTML = '';
+    setEconomyImportStatus('');
+  });
+}
+
 function setupEconomySettingsControls() {
   document.getElementById('loadEconomySettingsBtn')?.addEventListener('click', async () => {
     const input = document.getElementById('economySettingsSeasonInput');
@@ -7389,6 +7593,7 @@ function setupEconomySettingsControls() {
     event.preventDefault();
     void loadEconomySettingsSeason(event.currentTarget.value);
   });
+  setupEconomyImportControls();
 }
 
 async function init() {

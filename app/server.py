@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import csv
+import io
 import json
 import math
 import os
@@ -8,6 +10,7 @@ import re
 import secrets
 import sqlite3
 import tempfile
+import unicodedata
 from datetime import UTC, datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +42,59 @@ OWNER_SEASON_OBJECTIVES = [
     "Luchar por el play-in",
     "Desarrollo de jóvenes",
 ]
+OWNER_OFFICE_IMPORT_ROWS = {
+    "income": [
+        {"key": "recaudacion", "label": "Recaudación", "type": "category"},
+        {"key": "media_espectadores", "label": "Media espectadores", "type": "field"},
+        {"key": "entradas_regular_season", "label": "Entradas Regular Season", "type": "field"},
+        {"key": "partidos_playoffs", "label": "Partidos playoffs", "type": "field"},
+        {"key": "entradas_playoffs", "label": "Entradas Playoffs", "type": "field"},
+        {"key": "precio_medio_entrada", "label": "Precio medio entrada", "type": "field"},
+        {"key": "consumiciones", "label": "Consumiciones", "type": "field"},
+        {"key": "merchandising", "label": "Merchandising", "type": "category"},
+        {"key": "ventas_camisetas_ropa", "label": "Ventas de camisetas y ropa", "type": "field"},
+        {"key": "precio_medio_articulo", "label": "Precio medio artículo", "type": "field"},
+        {"key": "derechos", "label": "Derechos", "type": "category"},
+        {"key": "tv_globales", "label": "TV globales", "type": "field"},
+        {"key": "tv_local", "label": "TV local", "type": "field"},
+        {"key": "licencias", "label": "Licencias", "type": "field"},
+        {"key": "sponsor", "label": "Sponsor", "type": "category"},
+        {"key": "patrocinador_jersey", "label": "Patrocinador jersey", "type": "field"},
+        {"key": "patrocinador_estadio", "label": "Patrocinador estadio", "type": "field"},
+        {"key": "patrocinadores_generales", "label": "Patrocinadores generales", "type": "field"},
+        {"key": "flujos_caja_positivos", "label": "Flujos de caja positivos", "type": "category"},
+        {"key": "traspasos_positivos", "label": "Traspasos", "type": "field"},
+        {"key": "bonificaciones", "label": "Bonificaciones", "type": "field"},
+        {"key": "reparto_beneficios_positivo", "label": "Reparto beneficios", "type": "field"},
+        {"key": "reparto_impuesto_lujo", "label": "Reparto impuesto de lujo", "type": "field"},
+    ],
+    "expenses": [
+        {"key": "coste_plantilla", "label": "Coste plantilla", "type": "category"},
+        {"key": "salarios", "label": "Salarios", "type": "field"},
+        {"key": "multa", "label": "Multa", "type": "field"},
+        {"key": "cuerpo_tecnico", "label": "Cuerpo técnico", "type": "category"},
+        {"key": "multiplicador_exitos", "label": "Multiplicador éxitos", "type": "field"},
+        {"key": "gastos_cuerpo_tecnico", "label": "Gastos", "type": "field"},
+        {"key": "gastos_estadio", "label": "Gastos de estadio", "type": "category"},
+        {"key": "partidos", "label": "Partidos", "type": "field"},
+        {"key": "gastos_partido", "label": "Gastos partido", "type": "field"},
+        {"key": "indice_coste_estadio", "label": "Índice coste", "type": "field"},
+        {"key": "gastos_television", "label": "Gastos de televisión", "type": "category"},
+        {"key": "produccion", "label": "Producción", "type": "field"},
+        {"key": "costes_marketing", "label": "Costes de marketing", "type": "category"},
+        {"key": "indice_coste_marketing", "label": "Índice coste", "type": "field"},
+        {"key": "costes_ineficiencia", "label": "Costes ineficiencia", "type": "field"},
+        {"key": "unidades", "label": "Unidades", "type": "field"},
+        {"key": "coste_por_unidad", "label": "Coste por unidad", "type": "field"},
+        {"key": "gastos_operativos", "label": "Gastos operativos", "type": "category"},
+        {"key": "gastos_operativos_valor", "label": "Gastos", "type": "field"},
+        {"key": "indice_coste_operativo", "label": "Índice coste", "type": "field"},
+        {"key": "flujos_caja_negativos", "label": "Flujos de caja negativos", "type": "category"},
+        {"key": "traspasos_negativos", "label": "Traspasos", "type": "field"},
+        {"key": "sanciones", "label": "Sanciones", "type": "field"},
+        {"key": "reparto_beneficios_negativo", "label": "Reparto beneficios", "type": "field"},
+    ],
+}
 TEAM_IMAGE_COLORS = {
     "ATL": "#E03A3E, #C1D32F",
     "BKN": "#000000, #FFFFFF",
@@ -455,6 +511,67 @@ def normalize_hex_color(value: Any) -> Optional[str]:
 
 def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
     return {d[0]: row[idx] for idx, d in enumerate(cursor.description)}
+
+
+def normalize_import_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def parse_csv_amount(value: Any) -> Optional[float]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    negative = text.startswith("(") and text.endswith(")")
+    cleaned = text.strip("()").replace(" ", "")
+    cleaned = re.sub(r"[^0-9,.\-]", "", cleaned)
+    if not cleaned or cleaned in {"-", ".", ","}:
+        return None
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        parts = cleaned.split(",")
+        if len(parts) > 2 or (len(parts) == 2 and len(parts[-1]) == 3 and all(part.isdigit() for part in parts)):
+            cleaned = "".join(parts)
+        else:
+            cleaned = cleaned.replace(",", ".")
+    elif "." in cleaned:
+        parts = cleaned.split(".")
+        if len(parts) > 2 or (len(parts) == 2 and len(parts[-1]) == 3 and all(part.lstrip("-").isdigit() for part in parts)):
+            cleaned = "".join(parts)
+    try:
+        parsed = float(cleaned)
+    except ValueError:
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return -abs(parsed) if negative else parsed
+
+
+def owner_office_import_schema() -> Dict[str, List[Dict[str, str]]]:
+    schema: Dict[str, List[Dict[str, str]]] = {}
+    for section, rows in OWNER_OFFICE_IMPORT_ROWS.items():
+        current_category = {"key": "", "label": ""}
+        schema_rows: List[Dict[str, str]] = []
+        for row in rows:
+            normalized = {
+                "key": str(row["key"]),
+                "label": str(row["label"]),
+                "type": str(row["type"]),
+                "category_key": str(current_category["key"]),
+                "category_label": str(current_category["label"]),
+            }
+            schema_rows.append(normalized)
+            if normalized["type"] == "category":
+                current_category = {"key": normalized["key"], "label": normalized["label"]}
+        schema[section] = schema_rows
+    return schema
 
 
 class LeagueDB:
@@ -2083,6 +2200,361 @@ class LeagueDB:
                 }
             )
         return normalized
+
+    def _owner_import_schema_payload(self) -> Dict[str, Any]:
+        schema = owner_office_import_schema()
+        return {
+            section: [
+                {
+                    "key": row["key"],
+                    "label": row["label"],
+                    "type": row["type"],
+                    "category_key": row["category_key"],
+                    "category_label": row["category_label"],
+                }
+                for row in rows
+            ]
+            for section, rows in schema.items()
+        }
+
+    def _owner_import_header_value(self, row: Dict[str, Any], aliases: List[str]) -> str:
+        normalized_aliases = {normalize_import_text(alias) for alias in aliases}
+        for key, value in row.items():
+            if normalize_import_text(key) in normalized_aliases:
+                return str(value or "").strip()
+        return ""
+
+    def _owner_import_key(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+    def _owner_import_section(self, value: Any) -> str:
+        normalized = normalize_import_text(value)
+        if normalized in {"income", "ingreso", "ingresos", "revenue", "revenues"}:
+            return "income"
+        if normalized in {"expense", "expenses", "gasto", "gastos", "coste", "costes"}:
+            return "expenses"
+        return ""
+
+    def _owner_import_resolve_row(self, section: str, key_value: str, label_value: str, category_value: str) -> tuple[Optional[Dict[str, str]], Optional[str]]:
+        schema = owner_office_import_schema().get(section) or []
+        by_key = {row["key"]: row for row in schema}
+        candidate_key = self._owner_import_key(key_value)
+        if candidate_key:
+            row = by_key.get(candidate_key)
+            if row and row["type"] == "field":
+                return row, None
+            if row and row["type"] == "category":
+                return None, f"'{key_value}' es una categoría, no una fila importable"
+            label_value = label_value or key_value
+
+        label_norm = normalize_import_text(label_value)
+        if not label_norm:
+            return None, "Falta key o label/concepto"
+        matches = [row for row in schema if row["type"] == "field" and normalize_import_text(row["label"]) == label_norm]
+        category_norm = normalize_import_text(category_value)
+        if category_norm:
+            matches = [
+                row for row in matches
+                if normalize_import_text(row["category_key"]) == category_norm
+                or normalize_import_text(row["category_label"]) == category_norm
+            ]
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            return None, f"Concepto ambiguo '{label_value}'. Usa la columna key."
+        return None, f"Concepto desconocido '{label_value}'"
+
+    def _owner_import_normalize_records(
+        self,
+        raw_records: List[Dict[str, Any]],
+        teams_by_code: Dict[str, Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        normalized_records: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        for idx, raw in enumerate(raw_records):
+            line = parse_int(raw.get("line")) or idx + 2
+            season = parse_int(raw.get("season_year") or raw.get("season"))
+            team_code = normalize_team_code(raw.get("team_code") or raw.get("team"))
+            section = self._owner_import_section(raw.get("section"))
+            key_value = str(raw.get("key") or "").strip()
+            label_value = str(raw.get("label") or "").strip()
+            category_value = str(raw.get("category") or "").strip()
+            amount = parse_csv_amount(raw.get("value"))
+            if season is None or season < 2000 or season > 2100:
+                errors.append({"line": line, "message": "Temporada inválida. Usa el año inicial, por ejemplo 2025."})
+                continue
+            if not team_code or team_code not in teams_by_code:
+                errors.append({"line": line, "message": f"Equipo inválido: {team_code or '-'}"})
+                continue
+            if section not in {"income", "expenses"}:
+                errors.append({"line": line, "message": "Sección inválida. Usa income/ingresos o expenses/gastos."})
+                continue
+            row_def, row_error = self._owner_import_resolve_row(section, key_value, label_value, category_value)
+            if row_error or not row_def:
+                errors.append({"line": line, "message": row_error or "Concepto inválido."})
+                continue
+            if amount is None:
+                errors.append({"line": line, "message": f"Importe inválido para {team_code} {row_def['label']}."})
+                continue
+            normalized_amount = abs(float(amount)) if section == "income" else -abs(float(amount))
+            normalized_records.append(
+                {
+                    "line": line,
+                    "season_year": int(season),
+                    "team_code": team_code,
+                    "team_name": str(teams_by_code[team_code].get("name") or ""),
+                    "section": section,
+                    "key": row_def["key"],
+                    "label": row_def["label"],
+                    "category_key": row_def["category_key"],
+                    "category_label": row_def["category_label"],
+                    "value": normalized_amount,
+                }
+            )
+        return normalized_records, errors
+
+    def _owner_import_group_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        groups: Dict[tuple[int, str], Dict[str, Any]] = {}
+        for record in records:
+            key = (int(record["season_year"]), str(record["team_code"]))
+            if key not in groups:
+                groups[key] = {
+                    "season_year": int(record["season_year"]),
+                    "team_code": str(record["team_code"]),
+                    "team_name": str(record.get("team_name") or ""),
+                    "income": {},
+                    "expenses": {},
+                    "income_rows": 0,
+                    "expenses_rows": 0,
+                }
+            section = str(record["section"])
+            row_key = str(record["key"])
+            value = float(record["value"] or 0)
+            groups[key][section][row_key] = float(groups[key][section].get(row_key, 0)) + value
+            if section == "income":
+                groups[key]["income_rows"] += 1
+            else:
+                groups[key]["expenses_rows"] += 1
+
+        summary: List[Dict[str, Any]] = []
+        for group in groups.values():
+            revenue = sum(float(value or 0) for value in group["income"].values())
+            expenses = sum(float(value or 0) for value in group["expenses"].values())
+            summary.append(
+                {
+                    "season_year": int(group["season_year"]),
+                    "team_code": str(group["team_code"]),
+                    "team_name": str(group["team_name"]),
+                    "income_rows": int(group["income_rows"]),
+                    "expenses_rows": int(group["expenses_rows"]),
+                    "revenue": revenue,
+                    "expenses": expenses,
+                    "balance": revenue + expenses,
+                    "has_income": bool(group["income"]),
+                    "has_expenses": bool(group["expenses"]),
+                }
+            )
+        return sorted(summary, key=lambda row: (int(row["season_year"]), str(row["team_code"])))
+
+    def _owner_import_value_text(self, value: Any) -> str:
+        amount = float(value or 0)
+        rounded = round(amount)
+        if abs(amount - rounded) < 0.000001:
+            return str(int(rounded))
+        return f"{amount:.2f}".rstrip("0").rstrip(".")
+
+    def _owner_import_rows_for_json(self, section: str, values_by_key: Dict[str, float]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for row in owner_office_import_schema().get(section, []):
+            if row["type"] == "category":
+                rows.append({"key": row["key"], "label": row["label"], "type": "category", "value": ""})
+            else:
+                rows.append(
+                    {
+                        "key": row["key"],
+                        "label": row["label"],
+                        "type": "field",
+                        "value": self._owner_import_value_text(values_by_key.get(row["key"], 0)),
+                    }
+                )
+        return rows
+
+    def preview_owner_economy_csv(self, csv_text: str) -> Dict[str, Any]:
+        text = str(csv_text or "").lstrip("\ufeff")
+        if not text.strip():
+            return {"ok": False, "errors": [{"line": None, "message": "El CSV está vacío."}], "records": [], "summary": [], "schema": self._owner_import_schema_payload()}
+        with self.connect() as conn:
+            teams_by_code = {
+                str(row["code"]).upper(): {"id": int(row["id"]), "name": str(row["name"])}
+                for row in conn.execute("SELECT id, code, name FROM teams").fetchall()
+            }
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+        except csv.Error:
+            dialect = csv.excel
+        try:
+            reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+        except csv.Error as err:
+            return {"ok": False, "errors": [{"line": None, "message": f"No se pudo leer el CSV: {err}"}], "records": [], "summary": [], "schema": self._owner_import_schema_payload()}
+        if not reader.fieldnames:
+            return {"ok": False, "errors": [{"line": None, "message": "El CSV no tiene cabeceras."}], "records": [], "summary": [], "schema": self._owner_import_schema_payload()}
+
+        raw_records: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        aliases = {
+            "season": ["season", "season_year", "temporada", "year", "año", "ano"],
+            "team": ["team", "team_code", "equipo", "codigo", "código", "franquicia"],
+            "section": ["section", "seccion", "sección", "tipo", "apartado"],
+            "key": ["key", "clave", "campo", "concept_key", "concepto_key", "id"],
+            "label": ["label", "concept", "concepto", "partida", "row", "rubro"],
+            "category": ["category", "categoria", "categoría", "grupo", "bloque"],
+            "value": ["value", "amount", "valor", "importe", "total"],
+        }
+        try:
+            for row in reader:
+                if not any(str(value or "").strip() for value in row.values()):
+                    continue
+                raw_records.append(
+                    {
+                        "line": reader.line_num,
+                        "season": self._owner_import_header_value(row, aliases["season"]),
+                        "team": self._owner_import_header_value(row, aliases["team"]),
+                        "section": self._owner_import_header_value(row, aliases["section"]),
+                        "key": self._owner_import_header_value(row, aliases["key"]),
+                        "label": self._owner_import_header_value(row, aliases["label"]),
+                        "category": self._owner_import_header_value(row, aliases["category"]),
+                        "value": self._owner_import_header_value(row, aliases["value"]),
+                    }
+                )
+        except csv.Error as err:
+            errors.append({"line": None, "message": f"No se pudo leer el CSV: {err}"})
+        records, record_errors = self._owner_import_normalize_records(raw_records, teams_by_code)
+        errors.extend(record_errors)
+        if not records and not errors:
+            errors.append({"line": None, "message": "No se encontraron filas importables."})
+        return {
+            "ok": not errors,
+            "errors": errors,
+            "records": records,
+            "summary": self._owner_import_group_records(records),
+            "schema": self._owner_import_schema_payload(),
+        }
+
+    def apply_owner_economy_import(self, records_payload: Any) -> Dict[str, Any]:
+        if not isinstance(records_payload, list):
+            raise ValueError("records_required")
+        with self.connect() as conn:
+            teams_by_code = {
+                str(row["code"]).upper(): {"id": int(row["id"]), "name": str(row["name"])}
+                for row in conn.execute("SELECT id, code, name FROM teams").fetchall()
+            }
+            records, errors = self._owner_import_normalize_records(records_payload, teams_by_code)
+            if errors:
+                err = ValueError("invalid_records")
+                setattr(err, "errors", errors)
+                raise err
+            grouped_values: Dict[tuple[int, str], Dict[str, Dict[str, float]]] = {}
+            for record in records:
+                group_key = (int(record["season_year"]), str(record["team_code"]))
+                grouped_values.setdefault(group_key, {"income": {}, "expenses": {}})
+                section = str(record["section"])
+                row_key = str(record["key"])
+                grouped_values[group_key][section][row_key] = grouped_values[group_key][section].get(row_key, 0) + float(record["value"] or 0)
+
+            timestamp = now_iso()
+            for (season_year, team_code), sections in grouped_values.items():
+                team = teams_by_code[team_code]
+                team_id = int(team["id"])
+                existing_economy = conn.execute(
+                    """
+                    SELECT COALESCE(revenue, 0) AS revenue,
+                           COALESCE(expenses, 0) AS expenses
+                    FROM team_economy
+                    WHERE team_id = ? AND season_year = ?
+                    """,
+                    (team_id, season_year),
+                ).fetchone()
+                existing_owner = conn.execute(
+                    """
+                    SELECT income_json, expenses_json
+                    FROM team_owner_office
+                    WHERE team_id = ? AND season_year = ?
+                    """,
+                    (team_id, season_year),
+                ).fetchone()
+                has_income = bool(sections["income"])
+                has_expenses = bool(sections["expenses"])
+                revenue = sum(sections["income"].values()) if has_income else (float(existing_economy["revenue"] or 0) if existing_economy else 0.0)
+                expenses = sum(sections["expenses"].values()) if has_expenses else (float(existing_economy["expenses"] or 0) if existing_economy else 0.0)
+                balance = revenue + expenses
+                income_rows = (
+                    self._owner_import_rows_for_json("income", sections["income"])
+                    if has_income
+                    else (self._owner_office_rows_from_json(existing_owner["income_json"]) if existing_owner else [])
+                )
+                expenses_rows = (
+                    self._owner_import_rows_for_json("expenses", sections["expenses"])
+                    if has_expenses
+                    else (self._owner_office_rows_from_json(existing_owner["expenses_json"]) if existing_owner else [])
+                )
+                conn.execute(
+                    """
+                    INSERT INTO team_economy (
+                        team_id, season_year, balance, revenue, expenses, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(team_id, season_year) DO UPDATE SET
+                        balance = excluded.balance,
+                        revenue = excluded.revenue,
+                        expenses = excluded.expenses,
+                        updated_at = excluded.updated_at
+                    """,
+                    (team_id, season_year, float(balance), float(revenue), float(expenses), timestamp),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO team_owner_office (
+                        team_id,
+                        season_year,
+                        revenue,
+                        expenses,
+                        balance,
+                        income_json,
+                        expenses_json,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(team_id, season_year) DO UPDATE SET
+                        revenue = excluded.revenue,
+                        expenses = excluded.expenses,
+                        balance = excluded.balance,
+                        income_json = excluded.income_json,
+                        expenses_json = excluded.expenses_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        team_id,
+                        season_year,
+                        self._owner_import_value_text(revenue),
+                        self._owner_import_value_text(expenses),
+                        self._owner_import_value_text(balance),
+                        json.dumps(self._normalize_owner_office_rows(income_rows), ensure_ascii=True),
+                        json.dumps(self._normalize_owner_office_rows(expenses_rows), ensure_ascii=True),
+                        timestamp,
+                    ),
+                )
+            conn.commit()
+        summary = self._owner_import_group_records(records)
+        return {
+            "ok": True,
+            "record_count": len(records),
+            "group_count": len(summary),
+            "seasons": sorted({int(row["season_year"]) for row in summary}),
+            "summary": summary,
+        }
 
     def _owner_performance_rows_from_json(self, value: Any) -> List[Dict[str, Any]]:
         try:
@@ -5778,6 +6250,36 @@ QUALITY REQUIREMENTS
         if not self._require_admin():
             return
         if not self._require_csrf():
+            return
+
+        if parsed.path == "/api/admin/economy-import/preview":
+            csv_text = str(payload.get("csv_text") or "")
+            if len(csv_text.encode("utf-8")) > 2_000_000:
+                self._json(413, {"error": "csv_too_large"})
+                return
+            result = self.db.preview_owner_economy_csv(csv_text)
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/admin/economy-import/import":
+            try:
+                result = self.db.apply_owner_economy_import(payload.get("records"))
+            except ValueError as err:
+                if str(err) == "records_required":
+                    self._json(400, {"error": "records_required"})
+                    return
+                if str(err) == "invalid_records":
+                    self._json(400, {"error": "invalid_records", "errors": getattr(err, "errors", [])})
+                    return
+                raise
+            self._log_admin_action(
+                "import",
+                "owner_economy",
+                ",".join(str(season) for season in result.get("seasons", [])),
+                None,
+                {"record_count": result.get("record_count"), "group_count": result.get("group_count")},
+            )
+            self._json(200, result)
             return
 
         if parsed.path == "/api/admin/backup":
