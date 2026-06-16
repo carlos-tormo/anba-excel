@@ -21,7 +21,9 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
-OWNER_BACKGROUND_UPLOAD_DIR = ROOT / "data" / "uploads" / "owner-office"
+OWNER_BACKGROUND_UPLOAD_DIR = Path(
+    os.getenv("OWNER_BACKGROUND_UPLOAD_DIR", str(ROOT / "data" / "uploads" / "owner-office"))
+)
 OWNER_BACKGROUND_MAX_BYTES = 12_000_000
 DEFAULT_ENV_FILE = ROOT / ".env"
 ROSTER_STANDARD_MIN_DEFAULT = 14
@@ -95,6 +97,11 @@ OWNER_OFFICE_IMPORT_ROWS = {
         {"key": "reparto_beneficios_negativo", "label": "Reparto beneficios", "type": "field"},
     ],
 }
+ECONOMY_IMPORT_TOTAL_ROWS = [
+    {"key": "revenue", "label": "Ingresos", "type": "field"},
+    {"key": "expenses", "label": "Gastos", "type": "field"},
+    {"key": "balance", "label": "Balance", "type": "field"},
+]
 TEAM_IMAGE_COLORS = {
     "ATL": "#E03A3E, #C1D32F",
     "BKN": "#000000, #FFFFFF",
@@ -368,6 +375,8 @@ def normalize_pick_round(value: Any) -> str:
 
 def normalize_team_code(value: Any) -> Optional[str]:
     code = str(value or "").strip().upper()
+    if code == "PHO":
+        code = "PHX"
     return code if code else None
 
 
@@ -537,13 +546,23 @@ def parse_csv_amount(value: Any) -> Optional[float]:
             cleaned = cleaned.replace(",", "")
     elif "," in cleaned:
         parts = cleaned.split(",")
-        if len(parts) > 2 or (len(parts) == 2 and len(parts[-1]) == 3 and all(part.isdigit() for part in parts)):
+        if len(parts) > 2 or (
+            len(parts) == 2
+            and len(parts[-1]) == 3
+            and len(parts[0].lstrip("-")) <= 3
+            and all(part.lstrip("-").isdigit() for part in parts)
+        ):
             cleaned = "".join(parts)
         else:
             cleaned = cleaned.replace(",", ".")
     elif "." in cleaned:
         parts = cleaned.split(".")
-        if len(parts) > 2 or (len(parts) == 2 and len(parts[-1]) == 3 and all(part.lstrip("-").isdigit() for part in parts)):
+        if len(parts) > 2 or (
+            len(parts) == 2
+            and len(parts[-1]) == 3
+            and len(parts[0].lstrip("-")) <= 3
+            and all(part.lstrip("-").isdigit() for part in parts)
+        ):
             cleaned = "".join(parts)
     try:
         parsed = float(cleaned)
@@ -571,6 +590,16 @@ def owner_office_import_schema() -> Dict[str, List[Dict[str, str]]]:
             if normalized["type"] == "category":
                 current_category = {"key": normalized["key"], "label": normalized["label"]}
         schema[section] = schema_rows
+    schema["economy"] = [
+        {
+            "key": str(row["key"]),
+            "label": str(row["label"]),
+            "type": str(row["type"]),
+            "category_key": "",
+            "category_label": "Totales economía",
+        }
+        for row in ECONOMY_IMPORT_TOTAL_ROWS
+    ]
     return schema
 
 
@@ -2236,6 +2265,8 @@ class LeagueDB:
             return "income"
         if normalized in {"expense", "expenses", "gasto", "gastos", "coste", "costes"}:
             return "expenses"
+        if normalized in {"economy", "economia", "economía", "summary", "totals", "totales", "tracker"}:
+            return "economy"
         return ""
 
     def _owner_import_resolve_row(self, section: str, key_value: str, label_value: str, category_value: str) -> tuple[Optional[Dict[str, str]], Optional[str]]:
@@ -2244,7 +2275,7 @@ class LeagueDB:
         candidate_key = self._owner_import_key(key_value)
         if candidate_key:
             row = by_key.get(candidate_key)
-            if row and row["type"] == "field":
+            if row and (section == "economy" or row["type"] == "field"):
                 return row, None
             if row and row["type"] == "category":
                 return None, f"'{key_value}' es una categoría, no una fila importable"
@@ -2282,24 +2313,33 @@ class LeagueDB:
             key_value = str(raw.get("key") or "").strip()
             label_value = str(raw.get("label") or "").strip()
             category_value = str(raw.get("category") or "").strip()
-            amount = parse_csv_amount(raw.get("value"))
+            raw_amount = raw.get("value")
+            raw_amount_text = str(raw_amount or "").strip()
+            amount = None if not raw_amount_text else parse_csv_amount(raw_amount)
             if season is None or season < 2000 or season > 2100:
                 errors.append({"line": line, "message": "Temporada inválida. Usa el año inicial, por ejemplo 2025."})
                 continue
             if not team_code or team_code not in teams_by_code:
                 errors.append({"line": line, "message": f"Equipo inválido: {team_code or '-'}"})
                 continue
-            if section not in {"income", "expenses"}:
-                errors.append({"line": line, "message": "Sección inválida. Usa income/ingresos o expenses/gastos."})
+            if section not in {"income", "expenses", "economy"}:
+                errors.append({"line": line, "message": "Sección inválida. Usa income/ingresos, expenses/gastos o economy/totales."})
                 continue
             row_def, row_error = self._owner_import_resolve_row(section, key_value, label_value, category_value)
             if row_error or not row_def:
                 errors.append({"line": line, "message": row_error or "Concepto inválido."})
                 continue
-            if amount is None:
+            if raw_amount_text and amount is None:
                 errors.append({"line": line, "message": f"Importe inválido para {team_code} {row_def['label']}."})
                 continue
-            normalized_amount = abs(float(amount)) if section == "income" else -abs(float(amount))
+            normalized_amount = None
+            if amount is not None:
+                if section == "income" or (section == "economy" and row_def["key"] == "revenue"):
+                    normalized_amount = abs(float(amount))
+                elif section == "expenses" or (section == "economy" and row_def["key"] == "expenses"):
+                    normalized_amount = -abs(float(amount))
+                else:
+                    normalized_amount = float(amount)
             normalized_records.append(
                 {
                     "line": line,
@@ -2316,7 +2356,11 @@ class LeagueDB:
             )
         return normalized_records, errors
 
-    def _owner_import_group_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _owner_import_group_records(
+        self,
+        records: List[Dict[str, Any]],
+        economy_by_team: Optional[Dict[tuple[int, str], Dict[str, float]]] = None,
+    ) -> List[Dict[str, Any]]:
         groups: Dict[tuple[int, str], Dict[str, Any]] = {}
         for record in records:
             key = (int(record["season_year"]), str(record["team_code"]))
@@ -2327,22 +2371,48 @@ class LeagueDB:
                     "team_name": str(record.get("team_name") or ""),
                     "income": {},
                     "expenses": {},
+                    "economy": {},
                     "income_rows": 0,
                     "expenses_rows": 0,
+                    "economy_rows": 0,
                 }
             section = str(record["section"])
             row_key = str(record["key"])
-            value = float(record["value"] or 0)
-            groups[key][section][row_key] = float(groups[key][section].get(row_key, 0)) + value
+            raw_value = record.get("value")
+            if raw_value is None or str(raw_value).strip() == "":
+                if row_key not in groups[key][section]:
+                    groups[key][section][row_key] = None
+            else:
+                value = float(raw_value or 0)
+                existing = groups[key][section].get(row_key)
+                groups[key][section][row_key] = float(existing or 0) + value
             if section == "income":
                 groups[key]["income_rows"] += 1
-            else:
+            elif section == "expenses":
                 groups[key]["expenses_rows"] += 1
+            elif section == "economy":
+                groups[key]["economy_rows"] += 1
 
         summary: List[Dict[str, Any]] = []
         for group in groups.values():
-            revenue = sum(float(value or 0) for value in group["income"].values())
-            expenses = sum(float(value or 0) for value in group["expenses"].values())
+            group_key = (int(group["season_year"]), str(group["team_code"]))
+            existing = (economy_by_team or {}).get(group_key) or {}
+            economy = group.get("economy") or {}
+            revenue = float(
+                economy["revenue"]
+                if economy.get("revenue") not in (None, "")
+                else existing.get("revenue", 0)
+            )
+            expenses = float(
+                economy["expenses"]
+                if economy.get("expenses") not in (None, "")
+                else existing.get("expenses", 0)
+            )
+            balance = float(
+                economy["balance"]
+                if economy.get("balance") not in (None, "")
+                else existing.get("balance", revenue + expenses)
+            )
             summary.append(
                 {
                     "season_year": int(group["season_year"]),
@@ -2350,16 +2420,20 @@ class LeagueDB:
                     "team_name": str(group["team_name"]),
                     "income_rows": int(group["income_rows"]),
                     "expenses_rows": int(group["expenses_rows"]),
+                    "economy_rows": int(group["economy_rows"]),
                     "revenue": revenue,
                     "expenses": expenses,
-                    "balance": revenue + expenses,
+                    "balance": balance,
                     "has_income": bool(group["income"]),
                     "has_expenses": bool(group["expenses"]),
+                    "has_economy": bool(group["economy"]),
                 }
             )
         return sorted(summary, key=lambda row: (int(row["season_year"]), str(row["team_code"])))
 
     def _owner_import_value_text(self, value: Any) -> str:
+        if value is None or str(value).strip() == "":
+            return ""
         amount = float(value or 0)
         rounded = round(amount)
         if abs(amount - rounded) < 0.000001:
@@ -2377,7 +2451,9 @@ class LeagueDB:
                         "key": row["key"],
                         "label": row["label"],
                         "type": "field",
-                        "value": self._owner_import_value_text(values_by_key.get(row["key"], 0)),
+                        "value": self._owner_import_value_text(
+                            values_by_key[row["key"]] if row["key"] in values_by_key else ""
+                        ),
                     }
                 )
         return rows
@@ -2390,6 +2466,20 @@ class LeagueDB:
             teams_by_code = {
                 str(row["code"]).upper(): {"id": int(row["id"]), "name": str(row["name"])}
                 for row in conn.execute("SELECT id, code, name FROM teams").fetchall()
+            }
+            economy_by_team = {
+                (int(row["season_year"]), str(row["code"]).upper()): {
+                    "revenue": float(row["revenue"] or 0),
+                    "expenses": float(row["expenses"] or 0),
+                    "balance": float(row["balance"] or 0),
+                }
+                for row in conn.execute(
+                    """
+                    SELECT e.season_year, t.code, e.revenue, e.expenses, e.balance
+                    FROM team_economy e
+                    JOIN teams t ON t.id = e.team_id
+                    """
+                ).fetchall()
             }
         try:
             dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
@@ -2439,7 +2529,7 @@ class LeagueDB:
             "ok": not errors,
             "errors": errors,
             "records": records,
-            "summary": self._owner_import_group_records(records),
+            "summary": self._owner_import_group_records(records, economy_by_team),
             "schema": self._owner_import_schema_payload(),
         }
 
@@ -2459,12 +2549,19 @@ class LeagueDB:
             grouped_values: Dict[tuple[int, str], Dict[str, Dict[str, float]]] = {}
             for record in records:
                 group_key = (int(record["season_year"]), str(record["team_code"]))
-                grouped_values.setdefault(group_key, {"income": {}, "expenses": {}})
+                grouped_values.setdefault(group_key, {"income": {}, "expenses": {}, "economy": {}})
                 section = str(record["section"])
                 row_key = str(record["key"])
-                grouped_values[group_key][section][row_key] = grouped_values[group_key][section].get(row_key, 0) + float(record["value"] or 0)
+                raw_value = record.get("value")
+                if raw_value is None or str(raw_value).strip() == "":
+                    if row_key not in grouped_values[group_key][section]:
+                        grouped_values[group_key][section][row_key] = None
+                else:
+                    existing = grouped_values[group_key][section].get(row_key)
+                    grouped_values[group_key][section][row_key] = float(existing or 0) + float(raw_value or 0)
 
             timestamp = now_iso()
+            applied_economy_by_team: Dict[tuple[int, str], Dict[str, float]] = {}
             for (season_year, team_code), sections in grouped_values.items():
                 team = teams_by_code[team_code]
                 team_id = int(team["id"])
@@ -2487,9 +2584,28 @@ class LeagueDB:
                 ).fetchone()
                 has_income = bool(sections["income"])
                 has_expenses = bool(sections["expenses"])
-                revenue = sum(sections["income"].values()) if has_income else (float(existing_economy["revenue"] or 0) if existing_economy else 0.0)
-                expenses = sum(sections["expenses"].values()) if has_expenses else (float(existing_economy["expenses"] or 0) if existing_economy else 0.0)
-                balance = revenue + expenses
+                economy_values = sections.get("economy") or {}
+                has_economy = bool(economy_values)
+                revenue = (
+                    float(economy_values["revenue"])
+                    if economy_values.get("revenue") not in (None, "")
+                    else (float(existing_economy["revenue"] or 0) if existing_economy else 0.0)
+                )
+                expenses = (
+                    float(economy_values["expenses"])
+                    if economy_values.get("expenses") not in (None, "")
+                    else (float(existing_economy["expenses"] or 0) if existing_economy else 0.0)
+                )
+                balance = (
+                    float(economy_values["balance"])
+                    if economy_values.get("balance") not in (None, "")
+                    else revenue + expenses
+                )
+                applied_economy_by_team[(season_year, team_code)] = {
+                    "revenue": float(revenue),
+                    "expenses": float(expenses),
+                    "balance": float(balance),
+                }
                 income_rows = (
                     self._owner_import_rows_for_json("income", sections["income"])
                     if has_income
@@ -2547,7 +2663,7 @@ class LeagueDB:
                     ),
                 )
             conn.commit()
-        summary = self._owner_import_group_records(records)
+        summary = self._owner_import_group_records(records, applied_economy_by_team)
         return {
             "ok": True,
             "record_count": len(records),

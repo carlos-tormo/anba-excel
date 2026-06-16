@@ -7422,7 +7422,12 @@ function economyImportErrorsHtml(errors = []) {
 }
 
 function economyImportSchemaHtml(schema = {}) {
-  const sectionLabel = (section) => (section === 'income' ? 'Ingresos' : 'Gastos');
+  const sectionLabel = (section) => {
+    if (section === 'income') return 'Ingresos';
+    if (section === 'expenses') return 'Gastos';
+    if (section === 'economy') return 'Totales economía';
+    return section;
+  };
   return `
     <details class="economy-import-schema">
       <summary>Ver keys disponibles</summary>
