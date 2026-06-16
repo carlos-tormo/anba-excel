@@ -29,6 +29,16 @@ ROSTER_TWO_WAY_MAX_DEFAULT = 3
 CAP_FORECAST_MIN_YEAR = 2025
 CAP_FORECAST_MAX_YEAR = 2035
 CAP_FORECAST_WINDOW = 6
+OWNER_SEASON_OBJECTIVES = [
+    "Campeones",
+    "Finalistas",
+    "Final de conferencia",
+    "Segunda ronda",
+    "Primera ronda",
+    "Entrar en play-in",
+    "Luchar por el play-in",
+    "Desarrollo de jóvenes",
+]
 TEAM_IMAGE_COLORS = {
     "ATL": "#E03A3E, #C1D32F",
     "BKN": "#000000, #FFFFFF",
@@ -772,6 +782,8 @@ class LeagueDB:
                     season_year INTEGER NOT NULL,
                     confidence_current TEXT,
                     confidence_change TEXT,
+                    season_goal_set TEXT,
+                    season_goal_achieved TEXT,
                     revenue TEXT,
                     expenses TEXT,
                     balance TEXT,
@@ -898,6 +910,10 @@ class LeagueDB:
             }
             if "performance_json" not in owner_office_cols:
                 conn.execute("ALTER TABLE team_owner_office ADD COLUMN performance_json TEXT NOT NULL DEFAULT '[]'")
+            if "season_goal_set" not in owner_office_cols:
+                conn.execute("ALTER TABLE team_owner_office ADD COLUMN season_goal_set TEXT")
+            if "season_goal_achieved" not in owner_office_cols:
+                conn.execute("ALTER TABLE team_owner_office ADD COLUMN season_goal_achieved TEXT")
             if "owner_conclusion_message" not in owner_exit_cols:
                 conn.execute("ALTER TABLE owner_exit_interviews ADD COLUMN owner_conclusion_message TEXT")
             if "owner_office_background_url" not in owner_profile_cols:
@@ -2115,6 +2131,24 @@ class LeagueDB:
             )
         return normalized
 
+    def _normalize_owner_season_objective(self, value: Any) -> str:
+        text = str(value or "").strip()
+        return text if text in OWNER_SEASON_OBJECTIVES else ""
+
+    def _owner_season_objective_evaluation(self, target: Any, achieved: Any) -> str:
+        target_text = self._normalize_owner_season_objective(target)
+        achieved_text = self._normalize_owner_season_objective(achieved)
+        if not target_text or not achieved_text:
+            return "No evaluable"
+        target_rank = OWNER_SEASON_OBJECTIVES.index(target_text)
+        achieved_rank = OWNER_SEASON_OBJECTIVES.index(achieved_text)
+        difference = achieved_rank - target_rank
+        if difference < 0:
+            return f"Objetivo superado por {abs(difference)} nivel(es)"
+        if difference == 0:
+            return "Objetivo cumplido"
+        return f"Objetivo no cumplido por {difference} nivel(es)"
+
     def _owner_attribute_value(self, value: Any) -> Optional[int]:
         parsed = parse_int(value)
         if parsed is None:
@@ -2507,6 +2541,12 @@ class LeagueDB:
                     "season_year": int(year),
                     "confidence_current": str(saved["confidence_current"] or "") if saved else "",
                     "confidence_change": str(saved["confidence_change"] or "") if saved else "",
+                    "season_goal_set": self._normalize_owner_season_objective(saved["season_goal_set"]) if saved else "",
+                    "season_goal_achieved": self._normalize_owner_season_objective(saved["season_goal_achieved"]) if saved else "",
+                    "season_goal_evaluation": self._owner_season_objective_evaluation(
+                        saved["season_goal_set"] if saved else "",
+                        saved["season_goal_achieved"] if saved else "",
+                    ),
                     "revenue": str(saved["revenue"]) if saved and saved["revenue"] is not None else economy_revenue,
                     "expenses": str(saved["expenses"]) if saved and saved["expenses"] is not None else economy_expenses,
                     "balance": str(saved["balance"]) if saved and saved["balance"] is not None else economy_balance,
@@ -2592,6 +2632,8 @@ class LeagueDB:
                     season_year,
                     confidence_current,
                     confidence_change,
+                    season_goal_set,
+                    season_goal_achieved,
                     revenue,
                     expenses,
                     balance,
@@ -2600,10 +2642,12 @@ class LeagueDB:
                     performance_json,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(team_id, season_year) DO UPDATE SET
                     confidence_current = excluded.confidence_current,
                     confidence_change = excluded.confidence_change,
+                    season_goal_set = excluded.season_goal_set,
+                    season_goal_achieved = excluded.season_goal_achieved,
                     revenue = excluded.revenue,
                     expenses = excluded.expenses,
                     balance = excluded.balance,
@@ -2617,6 +2661,8 @@ class LeagueDB:
                     int(season_year),
                     str(payload.get("confidence_current") or "").strip(),
                     str(payload.get("confidence_change") or "").strip(),
+                    self._normalize_owner_season_objective(payload.get("season_goal_set")),
+                    self._normalize_owner_season_objective(payload.get("season_goal_achieved")),
                     str(payload.get("revenue") or "").strip(),
                     str(payload.get("expenses") or "").strip(),
                     str(payload.get("balance") or "").strip(),
@@ -4806,6 +4852,10 @@ QUALITY REQUIREMENTS
                 f"Atributos internos propietario: {json.dumps(attrs, ensure_ascii=False)}",
                 f"Confianza actual: {entry.get('confidence_current') or 'No configurada'}",
                 f"Cambio confianza temporada: {entry.get('confidence_change') or 'No configurado'}",
+                f"Objetivo de la temporada fijado: {entry.get('season_goal_set') or 'No configurado'}",
+                f"Objetivo de la temporada cumplido: {entry.get('season_goal_achieved') or 'No configurado'}",
+                f"Evaluacion del objetivo: {entry.get('season_goal_evaluation') or 'No evaluable'}",
+                "Criterio de objetivos: la jerarquia va de Campeones como mejor objetivo a Desarrollo de jovenes como peor; cumplir o superar el objetivo debe valorarse positivamente, y quedar por debajo debe penalizarse de forma creciente.",
                 f"Ingresos: {entry.get('revenue') or 'No configurado'}",
                 f"Gastos: {entry.get('expenses') or 'No configurado'}",
                 f"Balance: {entry.get('balance') or 'No configurado'}",
@@ -4829,6 +4879,7 @@ QUALITY REQUIREMENTS
             "No uses el nombre del propietario como si fuera el nombre del GM. No inventes datos fuera del contexto. "
             "Deja una pista clara de por que la confianza del propietario ha subido o bajado durante la temporada, "
             "usando el cambio de confianza del contexto si esta configurado. "
+            "Si hay objetivo de temporada configurado, menciona de forma natural si se cumplio, se supero o se quedo corto. "
             "Haz una sola intervencion inicial de 2 a 4 frases, cerrando con una pregunta concreta al GM "
             "sobre su evaluacion de la temporada."
         )
@@ -4894,6 +4945,8 @@ QUALITY REQUIREMENTS
             "\"message\", \"conclusion\" y \"trust_delta\". trust_delta debe ser exactamente 1 o -1. "
             "message debe ser una respuesta corta, de 1 a 2 frases, profesional y directa, que conteste al punto principal del GM "
             "y comunique claramente si la confianza sube o baja. "
+            "La decision de confianza debe tener en cuenta si el equipo cumplio, supero o fallo el objetivo fijado; "
+            "fallar por mas niveles debe pesar cada vez mas negativamente. "
             "conclusion debe ser un cierre separado, de 2 a 4 frases, con un mensaje para el proximo ano. "
             "Ese cierre puede ser duro, optimista, satisfecho o exigente segun resultados, economia, direccion de la franquicia "
             "y atributos del propietario. Debe insinuar que despues del verano propietario y GM se sentaran a definir objetivos concretos. "

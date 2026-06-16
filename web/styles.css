@@ -3596,7 +3596,12 @@ th {
   gap: 18px;
 }
 
-.owner-office-overview,
+.owner-office-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
 .owner-office-breakdowns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

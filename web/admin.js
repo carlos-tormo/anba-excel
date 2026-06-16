@@ -195,6 +195,18 @@ const OWNER_OFFICE_RESULT_OPTIONS = [
   'Reconstrucción',
 ];
 
+const OWNER_SEASON_OBJECTIVE_OPTIONS = [
+  '',
+  'Campeones',
+  'Finalistas',
+  'Final de conferencia',
+  'Segunda ronda',
+  'Primera ronda',
+  'Entrar en play-in',
+  'Luchar por el play-in',
+  'Desarrollo de jóvenes',
+];
+
 const OWNER_ATTRIBUTE_FIELDS = [
   { key: 'ambicion_competitiva', label: 'Ambición Competitiva' },
   { key: 'paciencia', label: 'Paciencia' },
@@ -3950,6 +3962,10 @@ function ownerOfficeEditableInput(field, value) {
   return `<input class="owner-office-input" data-owner-field="${escapeHtml(field)}" value="${escapeHtml(ownerOfficeInputValue(value))}">`;
 }
 
+function ownerOfficeEditableGoalSelect(field, value) {
+  return `<select class="owner-office-input" data-owner-field="${escapeHtml(field)}">${ownerOfficeGoalOptionsHtml(value)}</select>`;
+}
+
 function ownerOfficeBreakdownTable(title, kind, rows) {
   const tableClass = kind === 'income' ? 'owner-office-table--income' : 'owner-office-table--expenses';
   return `
@@ -3994,6 +4010,13 @@ function ownerOfficePerformanceRows(entry, season) {
 function ownerOfficeResultOptionsHtml(selected) {
   const selectedValue = String(selected || '');
   return OWNER_OFFICE_RESULT_OPTIONS.map((option) => (
+    `<option value="${escapeHtml(option)}" ${option === selectedValue ? 'selected' : ''}>${option ? escapeHtml(option) : 'Seleccionar'}</option>`
+  )).join('');
+}
+
+function ownerOfficeGoalOptionsHtml(selected) {
+  const selectedValue = String(selected || '');
+  return OWNER_SEASON_OBJECTIVE_OPTIONS.map((option) => (
     `<option value="${escapeHtml(option)}" ${option === selectedValue ? 'selected' : ''}>${option ? escapeHtml(option) : 'Seleccionar'}</option>`
   )).join('');
 }
@@ -4101,7 +4124,7 @@ function ownerExitBackgroundHtml(profile) {
     return `<img class="owner-exit-background-image" src="${escapeHtml(backgroundUrl)}" alt="" loading="lazy">`;
   }
   const teamName = String(state.teamData?.team?.name || state.teamData?.owner_office?.team_name || state.teamCode || 'ANBA').trim();
-  const logo = teamIconCandidates(state.teamCode)[0] || '';
+  const logo = teamLogoCandidates(state.teamCode)[0] || '';
   return `
     <div class="owner-exit-background-fallback">
       ${logo ? `<img src="${escapeHtml(logo)}" alt="">` : ''}
@@ -4121,7 +4144,7 @@ function renderOwnerExitModal(interview) {
   const ownerConclusion = String(interview?.owner_conclusion_message || '');
   const status = String(interview?.status || '').toLowerCase();
   const teamName = String(state.teamData?.team?.name || state.teamData?.owner_office?.team_name || state.teamCode || '').trim();
-  const logo = teamIconCandidates(state.teamCode)[0] || '';
+  const logo = teamLogoCandidates(state.teamCode)[0] || '';
   content.innerHTML = `
     <div class="owner-exit-game">
       <div class="owner-exit-background" aria-hidden="true">
@@ -4232,6 +4255,25 @@ function renderOwnerOffice() {
             <tr>
               <th>Balance</th>
               <td>${ownerOfficeEditableInput('balance', entry.balance)}${rank}</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+      <article class="owner-office-panel">
+        <h3>Objetivos</h3>
+        <table class="owner-office-table owner-office-mini-table">
+          <tbody>
+            <tr>
+              <th>Objetivo fijado</th>
+              <td>${ownerOfficeEditableGoalSelect('season_goal_set', entry.season_goal_set)}</td>
+            </tr>
+            <tr>
+              <th>Objetivo cumplido</th>
+              <td>${ownerOfficeEditableGoalSelect('season_goal_achieved', entry.season_goal_achieved)}</td>
+            </tr>
+            <tr>
+              <th>Evaluación</th>
+              <td>${escapeHtml(ownerOfficeInputValue(entry.season_goal_evaluation || 'No evaluable'))}</td>
             </tr>
           </tbody>
         </table>
@@ -4372,6 +4414,8 @@ async function saveOwnerOffice() {
         season_year: season,
         confidence_current: valueFor('confidence_current'),
         confidence_change: valueFor('confidence_change'),
+        season_goal_set: valueFor('season_goal_set'),
+        season_goal_achieved: valueFor('season_goal_achieved'),
         revenue: valueFor('revenue'),
         expenses: valueFor('expenses'),
         balance: valueFor('balance'),
