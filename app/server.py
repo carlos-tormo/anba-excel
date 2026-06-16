@@ -18,6 +18,8 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
+OWNER_BACKGROUND_UPLOAD_DIR = ROOT / "data" / "uploads" / "owner-office"
+OWNER_BACKGROUND_MAX_BYTES = 12_000_000
 DEFAULT_ENV_FILE = ROOT / ".env"
 ROSTER_STANDARD_MIN_DEFAULT = 14
 ROSTER_STANDARD_MAX_DEFAULT = 15
@@ -2630,6 +2632,29 @@ class LeagueDB:
             conn.commit()
         return self.get_team_owner_office(code, include_private=True)
 
+    def update_owner_background_url(self, code: str, background_url: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not team:
+                return None
+            timestamp = now_iso()
+            conn.execute(
+                """
+                INSERT INTO team_owner_profiles (
+                    team_id,
+                    owner_office_background_url,
+                    updated_at
+                )
+                VALUES (?, ?, ?)
+                ON CONFLICT(team_id) DO UPDATE SET
+                    owner_office_background_url = excluded.owner_office_background_url,
+                    updated_at = excluded.updated_at
+                """,
+                (int(team["id"]), str(background_url or "").strip()[:1000], timestamp),
+            )
+            conn.commit()
+        return self.get_team_owner_office(code, include_private=True)
+
     def upsert_team_economy(self, season_year: int, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         if season_year < 2000 or season_year > 2100:
             raise ValueError("invalid_season_year")
@@ -4028,6 +4053,86 @@ class Handler(SimpleHTTPRequestHandler):
             return {}
         return json.loads(raw.decode("utf-8"))
 
+    def _read_multipart_image_upload(self, field_name: str) -> tuple[bytes, str, str]:
+        content_type = str(self.headers.get("Content-Type") or "")
+        boundary_match = re.search(r'boundary=(?:"([^"]+)"|([^;]+))', content_type)
+        if not boundary_match:
+            raise ValueError("missing_multipart_boundary")
+        boundary = (boundary_match.group(1) or boundary_match.group(2) or "").encode("utf-8")
+        length = parse_int(self.headers.get("Content-Length"))
+        if length is None or length <= 0:
+            raise ValueError("missing_upload")
+        if length > OWNER_BACKGROUND_MAX_BYTES + 8192:
+            raise ValueError("upload_too_large")
+        body = self.rfile.read(length)
+        delimiter = b"--" + boundary
+        for raw_part in body.split(delimiter):
+            part = raw_part.strip(b"\r\n")
+            if not part or part == b"--":
+                continue
+            if part.endswith(b"--"):
+                part = part[:-2].strip(b"\r\n")
+            header_blob, separator, file_bytes = part.partition(b"\r\n\r\n")
+            if not separator:
+                continue
+            headers = header_blob.decode("latin-1", errors="ignore").split("\r\n")
+            disposition = next((line for line in headers if line.lower().startswith("content-disposition:")), "")
+            if not re.search(rf'name="{re.escape(field_name)}"', disposition):
+                continue
+            filename_match = re.search(r'filename="([^"]*)"', disposition)
+            if not filename_match or not filename_match.group(1):
+                raise ValueError("missing_upload")
+            mime_header = next((line for line in headers if line.lower().startswith("content-type:")), "")
+            declared_mime = mime_header.split(":", 1)[1].strip().lower() if ":" in mime_header else ""
+            file_bytes = file_bytes.rstrip(b"\r\n")
+            if not file_bytes:
+                raise ValueError("missing_upload")
+            if len(file_bytes) > OWNER_BACKGROUND_MAX_BYTES:
+                raise ValueError("upload_too_large")
+            ext, mime_type = self._uploaded_image_type(file_bytes, declared_mime)
+            return file_bytes, ext, mime_type
+        raise ValueError("missing_upload")
+
+    def _uploaded_image_type(self, data: bytes, declared_mime: str = "") -> tuple[str, str]:
+        if data.startswith(b"\xff\xd8\xff"):
+            return "jpg", "image/jpeg"
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png", "image/png"
+        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "webp", "image/webp"
+        raise ValueError("unsupported_upload_type")
+
+    def _serve_owner_background_upload(self, path: str) -> None:
+        filename = path.rsplit("/", 1)[-1]
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", filename or ""):
+            self._json(404, {"error": "not_found"})
+            return
+        file_path = OWNER_BACKGROUND_UPLOAD_DIR / filename
+        if not file_path.is_file():
+            self._json(404, {"error": "not_found"})
+            return
+        ext = file_path.suffix.lower().lstrip(".")
+        content_type = {
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "png": "image/png",
+            "webp": "image/webp",
+        }.get(ext, "application/octet-stream")
+        try:
+            data = file_path.read_bytes()
+        except OSError:
+            self._json(404, {"error": "not_found"})
+            return
+        self._bytes_response(
+            200,
+            data,
+            content_type,
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     def _client_ip(self) -> str:
         xff = self.headers.get("X-Forwarded-For", "").strip()
         if xff:
@@ -5137,6 +5242,10 @@ QUALITY REQUIREMENTS
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
 
+        if parsed.path.startswith("/uploads/owner-office/"):
+            self._serve_owner_background_upload(parsed.path)
+            return
+
         if parsed.path == "/":
             self._route_html("index.html")
             return
@@ -5381,6 +5490,53 @@ QUALITY REQUIREMENTS
                 return
             self._clear_session()
             self._json(200, {"ok": True}, headers={"Set-Cookie": self._clear_session_cookie()})
+            return
+
+        if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/owner-office/background"):
+            if not self._require_admin():
+                return
+            if not self._require_csrf():
+                return
+            parts = parsed.path.split("/")
+            if len(parts) < 6:
+                self._json(404, {"error": "not_found"})
+                return
+            code = normalize_team_code(parts[3])
+            if not code:
+                self._json(400, {"error": "invalid_team"})
+                return
+            try:
+                file_bytes, ext, mime_type = self._read_multipart_image_upload("background")
+            except ValueError as err:
+                error = str(err) or "invalid_upload"
+                status = 413 if error == "upload_too_large" else 400
+                self._json(status, {"error": error})
+                return
+            try:
+                OWNER_BACKGROUND_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                filename = f"{code}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(6)}.{ext}"
+                file_path = OWNER_BACKGROUND_UPLOAD_DIR / filename
+                file_path.write_bytes(file_bytes)
+            except OSError:
+                self._json(500, {"error": "upload_save_failed"})
+                return
+            background_url = f"/uploads/owner-office/{filename}"
+            owner_office = self.db.update_owner_background_url(code, background_url)
+            if not owner_office:
+                try:
+                    file_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self._json(404, {"error": "team_not_found"})
+                return
+            self._log_admin_action(
+                "upload",
+                "owner_office_background",
+                code,
+                code,
+                {"url": background_url, "bytes": len(file_bytes), "mime_type": mime_type},
+            )
+            self._json(200, {"ok": True, "background_url": background_url, "owner_office": owner_office})
             return
 
         payload = self._read_json()

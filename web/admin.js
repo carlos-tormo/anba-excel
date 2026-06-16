@@ -3858,6 +3858,28 @@ function ownerOfficeProfileAvatarHtml(profile) {
   `;
 }
 
+function ownerOfficeBackgroundUploadHtml(profile) {
+  const backgroundUrl = String(profile?.owner_office_background_url || '').trim();
+  return `
+    <div class="owner-office-background-upload">
+      <input type="hidden" data-owner-profile-field="owner_office_background_url" value="${escapeHtml(backgroundUrl)}">
+      <div class="owner-office-background-preview" data-owner-background-preview>
+        ${backgroundUrl
+          ? `<img src="${escapeHtml(backgroundUrl)}" alt="Fondo actual del despacho">`
+          : '<span>Sin fondo subido</span>'}
+      </div>
+      <div class="owner-office-background-actions">
+        <label class="owner-office-upload-button">
+          <input type="file" accept="image/png,image/jpeg,image/webp" data-owner-background-upload>
+          <span>Subir imagen</span>
+        </label>
+        <span class="owner-office-upload-status" data-owner-background-status></span>
+      </div>
+      <p>PNG, JPG o WebP. Recomendado: formato horizontal 16:9.</p>
+    </div>
+  `;
+}
+
 function ownerOfficeAttributeInput(key, value) {
   const parsed = Number(value);
   const normalized = Number.isFinite(parsed) && parsed >= 1 && parsed <= 10 ? String(parsed) : '';
@@ -3879,10 +3901,6 @@ function ownerOfficeProfileEditor(profile) {
               ${ownerOfficeProfileInput('owner_photo_url', profile?.owner_photo_url, 'placeholder="https://..."')}
             </label>
             <label>
-              <span>Fondo despacho URL</span>
-              ${ownerOfficeProfileInput('owner_office_background_url', profile?.owner_office_background_url, 'placeholder="https://..."')}
-            </label>
-            <label>
               <span>Nombre</span>
               ${ownerOfficeProfileInput('owner_name', profile?.owner_name)}
             </label>
@@ -3900,6 +3918,10 @@ function ownerOfficeProfileEditor(profile) {
           <span>Descripción</span>
           ${ownerOfficeProfileTextarea('owner_bio', profile?.owner_bio)}
         </label>
+        <div class="owner-office-bio-field">
+          <span>Fondo del despacho</span>
+          ${ownerOfficeBackgroundUploadHtml(profile)}
+        </div>
       </article>
       <article class="owner-office-panel owner-office-attributes-panel">
         <h3>Atributos internos</h3>
@@ -4227,6 +4249,7 @@ function renderOwnerOffice() {
   content.querySelector('[data-owner-exit-reset]')?.addEventListener('click', () => {
     void resetOwnerExitInterview();
   });
+  setupOwnerBackgroundUploadControls(content);
 }
 
 async function loadOwnerOfficeForTeam(code) {
@@ -4266,6 +4289,62 @@ function collectOwnerProfile() {
     owner_bio: fieldValue('owner_bio'),
     attributes,
   };
+}
+
+function setOwnerBackgroundUploadState(root, url, message = '') {
+  const hidden = root.querySelector('[data-owner-profile-field="owner_office_background_url"]');
+  const preview = root.querySelector('[data-owner-background-preview]');
+  const status = root.querySelector('[data-owner-background-status]');
+  if (hidden) hidden.value = url || '';
+  if (preview) {
+    preview.innerHTML = url
+      ? `<img src="${escapeHtml(url)}" alt="Fondo actual del despacho">`
+      : '<span>Sin fondo subido</span>';
+  }
+  if (status) status.textContent = message;
+}
+
+async function uploadOwnerOfficeBackground(file, root) {
+  if (!state.teamCode || !file) return;
+  const formData = new FormData();
+  formData.append('background', file);
+  const headers = {};
+  if (state.csrfToken) headers['X-CSRF-Token'] = state.csrfToken;
+  const res = await fetch(`/api/teams/${encodeURIComponent(state.teamCode)}/owner-office/background`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`API ${res.status}: ${text}`);
+  }
+  const result = await res.json();
+  if (result.owner_office) {
+    state.teamData.owner_office = result.owner_office;
+  }
+  setOwnerBackgroundUploadState(root, result.background_url || '', 'Imagen subida');
+}
+
+function setupOwnerBackgroundUploadControls(root) {
+  const input = root.querySelector('[data-owner-background-upload]');
+  if (!input) return;
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const status = root.querySelector('[data-owner-background-status]');
+    if (status) status.textContent = 'Subiendo...';
+    input.disabled = true;
+    try {
+      await uploadOwnerOfficeBackground(file, root);
+    } catch (err) {
+      if (status) status.textContent = 'Error al subir';
+      alert(`Background upload failed: ${err.message || err}`);
+    } finally {
+      input.disabled = false;
+      input.value = '';
+    }
+  });
 }
 
 function collectOwnerPerformanceRows() {
