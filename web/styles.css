@@ -12,6 +12,7 @@
   --primary-dark: #115e59;
   --danger: #b42318;
   --border: #d9e2ec;
+  --desktop-sidebar-width: 238px;
 }
 
 * { box-sizing: border-box; }
@@ -440,14 +441,14 @@ h1 {
 
 @media (min-width: 721px) {
   body.app-layout {
-    padding-left: 238px;
+    padding-left: var(--desktop-sidebar-width);
   }
 
   header {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 50;
-    width: 238px;
+    width: var(--desktop-sidebar-width);
     min-height: 100vh;
     align-items: stretch;
     justify-content: flex-start;
@@ -3997,6 +3998,15 @@ th {
   border: 0;
   border-radius: 0;
   background: #020617;
+}
+@media (min-width: 721px) {
+  body.app-layout .modal-backdrop.owner-exit-backdrop {
+    inset: 0 0 0 var(--desktop-sidebar-width);
+  }
+
+  body.app-layout .owner-exit-modal {
+    width: 100%;
+  }
 }
 .owner-exit-modal .modal-header {
   position: absolute;
