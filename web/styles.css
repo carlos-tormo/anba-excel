@@ -864,7 +864,7 @@ h1 {
   background: rgba(15, 23, 42, 0.56);
   display: grid;
   place-items: center;
-  z-index: 40;
+  z-index: 11000;
   padding: 14px;
 }
 .modal-card {
@@ -3883,6 +3883,24 @@ th {
   font-weight: 900;
 }
 
+.owner-office-check-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.owner-office-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-weight: 800;
+}
+
+.owner-office-check input {
+  width: 18px;
+  height: 18px;
+}
+
 .owner-office-category-row td {
   background: #d8ead1;
   color: #111827;
@@ -4000,6 +4018,10 @@ th {
   background: #020617;
 }
 @media (min-width: 721px) {
+  body.app-layout .modal-backdrop:not(.owner-exit-backdrop) {
+    inset: 0 0 0 var(--desktop-sidebar-width);
+  }
+
   body.app-layout .modal-backdrop.owner-exit-backdrop {
     inset: 0 0 0 var(--desktop-sidebar-width);
   }

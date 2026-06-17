@@ -68,6 +68,7 @@ const state = {
     signingFreeAgentId: null,
     gmTimelineEntries: [],
     gmTimelineSvg: '',
+    seasonViewStart: null,
     figuresSeasonStart: null,
     ownerOfficeSeason: null,
     trackerEconomySeason: null,
@@ -581,6 +582,67 @@ function freeAgencyModeActive() {
   return boolValue(state.settings.free_agency_mode);
 }
 
+function defaultSeasonViewStart() {
+  const currentYear = currentSeasonStart();
+  return freeAgencyModeActive() ? currentYear + 1 : currentYear;
+}
+
+function availableSeasonViewStarts() {
+  const currentYear = currentSeasonStart();
+  return Array.from({ length: 6 }, (_, idx) => currentYear + idx);
+}
+
+function normalizeSeasonViewStart(value) {
+  const starts = availableSeasonViewStarts();
+  if (value === null || value === undefined || value === '') {
+    const defaultStart = defaultSeasonViewStart();
+    return starts.includes(defaultStart) ? defaultStart : starts[0];
+  }
+  const requested = Number(value);
+  if (starts.includes(requested)) return requested;
+  const defaultStart = defaultSeasonViewStart();
+  return starts.includes(defaultStart) ? defaultStart : starts[0];
+}
+
+function selectedSeasonStart() {
+  const normalized = normalizeSeasonViewStart(state.ui.seasonViewStart);
+  state.ui.seasonViewStart = normalized;
+  return normalized;
+}
+
+function renderSeasonViewControl() {
+  const currentYear = currentSeasonStart();
+  const selected = selectedSeasonStart();
+  const optionsHtml = availableSeasonViewStarts()
+    .map((season) => {
+      const suffix = season === currentYear ? ' (current)' : '';
+      return `<option value="${season}">${seasonLabel(season)}${suffix}</option>`;
+    })
+    .join('');
+  document.querySelectorAll('[data-season-view-select]').forEach((select) => {
+    select.innerHTML = optionsHtml;
+    select.value = String(selected);
+  });
+}
+
+function setSeasonViewStart(startYear) {
+  state.ui.seasonViewStart = normalizeSeasonViewStart(startYear);
+  renderSeasonViewControl();
+  if (!state.teamData) return;
+  renderCards();
+  renderImportantFigures();
+  renderAssets();
+}
+
+function setupSeasonViewControl() {
+  renderSeasonViewControl();
+  document.querySelectorAll('[data-season-view-select]').forEach((select) => {
+    select.addEventListener('change', () => {
+      setSeasonViewStart(select.value);
+    });
+  });
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -1001,8 +1063,8 @@ function deadContractExcludedFromCap(dead) {
 }
 
 function balanceSeasonYears() {
-  const currentYear = currentSeasonStart();
-  return Array.from({ length: 6 }, (_, idx) => currentYear + idx);
+  const selectedYear = selectedSeasonStart();
+  return Array.from({ length: 6 }, (_, idx) => selectedYear + idx);
 }
 
 function exceptionBalanceTotal(season) {
@@ -1083,7 +1145,7 @@ function seasonBalances(season) {
 }
 
 function displayBalanceSeason() {
-  return freeAgencyModeActive() ? capHoldTargetSeason() : currentSeasonStart();
+  return selectedSeasonStart();
 }
 
 function summaryForBalanceSeason(data, season = displayBalanceSeason()) {
@@ -3733,7 +3795,7 @@ function renderCards() {
 function renderImportantFigures() {
   const table = document.getElementById('importantFiguresTable');
   if (!table) return;
-  const currentYear = currentSeasonStart();
+  const selectedYear = selectedSeasonStart();
   const seasons = balanceSeasonYears();
   const seasonData = seasons.map((season) => ({ season, balances: seasonBalances(season) }));
   const rows = [
@@ -3747,7 +3809,7 @@ function renderImportantFigures() {
       <tr>
         <th class="balance-row-heading">Balance</th>
         ${seasons.map((season) => `
-          <th class="${season === currentYear ? 'is-current-year' : ''}">${seasonSlashLabel(season)}</th>
+          <th class="${season === selectedYear ? 'is-current-year' : ''}">${seasonSlashLabel(season)}</th>
         `).join('')}
       </tr>
     </thead>
@@ -3762,7 +3824,7 @@ function renderImportantFigures() {
               ? (value > 0 ? 'is-negative' : '')
               : (value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '');
             return `
-              <td class="${season === currentYear ? 'is-current-year' : ''}">
+              <td class="${season === selectedYear ? 'is-current-year' : ''}">
                 <span class="balance-value ${valueClass}">${formatMoneyDots(value)}</span>
               </td>
             `;
@@ -3774,13 +3836,13 @@ function renderImportantFigures() {
 
   const appendix = document.getElementById('importantFiguresAppendix');
   if (!appendix) return;
-  const salaryCap = capForSeason(currentYear);
-  const luxuryCap = luxuryCapForSeason(currentYear);
-  const firstApron = firstApronForSeason(currentYear);
-  const secondApron = secondApronForSeason(currentYear);
+  const salaryCap = capForSeason(selectedYear);
+  const luxuryCap = luxuryCapForSeason(selectedYear);
+  const firstApron = firstApronForSeason(selectedYear);
+  const secondApron = secondApronForSeason(selectedYear);
   const minCap = Number(state.settings.minimum_cap_allowed || salaryCap * 0.9);
   const appendixRows = [
-    ['Temporada actual', seasonLabel(currentYear)],
+    ['Temporada seleccionada', seasonLabel(selectedYear)],
     ['Salary cap', formatDots(salaryCap)],
     ['Luxury cap', formatDots(luxuryCap)],
     ['1er Apron', formatDots(firstApron)],
@@ -3962,6 +4024,15 @@ function ownerOfficeMergedRows(defaultRows, savedRows) {
 
 function ownerOfficeEditableInput(field, value) {
   return `<input class="owner-office-input" data-owner-field="${escapeHtml(field)}" value="${escapeHtml(ownerOfficeInputValue(value))}">`;
+}
+
+function ownerOfficeEditableCheckbox(field, checked, label) {
+  return `
+    <label class="owner-office-check">
+      <input type="checkbox" data-owner-checkbox="${escapeHtml(field)}" ${checked ? 'checked' : ''}>
+      <span>${escapeHtml(label)}</span>
+    </label>
+  `;
 }
 
 function ownerOfficeEditableGoalSelect(field, value) {
@@ -4239,6 +4310,15 @@ function renderOwnerOffice() {
               <th>Cambio ${escapeHtml(seasonLabel(season))}</th>
               <td>${ownerOfficeEditableInput('confidence_change', entry.confidence_change)}</td>
             </tr>
+            <tr>
+              <th>Contexto GM</th>
+              <td>
+                <div class="owner-office-check-stack">
+                  ${ownerOfficeEditableCheckbox('new_gm_after_dismissal', Boolean(entry.new_gm_after_dismissal), 'Nuevo GM tras destitución')}
+                  ${ownerOfficeEditableCheckbox('gm_midseason_arrival', Boolean(entry.gm_midseason_arrival), 'GM que llegó a mediados de la temporada pasada')}
+                </div>
+              </td>
+            </tr>
           </tbody>
         </table>
       </article>
@@ -4408,6 +4488,7 @@ async function saveOwnerOffice() {
   const button = document.getElementById('saveOwnerOfficeBtn');
   const season = selectedOwnerOfficeSeason();
   const valueFor = (field) => document.querySelector(`[data-owner-field="${field}"]`)?.value?.trim() || '';
+  const checkedFor = (field) => Boolean(document.querySelector(`[data-owner-checkbox="${field}"]`)?.checked);
   if (button) button.disabled = true;
   try {
     const result = await api(`/api/teams/${encodeURIComponent(state.teamCode)}/owner-office`, {
@@ -4416,6 +4497,8 @@ async function saveOwnerOffice() {
         season_year: season,
         confidence_current: valueFor('confidence_current'),
         confidence_change: valueFor('confidence_change'),
+        new_gm_after_dismissal: checkedFor('new_gm_after_dismissal'),
+        gm_midseason_arrival: checkedFor('gm_midseason_arrival'),
         season_goal_set: valueFor('season_goal_set'),
         season_goal_achieved: valueFor('season_goal_achieved'),
         revenue: valueFor('revenue'),
@@ -5527,6 +5610,22 @@ function parseDraftConditionalTeams(value) {
   return Array.from(new Set(raw.split(/[,/|]/).map((code) => code.trim().toUpperCase()).filter(Boolean)));
 }
 
+function assetSeasonYear(asset) {
+  const rawYear = asset?.year;
+  if (rawYear === null || rawYear === undefined || String(rawYear).trim() === '') return null;
+  const year = Number(rawYear);
+  if (Number.isFinite(year)) return year;
+  return null;
+}
+
+function isAssetBeforeSelectedSeason(asset) {
+  const year = assetSeasonYear(asset);
+  const selectedAssetYear = asset?.asset_type === 'draft_pick'
+    ? selectedSeasonStart() + 1
+    : selectedSeasonStart();
+  return Number.isFinite(year) && year < selectedAssetYear;
+}
+
 function teamOptionsHtml(selected = '', { includeCurrent = true } = {}) {
   const selectedCode = String(selected || '').trim().toUpperCase();
   return state.teams
@@ -5643,7 +5742,8 @@ function renderAssets() {
     return [...own1, ...own2, ...acq1, ...acq2, ...conditional, ...sold];
   };
 
-  const picks = (state.teamData.assets || []).filter((a) => a.asset_type === 'draft_pick');
+  const picks = (state.teamData.assets || [])
+    .filter((a) => a.asset_type === 'draft_pick' && !isAssetBeforeSelectedSeason(a));
   const appendDraftAddCard = () => {
     if (!state.ui.addingDraftPick) {
       const addCard = document.createElement('button');
@@ -5684,7 +5784,7 @@ function renderAssets() {
           </select>
         </label>
         <label>Year
-          <input data-new-field="year" data-autofocus type="text" value="${state.settings.current_year || 2025}">
+          <input data-new-field="year" data-autofocus type="text" value="${selectedSeasonStart() + 1}">
         </label>
         <label data-owner-wrap>Original owner
           <select data-new-field="original_owner">
@@ -5750,7 +5850,7 @@ function renderAssets() {
       renderAssets();
     };
     const save = async () => {
-      const defaultYear = String(state.settings.current_year || 2025);
+      const defaultYear = String(selectedSeasonStart() + 1);
       const payload = {
         team_code: state.teamCode,
         asset_type: 'draft_pick',
@@ -6388,6 +6488,7 @@ async function loadTeam(code) {
   if (gmInlineInput) gmInlineInput.value = data.team.gm || '';
   syncTeamApronHardCapControls();
   syncTeamLuxuryRepeaterControl();
+  renderSeasonViewControl();
   renderTeamStrip();
   renderTeamPicker();
   renderAdminMobileTeamGrid();
@@ -7801,6 +7902,8 @@ async function init() {
 
   const settingsRes = await api('/api/settings');
   state.settings = { ...state.settings, ...(settingsRes.settings || {}) };
+  const initialSeason = Number(new URLSearchParams(window.location.search).get('season'));
+  state.ui.seasonViewStart = normalizeSeasonViewStart(Number.isInteger(initialSeason) ? initialSeason : null);
   const cashLimitTotalInput = document.getElementById('cashLimitTotalInput');
   const tradeMoveLimitPre30Input = document.getElementById('tradeMoveLimitPre30Input');
   const tradeMoveLimitPost30Input = document.getElementById('tradeMoveLimitPost30Input');
@@ -7839,6 +7942,7 @@ async function init() {
   setupAdminMobileNav();
   setupGmTimelineControls();
   setupFiguresSeasonControl();
+  setupSeasonViewControl();
   setupOwnerOfficeControls();
   setupTrackerTabs();
   setupTrackerEconomySeasonControl();
@@ -8016,6 +8120,7 @@ async function init() {
     }
     const selectedTradeMovePhase = normalizeMoveBucket(tradeMovePhaseSelect.value);
     const previousYear = Number(state.settings.current_year || 2025);
+    const previousFreeAgencyMode = freeAgencyModeActive();
     if (selectedYear !== previousYear) {
       const fromLabel = seasonLabel(previousYear);
       const toLabel = seasonLabel(selectedYear);
@@ -8058,6 +8163,10 @@ async function init() {
     tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
+    if (selectedYear !== previousYear || freeAgencyModeActive() !== previousFreeAgencyMode) {
+      state.ui.seasonViewStart = normalizeSeasonViewStart(null);
+      renderSeasonViewControl();
+    }
     if (state.ui.viewMode === 'team' && state.teamCode) {
       await loadTeam(state.teamCode);
     } else if (state.ui.viewMode === 'tracker') {
@@ -8096,6 +8205,7 @@ async function init() {
       body: JSON.stringify({}),
     });
     state.settings = { ...state.settings, ...(result.settings || {}) };
+    state.ui.seasonViewStart = normalizeSeasonViewStart(null);
     renderSeasonCapSettingsGrid(Number(state.settings.current_year || previousYear + 1));
     cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
     tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
@@ -8108,6 +8218,7 @@ async function init() {
     tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
+    renderSeasonViewControl();
 
     if (state.ui.viewMode === 'team' && state.teamCode) {
       await loadTeam(state.teamCode);

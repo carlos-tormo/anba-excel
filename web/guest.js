@@ -1378,8 +1378,8 @@ function deadContractExcludedFromCap(dead) {
 }
 
 function balanceSeasonYears() {
-  const currentYear = currentSeasonStart();
-  return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => currentYear + idx);
+  const selectedYear = selectedSeasonStart();
+  return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => selectedYear + idx);
 }
 
 function teamExceptionBalanceTotal(data, season) {
@@ -4696,6 +4696,15 @@ function renderOwnerOffice() {
               <th>Cambio ${escapeHtml(seasonLabel(season))}</th>
               <td>${ownerOfficeReadonlyCell(entry.confidence_change)}</td>
             </tr>
+            ${entry.new_gm_after_dismissal || entry.gm_midseason_arrival ? `
+              <tr>
+                <th>Contexto GM</th>
+                <td>${ownerOfficeReadonlyCell([
+                  entry.new_gm_after_dismissal ? 'Nuevo GM tras destitución' : '',
+                  entry.gm_midseason_arrival ? 'Llegó a mediados de la temporada pasada' : '',
+                ].filter(Boolean).join(' · '))}</td>
+              </tr>
+            ` : ''}
           </tbody>
         </table>
       </article>
@@ -4771,7 +4780,7 @@ function renderCards() {
 function renderImportantFigures() {
   const table = document.getElementById('importantFiguresTable');
   if (!table) return;
-  const currentYear = currentSeasonStart();
+  const selectedYear = selectedSeasonStart();
   const seasons = balanceSeasonYears();
   const seasonData = seasons.map((season) => ({ season, balances: seasonBalances(season) }));
   const rows = [
@@ -4785,7 +4794,7 @@ function renderImportantFigures() {
       <tr>
         <th class="balance-row-heading">Balance</th>
         ${seasons.map((season) => `
-          <th class="${season === currentYear ? 'is-current-year' : ''}">${seasonSlashLabel(season)}</th>
+          <th class="${season === selectedYear ? 'is-current-year' : ''}">${seasonSlashLabel(season)}</th>
         `).join('')}
       </tr>
     </thead>
@@ -4800,7 +4809,7 @@ function renderImportantFigures() {
               ? (value > 0 ? 'is-negative' : '')
               : (value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '');
             return `
-              <td class="${season === currentYear ? 'is-current-year' : ''}">
+              <td class="${season === selectedYear ? 'is-current-year' : ''}">
                 <span class="balance-value ${valueClass}">${formatMoneyDots(value)}</span>
               </td>
             `;
@@ -4812,13 +4821,13 @@ function renderImportantFigures() {
 
   const appendix = document.getElementById('importantFiguresAppendix');
   if (!appendix) return;
-  const salaryCap = capForSeason(currentYear);
-  const luxuryCap = luxuryCapForSeason(currentYear);
-  const firstApron = firstApronForSeason(currentYear);
-  const secondApron = secondApronForSeason(currentYear);
+  const salaryCap = capForSeason(selectedYear);
+  const luxuryCap = luxuryCapForSeason(selectedYear);
+  const firstApron = firstApronForSeason(selectedYear);
+  const secondApron = secondApronForSeason(selectedYear);
   const minCap = Number(state.settings.minimum_cap_allowed || salaryCap * 0.9);
   const appendixRows = [
-    ['Temporada actual', seasonLabel(currentYear)],
+    ['Temporada seleccionada', seasonLabel(selectedYear)],
     ['Salary cap', formatDots(salaryCap)],
     ['Luxury cap', formatDots(luxuryCap)],
     ['1er Apron', formatDots(firstApron)],
@@ -5166,17 +5175,18 @@ function setupRosterViewControl() {
 }
 
 function renderSeasonViewControl() {
-  const select = document.getElementById('seasonViewSelect');
-  if (!select) return;
   const currentYear = currentSeasonStart();
   const selected = selectedSeasonStart();
-  select.innerHTML = availableSeasonViewStarts()
+  const optionsHtml = availableSeasonViewStarts()
     .map((season) => {
       const suffix = season === currentYear ? ' (current)' : '';
       return `<option value="${season}">${seasonLabel(season)}${suffix}</option>`;
     })
     .join('');
-  select.value = String(selected);
+  document.querySelectorAll('[data-season-view-select]').forEach((select) => {
+    select.innerHTML = optionsHtml;
+    select.value = String(selected);
+  });
 }
 
 function renderFiguresSeasonControl() {
@@ -5204,6 +5214,7 @@ function setSeasonViewStart(startYear) {
   renderSeasonViewControl();
   if (state.teamCode) setTeamInUrl(state.teamCode);
   if (!state.teamData) return;
+  renderCards();
   renderPlayers();
   renderDeadContracts();
   renderExceptions();
@@ -5213,11 +5224,11 @@ function setSeasonViewStart(startYear) {
 }
 
 function setupSeasonViewControl() {
-  const select = document.getElementById('seasonViewSelect');
-  if (!select) return;
   renderSeasonViewControl();
-  select.addEventListener('change', () => {
-    setSeasonViewStart(select.value);
+  document.querySelectorAll('[data-season-view-select]').forEach((select) => {
+    select.addEventListener('change', () => {
+      setSeasonViewStart(select.value);
+    });
   });
 }
 

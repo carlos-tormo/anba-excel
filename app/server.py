@@ -928,6 +928,8 @@ class LeagueDB:
                     season_year INTEGER NOT NULL,
                     confidence_current TEXT,
                     confidence_change TEXT,
+                    new_gm_after_dismissal INTEGER NOT NULL DEFAULT 0,
+                    gm_midseason_arrival INTEGER NOT NULL DEFAULT 0,
                     season_goal_set TEXT,
                     season_goal_achieved TEXT,
                     revenue TEXT,
@@ -1056,6 +1058,10 @@ class LeagueDB:
             }
             if "performance_json" not in owner_office_cols:
                 conn.execute("ALTER TABLE team_owner_office ADD COLUMN performance_json TEXT NOT NULL DEFAULT '[]'")
+            if "new_gm_after_dismissal" not in owner_office_cols:
+                conn.execute("ALTER TABLE team_owner_office ADD COLUMN new_gm_after_dismissal INTEGER NOT NULL DEFAULT 0")
+            if "gm_midseason_arrival" not in owner_office_cols:
+                conn.execute("ALTER TABLE team_owner_office ADD COLUMN gm_midseason_arrival INTEGER NOT NULL DEFAULT 0")
             if "season_goal_set" not in owner_office_cols:
                 conn.execute("ALTER TABLE team_owner_office ADD COLUMN season_goal_set TEXT")
             if "season_goal_achieved" not in owner_office_cols:
@@ -2714,9 +2720,24 @@ class LeagueDB:
                     errors.append({"line": line, "message": f"Objetivo cumplido inválido: {season_goal_achieved_raw}."})
                     continue
 
-            has_performance = any([history_season_raw, wins_raw, losses_raw, result])
+            normalized_performance = raw.get("performance_row")
+            has_normalized_performance = isinstance(normalized_performance, dict)
+            has_performance = has_normalized_performance or any([history_season_raw, wins_raw, losses_raw, result])
             performance_row = None
-            if has_performance:
+            if has_normalized_performance:
+                history_season = parse_int(normalized_performance.get("season_year"))
+                if history_season is None or history_season < 2000 or history_season > 2100:
+                    errors.append({"line": line, "message": "Temporada de historial inválida."})
+                    continue
+                wins = parse_int(normalized_performance.get("wins"))
+                losses = parse_int(normalized_performance.get("losses"))
+                performance_row = {
+                    "season_year": max(2000, min(2100, history_season)),
+                    "wins": "" if wins is None else max(0, min(100, wins)),
+                    "losses": "" if losses is None else max(0, min(100, losses)),
+                    "result": str(normalized_performance.get("result") or "").strip()[:80],
+                }
+            elif has_performance:
                 history_season = parse_int(history_season_raw)
                 if history_season is None or history_season < 2000 or history_season > 2100:
                     errors.append({"line": line, "message": "Temporada de historial inválida."})
@@ -3435,6 +3456,8 @@ class LeagueDB:
                     "season_year": int(year),
                     "confidence_current": str(saved["confidence_current"] or "") if saved else "",
                     "confidence_change": str(saved["confidence_change"] or "") if saved else "",
+                    "new_gm_after_dismissal": parse_bool(saved["new_gm_after_dismissal"]) if saved else False,
+                    "gm_midseason_arrival": parse_bool(saved["gm_midseason_arrival"]) if saved else False,
                     "season_goal_set": self._normalize_owner_season_objective(saved["season_goal_set"]) if saved else "",
                     "season_goal_achieved": self._normalize_owner_season_objective(saved["season_goal_achieved"]) if saved else "",
                     "season_goal_evaluation": self._owner_season_objective_evaluation(
@@ -3526,6 +3549,8 @@ class LeagueDB:
                     season_year,
                     confidence_current,
                     confidence_change,
+                    new_gm_after_dismissal,
+                    gm_midseason_arrival,
                     season_goal_set,
                     season_goal_achieved,
                     revenue,
@@ -3536,10 +3561,12 @@ class LeagueDB:
                     performance_json,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(team_id, season_year) DO UPDATE SET
                     confidence_current = excluded.confidence_current,
                     confidence_change = excluded.confidence_change,
+                    new_gm_after_dismissal = excluded.new_gm_after_dismissal,
+                    gm_midseason_arrival = excluded.gm_midseason_arrival,
                     season_goal_set = excluded.season_goal_set,
                     season_goal_achieved = excluded.season_goal_achieved,
                     revenue = excluded.revenue,
@@ -3555,6 +3582,8 @@ class LeagueDB:
                     int(season_year),
                     str(payload.get("confidence_current") or "").strip(),
                     str(payload.get("confidence_change") or "").strip(),
+                    1 if parse_bool(payload.get("new_gm_after_dismissal")) else 0,
+                    1 if parse_bool(payload.get("gm_midseason_arrival")) else 0,
                     self._normalize_owner_season_objective(payload.get("season_goal_set")),
                     self._normalize_owner_season_objective(payload.get("season_goal_achieved")),
                     str(payload.get("revenue") or "").strip(),
@@ -5712,6 +5741,31 @@ QUALITY REQUIREMENTS
         entries = owner_office.get("entries") if isinstance(owner_office.get("entries"), dict) else {}
         return entries.get(str(season_year), {}) if isinstance(entries, dict) else {}
 
+    def _owner_interview_personality_guide(self, attrs: Dict[str, Any]) -> str:
+        def level(key: str) -> str:
+            value = parse_int(attrs.get(key))
+            if value is None:
+                return "sin configurar"
+            if value >= 8:
+                return "alta"
+            if value <= 3:
+                return "baja"
+            return "media"
+
+        return (
+            "Ambicion competitiva {ambicion}: alta = exige competir ya y no se conforma; baja = acepta ciclos largos. "
+            "Paciencia {paciencia}: alta = tolera procesos; baja = se frustra rapido. "
+            "Intervencionismo {intervencionismo}: alta = quiere opinar sobre decisiones; baja = delega. "
+            "Orientacion financiera {financiera}: alta = ingresos, gastos, balance y lujo pesan mucho; baja = pesa mas lo deportivo. "
+            "Orientacion de marca {marca}: alta = imagen publica, aficion y prestigio importan mucho."
+        ).format(
+            ambicion=level("ambicion_competitiva"),
+            paciencia=level("paciencia"),
+            intervencionismo=level("intervencionismo"),
+            financiera=level("orientacion_financiera"),
+            marca=level("orientacion_marca"),
+        )
+
     def _owner_interview_context_text(
         self,
         owner_office: Dict[str, Any],
@@ -5744,8 +5798,12 @@ QUALITY REQUIREMENTS
                 f"GM evaluado: {gm_reference}",
                 "Regla de voz: el propietario habla en primera persona; el nombre del propietario NO es el nombre del GM y no debe usarse como destinatario.",
                 f"Atributos internos propietario: {json.dumps(attrs, ensure_ascii=False)}",
+                f"Guia de personalidad del propietario: {self._owner_interview_personality_guide(attrs)}",
                 f"Confianza actual: {entry.get('confidence_current') or 'No configurada'}",
                 f"Cambio confianza temporada: {entry.get('confidence_change') or 'No configurado'}",
+                f"Nuevo GM tras destitucion: {'Si' if entry.get('new_gm_after_dismissal') else 'No'}",
+                f"GM llego a mediados de la temporada pasada: {'Si' if entry.get('gm_midseason_arrival') else 'No'}",
+                "Regla de contexto GM: si 'Nuevo GM tras destitucion' es Si, cualquier perdida de confianza previa corresponde al GM anterior; evalua al GM actual desde su nuevo punto de partida. Si 'GM llego a mediados de la temporada pasada' es Si, reconoce que el propietario le esta dando otra oportunidad por no haber tenido una temporada completa.",
                 f"Objetivo de la temporada fijado: {entry.get('season_goal_set') or 'No configurado'}",
                 f"Objetivo de la temporada cumplido: {entry.get('season_goal_achieved') or 'No configurado'}",
                 f"Evaluacion del objetivo: {entry.get('season_goal_evaluation') or 'No evaluable'}",
@@ -5756,6 +5814,7 @@ QUALITY REQUIREMENTS
                 f"Ranking balance: #{entry.get('balance_rank') or '-'} de {entry.get('balance_rank_total') or '-'}",
                 "Ultimos cinco anos:",
                 "\n".join(perf_lines) or "No configurado",
+                "Regla de uso de historial: la temporada revisada es el ancla emocional; los anos anteriores solo dan contexto de tendencia. No listes el historial completo salvo que sea necesario.",
             ]
         )
 
@@ -5768,14 +5827,16 @@ QUALITY REQUIREMENTS
         context = self._owner_interview_context_text(owner_office, season_year, session=session)
         system_prompt = (
             "Eres el propietario de una franquicia de la liga ANBA. "
-            "Escribe en espanol, con tono conversacional de despacho, directo y creible. "
+            "Escribe en espanol, con tono conversacional de despacho, directo, humano y creible. "
             "Habla siempre en primera persona como propietario y dirigete al GM evaluado, nunca al propietario. "
             "No uses el nombre del propietario como si fuera el nombre del GM. No inventes datos fuera del contexto. "
-            "Deja una pista clara de por que la confianza del propietario ha subido o bajado durante la temporada, "
-            "usando el cambio de confianza del contexto si esta configurado. "
-            "Si hay objetivo de temporada configurado, menciona de forma natural si se cumplio, se supero o se quedo corto. "
-            "Haz una sola intervencion inicial de 2 a 4 frases, cerrando con una pregunta concreta al GM "
-            "sobre su evaluacion de la temporada."
+            "No redactes un informe ni un resumen descriptivo de la situacion. Usa los datos como motivo emocional: orgullo, decepcion, alivio, enfado, duda, ambicion o impaciencia. "
+            "La personalidad del propietario debe notarse en sus prioridades: ambicion, paciencia, intervencionismo, finanzas y marca cambian que le molesta o que celebra. "
+            "La temporada revisada, el objetivo fijado/cumplido, el cambio de confianza, la confianza actual, la economia y el historial reciente deben influir en el tono. "
+            "Si el objetivo se fallo, que se note la frustracion de forma proporcional; si se cumplio o supero, reconoce el merito pero ajusta la exigencia segun la ambicion. "
+            "Si la confianza subio, explica que se ha ganado y por que el liston sube; si bajo, explica que herida o duda ha dejado la temporada. "
+            "Usa maximo 2 o 3 datos concretos, integrados de forma natural, no como lista. "
+            "Haz una sola intervencion inicial de 3 a 5 frases, con frases que suenen habladas, y cierra con una pregunta concreta al GM."
         )
         user_prompt = f"Contexto para la entrevista de salida:\n{context}"
         generated = self._openai_text_response(system_prompt, user_prompt, max_output_tokens=450)
@@ -5783,9 +5844,9 @@ QUALITY REQUIREMENTS
             return generated[:2000]
         team = owner_office.get("team_code") or "el equipo"
         return (
-            f"Terminada la temporada {season_label(season_year)}, quiero entender tu lectura de lo que ha pasado con {team}. "
-            "Los resultados, la confianza y la situacion economica han movido mi evaluacion del proyecto, y quiero saber si lees igual ese cambio. "
-            "Dime con claridad que ha funcionado, que no, y cual es tu plan para corregirlo."
+            f"Bueno, ya estamos aqui. Terminada la temporada {season_label(season_year)}, no quiero un informe bonito sobre {team}; quiero saber si entiendes lo que esto me ha hecho sentir como propietario. "
+            "La confianza no se mueve sola: se gana, se erosiona, y deja un liston para el ano que viene. "
+            "Dime con claridad que te llevas de esta temporada y que vas a cambiar desde el primer dia."
         )
 
     def _owner_interview_parse_final(self, raw_text: Optional[str], gm_response: str) -> tuple[str, str, int]:
@@ -5837,13 +5898,17 @@ QUALITY REQUIREMENTS
             "Eres el propietario de una franquicia de la liga ANBA. "
             "Evalua la respuesta del GM en espanol. Debes responder SOLO JSON valido con estas claves: "
             "\"message\", \"conclusion\" y \"trust_delta\". trust_delta debe ser exactamente 1 o -1. "
-            "message debe ser una respuesta corta, de 1 a 2 frases, profesional y directa, que conteste al punto principal del GM "
-            "y comunique claramente si la confianza sube o baja. "
-            "La decision de confianza debe tener en cuenta si el equipo cumplio, supero o fallo el objetivo fijado; "
-            "fallar por mas niveles debe pesar cada vez mas negativamente. "
+            "message debe ser una reaccion humana, corta y directa, de 1 a 3 frases, al punto principal del GM. "
+            "No debe sonar como evaluacion generica: responde a lo que el GM dijo, con aceptacion, duda, enfado, reconocimiento o exigencia. "
+            "Comunica claramente si la confianza sube o baja. "
+            "La decision de confianza debe pesar mucho la respuesta del GM, pero tambien el objetivo fijado/cumplido, confianza actual, cambio de confianza, economia, resultado deportivo y personalidad del propietario. "
+            "Si el GM asume responsabilidad, entiende el contexto y propone prioridades creibles alineadas con el propietario, trust_delta debe tender a 1. "
+            "Si evade responsabilidades, contesta con vaguedades, ignora el objetivo fallado o contradice prioridades claras del propietario, trust_delta debe tender a -1. "
+            "Fallar el objetivo por mas niveles debe pesar cada vez mas negativamente, sobre todo con baja paciencia o alta ambicion. "
             "conclusion debe ser un cierre separado, de 2 a 4 frases, con un mensaje para el proximo ano. "
-            "Ese cierre puede ser duro, optimista, satisfecho o exigente segun resultados, economia, direccion de la franquicia "
-            "y atributos del propietario. Debe insinuar que despues del verano propietario y GM se sentaran a definir objetivos concretos. "
+            "Ese cierre debe sonar como el propietario marcando el clima del proximo ano: duro, optimista, satisfecho, nervioso o exigente segun el contexto. "
+            "Debe insinuar que despues del verano propietario y GM se sentaran a definir objetivos concretos. "
+            "Usa maximo 2 datos concretos y evita enumerar el contexto. "
             "No trates el nombre del propietario como si fuera el GM."
         )
         user_prompt = (

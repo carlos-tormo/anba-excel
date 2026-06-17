@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260616g">
+  <link rel="stylesheet" href="/styles.css?v=20260617b">
 </head>
 <body class="app-layout">
   <header>
@@ -564,7 +564,15 @@
     </section>
 
     <section id="draftAssetsSection" class="team-tab-draft-section">
-      <h2 class="team-tab-section-title">Draft Assets</h2>
+      <div class="section-head">
+        <div></div>
+        <div class="section-actions">
+          <label class="season-view-control" for="draftSeasonViewSelect">
+            <span>Temporada</span>
+            <select id="draftSeasonViewSelect" data-season-view-select></select>
+          </label>
+        </div>
+      </div>
       <div id="draftAssetsBoard" class="draft-assets-board"></div>
     </section>
 
@@ -585,7 +593,15 @@
     </section>
 
     <section id="importantFiguresSection">
-      <h2>Balances</h2>
+      <div class="section-head">
+        <h2>Balances</h2>
+        <div class="section-actions">
+          <label class="season-view-control" for="generalSeasonViewSelect">
+            <span>Temporada</span>
+            <select id="generalSeasonViewSelect" data-season-view-select></select>
+          </label>
+        </div>
+      </div>
       <div class="table-wrap important-figures-wrap">
         <table id="importantFiguresTable">
           <tbody></tbody>
@@ -962,6 +978,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260616g" defer></script>
+  <script src="/admin.js?v=20260617b" defer></script>
 </body>
 </html>
