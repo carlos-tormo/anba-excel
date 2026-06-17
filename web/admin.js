@@ -10,6 +10,7 @@ const state = {
   economySettingsSeasons: [],
   economySettingsSeason: null,
   economyImportPreview: null,
+  ownerOfficeImportPreview: null,
   adminUsers: [],
   gmOptionRequests: [],
   freeAgents: [],
@@ -7585,6 +7586,190 @@ function setupEconomyImportControls() {
   });
 }
 
+function setOwnerOfficeImportStatus(message, tone = '') {
+  const status = document.getElementById('ownerOfficeImportStatus');
+  if (!status) return;
+  status.textContent = message || '';
+  status.dataset.tone = tone || '';
+}
+
+function openOwnerOfficeImportModal() {
+  const modal = document.getElementById('ownerOfficeImportModal');
+  state.ownerOfficeImportPreview = null;
+  const input = document.getElementById('ownerOfficeImportCsvInput');
+  if (input) input.value = '';
+  const confirm = document.getElementById('ownerOfficeImportConfirmBtn');
+  if (confirm) confirm.disabled = true;
+  const preview = document.getElementById('ownerOfficeImportPreview');
+  if (preview) preview.innerHTML = '';
+  setOwnerOfficeImportStatus('');
+  modal?.classList.remove('section-hidden');
+}
+
+function closeOwnerOfficeImportModal() {
+  document.getElementById('ownerOfficeImportModal')?.classList.add('section-hidden');
+}
+
+function ownerOfficeImportErrorsHtml(errors = []) {
+  return economyImportErrorsHtml(errors);
+}
+
+function renderOwnerOfficeImportPreview(preview) {
+  const container = document.getElementById('ownerOfficeImportPreview');
+  const confirm = document.getElementById('ownerOfficeImportConfirmBtn');
+  if (!container) return;
+  const errors = preview?.errors || [];
+  const summary = preview?.summary || [];
+  const records = preview?.records || [];
+  if (confirm) confirm.disabled = Boolean(errors.length) || !records.length;
+  const summaryHtml = summary.length ? `
+    <div class="table-wrap economy-import-table-wrap">
+      <table class="economy-import-table">
+        <thead>
+          <tr>
+            <th>Temporada despacho</th>
+            <th>Equipo</th>
+            <th>Confianza</th>
+            <th>Cambio</th>
+            <th>Objetivo fijado</th>
+            <th>Objetivo cumplido</th>
+            <th>Historial deportivo</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${summary.map((row) => `
+            <tr>
+              <td>${escapeHtml(seasonLabel(row.season_year))}</td>
+              <td><strong>${escapeHtml(row.team_code)}</strong> ${escapeHtml(row.team_name || '')}</td>
+              <td>${escapeHtml(row.confidence_current || '-')}</td>
+              <td>${escapeHtml(row.confidence_change || '-')}</td>
+              <td>${escapeHtml(row.season_goal_set || '-')}</td>
+              <td>${escapeHtml(row.season_goal_achieved || '-')}</td>
+              <td>${escapeHtml(row.performance_count || 0)} filas</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  ` : '<p class="economy-import-empty">No hay filas válidas para importar todavía.</p>';
+  const objectives = Array.isArray(preview?.objective_options) ? preview.objective_options : OWNER_SEASON_OBJECTIVE_OPTIONS.filter(Boolean);
+  container.innerHTML = `
+    ${ownerOfficeImportErrorsHtml(errors)}
+    <div class="economy-import-summary">
+      <h3>Previsualización</h3>
+      <p>${escapeHtml(records.length)} filas válidas · ${escapeHtml(summary.length)} equipo/temporada</p>
+      ${summaryHtml}
+    </div>
+    <details class="economy-import-schema">
+      <summary>Ver formato y valores permitidos</summary>
+      <div>
+        <h4>Cabeceras aceptadas</h4>
+        <div class="economy-import-key-grid">
+          <code>season</code><span>Temporada del despacho, por ejemplo 2025 para 2025-26.</span>
+          <code>team</code><span>Código del equipo. PHO se convierte en PHX.</span>
+          <code>confidence_current</code><span>Confianza actual.</span>
+          <code>confidence_change</code><span>Cambio de confianza de esa temporada.</span>
+          <code>history_season</code><span>Temporada del historial deportivo.</span>
+          <code>wins</code><span>Victorias.</span>
+          <code>losses</code><span>Derrotas.</span>
+          <code>result</code><span>Resultado deportivo.</span>
+          <code>season_goal_set</code><span>Opcional: objetivo fijado.</span>
+          <code>season_goal_achieved</code><span>Opcional: objetivo cumplido.</span>
+        </div>
+        <h4>Objetivos permitidos</h4>
+        <p>${objectives.map((option) => `<code>${escapeHtml(option)}</code>`).join(' ')}</p>
+      </div>
+    </details>
+  `;
+  if (errors.length) {
+    setOwnerOfficeImportStatus('Corrige los errores del CSV antes de confirmar.', 'error');
+  } else if (records.length) {
+    setOwnerOfficeImportStatus('Previsualización lista. Revisa los datos antes de confirmar.', 'success');
+  } else {
+    setOwnerOfficeImportStatus('No se encontraron filas válidas.', 'error');
+  }
+}
+
+async function previewOwnerOfficeImportCsv() {
+  const input = document.getElementById('ownerOfficeImportCsvInput');
+  const file = input?.files?.[0];
+  if (!file) {
+    alert('Selecciona un archivo CSV.');
+    return;
+  }
+  const button = document.getElementById('ownerOfficeImportPreviewBtn');
+  const confirm = document.getElementById('ownerOfficeImportConfirmBtn');
+  if (button) button.disabled = true;
+  if (confirm) confirm.disabled = true;
+  setOwnerOfficeImportStatus('Leyendo y validando CSV...');
+  try {
+    const csvText = await file.text();
+    const result = await api('/api/admin/owner-office-import/preview', {
+      method: 'POST',
+      body: JSON.stringify({ csv_text: csvText }),
+    });
+    state.ownerOfficeImportPreview = result;
+    renderOwnerOfficeImportPreview(result);
+  } catch (err) {
+    state.ownerOfficeImportPreview = null;
+    setOwnerOfficeImportStatus('Error validando CSV.', 'error');
+    alert(`Owner office import preview failed: ${err.message || err}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function confirmOwnerOfficeImport() {
+  const preview = state.ownerOfficeImportPreview;
+  if (!preview || !Array.isArray(preview.records) || preview.errors?.length) return;
+  const button = document.getElementById('ownerOfficeImportConfirmBtn');
+  if (button) button.disabled = true;
+  setOwnerOfficeImportStatus('Importando datos...');
+  try {
+    const result = await api('/api/admin/owner-office-import/import', {
+      method: 'POST',
+      body: JSON.stringify({ records: preview.records }),
+    });
+    if (state.teamCode) {
+      await loadOwnerOfficeForTeam(state.teamCode);
+      renderOwnerOffice();
+    }
+    await refreshAdminLogsSafe();
+    setOwnerOfficeImportStatus(`Importadas ${result.record_count || 0} filas en ${result.group_count || 0} equipo/temporada.`, 'success');
+    alert('Owner office CSV imported.');
+  } catch (err) {
+    setOwnerOfficeImportStatus('Error importando CSV.', 'error');
+    alert(`Owner office import failed: ${err.message || err}`);
+  } finally {
+    if (button && state.ownerOfficeImportPreview && !state.ownerOfficeImportPreview.errors?.length) button.disabled = false;
+  }
+}
+
+function setupOwnerOfficeImportControls() {
+  document.getElementById('openOwnerOfficeImportBtn')?.addEventListener('click', () => {
+    openOwnerOfficeImportModal();
+  });
+  document.getElementById('ownerOfficeImportCloseBtn')?.addEventListener('click', () => {
+    closeOwnerOfficeImportModal();
+  });
+  document.getElementById('ownerOfficeImportModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeOwnerOfficeImportModal();
+  });
+  document.getElementById('ownerOfficeImportPreviewBtn')?.addEventListener('click', async () => {
+    await previewOwnerOfficeImportCsv();
+  });
+  document.getElementById('ownerOfficeImportConfirmBtn')?.addEventListener('click', async () => {
+    await confirmOwnerOfficeImport();
+  });
+  document.getElementById('ownerOfficeImportCsvInput')?.addEventListener('change', () => {
+    state.ownerOfficeImportPreview = null;
+    document.getElementById('ownerOfficeImportConfirmBtn')?.setAttribute('disabled', 'disabled');
+    const preview = document.getElementById('ownerOfficeImportPreview');
+    if (preview) preview.innerHTML = '';
+    setOwnerOfficeImportStatus('');
+  });
+}
+
 function setupEconomySettingsControls() {
   document.getElementById('loadEconomySettingsBtn')?.addEventListener('click', async () => {
     const input = document.getElementById('economySettingsSeasonInput');
@@ -7599,6 +7784,7 @@ function setupEconomySettingsControls() {
     void loadEconomySettingsSeason(event.currentTarget.value);
   });
   setupEconomyImportControls();
+  setupOwnerOfficeImportControls();
 }
 
 async function init() {

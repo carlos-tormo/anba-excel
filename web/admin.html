@@ -406,8 +406,9 @@
           <button id="loadEconomySettingsBtn" type="button">Load season</button>
           <button id="saveEconomySettingsBtn" type="button">Save economy data</button>
           <button id="openEconomyImportBtn" type="button" class="ghost">Importar economía CSV</button>
+          <button id="openOwnerOfficeImportBtn" type="button" class="ghost">Importar despacho CSV</button>
         </div>
-        <p class="settings-help-text">CSV long format: season, team, section, key, value. Section accepts income/ingresos or expenses/gastos.</p>
+        <p class="settings-help-text">Economy CSV: season, team, section, key, value. Despacho CSV: season, team, confidence_current, confidence_change, history_season, wins, losses, result.</p>
         <div class="table-wrap settings-economy-table-wrap">
           <table id="economySettingsTable" class="settings-economy-table">
             <thead>
@@ -807,6 +808,31 @@
     </div>
   </div>
 
+  <div id="ownerOfficeImportModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="ownerOfficeImportModalTitle">
+    <div class="modal-card economy-import-modal">
+      <div class="modal-header">
+        <h2 id="ownerOfficeImportModalTitle">Importar despacho CSV</h2>
+        <button id="ownerOfficeImportCloseBtn" type="button" class="danger">Cerrar</button>
+      </div>
+      <div class="economy-import-body">
+        <div class="economy-import-instructions">
+          <p>Formato recomendado:</p>
+          <pre>season,team,confidence_current,confidence_change,history_season,wins,losses,result
+2025,ATL,7,+1,2021,41,41,Play-in
+2025,ATL,,,2022,44,38,Primera ronda</pre>
+          <p>Campos opcionales: <strong>season_goal_set</strong> y <strong>season_goal_achieved</strong>. Phoenix puede venir como PHO o PHX.</p>
+        </div>
+        <div class="settings-row economy-import-controls">
+          <input id="ownerOfficeImportCsvInput" type="file" accept=".csv,text/csv">
+          <button id="ownerOfficeImportPreviewBtn" type="button">Previsualizar</button>
+          <button id="ownerOfficeImportConfirmBtn" type="button" disabled>Confirmar importación</button>
+        </div>
+        <div id="ownerOfficeImportStatus" class="economy-import-status"></div>
+        <div id="ownerOfficeImportPreview" class="economy-import-preview"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="tradeModal" class="modal-backdrop section-hidden" role="dialog" aria-label="Process trade">
     <div class="modal-card trade-modal">
       <div class="modal-header">
@@ -936,6 +962,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260616f" defer></script>
+  <script src="/admin.js?v=20260616g" defer></script>
 </body>
 </html>

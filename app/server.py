@@ -2672,6 +2672,312 @@ class LeagueDB:
             "summary": summary,
         }
 
+    def _owner_office_import_header_value(self, row: Dict[str, Any], aliases: List[str]) -> str:
+        return self._owner_import_header_value(row, aliases)
+
+    def _owner_office_import_normalize_records(
+        self,
+        raw_records: List[Dict[str, Any]],
+        teams_by_code: Dict[str, Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        records: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        for idx, raw in enumerate(raw_records):
+            line = parse_int(raw.get("line")) or idx + 2
+            season_year = parse_int(raw.get("season_year") or raw.get("season"))
+            team_code = normalize_team_code(raw.get("team_code") or raw.get("team"))
+            confidence_current = str(raw.get("confidence_current") or "").strip()[:80]
+            confidence_change = str(raw.get("confidence_change") or "").strip()[:80]
+            season_goal_set_raw = str(raw.get("season_goal_set") or "").strip()
+            season_goal_achieved_raw = str(raw.get("season_goal_achieved") or "").strip()
+            history_season_raw = str(raw.get("history_season") or "").strip()
+            wins_raw = str(raw.get("wins") or "").strip()
+            losses_raw = str(raw.get("losses") or "").strip()
+            result = str(raw.get("result") or "").strip()[:80]
+            if season_year is None or season_year < 2000 or season_year > 2100:
+                errors.append({"line": line, "message": "Temporada inválida. Usa el año inicial, por ejemplo 2025."})
+                continue
+            if not team_code or team_code not in teams_by_code:
+                errors.append({"line": line, "message": f"Equipo inválido: {team_code or '-'}"})
+                continue
+
+            season_goal_set = ""
+            season_goal_achieved = ""
+            if season_goal_set_raw:
+                season_goal_set = self._normalize_owner_season_objective(season_goal_set_raw)
+                if not season_goal_set:
+                    errors.append({"line": line, "message": f"Objetivo fijado inválido: {season_goal_set_raw}."})
+                    continue
+            if season_goal_achieved_raw:
+                season_goal_achieved = self._normalize_owner_season_objective(season_goal_achieved_raw)
+                if not season_goal_achieved:
+                    errors.append({"line": line, "message": f"Objetivo cumplido inválido: {season_goal_achieved_raw}."})
+                    continue
+
+            has_performance = any([history_season_raw, wins_raw, losses_raw, result])
+            performance_row = None
+            if has_performance:
+                history_season = parse_int(history_season_raw)
+                if history_season is None or history_season < 2000 or history_season > 2100:
+                    errors.append({"line": line, "message": "Temporada de historial inválida."})
+                    continue
+                wins = parse_int(wins_raw)
+                losses = parse_int(losses_raw)
+                if wins_raw and wins is None:
+                    errors.append({"line": line, "message": "Victorias inválidas."})
+                    continue
+                if losses_raw and losses is None:
+                    errors.append({"line": line, "message": "Derrotas inválidas."})
+                    continue
+                performance_row = {
+                    "season_year": max(2000, min(2100, history_season)),
+                    "wins": "" if wins is None else max(0, min(100, wins)),
+                    "losses": "" if losses is None else max(0, min(100, losses)),
+                    "result": result,
+                }
+
+            if not any([confidence_current, confidence_change, season_goal_set, season_goal_achieved, performance_row]):
+                errors.append({"line": line, "message": "Fila sin datos importables."})
+                continue
+
+            records.append(
+                {
+                    "line": line,
+                    "season_year": int(season_year),
+                    "team_code": team_code,
+                    "team_name": str(teams_by_code[team_code].get("name") or ""),
+                    "confidence_current": confidence_current,
+                    "confidence_change": confidence_change,
+                    "season_goal_set": season_goal_set,
+                    "season_goal_achieved": season_goal_achieved,
+                    "performance_row": performance_row,
+                }
+            )
+        errors.extend(self._owner_office_import_group_errors(records))
+        return records, errors
+
+    def _owner_office_import_group_errors(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        grouped: Dict[tuple[int, str], List[Dict[str, Any]]] = {}
+        for record in records:
+            grouped.setdefault((int(record["season_year"]), str(record["team_code"])), []).append(record)
+        errors: List[Dict[str, Any]] = []
+        for (_season_year, team_code), group_records in grouped.items():
+            performance_rows = [row for row in group_records if row.get("performance_row")]
+            if len(performance_rows) > 5:
+                first_line = performance_rows[0].get("line")
+                errors.append(
+                    {
+                        "line": first_line,
+                        "message": f"{team_code} tiene más de 5 filas de historial deportivo para la misma temporada.",
+                    }
+                )
+        return errors
+
+    def _owner_office_import_group_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        groups: Dict[tuple[int, str], Dict[str, Any]] = {}
+        for record in records:
+            key = (int(record["season_year"]), str(record["team_code"]))
+            if key not in groups:
+                groups[key] = {
+                    "season_year": int(record["season_year"]),
+                    "team_code": str(record["team_code"]),
+                    "team_name": str(record.get("team_name") or ""),
+                    "confidence_current": "",
+                    "confidence_change": "",
+                    "season_goal_set": "",
+                    "season_goal_achieved": "",
+                    "performance_rows": [],
+                }
+            for field in ["confidence_current", "confidence_change", "season_goal_set", "season_goal_achieved"]:
+                value = str(record.get(field) or "").strip()
+                if value:
+                    groups[key][field] = value
+            performance_row = record.get("performance_row")
+            if isinstance(performance_row, dict):
+                groups[key]["performance_rows"].append(performance_row)
+        summary: List[Dict[str, Any]] = []
+        for group in groups.values():
+            group["performance_rows"] = sorted(
+                group["performance_rows"],
+                key=lambda row: parse_int(row.get("season_year")) or 0,
+            )
+            summary.append(
+                {
+                    "season_year": int(group["season_year"]),
+                    "team_code": str(group["team_code"]),
+                    "team_name": str(group["team_name"]),
+                    "confidence_current": str(group["confidence_current"]),
+                    "confidence_change": str(group["confidence_change"]),
+                    "season_goal_set": str(group["season_goal_set"]),
+                    "season_goal_achieved": str(group["season_goal_achieved"]),
+                    "performance_count": len(group["performance_rows"]),
+                    "performance_rows": group["performance_rows"],
+                }
+            )
+        return sorted(summary, key=lambda row: (int(row["season_year"]), str(row["team_code"])))
+
+    def preview_owner_office_csv(self, csv_text: str) -> Dict[str, Any]:
+        text = str(csv_text or "").lstrip("\ufeff")
+        if not text.strip():
+            return {"ok": False, "errors": [{"line": None, "message": "El CSV está vacío."}], "records": [], "summary": []}
+        with self.connect() as conn:
+            teams_by_code = {
+                str(row["code"]).upper(): {"id": int(row["id"]), "name": str(row["name"])}
+                for row in conn.execute("SELECT id, code, name FROM teams").fetchall()
+            }
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+        except csv.Error:
+            dialect = csv.excel
+        try:
+            reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+        except csv.Error as err:
+            return {"ok": False, "errors": [{"line": None, "message": f"No se pudo leer el CSV: {err}"}], "records": [], "summary": []}
+        if not reader.fieldnames:
+            return {"ok": False, "errors": [{"line": None, "message": "El CSV no tiene cabeceras."}], "records": [], "summary": []}
+        aliases = {
+            "season": ["season", "season_year", "temporada", "año", "ano", "owner_season", "temporada_despacho"],
+            "team": ["team", "team_code", "equipo", "codigo", "código", "franquicia"],
+            "confidence_current": ["confidence_current", "confianza_actual", "confianza", "trust", "trust_current"],
+            "confidence_change": ["confidence_change", "cambio", "cambio_confianza", "trust_change"],
+            "season_goal_set": ["season_goal_set", "objetivo_fijado", "objetivo_temporada_fijado"],
+            "season_goal_achieved": ["season_goal_achieved", "objetivo_cumplido", "objetivo_temporada_cumplido"],
+            "history_season": ["history_season", "historial_temporada", "temporada_historial", "sports_season", "season_history"],
+            "wins": ["wins", "victorias", "w"],
+            "losses": ["losses", "derrotas", "l"],
+            "result": ["result", "resultado", "final_result", "resultado_final"],
+        }
+        raw_records: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        try:
+            for row in reader:
+                if not any(str(value or "").strip() for value in row.values()):
+                    continue
+                raw_records.append(
+                    {
+                        "line": reader.line_num,
+                        "season": self._owner_office_import_header_value(row, aliases["season"]),
+                        "team": self._owner_office_import_header_value(row, aliases["team"]),
+                        "confidence_current": self._owner_office_import_header_value(row, aliases["confidence_current"]),
+                        "confidence_change": self._owner_office_import_header_value(row, aliases["confidence_change"]),
+                        "season_goal_set": self._owner_office_import_header_value(row, aliases["season_goal_set"]),
+                        "season_goal_achieved": self._owner_office_import_header_value(row, aliases["season_goal_achieved"]),
+                        "history_season": self._owner_office_import_header_value(row, aliases["history_season"]),
+                        "wins": self._owner_office_import_header_value(row, aliases["wins"]),
+                        "losses": self._owner_office_import_header_value(row, aliases["losses"]),
+                        "result": self._owner_office_import_header_value(row, aliases["result"]),
+                    }
+                )
+        except csv.Error as err:
+            errors.append({"line": None, "message": f"No se pudo leer el CSV: {err}"})
+        records, record_errors = self._owner_office_import_normalize_records(raw_records, teams_by_code)
+        errors.extend(record_errors)
+        if not records and not errors:
+            errors.append({"line": None, "message": "No se encontraron filas importables."})
+        return {
+            "ok": not errors,
+            "errors": errors,
+            "records": records,
+            "summary": self._owner_office_import_group_records(records),
+            "objective_options": OWNER_SEASON_OBJECTIVES,
+        }
+
+    def apply_owner_office_import(self, records_payload: Any) -> Dict[str, Any]:
+        if not isinstance(records_payload, list):
+            raise ValueError("records_required")
+        with self.connect() as conn:
+            teams_by_code = {
+                str(row["code"]).upper(): {"id": int(row["id"]), "name": str(row["name"])}
+                for row in conn.execute("SELECT id, code, name FROM teams").fetchall()
+            }
+            records, errors = self._owner_office_import_normalize_records(records_payload, teams_by_code)
+            if errors:
+                err = ValueError("invalid_records")
+                setattr(err, "errors", errors)
+                raise err
+            grouped = self._owner_office_import_group_records(records)
+            timestamp = now_iso()
+            for group in grouped:
+                team = teams_by_code[str(group["team_code"])]
+                team_id = int(team["id"])
+                season_year = int(group["season_year"])
+                existing = conn.execute(
+                    """
+                    SELECT *
+                    FROM team_owner_office
+                    WHERE team_id = ? AND season_year = ?
+                    """,
+                    (team_id, season_year),
+                ).fetchone()
+                confidence_current = str(group.get("confidence_current") or "").strip()
+                confidence_change = str(group.get("confidence_change") or "").strip()
+                season_goal_set = str(group.get("season_goal_set") or "").strip()
+                season_goal_achieved = str(group.get("season_goal_achieved") or "").strip()
+                performance_rows = group.get("performance_rows") if isinstance(group.get("performance_rows"), list) else []
+                normalized_performance_rows = (
+                    self._normalize_owner_performance_rows(performance_rows, season_year)
+                    if performance_rows
+                    else (
+                        self._owner_performance_rows_from_json(existing["performance_json"])
+                        if existing else self._normalize_owner_performance_rows([], season_year)
+                    )
+                )
+                conn.execute(
+                    """
+                    INSERT INTO team_owner_office (
+                        team_id,
+                        season_year,
+                        confidence_current,
+                        confidence_change,
+                        season_goal_set,
+                        season_goal_achieved,
+                        revenue,
+                        expenses,
+                        balance,
+                        income_json,
+                        expenses_json,
+                        performance_json,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(team_id, season_year) DO UPDATE SET
+                        confidence_current = excluded.confidence_current,
+                        confidence_change = excluded.confidence_change,
+                        season_goal_set = excluded.season_goal_set,
+                        season_goal_achieved = excluded.season_goal_achieved,
+                        revenue = excluded.revenue,
+                        expenses = excluded.expenses,
+                        balance = excluded.balance,
+                        income_json = excluded.income_json,
+                        expenses_json = excluded.expenses_json,
+                        performance_json = excluded.performance_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        team_id,
+                        season_year,
+                        confidence_current or (str(existing["confidence_current"] or "") if existing else ""),
+                        confidence_change or (str(existing["confidence_change"] or "") if existing else ""),
+                        season_goal_set or (str(existing["season_goal_set"] or "") if existing else ""),
+                        season_goal_achieved or (str(existing["season_goal_achieved"] or "") if existing else ""),
+                        str(existing["revenue"]) if existing and existing["revenue"] is not None else None,
+                        str(existing["expenses"]) if existing and existing["expenses"] is not None else None,
+                        str(existing["balance"]) if existing and existing["balance"] is not None else None,
+                        str(existing["income_json"]) if existing and existing["income_json"] else "[]",
+                        str(existing["expenses_json"]) if existing and existing["expenses_json"] else "[]",
+                        json.dumps(normalized_performance_rows, ensure_ascii=True),
+                        timestamp,
+                    ),
+                )
+            conn.commit()
+        return {
+            "ok": True,
+            "record_count": len(records),
+            "group_count": len(grouped),
+            "seasons": sorted({int(row["season_year"]) for row in grouped}),
+            "summary": grouped,
+        }
+
     def _owner_performance_rows_from_json(self, value: Any) -> List[Dict[str, Any]]:
         try:
             parsed = json.loads(str(value or "[]"))
@@ -6391,6 +6697,36 @@ QUALITY REQUIREMENTS
             self._log_admin_action(
                 "import",
                 "owner_economy",
+                ",".join(str(season) for season in result.get("seasons", [])),
+                None,
+                {"record_count": result.get("record_count"), "group_count": result.get("group_count")},
+            )
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/admin/owner-office-import/preview":
+            csv_text = str(payload.get("csv_text") or "")
+            if len(csv_text.encode("utf-8")) > 2_000_000:
+                self._json(413, {"error": "csv_too_large"})
+                return
+            result = self.db.preview_owner_office_csv(csv_text)
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/admin/owner-office-import/import":
+            try:
+                result = self.db.apply_owner_office_import(payload.get("records"))
+            except ValueError as err:
+                if str(err) == "records_required":
+                    self._json(400, {"error": "records_required"})
+                    return
+                if str(err) == "invalid_records":
+                    self._json(400, {"error": "invalid_records", "errors": getattr(err, "errors", [])})
+                    return
+                raise
+            self._log_admin_action(
+                "import",
+                "owner_office",
                 ",".join(str(season) for season in result.get("seasons", [])),
                 None,
                 {"record_count": result.get("record_count"), "group_count": result.get("group_count")},
