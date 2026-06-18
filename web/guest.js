@@ -4303,9 +4303,19 @@ function ownerOfficeEntryForSeason(season) {
 function ownerOfficeDisplayValue(value) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'number' && Number.isFinite(value)) return formatMoneyDots(value);
-  const parsed = parseAmountLike(value);
+  const parsed = parseOwnerOfficeDisplayAmount(value);
   if (parsed !== null && String(value).trim().match(/^[\s€$0-9.,-]+$/)) return formatMoneyDots(parsed);
   return String(value);
+}
+
+function parseOwnerOfficeDisplayAmount(value) {
+  const text = String(value || '').trim();
+  const compact = text.replace(/[€$]/g, '').replace(/\s+/g, '');
+  if (/^-?\d+[.,]\d{1,2}$/.test(compact)) {
+    const decimal = Number(compact.replace(',', '.'));
+    return Number.isFinite(decimal) ? decimal : null;
+  }
+  return parseAmountLike(value);
 }
 
 function ownerOfficeAgeFromBirthDate(value) {

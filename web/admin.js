@@ -660,6 +660,7 @@ function confirmWithDiscordNotification({
   defaultNotify = true,
   imageLabel = 'Generar imagen con OpenAI',
   defaultGenerateImage = true,
+  uploadLabel = 'Usar imagen subida',
   danger = false,
 } = {}) {
   return new Promise((resolve) => {
@@ -681,6 +682,11 @@ function confirmWithDiscordNotification({
           <input type="checkbox" data-role="generate-discord-image" ${(defaultNotify && defaultGenerateImage) ? 'checked' : ''} ${defaultNotify ? '' : 'disabled'}>
           <span>${escapeHtml(imageLabel)}</span>
         </label>
+        <label class="notify-confirm-upload">
+          <span>${escapeHtml(uploadLabel)}</span>
+          <input type="file" data-role="custom-discord-image" accept="image/png,image/jpeg,image/webp,image/gif" ${defaultNotify && !defaultGenerateImage ? '' : 'disabled'}>
+          <small>Opcional. Máximo 8 MB. Se usa cuando no generas imagen con OpenAI.</small>
+        </label>
         <div class="notification-confirm-actions">
           <button type="button" data-action="cancel">Cancelar</button>
           <button type="button" data-action="confirm" class="${danger ? 'danger' : ''}">${escapeHtml(confirmLabel)}</button>
@@ -694,31 +700,73 @@ function confirmWithDiscordNotification({
       resolve(value);
     };
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false });
+      if (event.key === 'Escape') cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false, customDiscordImage: null });
     };
     document.addEventListener('keydown', onKeyDown);
     backdrop.addEventListener('click', (event) => {
-      if (event.target === backdrop) cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false });
+      if (event.target === backdrop) cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false, customDiscordImage: null });
     });
     backdrop.querySelector('[data-action="cancel"]').addEventListener('click', () => {
-      cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false });
+      cleanup({ confirmed: false, notifyDiscord: false, generateDiscordImage: false, customDiscordImage: null });
     });
     const notifyInput = backdrop.querySelector('[data-role="notify-discord"]');
     const imageInput = backdrop.querySelector('[data-role="generate-discord-image"]');
-    notifyInput?.addEventListener('change', () => {
+    const customImageInput = backdrop.querySelector('[data-role="custom-discord-image"]');
+    const updateCustomImageState = () => {
       const notifyEnabled = Boolean(notifyInput.checked);
       if (imageInput) {
         imageInput.disabled = !notifyEnabled;
         if (!notifyEnabled) imageInput.checked = false;
-        else if (defaultGenerateImage) imageInput.checked = true;
+      }
+      if (customImageInput) {
+        customImageInput.disabled = !notifyEnabled || Boolean(imageInput?.checked);
+        if (customImageInput.disabled) customImageInput.value = '';
+      }
+    };
+    notifyInput?.addEventListener('change', updateCustomImageState);
+    imageInput?.addEventListener('change', updateCustomImageState);
+    customImageInput?.addEventListener('change', () => {
+      if (customImageInput.files?.length && imageInput) {
+        imageInput.checked = false;
+        updateCustomImageState();
       }
     });
-    backdrop.querySelector('[data-action="confirm"]').addEventListener('click', () => {
+    backdrop.querySelector('[data-action="confirm"]').addEventListener('click', async () => {
       const notifyDiscord = Boolean(notifyInput?.checked);
       const generateDiscordImage = notifyDiscord && Boolean(imageInput?.checked);
-      cleanup({ confirmed: true, notifyDiscord, generateDiscordImage });
+      let customDiscordImage = null;
+      if (notifyDiscord && !generateDiscordImage && customImageInput?.files?.length) {
+        const file = customImageInput.files[0];
+        if (file.size > 8 * 1024 * 1024) {
+          alert('La imagen no puede superar 8 MB.');
+          return;
+        }
+        if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+          alert('Formato no válido. Usa PNG, JPG, WEBP o GIF.');
+          return;
+        }
+        let dataUrl = '';
+        try {
+          dataUrl = await new Promise((fileResolve, fileReject) => {
+            const reader = new FileReader();
+            reader.onload = () => fileResolve(String(reader.result || ''));
+            reader.onerror = () => fileReject(reader.error || new Error('No se pudo leer la imagen.'));
+            reader.readAsDataURL(file);
+          });
+        } catch (err) {
+          alert('No se pudo leer la imagen seleccionada.');
+          return;
+        }
+        customDiscordImage = {
+          filename: file.name || 'notification-image',
+          mime_type: file.type,
+          data_url: dataUrl,
+        };
+      }
+      cleanup({ confirmed: true, notifyDiscord, generateDiscordImage, customDiscordImage });
     });
     document.body.appendChild(backdrop);
+    updateCustomImageState();
     backdrop.querySelector('[data-action="confirm"]')?.focus();
   });
 }
@@ -2475,6 +2523,7 @@ async function confirmTrade() {
         trade_bucket: tradeBucket,
         notify_discord: decision.notifyDiscord,
         generate_discord_image: decision.generateDiscordImage,
+        discord_custom_image: decision.customDiscordImage,
       }),
     });
     if (!result.ok) {
@@ -2749,6 +2798,7 @@ async function decideGmOptionRequest(requestId, decision, button) {
       decision,
       notify_discord: result.notifyDiscord,
       generate_discord_image: result.generateDiscordImage,
+      discord_custom_image: result.customDiscordImage,
     };
   } else {
     const label = decision === 'approved' ? 'aprobar' : 'rechazar';
@@ -3895,9 +3945,19 @@ function ownerOfficeInputValue(value) {
 function ownerOfficeDisplayValue(value) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'number' && Number.isFinite(value)) return formatMoneyDots(value);
-  const parsed = parseAmount(value);
+  const parsed = parseOwnerOfficeDisplayAmount(value);
   if (parsed !== null && String(value).trim().match(/^[\s€$0-9.,-]+$/)) return formatMoneyDots(parsed);
   return String(value);
+}
+
+function parseOwnerOfficeDisplayAmount(value) {
+  const text = String(value || '').trim();
+  const compact = text.replace(/[€$]/g, '').replace(/\s+/g, '');
+  if (/^-?\d+[.,]\d{1,2}$/.test(compact)) {
+    const decimal = Number(compact.replace(',', '.'));
+    return Number.isFinite(decimal) ? decimal : null;
+  }
+  return parseAmount(value);
 }
 
 function ownerOfficeProfile() {
@@ -5312,6 +5372,7 @@ function renderPlayers() {
               option_action_value: optionValue,
               notify_discord: decision.notifyDiscord,
               generate_discord_image: decision.generateDiscordImage,
+              discord_custom_image: decision.customDiscordImage,
             }),
           });
           p[optionField] = nextOptionValue || null;
@@ -5387,6 +5448,7 @@ function renderPlayers() {
         body: JSON.stringify({
           notify_discord: decision.notifyDiscord,
           generate_discord_image: decision.generateDiscordImage,
+          discord_custom_image: decision.customDiscordImage,
         }),
       });
       await loadTeam(state.teamCode);
@@ -5597,6 +5659,7 @@ async function cutSelectedPlayersAction() {
       body: JSON.stringify({
         notify_discord: decision.notifyDiscord,
         generate_discord_image: decision.generateDiscordImage,
+        discord_custom_image: decision.customDiscordImage,
       }),
     });
   }

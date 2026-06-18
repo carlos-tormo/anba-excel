@@ -909,6 +909,26 @@ h1 {
   width: 18px;
   height: 18px;
 }
+.notify-confirm-upload {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 800;
+}
+.notify-confirm-upload input {
+  width: 100%;
+  color: #334155;
+  font-weight: 700;
+}
+.notify-confirm-upload input:disabled {
+  opacity: 0.55;
+}
+.notify-confirm-upload small {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
 .notification-confirm-actions {
   display: flex;
   justify-content: flex-end;
@@ -6926,7 +6946,7 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
   header {
     position: sticky;
     top: 0;
-    z-index: 38;
+    z-index: 1000;
     display: grid;
     grid-template-columns: 34px minmax(0, 1fr) 34px;
     align-items: center;

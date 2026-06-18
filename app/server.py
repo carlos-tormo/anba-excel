@@ -951,6 +951,8 @@ class LeagueDB:
                     owner_birth_date TEXT,
                     owner_photo_url TEXT,
                     owner_office_background_url TEXT,
+                    owner_office_background_blob BLOB,
+                    owner_office_background_mime TEXT,
                     owner_bio TEXT,
                     ambicion_competitiva INTEGER,
                     paciencia INTEGER,
@@ -1070,6 +1072,10 @@ class LeagueDB:
                 conn.execute("ALTER TABLE owner_exit_interviews ADD COLUMN owner_conclusion_message TEXT")
             if "owner_office_background_url" not in owner_profile_cols:
                 conn.execute("ALTER TABLE team_owner_profiles ADD COLUMN owner_office_background_url TEXT")
+            if "owner_office_background_blob" not in owner_profile_cols:
+                conn.execute("ALTER TABLE team_owner_profiles ADD COLUMN owner_office_background_blob BLOB")
+            if "owner_office_background_mime" not in owner_profile_cols:
+                conn.execute("ALTER TABLE team_owner_profiles ADD COLUMN owner_office_background_mime TEXT")
             if "cash_received" not in team_cols:
                 conn.execute("ALTER TABLE teams ADD COLUMN cash_received REAL NOT NULL DEFAULT 0")
             if "cash_sent" not in team_cols:
@@ -3827,6 +3833,62 @@ class LeagueDB:
             conn.commit()
         return self.get_team_owner_office(code, include_private=True)
 
+    def update_owner_background_image(self, code: str, file_bytes: bytes, mime_type: str) -> Optional[Dict[str, Any]]:
+        normalized_code = code.upper()
+        if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise ValueError("unsupported_upload_type")
+        if not file_bytes:
+            raise ValueError("missing_upload")
+        if len(file_bytes) > OWNER_BACKGROUND_MAX_BYTES:
+            raise ValueError("upload_too_large")
+        with self.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = ?", (normalized_code,)).fetchone()
+            if not team:
+                return None
+            timestamp = now_iso()
+            cache_key = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+            background_url = f"/api/teams/{normalized_code}/owner-office/background-image?v={cache_key}"
+            conn.execute(
+                """
+                INSERT INTO team_owner_profiles (
+                    team_id,
+                    owner_office_background_url,
+                    owner_office_background_blob,
+                    owner_office_background_mime,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(team_id) DO UPDATE SET
+                    owner_office_background_url = excluded.owner_office_background_url,
+                    owner_office_background_blob = excluded.owner_office_background_blob,
+                    owner_office_background_mime = excluded.owner_office_background_mime,
+                    updated_at = excluded.updated_at
+                """,
+                (int(team["id"]), background_url, sqlite3.Binary(file_bytes), mime_type, timestamp),
+            )
+            conn.commit()
+        return self.get_team_owner_office(normalized_code, include_private=True)
+
+    def get_owner_background_image(self, code: str) -> Optional[tuple[bytes, str]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT p.owner_office_background_blob AS image_blob,
+                       p.owner_office_background_mime AS mime_type
+                FROM team_owner_profiles p
+                JOIN teams t ON t.id = p.team_id
+                WHERE t.code = ?
+                """,
+                (code.upper(),),
+            ).fetchone()
+            if not row or row["image_blob"] is None:
+                return None
+            image_bytes = bytes(row["image_blob"])
+            mime_type = str(row["mime_type"] or "application/octet-stream")
+            if not image_bytes:
+                return None
+            return image_bytes, mime_type
+
     def upsert_team_economy(self, season_year: int, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         if season_year < 2000 or season_year > 2100:
             raise ValueError("invalid_season_year")
@@ -6182,6 +6244,7 @@ QUALITY REQUIREMENTS
         image_reference_url: Optional[str] = None,
         image_fallback_prompt: Optional[str] = None,
         generate_image: bool = True,
+        custom_image: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not self.discord_notifications_enabled or not self.discord_webhook_url:
             return
@@ -6209,7 +6272,9 @@ QUALITY REQUIREMENTS
             embed["fields"] = normalized_fields[:25]
 
         image_attachment = None
-        if generate_image:
+        if custom_image:
+            image_attachment = self._discord_custom_image_attachment(custom_image)
+        if not image_attachment and generate_image:
             image_attachment = self._generate_openai_image(
                 image_prompt or "",
                 reference_image_url=image_reference_url,
@@ -6252,7 +6317,52 @@ QUALITY REQUIREMENTS
             return True
         return parse_bool(payload.get("generate_discord_image"))
 
-    def _notify_player_cut(self, result: Dict[str, Any], *, generate_image: bool = True) -> None:
+    def _discord_custom_image_attachment(self, payload: Any) -> Optional[tuple[bytes, str, str]]:
+        if not isinstance(payload, dict):
+            return None
+        allowed_mime_types = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/webp": "webp",
+            "image/gif": "gif",
+        }
+        data_url = str(payload.get("data_url") or "").strip()
+        mime_type = str(payload.get("mime_type") or "").strip().lower()
+        base64_text = str(payload.get("base64") or "").strip()
+        if data_url:
+            match = re.match(r"^data:(image/(?:png|jpeg|webp|gif));base64,(.+)$", data_url, re.IGNORECASE | re.DOTALL)
+            if not match:
+                self.log_error("Discord custom image ignored: invalid data URL.")
+                return None
+            mime_type = match.group(1).lower()
+            base64_text = match.group(2)
+        if mime_type not in allowed_mime_types or not base64_text:
+            self.log_error("Discord custom image ignored: unsupported image type.")
+            return None
+        compact_base64 = re.sub(r"\s+", "", base64_text)
+        try:
+            file_bytes = base64.b64decode(compact_base64, validate=True)
+        except ValueError:
+            self.log_error("Discord custom image ignored: invalid base64 data.")
+            return None
+        if not file_bytes:
+            return None
+        if len(file_bytes) > 8 * 1024 * 1024:
+            self.log_error("Discord custom image ignored: file is larger than 8 MB.")
+            return None
+        raw_filename = str(payload.get("filename") or "notification-image").strip()
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_filename).strip("._-") or "notification-image"
+        safe_stem = re.sub(r"\.(png|jpe?g|webp|gif)$", "", safe_stem, flags=re.IGNORECASE)[:80] or "notification-image"
+        filename = f"{safe_stem}.{allowed_mime_types[mime_type]}"
+        return file_bytes, filename, mime_type
+
+    def _notify_player_cut(
+        self,
+        result: Dict[str, Any],
+        *,
+        generate_image: bool = True,
+        custom_image: Optional[Dict[str, Any]] = None,
+    ) -> None:
         team_code = str(result.get("team_code") or "").upper()
         team_name = str(result.get("team_name") or team_code)
         player_name = str(result.get("player_name") or "Jugador")
@@ -6291,6 +6401,7 @@ QUALITY REQUIREMENTS
             image_reference_url=reference_url,
             image_fallback_prompt=generic_prompt,
             generate_image=generate_image,
+            custom_image=custom_image,
         )
 
     def _trade_asset_summary(self, players: List[Any], pick_count: Any, right_count: Any) -> str:
@@ -6305,7 +6416,13 @@ QUALITY REQUIREMENTS
             return "Sin activos registrados"
         return "\n".join(f"- {item}" for item in items)
 
-    def _notify_trade_processed(self, result: Dict[str, Any], *, generate_image: bool = True) -> None:
+    def _notify_trade_processed(
+        self,
+        result: Dict[str, Any],
+        *,
+        generate_image: bool = True,
+        custom_image: Optional[Dict[str, Any]] = None,
+    ) -> None:
         team_a = str(result.get("team_a", {}).get("code") or "").upper()
         team_b = str(result.get("team_b", {}).get("code") or "").upper()
         bucket = normalize_trade_bucket(result.get("trade_bucket"))
@@ -6343,6 +6460,7 @@ QUALITY REQUIREMENTS
                 context=f"{team_a} receives: {team_a_receives}. {team_b} receives: {team_b_receives}.",
             ),
             generate_image=generate_image,
+            custom_image=custom_image,
         )
 
     def _notify_contract_option_action(
@@ -6353,6 +6471,7 @@ QUALITY REQUIREMENTS
         action: str,
         *,
         generate_image: bool = True,
+        custom_image: Optional[Dict[str, Any]] = None,
     ) -> None:
         team_code = str(player.get("team_code") or "").upper()
         team_name = str(player.get("team_name") or team_code)
@@ -6424,6 +6543,7 @@ QUALITY REQUIREMENTS
             image_reference_url=reference_url,
             image_fallback_prompt=generic_prompt,
             generate_image=generate_image,
+            custom_image=custom_image,
         )
 
     def _exchange_google_code(self, code: str) -> Dict[str, Any]:
@@ -6456,6 +6576,31 @@ QUALITY REQUIREMENTS
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+
+        if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/owner-office/background-image"):
+            parts = parsed.path.split("/")
+            if len(parts) < 6:
+                self._json(404, {"error": "not_found"})
+                return
+            code = normalize_team_code(parts[3])
+            if not code:
+                self._json(400, {"error": "invalid_team"})
+                return
+            image = self.db.get_owner_background_image(code)
+            if not image:
+                self._json(404, {"error": "not_found"})
+                return
+            image_bytes, mime_type = image
+            self._bytes_response(
+                200,
+                image_bytes,
+                mime_type,
+                headers={
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+            return
 
         if parsed.path.startswith("/uploads/owner-office/"):
             self._serve_owner_background_upload(parsed.path)
@@ -6721,29 +6866,28 @@ QUALITY REQUIREMENTS
                 self._json(400, {"error": "invalid_team"})
                 return
             try:
-                file_bytes, ext, mime_type = self._read_multipart_image_upload("background")
+                file_bytes, _ext, mime_type = self._read_multipart_image_upload("background")
             except ValueError as err:
                 error = str(err) or "invalid_upload"
                 status = 413 if error == "upload_too_large" else 400
                 self._json(status, {"error": error})
                 return
             try:
-                OWNER_BACKGROUND_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-                filename = f"{code}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(6)}.{ext}"
-                file_path = OWNER_BACKGROUND_UPLOAD_DIR / filename
-                file_path.write_bytes(file_bytes)
-            except OSError:
+                owner_office = self.db.update_owner_background_image(code, file_bytes, mime_type)
+            except ValueError as err:
+                error = str(err) or "invalid_upload"
+                status = 413 if error == "upload_too_large" else 400
+                self._json(status, {"error": error})
+                return
+            except sqlite3.Error:
                 self._json(500, {"error": "upload_save_failed"})
                 return
-            background_url = f"/uploads/owner-office/{filename}"
-            owner_office = self.db.update_owner_background_url(code, background_url)
             if not owner_office:
-                try:
-                    file_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
                 self._json(404, {"error": "team_not_found"})
                 return
+            background_url = str(
+                (owner_office.get("owner_profile") or {}).get("owner_office_background_url") or ""
+            )
             self._log_admin_action(
                 "upload",
                 "owner_office_background",
@@ -7107,7 +7251,11 @@ QUALITY REQUIREMENTS
                 },
             )
             if self._discord_notify_requested(payload):
-                self._notify_player_cut(result, generate_image=self._discord_image_requested(payload))
+                self._notify_player_cut(
+                    result,
+                    generate_image=self._discord_image_requested(payload),
+                    custom_image=payload.get("discord_custom_image"),
+                )
             self._json(200, {"ok": True, "result": result})
             return
 
@@ -7194,7 +7342,11 @@ QUALITY REQUIREMENTS
                     },
                 )
                 if self._discord_notify_requested(payload):
-                    self._notify_trade_processed(result, generate_image=self._discord_image_requested(payload))
+                    self._notify_trade_processed(
+                        result,
+                        generate_image=self._discord_image_requested(payload),
+                        custom_image=payload.get("discord_custom_image"),
+                    )
             self._json(200 if result else 400, {"ok": bool(result), "result": result})
             return
 
@@ -7457,6 +7609,7 @@ QUALITY REQUIREMENTS
                     option_value,
                     option_action,
                     generate_image=self._discord_image_requested(payload),
+                    custom_image=payload.get("discord_custom_image"),
                 )
             self._json(200, {"ok": True, "request": updated})
             return
@@ -7810,6 +7963,7 @@ QUALITY REQUIREMENTS
                         option_action_value,
                         option_action,
                         generate_image=self._discord_image_requested(payload),
+                        custom_image=payload.get("discord_custom_image"),
                     )
             self._json(200 if ok else 404, {"ok": ok})
             return
