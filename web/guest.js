@@ -4684,8 +4684,11 @@ function renderOwnerOffice() {
     .map((year) => `<option value="${year}" ${year === season ? 'selected' : ''}>${seasonLabel(year)}</option>`)
     .join('');
   if (subtitle) subtitle.textContent = `${state.teamCode || ''} · ${seasonLabel(season)}`;
-  const rank = entry.balance_rank && entry.balance_rank_total
+  const balanceRank = entry.balance_rank && entry.balance_rank_total
     ? `<span class="owner-office-rank">#${entry.balance_rank} de ${entry.balance_rank_total}</span>`
+    : '';
+  const confidenceRank = entry.confidence_rank && entry.confidence_rank_total
+    ? `<span class="owner-office-rank">#${entry.confidence_rank} de ${entry.confidence_rank_total}</span>`
     : '';
   const incomeRows = ownerOfficeMergedRows(OWNER_OFFICE_INCOME_ROWS, entry.income_rows);
   const expenseRows = ownerOfficeMergedRows(OWNER_OFFICE_EXPENSE_ROWS, entry.expenses_rows);
@@ -4702,7 +4705,7 @@ function renderOwnerOffice() {
           <tbody>
             <tr>
               <th>Confianza actual</th>
-              <td>${ownerOfficeReadonlyCell(entry.confidence_current)}</td>
+              <td>${ownerOfficeReadonlyCell(entry.confidence_current, confidenceRank)}</td>
             </tr>
             <tr>
               <th>Cambio ${escapeHtml(seasonLabel(season))}</th>
@@ -4734,7 +4737,7 @@ function renderOwnerOffice() {
             </tr>
             <tr>
               <th>Balance</th>
-              <td>${ownerOfficeReadonlyCell(entry.balance, rank)}</td>
+              <td>${ownerOfficeReadonlyCell(entry.balance, balanceRank)}</td>
             </tr>
           </tbody>
         </table>

@@ -4032,14 +4032,20 @@ th {
 .modal-backdrop.owner-exit-backdrop {
   padding: 0;
   background: #020617;
+  place-items: stretch;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .owner-exit-modal {
   position: relative;
   width: 100vw;
-  height: 100dvh;
+  min-height: 100dvh;
+  height: auto;
   max-height: none;
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
   border: 0;
   border-radius: 0;
   background: #020617;
@@ -4083,14 +4089,24 @@ th {
 }
 .owner-exit-modal-content {
   width: 100%;
-  height: 100%;
+  min-height: 100dvh;
+  height: auto;
 }
 .owner-exit-game {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  box-sizing: border-box;
   width: 100%;
-  height: 100%;
-  min-height: 100%;
-  overflow: hidden;
+  min-height: 100dvh;
+  height: auto;
+  overflow: visible;
+  padding:
+    calc(max(14px, env(safe-area-inset-top)) + 116px)
+    max(28px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom))
+    max(28px, env(safe-area-inset-left));
   background: #020617;
   color: #f8fafc;
 }
@@ -4100,6 +4116,7 @@ th {
 .owner-exit-scene-shade {
   position: absolute;
   inset: 0;
+  pointer-events: none;
 }
 .owner-exit-background-image {
   width: 100%;
@@ -4171,20 +4188,18 @@ th {
   white-space: nowrap;
 }
 .owner-exit-dialogue-panel {
-  position: absolute;
-  left: max(28px, env(safe-area-inset-left));
-  right: max(28px, env(safe-area-inset-right));
-  bottom: max(24px, env(safe-area-inset-bottom));
+  position: relative;
   z-index: 6;
   display: grid;
   gap: 10px;
-  max-height: min(48vh, 430px);
+  width: 100%;
+  max-height: none;
 }
 .owner-exit-chat {
   display: grid;
   gap: 10px;
-  overflow: auto;
-  max-height: min(36vh, 320px);
+  overflow: visible;
+  max-height: none;
   padding-right: 4px;
 }
 .owner-exit-dialogue {
@@ -6876,14 +6891,23 @@ input[data-field^="salary"], input[data-field="years_left"], input[data-field="y
     width: 28px;
     height: 28px;
   }
+  .owner-exit-game {
+    min-height: 100dvh;
+    padding:
+      calc(max(12px, env(safe-area-inset-top)) + 96px)
+      max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
+  }
   .owner-exit-dialogue-panel {
-    left: max(8px, env(safe-area-inset-left));
-    right: max(8px, env(safe-area-inset-right));
-    bottom: max(8px, env(safe-area-inset-bottom));
-    max-height: 62vh;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    max-height: none;
   }
   .owner-exit-chat {
-    max-height: 42vh;
+    max-height: none;
+    overflow: visible;
   }
   .owner-exit-dialogue,
   .owner-exit-dialogue--gm {

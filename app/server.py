@@ -3620,6 +3620,30 @@ class LeagueDB:
                     (int(year),),
                 ).fetchall()
                 balance_rank = next((idx + 1 for idx, row in enumerate(rank_rows) if int(row["id"]) == team_id), None)
+                confidence_rows_raw = conn.execute(
+                    """
+                    SELECT t.id, t.code, o.confidence_current
+                    FROM teams t
+                    JOIN team_owner_office o
+                      ON o.team_id = t.id AND o.season_year = ?
+                    WHERE TRIM(COALESCE(o.confidence_current, '')) <> ''
+                    """,
+                    (int(year),),
+                ).fetchall()
+                confidence_rows = []
+                for confidence_row in confidence_rows_raw:
+                    confidence_value = parse_amount_like(confidence_row["confidence_current"])
+                    if confidence_value is None:
+                        continue
+                    confidence_rows.append(
+                        {
+                            "id": int(confidence_row["id"]),
+                            "code": str(confidence_row["code"]),
+                            "confidence": float(confidence_value),
+                        }
+                    )
+                confidence_rows.sort(key=lambda row: (-row["confidence"], row["code"]))
+                confidence_rank = next((idx + 1 for idx, row in enumerate(confidence_rows) if int(row["id"]) == team_id), None)
                 saved = saved_by_year.get(int(year))
                 interview = interviews_by_year.get(int(year))
                 if not interview and free_agency_mode and int(year) == current_year:
@@ -3656,6 +3680,8 @@ class LeagueDB:
                     "season_year": int(year),
                     "confidence_current": str(saved["confidence_current"] or "") if saved else "",
                     "confidence_change": str(saved["confidence_change"] or "") if saved else "",
+                    "confidence_rank": confidence_rank,
+                    "confidence_rank_total": len(confidence_rows),
                     "new_gm_after_dismissal": parse_bool(saved["new_gm_after_dismissal"]) if saved else False,
                     "gm_midseason_arrival": parse_bool(saved["gm_midseason_arrival"]) if saved else False,
                     "season_goal_set": self._normalize_owner_season_objective(saved["season_goal_set"]) if saved else "",
@@ -6076,6 +6102,7 @@ QUALITY REQUIREMENTS
                 f"Atributos internos propietario: {json.dumps(attrs, ensure_ascii=False)}",
                 f"Guia de personalidad del propietario: {self._owner_interview_personality_guide(attrs)}",
                 f"Confianza actual: {entry.get('confidence_current') or 'No configurada'}",
+                f"Ranking confianza: #{entry.get('confidence_rank') or '-'} de {entry.get('confidence_rank_total') or '-'}",
                 f"Cambio confianza temporada: {entry.get('confidence_change') or 'No configurado'}",
                 f"Nuevo GM tras destitucion: {'Si' if entry.get('new_gm_after_dismissal') else 'No'}",
                 f"GM llego a mediados de la temporada pasada: {'Si' if entry.get('gm_midseason_arrival') else 'No'}",
