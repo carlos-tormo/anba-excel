@@ -3942,6 +3942,24 @@ function ownerOfficeInputValue(value) {
   return String(value);
 }
 
+function ownerOfficeBreakdownInputValue(value) {
+  const text = ownerOfficeInputValue(value);
+  const compact = text.replace(/[€$]/g, '').replace(/\s+/g, '');
+  if (/^-?\d+\.\d{1,2}$/.test(compact)) {
+    return text.replace('.', ',');
+  }
+  return text;
+}
+
+function normalizeOwnerOfficeBreakdownValue(value) {
+  const text = String(value || '').trim();
+  const compact = text.replace(/[€$]/g, '').replace(/\s+/g, '');
+  if (/^-?\d+\.\d{1,2}$/.test(compact)) {
+    return text.replace('.', ',');
+  }
+  return text;
+}
+
 function ownerOfficeDisplayValue(value) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'number' && Number.isFinite(value)) return formatMoneyDots(value);
@@ -4126,7 +4144,7 @@ function ownerOfficeBreakdownTable(title, kind, rows) {
                 <td>${escapeHtml(row.label)}</td>
                 <td>${row.type === 'category'
                   ? `<span class="owner-office-calculated-value">${escapeHtml(ownerOfficeDisplayValue(row.value))}</span>`
-                  : `<input class="owner-office-input" data-owner-row-value="${escapeHtml(row.key)}" value="${escapeHtml(ownerOfficeInputValue(row.value))}">`}</td>
+                  : `<input class="owner-office-input" data-owner-row-value="${escapeHtml(row.key)}" value="${escapeHtml(ownerOfficeBreakdownInputValue(row.value))}">`}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -4460,7 +4478,7 @@ function collectOwnerOfficeRows(kind, defaultRows) {
     const input = row?.querySelector('[data-owner-row-value]');
     return {
       ...defaultRow,
-      value: input ? input.value.trim() : '',
+      value: input ? normalizeOwnerOfficeBreakdownValue(input.value) : '',
     };
   });
 }

@@ -219,11 +219,13 @@ def parse_amount_like(value: Any) -> Optional[float]:
             return parsed if math.isfinite(parsed) else None
         except ValueError:
             return None
-    cleaned = text.replace(" ", "")
+    cleaned = re.sub(r"[€$]", "", text.replace(" ", ""))
     if "," in cleaned and "." in cleaned:
         cleaned = cleaned.replace(".", "").replace(",", ".")
     elif "," in cleaned:
         cleaned = cleaned.replace(",", ".")
+    elif "." in cleaned and re.fullmatch(r"-?\d+\.\d{1,2}", cleaned):
+        pass
     else:
         cleaned = cleaned.replace(".", "")
     cleaned = re.sub(r"[^0-9.-]", "", cleaned)
@@ -2208,15 +2210,23 @@ class LeagueDB:
                 row_type = "field"
             if not key or not label:
                 continue
+            raw_value = "" if raw.get("value") is None else str(raw.get("value"))
             rows.append(
                 {
                     "key": key,
                     "label": label,
                     "type": row_type,
-                    "value": "" if raw.get("value") is None else str(raw.get("value")),
+                    "value": self._owner_office_field_value_text(raw_value) if row_type == "field" else raw_value,
                 }
             )
         return self._owner_office_apply_calculated_rows(section, rows)
+
+    def _owner_office_field_value_text(self, value: Any) -> str:
+        text = "" if value is None else str(value).strip()
+        compact = re.sub(r"[€$]", "", text.replace(" ", ""))
+        if re.fullmatch(r"-?\d+\.\d{1,2}", compact):
+            return text.replace(".", ",")
+        return text
 
     def _normalize_owner_office_rows(self, rows: Any, section: Optional[str] = None) -> List[Dict[str, Any]]:
         if not isinstance(rows, list):
@@ -2232,12 +2242,13 @@ class LeagueDB:
             row_type = str(raw.get("type") or "field").strip().lower()
             if row_type not in {"category", "field"}:
                 row_type = "field"
+            raw_value = "" if raw.get("value") is None else str(raw.get("value")).strip()[:500]
             normalized.append(
                 {
                     "key": key[:80],
                     "label": label[:160],
                     "type": row_type,
-                    "value": "" if raw.get("value") is None else str(raw.get("value")).strip()[:500],
+                    "value": self._owner_office_field_value_text(raw_value) if row_type == "field" else raw_value,
                 }
             )
         return self._owner_office_apply_calculated_rows(section, normalized)
