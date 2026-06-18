@@ -2184,7 +2184,7 @@ class LeagueDB:
                 "rows": rows,
             }
 
-    def _owner_office_rows_from_json(self, value: Any) -> List[Dict[str, Any]]:
+    def _owner_office_rows_from_json(self, value: Any, section: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
             parsed = json.loads(str(value or "[]"))
         except json.JSONDecodeError:
@@ -2210,9 +2210,9 @@ class LeagueDB:
                     "value": "" if raw.get("value") is None else str(raw.get("value")),
                 }
             )
-        return rows
+        return self._owner_office_apply_calculated_rows(section, rows)
 
-    def _normalize_owner_office_rows(self, rows: Any) -> List[Dict[str, Any]]:
+    def _normalize_owner_office_rows(self, rows: Any, section: Optional[str] = None) -> List[Dict[str, Any]]:
         if not isinstance(rows, list):
             return []
         normalized: List[Dict[str, Any]] = []
@@ -2234,7 +2234,148 @@ class LeagueDB:
                     "value": "" if raw.get("value") is None else str(raw.get("value")).strip()[:500],
                 }
             )
-        return normalized
+        return self._owner_office_apply_calculated_rows(section, normalized)
+
+    def _owner_office_apply_calculated_rows(
+        self,
+        section: Optional[str],
+        rows: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if section not in {"income", "expenses"} or not rows:
+            return rows
+
+        amounts: Dict[str, float] = {}
+        present: set[str] = set()
+        for row in rows:
+            key = str(row.get("key") or "")
+            parsed = parse_amount_like(row.get("value"))
+            amounts[key] = float(parsed or 0)
+            if parsed is not None:
+                present.add(key)
+
+        def value(key: str) -> float:
+            return amounts.get(key, 0.0)
+
+        def magnitude(key: str) -> float:
+            return abs(value(key))
+
+        def calculated(keys: List[str], amount: float) -> str:
+            if not any(key in present for key in keys):
+                return ""
+            return self._owner_import_value_text(amount)
+
+        if section == "income":
+            formulas = {
+                "recaudacion": calculated(
+                    ["entradas_playoffs", "entradas_regular_season", "precio_medio_entrada", "consumiciones"],
+                    (
+                        value("entradas_playoffs") + value("entradas_regular_season")
+                    ) * (0.6 * value("precio_medio_entrada"))
+                    + (
+                        value("entradas_playoffs") + value("entradas_regular_season")
+                    ) * (0.9 * value("consumiciones")),
+                ),
+                "merchandising": calculated(
+                    ["ventas_camisetas_ropa", "precio_medio_articulo"],
+                    value("ventas_camisetas_ropa") * value("precio_medio_articulo"),
+                ),
+                "derechos": calculated(
+                    ["tv_globales", "tv_local", "licencias"],
+                    value("tv_globales") + value("tv_local") + value("licencias"),
+                ),
+                "sponsor": calculated(
+                    ["patrocinador_jersey", "patrocinador_estadio", "patrocinadores_generales"],
+                    value("patrocinador_jersey")
+                    + value("patrocinador_estadio")
+                    + value("patrocinadores_generales"),
+                ),
+                "flujos_caja_positivos": calculated(
+                    [
+                        "traspasos_positivos",
+                        "bonificaciones",
+                        "reparto_beneficios_positivo",
+                        "reparto_impuesto_lujo",
+                    ],
+                    value("traspasos_positivos")
+                    + value("bonificaciones")
+                    + value("reparto_beneficios_positivo")
+                    + value("reparto_impuesto_lujo"),
+                ),
+            }
+        else:
+            formulas = {
+                "coste_plantilla": calculated(
+                    ["salarios", "multa"],
+                    -magnitude("salarios") - magnitude("multa"),
+                ),
+                "cuerpo_tecnico": calculated(
+                    ["multiplicador_exitos", "gastos_cuerpo_tecnico"],
+                    magnitude("multiplicador_exitos") * magnitude("gastos_cuerpo_tecnico") * -1,
+                ),
+                "gastos_estadio": calculated(
+                    ["partidos", "gastos_partido", "indice_coste_estadio"],
+                    magnitude("partidos") * magnitude("gastos_partido") * magnitude("indice_coste_estadio") * -1,
+                ),
+                "gastos_television": calculated(
+                    ["produccion"],
+                    magnitude("produccion") * -1,
+                ),
+                "costes_marketing": calculated(
+                    ["costes_ineficiencia", "unidades", "coste_por_unidad", "indice_coste_marketing"],
+                    -magnitude("costes_ineficiencia")
+                    - (magnitude("unidades") * magnitude("coste_por_unidad")) * magnitude("indice_coste_marketing"),
+                ),
+                "gastos_operativos": calculated(
+                    ["gastos_operativos_valor", "indice_coste_operativo"],
+                    magnitude("gastos_operativos_valor") * magnitude("indice_coste_operativo") * -1,
+                ),
+                "flujos_caja_negativos": calculated(
+                    ["traspasos_negativos", "sanciones", "reparto_beneficios_negativo"],
+                    -magnitude("traspasos_negativos")
+                    - magnitude("sanciones")
+                    - magnitude("reparto_beneficios_negativo"),
+                ),
+            }
+
+        calculated_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            row_copy = dict(row)
+            key = str(row_copy.get("key") or "")
+            if str(row_copy.get("type") or "") == "category" and key in formulas:
+                row_copy["value"] = formulas[key]
+            calculated_rows.append(row_copy)
+        return calculated_rows
+
+    def _owner_office_breakdown_total(self, section: str, rows: List[Dict[str, Any]]) -> Optional[float]:
+        category_keys = {
+            "income": {
+                "recaudacion",
+                "merchandising",
+                "derechos",
+                "sponsor",
+                "flujos_caja_positivos",
+            },
+            "expenses": {
+                "coste_plantilla",
+                "cuerpo_tecnico",
+                "gastos_estadio",
+                "gastos_television",
+                "costes_marketing",
+                "gastos_operativos",
+                "flujos_caja_negativos",
+            },
+        }.get(section, set())
+        total = 0.0
+        has_value = False
+        for row in rows:
+            if str(row.get("key") or "") not in category_keys:
+                continue
+            parsed = parse_amount_like(row.get("value"))
+            if parsed is None:
+                continue
+            total += float(parsed)
+            has_value = True
+        return total if has_value else None
 
     def _owner_import_schema_payload(self) -> Dict[str, Any]:
         schema = owner_office_import_schema()
@@ -2414,11 +2555,25 @@ class LeagueDB:
                 if economy.get("expenses") not in (None, "")
                 else existing.get("expenses", 0)
             )
+            income_total = self._owner_office_breakdown_total(
+                "income",
+                self._owner_import_rows_for_json("income", group.get("income") or {}),
+            )
+            expenses_total = self._owner_office_breakdown_total(
+                "expenses",
+                self._owner_import_rows_for_json("expenses", group.get("expenses") or {}),
+            )
+            if income_total is not None:
+                revenue = float(income_total)
+            if expenses_total is not None:
+                expenses = float(expenses_total)
             balance = float(
                 economy["balance"]
-                if economy.get("balance") not in (None, "")
+                if economy.get("balance") not in (None, "") and income_total is None and expenses_total is None
                 else existing.get("balance", revenue + expenses)
             )
+            if income_total is not None or expenses_total is not None:
+                balance = revenue + expenses
             summary.append(
                 {
                     "season_year": int(group["season_year"]),
@@ -2462,7 +2617,7 @@ class LeagueDB:
                         ),
                     }
                 )
-        return rows
+        return self._owner_office_apply_calculated_rows(section, rows)
 
     def preview_owner_economy_csv(self, csv_text: str) -> Dict[str, Any]:
         text = str(csv_text or "").lstrip("\ufeff")
@@ -2607,21 +2762,29 @@ class LeagueDB:
                     if economy_values.get("balance") not in (None, "")
                     else revenue + expenses
                 )
+                income_rows = (
+                    self._owner_import_rows_for_json("income", sections["income"])
+                    if has_income
+                    else (self._owner_office_rows_from_json(existing_owner["income_json"], "income") if existing_owner else [])
+                )
+                expenses_rows = (
+                    self._owner_import_rows_for_json("expenses", sections["expenses"])
+                    if has_expenses
+                    else (self._owner_office_rows_from_json(existing_owner["expenses_json"], "expenses") if existing_owner else [])
+                )
+                income_total = self._owner_office_breakdown_total("income", income_rows) if has_income else None
+                expenses_total = self._owner_office_breakdown_total("expenses", expenses_rows) if has_expenses else None
+                if income_total is not None:
+                    revenue = float(income_total)
+                if expenses_total is not None:
+                    expenses = float(expenses_total)
+                if income_total is not None or expenses_total is not None:
+                    balance = revenue + expenses
                 applied_economy_by_team[(season_year, team_code)] = {
                     "revenue": float(revenue),
                     "expenses": float(expenses),
                     "balance": float(balance),
                 }
-                income_rows = (
-                    self._owner_import_rows_for_json("income", sections["income"])
-                    if has_income
-                    else (self._owner_office_rows_from_json(existing_owner["income_json"]) if existing_owner else [])
-                )
-                expenses_rows = (
-                    self._owner_import_rows_for_json("expenses", sections["expenses"])
-                    if has_expenses
-                    else (self._owner_office_rows_from_json(existing_owner["expenses_json"]) if existing_owner else [])
-                )
                 conn.execute(
                     """
                     INSERT INTO team_economy (
@@ -2663,8 +2826,8 @@ class LeagueDB:
                         self._owner_import_value_text(revenue),
                         self._owner_import_value_text(expenses),
                         self._owner_import_value_text(balance),
-                        json.dumps(self._normalize_owner_office_rows(income_rows), ensure_ascii=True),
-                        json.dumps(self._normalize_owner_office_rows(expenses_rows), ensure_ascii=True),
+                        json.dumps(self._normalize_owner_office_rows(income_rows, "income"), ensure_ascii=True),
+                        json.dumps(self._normalize_owner_office_rows(expenses_rows, "expenses"), ensure_ascii=True),
                         timestamp,
                     ),
                 )
@@ -3452,6 +3615,26 @@ class LeagueDB:
                         "owner_conclusion_message": "",
                         "trust_delta": None,
                     }
+                income_rows = self._owner_office_rows_from_json(saved["income_json"], "income") if saved else []
+                expenses_rows = self._owner_office_rows_from_json(saved["expenses_json"], "expenses") if saved else []
+                income_total = self._owner_office_breakdown_total("income", income_rows)
+                expenses_total = self._owner_office_breakdown_total("expenses", expenses_rows)
+                revenue_value = (
+                    self._owner_import_value_text(income_total)
+                    if income_total is not None
+                    else (str(saved["revenue"]) if saved and saved["revenue"] is not None else economy_revenue)
+                )
+                expenses_value = (
+                    self._owner_import_value_text(expenses_total)
+                    if expenses_total is not None
+                    else (str(saved["expenses"]) if saved and saved["expenses"] is not None else economy_expenses)
+                )
+                if income_total is not None or expenses_total is not None:
+                    revenue_num = parse_amount_like(revenue_value) or 0.0
+                    expenses_num = parse_amount_like(expenses_value) or 0.0
+                    balance_value = self._owner_import_value_text(revenue_num + expenses_num)
+                else:
+                    balance_value = str(saved["balance"]) if saved and saved["balance"] is not None else economy_balance
                 entries[str(year)] = {
                     "season_year": int(year),
                     "confidence_current": str(saved["confidence_current"] or "") if saved else "",
@@ -3464,13 +3647,13 @@ class LeagueDB:
                         saved["season_goal_set"] if saved else "",
                         saved["season_goal_achieved"] if saved else "",
                     ),
-                    "revenue": str(saved["revenue"]) if saved and saved["revenue"] is not None else economy_revenue,
-                    "expenses": str(saved["expenses"]) if saved and saved["expenses"] is not None else economy_expenses,
-                    "balance": str(saved["balance"]) if saved and saved["balance"] is not None else economy_balance,
+                    "revenue": revenue_value,
+                    "expenses": expenses_value,
+                    "balance": balance_value,
                     "balance_rank": balance_rank,
                     "balance_rank_total": len(rank_rows),
-                    "income_rows": self._owner_office_rows_from_json(saved["income_json"]) if saved else [],
-                    "expenses_rows": self._owner_office_rows_from_json(saved["expenses_json"]) if saved else [],
+                    "income_rows": income_rows,
+                    "expenses_rows": expenses_rows,
                     "performance_rows": self._owner_performance_rows_from_json(saved["performance_json"]) if saved else self._normalize_owner_performance_rows([], int(year)),
                     "exit_interview": interview,
                     "updated_at": str(saved["updated_at"] or "") if saved else "",
@@ -3542,6 +3725,26 @@ class LeagueDB:
                         timestamp,
                     ),
                 )
+            income_rows = self._normalize_owner_office_rows(payload.get("income_rows"), "income")
+            expenses_rows = self._normalize_owner_office_rows(payload.get("expenses_rows"), "expenses")
+            income_total = self._owner_office_breakdown_total("income", income_rows)
+            expenses_total = self._owner_office_breakdown_total("expenses", expenses_rows)
+            revenue_value = (
+                self._owner_import_value_text(income_total)
+                if income_total is not None
+                else str(payload.get("revenue") or "").strip()
+            )
+            expenses_value = (
+                self._owner_import_value_text(expenses_total)
+                if expenses_total is not None
+                else str(payload.get("expenses") or "").strip()
+            )
+            if income_total is not None or expenses_total is not None:
+                revenue_num = parse_amount_like(revenue_value) or 0.0
+                expenses_num = parse_amount_like(expenses_value) or 0.0
+                balance_value = self._owner_import_value_text(revenue_num + expenses_num)
+            else:
+                balance_value = str(payload.get("balance") or "").strip()
             conn.execute(
                 """
                 INSERT INTO team_owner_office (
@@ -3586,11 +3789,11 @@ class LeagueDB:
                     1 if parse_bool(payload.get("gm_midseason_arrival")) else 0,
                     self._normalize_owner_season_objective(payload.get("season_goal_set")),
                     self._normalize_owner_season_objective(payload.get("season_goal_achieved")),
-                    str(payload.get("revenue") or "").strip(),
-                    str(payload.get("expenses") or "").strip(),
-                    str(payload.get("balance") or "").strip(),
-                    json.dumps(self._normalize_owner_office_rows(payload.get("income_rows")), ensure_ascii=True),
-                    json.dumps(self._normalize_owner_office_rows(payload.get("expenses_rows")), ensure_ascii=True),
+                    revenue_value,
+                    expenses_value,
+                    balance_value,
+                    json.dumps(income_rows, ensure_ascii=True),
+                    json.dumps(expenses_rows, ensure_ascii=True),
                     json.dumps(
                         self._normalize_owner_performance_rows(payload.get("performance_rows"), int(season_year)),
                         ensure_ascii=True,

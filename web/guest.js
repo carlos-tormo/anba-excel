@@ -4391,7 +4391,9 @@ function ownerOfficeBreakdownTable(title, kind, rows) {
             ${rows.map((row) => `
               <tr class="${row.type === 'category' ? 'owner-office-category-row' : ''}">
                 <td>${escapeHtml(row.label)}</td>
-                <td>${row.type === 'category' ? '' : ownerOfficeReadonlyCell(row.value)}</td>
+                <td>${row.type === 'category'
+                  ? `<span class="owner-office-calculated-value">${escapeHtml(ownerOfficeDisplayValue(row.value))}</span>`
+                  : ownerOfficeReadonlyCell(row.value)}</td>
               </tr>
             `).join('')}
           </tbody>

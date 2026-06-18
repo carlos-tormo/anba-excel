@@ -3892,6 +3892,14 @@ function ownerOfficeInputValue(value) {
   return String(value);
 }
 
+function ownerOfficeDisplayValue(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number' && Number.isFinite(value)) return formatMoneyDots(value);
+  const parsed = parseAmount(value);
+  if (parsed !== null && String(value).trim().match(/^[\s€$0-9.,-]+$/)) return formatMoneyDots(parsed);
+  return String(value);
+}
+
 function ownerOfficeProfile() {
   return state.teamData?.owner_office?.owner_profile || {};
 }
@@ -4056,7 +4064,9 @@ function ownerOfficeBreakdownTable(title, kind, rows) {
             ${rows.map((row) => `
               <tr class="${row.type === 'category' ? 'owner-office-category-row' : ''}" data-row-key="${escapeHtml(row.key)}" data-row-label="${escapeHtml(row.label)}" data-row-type="${escapeHtml(row.type)}">
                 <td>${escapeHtml(row.label)}</td>
-                <td>${row.type === 'category' ? '' : `<input class="owner-office-input" data-owner-row-value="${escapeHtml(row.key)}" value="${escapeHtml(ownerOfficeInputValue(row.value))}">`}</td>
+                <td>${row.type === 'category'
+                  ? `<span class="owner-office-calculated-value">${escapeHtml(ownerOfficeDisplayValue(row.value))}</span>`
+                  : `<input class="owner-office-input" data-owner-row-value="${escapeHtml(row.key)}" value="${escapeHtml(ownerOfficeInputValue(row.value))}">`}</td>
               </tr>
             `).join('')}
           </tbody>

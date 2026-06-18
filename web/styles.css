@@ -3912,6 +3912,13 @@ th {
   background: #f3c8c8;
 }
 
+.owner-office-calculated-value {
+  display: inline-block;
+  min-width: 90px;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
 .owner-office-value {
   display: flex;
   align-items: center;
