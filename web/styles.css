@@ -6470,6 +6470,30 @@ td.salary-option--nb .salary-pct {
   font-size: 0.75rem;
   line-height: 1.25;
 }
+.bird-years-cell {
+  text-align: center;
+}
+.bird-years-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  padding: 2px 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 0.75rem;
+  font-weight: 850;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.bird-years-pill--plus {
+  border-color: #facc15;
+  background: #fef08a;
+  color: #713f12;
+  box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.22);
+}
 .type-pill {
   display: inline-block;
   padding: 2px 10px;
@@ -6585,6 +6609,26 @@ td.salary-option--nb .salary-pct {
 .inline-editor.type-edit.type-pill--10d select {
   color: #f8fafc;
 }
+.inline-editor.bird-years-edit {
+  width: fit-content;
+  padding: 1px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+.inline-editor.bird-years-edit select {
+  min-width: 48px;
+  border: none;
+  background: transparent;
+  font-weight: 850;
+  text-align: center;
+}
+.inline-editor.bird-years-edit.bird-years-edit--plus {
+  border-color: #facc15;
+  background: #fef08a;
+  color: #713f12;
+  box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.18);
+}
 .inline-editor.pos-edit input {
   width: 34px;
   min-width: 34px;
@@ -6653,6 +6697,12 @@ button.ghost:hover {
   font-size: 0.9rem;
 }
 input[data-field^="salary"], input[data-field="years_left"], input[data-field="year"] {
+  width: 95px;
+}
+select[data-field="years_left"],
+select[data-new-field="years_left"],
+#signFreeAgentYears,
+#bulkYears {
   width: 95px;
 }
 .inline-editor {

@@ -223,6 +223,28 @@ function typeClass(value) {
   return v ? `type-pill--${v}` : '';
 }
 
+function normalizeBirdYears(value) {
+  const compact = String(value ?? '').trim().replace(/\s+/g, '').replace(',', '.');
+  if (!compact || compact === '0') return '';
+  if (compact === '1' || compact === '1.0') return '1';
+  if (compact === '2' || compact === '2.0') return '2';
+  if (compact === '2+') return '2+';
+  return '';
+}
+
+function birdYearsOptions(selected = '') {
+  const normalized = normalizeBirdYears(selected);
+  return ['', '1', '2', '2+']
+    .map((value) => `<option value="${escapeHtml(value)}"${value === normalized ? ' selected' : ''}>${value || '0'}</option>`)
+    .join('');
+}
+
+function birdYearsSortValue(value) {
+  const normalized = normalizeBirdYears(value);
+  if (!normalized) return null;
+  return normalized === '2+' ? 3 : Number(normalized);
+}
+
 function contractOptionClass(value) {
   const v = String(value || '').toUpperCase();
   if (!v) return '';
@@ -1689,9 +1711,10 @@ function sortValue(row, key) {
     if (isTwoWayPlayer(row)) return POSITION_ORDER.TW;
     return POSITION_ORDER[String(val).toUpperCase()] ?? 999;
   }
+  if (key === 'years_left') return birdYearsSortValue(val);
   if (typeof val === 'number') return val;
   const num = parseAmount(val);
-  if (num !== null && (key.includes('salary_') || key === 'year' || key === 'rating' || key === 'years_left' || key === 'amount_num')) {
+  if (num !== null && (key.includes('salary_') || key === 'year' || key === 'rating' || key === 'amount_num')) {
     return num;
   }
   return String(val).toLowerCase();
@@ -3477,7 +3500,7 @@ function renderFreeAgents() {
       <td><input data-field="position" value="${escapeHtml(agent.position || '')}"></td>
       <td><select data-field="bird_rights">${birdRightsOptions(agent.bird_rights || '')}</select></td>
       <td><input data-field="rating" value="${escapeHtml(agent.rating || '')}"></td>
-      <td><input data-field="years_left" value="${agent.years_left == null ? '' : escapeHtml(agent.years_left)}"></td>
+      <td><select data-field="years_left">${birdYearsOptions(agent.years_left || '')}</select></td>
       <td><input data-field="notes" value="${escapeHtml(agent.notes || '')}"></td>
       <td>
         <button data-action="sign-free-agent" type="button">Sign</button>
@@ -3513,7 +3536,7 @@ function renderFreeAgents() {
       <td><input data-new-field="position" placeholder="PG"></td>
       <td><select data-new-field="bird_rights">${birdRightsOptions('')}</select></td>
       <td><input data-new-field="rating" placeholder="Rating"></td>
-      <td><input data-new-field="years_left" placeholder="Years"></td>
+      <td><select data-new-field="years_left">${birdYearsOptions('')}</select></td>
       <td><input data-new-field="notes" placeholder="Notes"></td>
       <td class="table-add-actions-cell">
         <button type="button" class="inline-save" data-action="save-draft">✓</button>
@@ -3705,7 +3728,7 @@ function openSignFreeAgentModal(agent) {
   document.getElementById('signFreeAgentPosition').value = agent.position || '';
   document.getElementById('signFreeAgentType').innerHTML = birdRightsOptions(agent.bird_rights || '');
   document.getElementById('signFreeAgentRating').value = agent.rating || '';
-  document.getElementById('signFreeAgentYears').value = agent.years_left == null ? '' : agent.years_left;
+  document.getElementById('signFreeAgentYears').value = normalizeBirdYears(agent.years_left);
   document.getElementById('signFreeAgentNotes').value = agent.notes || '';
   document.getElementById('signFreeAgentProvisional').checked = false;
   document.getElementById('signFreeAgentPartial').checked = false;
@@ -3725,7 +3748,7 @@ function signFreeAgentPayload() {
     position: document.getElementById('signFreeAgentPosition')?.value.trim() || null,
     bird_rights: document.getElementById('signFreeAgentType')?.value.trim() || null,
     rating: document.getElementById('signFreeAgentRating')?.value.trim() || null,
-    years_left: document.getElementById('signFreeAgentYears')?.value.trim() || null,
+    years_left: normalizeBirdYears(document.getElementById('signFreeAgentYears')?.value),
     notes: document.getElementById('signFreeAgentNotes')?.value.trim() || null,
     provisional_amounts: Boolean(document.getElementById('signFreeAgentProvisional')?.checked),
     partially_guaranteed: Boolean(document.getElementById('signFreeAgentPartial')?.checked),
@@ -5134,7 +5157,7 @@ function appendAddPlayerRow(tbody) {
       </select>
     </td>
     <td><input data-new-field="rating" placeholder="Rating"></td>
-    <td><input data-new-field="years_left" placeholder="Years"></td>
+    <td><select data-new-field="years_left">${birdYearsOptions('')}</select></td>
     <td><div class="salary-cell-admin"><input data-new-field="salary_2025_text" placeholder="0"><select data-new-option-field="option_2025"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
     <td><div class="salary-cell-admin"><input data-new-field="salary_2026_text" placeholder="0"><select data-new-option-field="option_2026"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
     <td><div class="salary-cell-admin"><input data-new-field="salary_2027_text" placeholder="0"><select data-new-option-field="option_2027"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
@@ -5209,7 +5232,7 @@ function renderPlayers() {
 
     tr.querySelectorAll('[data-field]').forEach((fieldEl) => {
       const key = fieldEl.dataset.field;
-      fieldEl.value = p[key] == null ? '' : p[key];
+      fieldEl.value = key === 'years_left' ? normalizeBirdYears(p[key]) : (p[key] == null ? '' : p[key]);
 
       if (fieldEl.tagName === 'SELECT' && key === 'bird_rights') {
         const hasValue = Array.from(fieldEl.options).some((opt) => opt.value === fieldEl.value);
@@ -5287,6 +5310,14 @@ function renderPlayers() {
           cl.forEach((c) => wrapper.classList.remove(c));
           const next = typeClass(fieldEl.value);
           if (next) wrapper.classList.add(next);
+        };
+        applyClass();
+        fieldEl.addEventListener('change', applyClass);
+      }
+      if (key === 'years_left') {
+        wrapper.classList.add('bird-years-edit');
+        const applyClass = () => {
+          wrapper.classList.toggle('bird-years-edit--plus', normalizeBirdYears(fieldEl.value) === '2+');
         };
         applyClass();
         fieldEl.addEventListener('change', applyClass);
@@ -8078,7 +8109,7 @@ async function init() {
     if (bulkTipo) payload.bird_rights = bulkTipo;
     if (bulkPos) payload.position = bulkPos;
     if (bulkRating) payload.rating = bulkRating;
-    if (bulkYears) payload.years_left = bulkYears;
+    if (bulkYears) payload.years_left = bulkYears === '0' ? null : bulkYears;
     if (Object.keys(payload).length === 0) {
       alert('No hay cambios para aplicar.');
       return;

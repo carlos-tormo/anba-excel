@@ -207,6 +207,20 @@ def parse_float(value: Optional[str]) -> Optional[float]:
         return None
 
 
+def normalize_bird_years(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw or raw == "0":
+        return None
+    compact = raw.replace(" ", "").replace(",", ".")
+    if compact in {"1", "1.0"}:
+        return "1"
+    if compact in {"2", "2.0"}:
+        return "2"
+    if compact == "2+":
+        return "2+"
+    return None
+
+
 def parse_amount_like(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -521,7 +535,10 @@ def normalize_hex_color(value: Any) -> Optional[str]:
 
 
 def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
-    return {d[0]: row[idx] for idx, d in enumerate(cursor.description)}
+    item = {d[0]: row[idx] for idx, d in enumerate(cursor.description)}
+    if "years_left" in item:
+        item["years_left"] = normalize_bird_years(item.get("years_left"))
+    return item
 
 
 def normalize_import_text(value: Any) -> str:
@@ -4147,7 +4164,10 @@ class LeagueDB:
         for f in fields:
             if f in payload:
                 assignments.append(f"{f} = ?")
-                values.append(payload[f])
+                if f == "years_left":
+                    values.append(normalize_bird_years(payload[f]))
+                else:
+                    values.append(payload[f])
 
         for f in bool_fields:
             if f in payload:
@@ -4207,7 +4227,7 @@ class LeagueDB:
                 "bird_rights": payload.get("bird_rights"),
                 "rating": payload.get("rating"),
                 "position": payload.get("position"),
-                "years_left": parse_float(payload.get("years_left")) if payload.get("years_left") is not None else None,
+                "years_left": normalize_bird_years(payload.get("years_left")),
                 "salary_2025_text": payload.get("salary_2025_text"),
                 "salary_2026_text": payload.get("salary_2026_text"),
                 "salary_2027_text": payload.get("salary_2027_text"),
@@ -4360,7 +4380,7 @@ class LeagueDB:
                     str(payload.get("position") or "").strip() or None,
                     str(payload.get("bird_rights") or "").strip() or None,
                     str(payload.get("rating") or "").strip() or None,
-                    parse_float(payload.get("years_left")) if payload.get("years_left") is not None else None,
+                    normalize_bird_years(payload.get("years_left")),
                     str(payload.get("notes") or "").strip() or None,
                     now,
                     now,
@@ -4384,7 +4404,7 @@ class LeagueDB:
                 vals.append(value)
             elif field == "years_left":
                 assigns.append("years_left = ?")
-                vals.append(parse_float(payload.get(field)) if payload.get(field) is not None else None)
+                vals.append(normalize_bird_years(payload.get(field)))
             else:
                 assigns.append(f"{field} = ?")
                 vals.append(str(payload.get(field) or "").strip() or None)

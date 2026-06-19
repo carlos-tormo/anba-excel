@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260618c">
+  <link rel="stylesheet" href="/styles.css?v=20260618d">
 </head>
 <body class="app-layout">
   <header>
@@ -273,7 +273,7 @@
               <th data-sort="position">Pos</th>
               <th data-sort="bird_rights">Type</th>
               <th data-sort="rating">Rating</th>
-              <th data-sort="years_left">Years</th>
+              <th data-sort="years_left">Bird years</th>
               <th data-sort="notes">Notes</th>
               <th>Actions</th>
             </tr>
@@ -484,7 +484,13 @@
         </select>
         <input id="bulkPos" placeholder="Pos (ej: PG)">
         <input id="bulkRating" placeholder="Rating">
-        <input id="bulkYears" placeholder="Years">
+        <select id="bulkYears">
+          <option value="">Bird years</option>
+          <option value="0">0</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="2+">2+</option>
+        </select>
         <button id="applyBulkBtn">Aplicar a seleccionados</button>
         <button id="deleteBulkBtn" class="danger">Eliminar seleccionados</button>
       </div>
@@ -504,7 +510,7 @@
               <th data-sort="position">Pos</th>
               <th data-sort="bird_rights">Tipo</th>
               <th data-sort="rating">Rating</th>
-              <th data-sort="years_left">Years</th>
+              <th data-sort="years_left">Bird years</th>
               <th data-sort="salary_2025_num">2025-26</th>
               <th data-sort="salary_2026_num">2026-27</th>
               <th data-sort="salary_2027_num">2027-28</th>
@@ -665,7 +671,14 @@
         </select>
       </td>
       <td><input data-field="rating"></td>
-      <td><input data-field="years_left"></td>
+      <td>
+        <select data-field="years_left">
+          <option value="">0</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="2+">2+</option>
+        </select>
+      </td>
       <td>
         <div class="salary-cell-admin">
           <input data-field="salary_2025_text">
@@ -942,8 +955,13 @@
         </select>
         <label for="signFreeAgentRating">Rating</label>
         <input id="signFreeAgentRating" type="text" placeholder="Rating">
-        <label for="signFreeAgentYears">Years</label>
-        <input id="signFreeAgentYears" type="text" placeholder="Years">
+        <label for="signFreeAgentYears">Bird years</label>
+        <select id="signFreeAgentYears">
+          <option value="">0</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="2+">2+</option>
+        </select>
         <label for="signFreeAgentNotes">Notes</label>
         <input id="signFreeAgentNotes" type="text" placeholder="Notes">
       </div>
@@ -978,6 +996,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260618d" defer></script>
+  <script src="/admin.js?v=20260618e" defer></script>
 </body>
 </html>

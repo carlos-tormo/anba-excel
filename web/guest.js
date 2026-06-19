@@ -753,6 +753,28 @@ function typeClass(value) {
   return v ? `type-pill--${v}` : '';
 }
 
+function normalizeBirdYears(value) {
+  const compact = String(value ?? '').trim().replace(/\s+/g, '').replace(',', '.');
+  if (!compact || compact === '0') return '';
+  if (compact === '1' || compact === '1.0') return '1';
+  if (compact === '2' || compact === '2.0') return '2';
+  if (compact === '2+') return '2+';
+  return '';
+}
+
+function birdYearsSortValue(value) {
+  const normalized = normalizeBirdYears(value);
+  if (!normalized) return null;
+  return normalized === '2+' ? 3 : Number(normalized);
+}
+
+function birdYearsCellHtml(value) {
+  const normalized = normalizeBirdYears(value);
+  if (!normalized) return '';
+  const plusClass = normalized === '2+' ? ' bird-years-pill--plus' : '';
+  return `<span class="bird-years-pill${plusClass}">${escapeHtml(normalized)}</span>`;
+}
+
 function contractOptionClass(value) {
   const v = String(value || '').toUpperCase();
   if (!v) return '';
@@ -3329,10 +3351,11 @@ function sortValue(row, key) {
     if (isTwoWayPlayer(row)) return POSITION_ORDER.TW;
     return POSITION_ORDER[String(val).toUpperCase()] ?? 999;
   }
+  if (key === 'years_left') return birdYearsSortValue(val);
   if (typeof val === 'number') return val;
   const num = Number(String(val).replaceAll('.', '').replaceAll(',', '.'));
   if (Number.isFinite(num) && key.includes('salary_')) return num;
-  if (Number.isFinite(num) && (key === 'year' || key === 'rating' || key === 'years_left' || key === 'amount_num')) return num;
+  if (Number.isFinite(num) && (key === 'year' || key === 'rating' || key === 'amount_num')) return num;
   return String(val).toLowerCase();
 }
 
@@ -3682,7 +3705,7 @@ function openPlayerMetaModal(playerName, meta) {
   const pos = String(meta.position || '').trim() || 'N/A';
   const rating = String(meta.rating || '').trim() || 'N/A';
   const contract = String(meta.contract || '').trim() || 'N/A';
-  const years = String(meta.years || '').trim() || 'N/A';
+  const years = normalizeBirdYears(meta.years) || 'N/A';
   const contractCls = contract === 'N/A' ? '' : typeClass(contract);
 
   titleEl.textContent = playerName || 'Player info';
@@ -3690,7 +3713,7 @@ function openPlayerMetaModal(playerName, meta) {
     <div class="player-meta-row"><span class="player-meta-label">Position</span><span class="pos-pill">${escapeHtml(pos)}</span></div>
     <div class="player-meta-row"><span class="player-meta-label">Rating</span><span class="meta-pill">${escapeHtml(rating)}</span></div>
     <div class="player-meta-row"><span class="player-meta-label">Tipo</span><span class="${contract === 'N/A' ? 'meta-pill' : `type-pill ${contractCls}`}">${escapeHtml(contract)}</span></div>
-    <div class="player-meta-row"><span class="player-meta-label">Years</span><span class="meta-pill">${escapeHtml(years)}</span></div>
+    <div class="player-meta-row"><span class="player-meta-label">Bird years</span>${years === 'N/A' ? `<span class="meta-pill">${escapeHtml(years)}</span>` : birdYearsCellHtml(years)}</div>
   `;
   backdrop.classList.remove('section-hidden');
   backdrop.setAttribute('aria-hidden', 'false');
@@ -4167,7 +4190,7 @@ function renderFreeAgents() {
       <td>${escapeHtml(agent.position || '')}</td>
       <td>${escapeHtml(agent.bird_rights || '')}</td>
       <td>${escapeHtml(agent.rating || '')}</td>
-      <td>${agent.years_left == null ? '' : escapeHtml(agent.years_left)}</td>
+      <td class="bird-years-cell">${birdYearsCellHtml(agent.years_left)}</td>
       <td class="details-cell">${escapeHtml(agent.notes || '')}</td>
     `;
     tbody.appendChild(tr);
@@ -5303,11 +5326,12 @@ function renderPlayers() {
         previousPositionKey = positionKey;
       }
     }
+    const birdYears = normalizeBirdYears(p.years_left);
     const metaPayload = {
       position: p.position || '',
       rating: p.rating || '',
       contract: p.bird_rights || '',
-      years: p.years_left || '',
+      years: birdYears,
     };
     const tr = document.createElement('tr');
     if (hasVisibleCapHold) tr.classList.add('roster-row--cap-hold');
@@ -5325,7 +5349,7 @@ function renderPlayers() {
         </div>
       </td>
       <td>${p.bird_rights ? `<span class="type-pill ${typeClass(p.bird_rights)}">${p.bird_rights}</span>` : ''}</td>
-      <td>${p.years_left || ''}</td>
+      <td class="bird-years-cell">${birdYearsCellHtml(birdYears)}</td>
       ${seasons.map((season) => `<td>${salaryCellHtml(p, season, state.filters.showEmptyYears)}</td>`).join('')}
     `;
     const infoBtn = tr.querySelector('.player-meta-btn');
@@ -5360,7 +5384,7 @@ function renderPlayers() {
             ${p.position ? `<span class="pos-pill">${escapeHtml(p.position)}</span>` : ''}
             ${p.rating ? `<span class="meta-pill">${escapeHtml(p.rating)}</span>` : ''}
             ${p.bird_rights ? `<span class="type-pill ${typeClass(p.bird_rights)}">${escapeHtml(p.bird_rights)}</span>` : ''}
-            ${p.years_left ? `<span class="meta-pill">${escapeHtml(p.years_left)} yrs</span>` : ''}
+            ${birdYears ? birdYearsCellHtml(birdYears) : ''}
           </div>
         </div>
         ${contractRows.length ? `
