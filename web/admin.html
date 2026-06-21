@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260618d">
+  <link rel="stylesheet" href="/styles.css?v=20260620a">
 </head>
 <body class="app-layout">
   <header>
@@ -21,6 +21,7 @@
         <button id="trackerHomeBtn" class="sidebar-nav-item" type="button">Tracker</button>
         <button id="figuresHomeBtn" class="sidebar-nav-item" type="button">Cifras</button>
         <button id="draftHomeBtn" class="sidebar-nav-item" type="button">Draft</button>
+        <button id="leaguePlayersHomeBtn" class="sidebar-nav-item" type="button">Jugadores</button>
         <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button">Free agents</button>
       </div>
       <button id="reloadBtn" class="sidebar-icon-btn" type="button" aria-label="Reload" title="Reload">↻</button>
@@ -58,6 +59,7 @@
         <button id="adminMobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Tracker</button>
         <button id="adminMobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦">Cifras</button>
         <button id="adminMobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈">Draft</button>
+        <button id="adminMobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎">Jugadores</button>
         <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡">Admin Log</button>
         <button id="adminMobileUsersBtn" type="button" class="mobile-nav-btn" data-icon="☉">Users</button>
@@ -206,13 +208,13 @@
           <thead>
             <tr>
               <th data-sort="team_code">Team</th>
-              <th data-sort="cap_total">CAP total</th>
+              <th data-sort="cap_total" title="CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato y cap holds activos. Excluye: cap holds renunciados, contratos Two-Way y contratos Exhibit 10.">CAP total</th>
               <th data-sort="gasto_total">GASTO total</th>
               <th data-sort="espacio_cap">Espacio CAP</th>
               <th data-sort="espacio_luxury">Espacio Luxury</th>
               <th data-sort="luxury_tax">Luxury tax</th>
-              <th data-sort="espacio_1er_apron">Espacio 1er apron</th>
-              <th data-sort="espacio_2do_apron">Espacio 2do apron</th>
+              <th data-sort="espacio_1er_apron" title="Cuenta del APRON = Team Salary sin cap holds. Incluye salarios de jugadores, Dead Contracts y el ajuste 0-1 YOS cuando aplica: si un jugador con 0 o 1 año de servicio firma como agente libre, cuenta como mínimo de 2 YOS si su salario queda por debajo. Excluye cap holds, Two-Way y Exhibit 10.">Espacio 1er apron</th>
+              <th data-sort="espacio_2do_apron" title="Cuenta del APRON = Team Salary sin cap holds. Incluye salarios de jugadores, Dead Contracts y el ajuste 0-1 YOS cuando aplica: si un jugador con 0 o 1 año de servicio firma como agente libre, cuenta como mínimo de 2 YOS si su salario queda por debajo. Excluye cap holds, Two-Way y Exhibit 10.">Espacio 2do apron</th>
               <th data-sort="roster_standard_count">Std</th>
               <th data-sort="roster_two_way_count">TW</th>
               <th data-sort="draft_first_count">1st picks</th>
@@ -273,9 +275,30 @@
               <th data-sort="position">Pos</th>
               <th data-sort="bird_rights">Type</th>
               <th data-sort="rating">Rating</th>
-              <th data-sort="years_left">Bird years</th>
+              <th data-sort="years_left">Birds</th>
               <th data-sort="notes">Notes</th>
               <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="leaguePlayersSection" class="section-hidden">
+      <h2>Jugadores</h2>
+      <div class="section-subtitle">Perfil global de jugadores. YOS y agente libre firmado alimentan el ajuste 0-1 YOS del APRON.</div>
+      <div class="table-wrap">
+        <table id="leaguePlayersTable">
+          <thead>
+            <tr>
+              <th data-sort="name">Jugador</th>
+              <th data-sort="status_label">Estado</th>
+              <th data-sort="team_code">Equipo</th>
+              <th data-sort="experience_years">YOS</th>
+              <th>Perfil</th>
+              <th data-sort="active_contract_summary">Contrato activo</th>
+              <th>Últimos movimientos</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -476,6 +499,7 @@
           <option value="TMid">TMid</option>
           <option value="Bi">Bi</option>
           <option value="10d">10d</option>
+          <option value="E10">E10</option>
           <option value="R">R</option>
           <option value="R(2)">R(2)</option>
           <option value="TW">TW</option>
@@ -510,7 +534,7 @@
               <th data-sort="position">Pos</th>
               <th data-sort="bird_rights">Tipo</th>
               <th data-sort="rating">Rating</th>
-              <th data-sort="years_left">Bird years</th>
+              <th data-sort="years_left">Birds</th>
               <th data-sort="salary_2025_num">2025-26</th>
               <th data-sort="salary_2026_num">2026-27</th>
               <th data-sort="salary_2027_num">2027-28</th>
@@ -663,6 +687,7 @@
           <option value="TMid">TMid</option>
           <option value="Bi">Bi</option>
           <option value="10d">10d</option>
+          <option value="E10">E10</option>
           <option value="R">R</option>
           <option value="R(2)">R(2)</option>
           <option value="TW">TW</option>
@@ -947,6 +972,7 @@
           <option value="TMid">TMid</option>
           <option value="Bi">Bi</option>
           <option value="10d">10d</option>
+          <option value="E10">E10</option>
           <option value="R">R</option>
           <option value="R(2)">R(2)</option>
           <option value="TW">TW</option>
@@ -996,6 +1022,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260618e" defer></script>
+  <script src="/admin.js?v=20260620a" defer></script>
 </body>
 </html>

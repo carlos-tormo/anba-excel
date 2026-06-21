@@ -13,6 +13,7 @@ const state = {
   ownerOfficeImportPreview: null,
   adminUsers: [],
   gmOptionRequests: [],
+  leaguePlayers: [],
   freeAgents: [],
   draftOrder: {
     draft_year: null,
@@ -81,6 +82,7 @@ const state = {
     dead_contracts: { key: 'label', dir: 'asc' },
     exceptions: { key: 'label', dir: 'asc' },
     player_rights: { key: 'label', dir: 'asc' },
+    league_players: { key: 'name', dir: 'asc' },
     free_agents: { key: 'name', dir: 'asc' },
   },
 };
@@ -970,23 +972,10 @@ function capHoldInfo(player, season) {
 }
 
 function salaryDisplayNumericValue(row, season) {
+  if (isExhibit10Player(row)) return 0;
   const hold = capHoldInfo(row, season);
   if (hold.displayable && hold.amount > 0) return hold.amount;
   return salaryNumericValue(row, season);
-}
-
-function playerCapCountValue(player, season) {
-  const hold = capHoldInfo(player, season);
-  if (hold.displayable && hold.amount > 0) return hold.amount;
-  if (isTwoWayPlayer(player)) return 0;
-  return salaryNumericValue(player, season);
-}
-
-function playerApronCountValue(player, season) {
-  const hold = capHoldInfo(player, season);
-  if (hold.displayable) return 0;
-  if (isTwoWayPlayer(player)) return 0;
-  return salaryNumericValue(player, season);
 }
 
 function amountNumericValue(row) {
@@ -999,6 +988,19 @@ function amountNumericValue(row) {
 
 function isTwoWayPlayer(player) {
   return boolValue(player?.is_two_way) || String(player?.bird_rights || '').trim().toUpperCase() === 'TW';
+}
+
+function isExhibit10Player(player) {
+  const normalized = String(player?.bird_rights || '').trim().toUpperCase().replace(/[\s_-]/g, '');
+  return normalized === 'E10' || normalized === 'EXHIBIT10';
+}
+
+function capTotalTooltipText() {
+  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato y cap holds activos. Excluye: cap holds renunciados, contratos Two-Way y contratos Exhibit 10.';
+}
+
+function apronTooltipText() {
+  return 'Cuenta del APRON = Team Salary sin cap holds. Incluye salarios de jugadores, Dead Contracts y el ajuste 0-1 YOS cuando aplica: si un jugador con 0 o 1 año de servicio firma como agente libre, cuenta como mínimo de 2 YOS si su salario queda por debajo. Excluye cap holds, Two-Way y Exhibit 10. Unlikely bonuses, grievances, QO/matches, tenders y SRP Exception no aplican o se omiten por ahora.';
 }
 
 function rosterLimits() {
@@ -1163,50 +1165,22 @@ function luxuryRepeaterForSeason(data, season) {
   return false;
 }
 
-function luxuryTaxAmount(overage, repeater) {
-  let remaining = Math.max(0, Number(overage || 0));
-  if (!remaining) return 0;
-  const tierSize = 5_000_000;
-  const baseRates = repeater
-    ? [2.5, 2.75, 3.5, 4.25]
-    : [1.5, 1.75, 2.5, 3.25];
-  let tax = 0;
-  let tierIndex = 0;
-  while (remaining > 0) {
-    const taxable = Math.min(tierSize, remaining);
-    const rate = tierIndex < baseRates.length
-      ? baseRates[tierIndex]
-      : baseRates[baseRates.length - 1] + ((tierIndex - baseRates.length + 1) * 0.5);
-    tax += taxable * rate;
-    remaining -= taxable;
-    tierIndex += 1;
-  }
-  return tax;
+function serverSeasonSummary(data, season) {
+  const summaries = data?.season_summaries || {};
+  const direct = summaries[String(season)];
+  if (direct) return direct;
+  const base = data?.summary || null;
+  return Number(base?.current_year) === Number(season) ? base : null;
 }
 
 function teamSeasonBalances(data, season) {
-  const players = data?.players || [];
-  const deadContracts = data?.dead_contracts || [];
-  const playerTotal = players.reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
-  const capPlayerTotal = players.reduce((sum, player) => sum + playerCapCountValue(player, season), 0);
-  const apronPlayerTotal = players.reduce((sum, player) => sum + playerApronCountValue(player, season), 0);
-  const normalDeadCapTotal = deadContracts
-    .filter((dead) => !isTwoWayDeadContract(dead) && !deadContractExcludedFromCap(dead))
-    .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
-  const deadGastoTotal = deadContracts
-    .filter((dead) => !deadContractExcludedFromGasto(dead))
-    .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
-  const capTotal = capPlayerTotal + normalDeadCapTotal;
-  const apronAccount = apronPlayerTotal + normalDeadCapTotal;
-  const gastoTotal = playerTotal + deadGastoTotal;
-  const salaryCap = capForSeason(season);
-  const luxuryCap = luxuryCapForSeason(season);
-  const luxuryOverage = Math.max(0, capTotal - luxuryCap);
+  const serverSummary = serverSeasonSummary(data, season);
   return {
-    cap_total: capTotal,
-    gasto_total: gastoTotal,
-    apron_account: apronAccount,
-    luxury_tax: luxuryTaxAmount(luxuryOverage, luxuryRepeaterForSeason(data, season)),
+    cap_total: Number(serverSummary?.cap_figure || 0),
+    gasto_total: Number(serverSummary?.payroll || 0),
+    apron_account: Number(serverSummary?.apron_account || 0),
+    luxury_tax: Number(serverSummary?.luxury_tax || 0),
+    missing_server_summary: !serverSummary,
   };
 }
 
@@ -1220,20 +1194,22 @@ function displayBalanceSeason() {
 
 function summaryForBalanceSeason(data, season = displayBalanceSeason()) {
   const base = data?.summary || {};
-  const balances = teamSeasonBalances(data, season);
-  const salaryCap = capForSeason(season) || Number(base.salary_cap_2025 || 0);
-  const luxuryCap = luxuryCapForSeason(season);
-  const firstApron = firstApronForSeason(season) || Number(base.first_apron || 0);
-  const secondApron = secondApronForSeason(season) || Number(base.second_apron || 0);
+  const serverSummary = serverSeasonSummary(data, season);
+  if (serverSummary) {
+    return { ...base, ...serverSummary, current_year: season };
+  }
   return {
     ...base,
     current_year: season,
-    cap_figure: balances.cap_total,
-    payroll: balances.gasto_total,
-    room_to_cap: salaryCap - balances.cap_total,
-    room_to_luxury: luxuryCap - balances.cap_total,
-    room_to_first_apron: firstApron - balances.apron_account,
-    room_to_second_apron: secondApron - balances.apron_account,
+    cap_figure: 0,
+    payroll: 0,
+    apron_account: 0,
+    luxury_tax: 0,
+    room_to_cap: 0,
+    room_to_luxury: 0,
+    room_to_first_apron: 0,
+    room_to_second_apron: 0,
+    missing_server_summary: true,
   };
 }
 
@@ -1885,6 +1861,7 @@ function setupSorting() {
   updateSortIndicators('playersTable', state.sort.players);
   updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
   updateSortIndicators('playerRightsTable', state.sort.player_rights);
+  updateSortIndicators('leaguePlayersTable', state.sort.league_players);
   updateSortIndicators('freeAgentsTable', state.sort.free_agents);
 
   document.querySelectorAll('#deadContractsTable thead th[data-sort]').forEach((th) => {
@@ -1945,6 +1922,21 @@ function setupSorting() {
       };
       renderFreeAgents();
       updateSortIndicators('freeAgentsTable', state.sort.free_agents);
+    });
+  });
+
+  document.querySelectorAll('#leaguePlayersTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.league_players;
+      state.sort.league_players = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderLeaguePlayers();
+      updateSortIndicators('leaguePlayersTable', state.sort.league_players);
     });
   });
 }
@@ -2134,6 +2126,7 @@ function renderAddEntryFields() {
         <option value="TMid">TMid</option>
         <option value="Bi">Bi</option>
         <option value="10d">10d</option>
+        <option value="E10">E10</option>
         <option value="R">R</option>
         <option value="R(2)">R(2)</option>
         <option value="TW">TW</option>
@@ -2559,6 +2552,24 @@ async function confirmTrade() {
     if (state.teamCode) await loadTeam(state.teamCode);
     else await loadTracker();
     await loadAdminLogs();
+  } catch (err) {
+    const raw = String(err?.message || err || 'Error procesando el traspaso.');
+    const jsonMatch = raw.match(/API\s+\d+:\s+(\{.*\})$/s);
+    let message = raw;
+    if (jsonMatch) {
+      try {
+        const data = JSON.parse(jsonMatch[1]);
+        const issues = (data.validation?.issues || [])
+          .filter((issue) => issue.severity === 'illegal')
+          .map((issue) => `${issue.teamCode ? `${issue.teamCode}: ` : ''}${issue.message}`);
+        if (data.error === 'trade_invalid' && issues.length) {
+          message = `Traspaso no válido:\n${issues.slice(0, 6).join('\n')}`;
+        }
+      } catch {
+        // Fall through to the raw API error.
+      }
+    }
+    alert(message);
   } finally {
     btn.disabled = false;
   }
@@ -2966,6 +2977,7 @@ function setViewMode(mode) {
   const showFigures = mode === 'figures';
   const showDraftOrder = mode === 'draft-order';
   const showFreeAgents = mode === 'free-agents';
+  const showLeaguePlayers = mode === 'league-players';
   const showAdminLog = mode === 'admin-log';
   const showAdminUsers = mode === 'admin-users';
   const showGmOptionRequests = mode === 'gm-option-requests';
@@ -2980,6 +2992,7 @@ function setViewMode(mode) {
   toggleSection('figuresSection', !showFigures);
   toggleSection('draftOrderSection', !showDraftOrder);
   toggleSection('freeAgentsSection', !showFreeAgents);
+  toggleSection('leaguePlayersSection', !showLeaguePlayers);
   toggleSection('teamTabs', !showTeam);
   toggleSection('teamMeta', !showTeam);
   toggleSection('adminTeamControlsSection', !showTeam);
@@ -3131,8 +3144,9 @@ function buildBalanceCard(label, value, isWarning = false) {
   const numeric = Number(value || 0);
   const signClass = numeric < 0 ? ' is-negative' : numeric > 0 ? ' is-positive' : '';
   const warningClass = isWarning || numeric < 0 ? ' is-warning' : '';
+  const tooltip = String(label || '').toUpperCase().includes('APRON') ? apronTooltipText() : '';
   return `
-    <div class="team-balance-card${warningClass}${signClass}">
+    <div class="team-balance-card${warningClass}${signClass}"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>
       <div class="team-balance-label">${escapeHtml(label)}</div>
       <div class="team-balance-value">${formatBalanceMoney(value)}</div>
     </div>
@@ -3300,6 +3314,7 @@ function setupAdminMobileNav() {
   const trackerBtn = document.getElementById('adminMobileTrackerBtn');
   const figuresBtn = document.getElementById('adminMobileFiguresBtn');
   const draftBtn = document.getElementById('adminMobileDraftBtn');
+  const leaguePlayersBtn = document.getElementById('adminMobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('adminMobileFreeAgentsBtn');
   const logBtn = document.getElementById('adminMobileLogBtn');
   const usersBtn = document.getElementById('adminMobileUsersBtn');
@@ -3333,6 +3348,12 @@ function setupAdminMobileNav() {
     draftBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
       await loadDraftOrder();
+    });
+  }
+  if (leaguePlayersBtn) {
+    leaguePlayersBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      await loadLeaguePlayers();
     });
   }
   if (freeAgentsBtn) {
@@ -3400,13 +3421,13 @@ function renderTracker() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><button type="button" class="tracker-team-btn" data-team-code="${row.team_code}">${row.team_code}</button></td>
-      <td>${formatMoneyDots(row.cap_total)}</td>
+      <td><span class="cap-total-tooltip" title="${escapeHtml(capTotalTooltipText())}">${formatMoneyDots(row.cap_total)}</span></td>
       <td>${formatMoneyDots(row.gasto_total)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_cap)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_luxury)}</td>
       <td>${trackerLuxuryTaxValueHtml(row.luxury_tax)}</td>
-      <td>${trackerSpaceValueHtml(row.espacio_1er_apron)}</td>
-      <td>${trackerSpaceValueHtml(row.espacio_2do_apron)}</td>
+      <td title="${escapeHtml(apronTooltipText())}">${trackerSpaceValueHtml(row.espacio_1er_apron)}</td>
+      <td title="${escapeHtml(apronTooltipText())}">${trackerSpaceValueHtml(row.espacio_2do_apron)}</td>
       <td>${trackerRosterCountChipHtml('standard', Number(row.roster_standard_count || 0))}</td>
       <td>${trackerRosterCountChipHtml('twoWay', Number(row.roster_two_way_count || 0))}</td>
       <td>${draftPickCountChipHtml(Number(row.draft_first_count || 0), '1st')}</td>
@@ -3459,7 +3480,7 @@ function renderTrackerEconomy() {
 }
 
 function birdRightsOptions(selected = '') {
-  const values = ['', 'Min', 'Max', 'Mid', 'TMid', 'Bi', '10d', 'R', 'R(2)', 'TW', 'Room', 'Reg'];
+  const values = ['', 'Min', 'Max', 'Mid', 'TMid', 'Bi', '10d', 'E10', 'R', 'R(2)', 'TW', 'Room', 'Reg'];
   const normalized = String(selected || '');
   if (normalized && !values.includes(normalized)) values.push(normalized);
   return values
@@ -3570,6 +3591,228 @@ function renderFreeAgents() {
     tr.innerHTML = '<td colspan="7">No free agents listed.</td>';
     tbody.appendChild(tr);
   }
+}
+
+function shortDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || '');
+  return date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
+function leaguePlayerLogsHtml(player) {
+  const logs = Array.isArray(player?.transaction_logs) ? player.transaction_logs : [];
+  const profileId = player?.profile_id || '';
+  const list = logs.length ? `
+    <ul class="player-log-list player-log-list--editable">
+      ${logs.slice(0, 3).map((log) => `
+        <li data-player-transaction-row="${escapeHtml(log.id || '')}">
+          <input class="player-log-input player-log-input--summary" data-player-transaction-id="${escapeHtml(log.id || '')}" data-player-transaction-field="summary" value="${escapeHtml(log.summary || 'Movimiento registrado')}" aria-label="Resumen del movimiento">
+          <input class="player-log-input player-log-input--action" data-player-transaction-id="${escapeHtml(log.id || '')}" data-player-transaction-field="action" value="${escapeHtml(log.action || 'manual')}" aria-label="Tipo de movimiento">
+          <input class="player-log-input player-log-input--team" data-player-transaction-id="${escapeHtml(log.id || '')}" data-player-transaction-field="team_code" value="${escapeHtml(log.team_code || '')}" placeholder="Equipo" aria-label="Equipo">
+          <input class="player-log-input player-log-input--team" data-player-transaction-id="${escapeHtml(log.id || '')}" data-player-transaction-field="from_team_code" value="${escapeHtml(log.from_team_code || '')}" placeholder="Desde" aria-label="Desde">
+          <input class="player-log-input player-log-input--team" data-player-transaction-id="${escapeHtml(log.id || '')}" data-player-transaction-field="to_team_code" value="${escapeHtml(log.to_team_code || '')}" placeholder="A" aria-label="A">
+          <input class="player-log-input player-log-input--date" data-player-transaction-id="${escapeHtml(log.id || '')}" data-player-transaction-field="created_at" value="${escapeHtml(log.created_at || '')}" aria-label="Fecha">
+          <button type="button" class="player-log-delete-btn" data-player-transaction-delete="${escapeHtml(log.id || '')}" aria-label="Eliminar movimiento">Eliminar</button>
+        </li>
+      `).join('')}
+    </ul>
+  ` : '<span class="muted-text">Sin movimientos recientes</span>';
+  return `
+    <div class="player-log-editor">
+      ${list}
+      <button type="button" class="player-log-add-btn" data-player-log-add="${escapeHtml(profileId)}">Añadir movimiento</button>
+    </div>
+  `;
+}
+
+function playerIdentityTitle(player) {
+  const profileId = player?.profile_id || '';
+  const hasProfileListShape = Object.prototype.hasOwnProperty.call(player || {}, 'active_contract');
+  const contractId = player?.player_id || (!hasProfileListShape ? player?.id : '') || '';
+  const parts = [`Perfil ID: ${profileId || '-'}`];
+  if (contractId) parts.push(`Contrato ID: ${contractId}`);
+  return parts.join('\n');
+}
+
+function leaguePlayerLogoHtml(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  const src = teamLogoCandidates(normalized)[0] || '';
+  if (!src) return `<span class="league-player-team-logo-fallback">${escapeHtml(normalized || '-')}</span>`;
+  return `
+    <span class="league-player-team-logo" title="${escapeHtml(normalized)}" aria-label="${escapeHtml(normalized)}">
+      <span>${escapeHtml(normalized)}</span>
+      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+    </span>
+  `;
+}
+
+function leaguePlayerTeamHtml(player) {
+  const code = String(player?.team_code || '').trim().toUpperCase();
+  if (!code) return '<span class="muted-text">Sin equipo</span>';
+  return `
+    <button type="button" class="tracker-team-btn league-player-team-btn" data-team-code="${escapeHtml(code)}">
+      ${leaguePlayerLogoHtml(code)}
+      <span>${escapeHtml(code)}</span>
+    </button>
+  `;
+}
+
+function leaguePlayerStatusHtml(player) {
+  const status = String(player?.status || 'inactive').trim().toLowerCase();
+  const label = String(player?.status_label || 'Sin contrato').trim();
+  return `<span class="league-player-status league-player-status--${escapeHtml(status)}">${escapeHtml(label)}</span>`;
+}
+
+function leaguePlayerContractHtml(player) {
+  const summary = String(player?.active_contract_summary || '').trim();
+  const deadSummary = String(player?.dead_contract_summary || '').trim();
+  const deadCount = Number(player?.dead_contract_count || 0);
+  const deadHtml = deadCount > 0
+    ? `<span class="league-player-contract-note">Dead contracts: ${escapeHtml(deadSummary || `${deadCount}`)}</span>`
+    : '';
+  if (!summary || summary === 'No') {
+    return `
+      <span class="muted-text">Sin contrato activo</span>
+      ${deadHtml}
+    `;
+  }
+  return `
+    <span class="league-player-contract">${escapeHtml(summary)}</span>
+    ${deadHtml}
+  `;
+}
+
+function leaguePlayerProfileFieldsHtml(player) {
+  return `
+    <div class="league-player-profile-grid">
+      <label>
+        <span>DOB</span>
+        <input class="player-profile-input" data-player-profile-field="date_of_birth" type="date" value="${escapeHtml(player.date_of_birth || '')}">
+      </label>
+      <label>
+        <span>Nacionalidad</span>
+        <input class="player-profile-input" data-player-profile-field="nationality" value="${escapeHtml(player.nationality || '')}">
+      </label>
+      <label>
+        <span>Fuente YOS</span>
+        <input class="player-profile-input" data-player-profile-field="yos_source" value="${escapeHtml(player.yos_source || '')}">
+      </label>
+      <label>
+        <span>Imagen/ref.</span>
+        <input class="player-profile-input" data-player-profile-field="reference_image_url" value="${escapeHtml(player.reference_image_url || '')}">
+      </label>
+      <label>
+        <span>Notas perfil</span>
+        <input class="player-profile-input" data-player-profile-field="profile_notes" value="${escapeHtml(player.profile_notes || '')}">
+      </label>
+      <label>
+        <span>Notas movimientos</span>
+        <input class="player-profile-input" data-player-profile-field="transaction_notes" value="${escapeHtml(player.transaction_notes || '')}">
+      </label>
+    </div>
+  `;
+}
+
+function renderLeaguePlayers() {
+  const tbody = document.querySelector('#leaguePlayersTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const rows = sortedRows(state.leaguePlayers || [], state.sort.league_players);
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="7">No hay jugadores cargados.</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+  rows.forEach((player) => {
+    const profileId = player.profile_id || null;
+    const contractRowId = player.player_id || player.id || null;
+    const tr = document.createElement('tr');
+    tr.dataset.id = profileId || contractRowId || '';
+    tr.innerHTML = `
+      <td><input class="player-profile-input" data-player-profile-field="name" title="${escapeHtml(playerIdentityTitle(player))}" value="${escapeHtml(player.name || '')}"></td>
+      <td>${leaguePlayerStatusHtml(player)}</td>
+      <td>${leaguePlayerTeamHtml(player)}</td>
+      <td><input class="player-profile-input player-profile-input--tiny" data-player-profile-field="experience_years" type="number" min="0" max="50" value="${player.experience_years == null ? '' : escapeHtml(player.experience_years)}"></td>
+      <td>${leaguePlayerProfileFieldsHtml(player)}</td>
+      <td>${leaguePlayerContractHtml(player)}</td>
+      <td>${leaguePlayerLogsHtml(player)}</td>
+    `;
+    const teamBtn = tr.querySelector('[data-team-code]');
+    if (teamBtn) {
+      teamBtn.addEventListener('click', async () => {
+        await loadTeam(teamBtn.dataset.teamCode);
+      });
+    }
+    tr.querySelectorAll('[data-player-profile-field]').forEach((el) => {
+      const key = el.dataset.playerProfileField;
+      attachInlineEditor(el, async () => {
+        const value = String(el.value || '').trim();
+        const payload = { [key]: value === '' ? null : value };
+        const url = profileId
+          ? `/api/player-profiles/${profileId}`
+          : (contractRowId ? `/api/players/${contractRowId}` : '');
+        if (!url) throw new Error('No player identity available for profile update');
+        await api(url, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        });
+        player[key] = payload[key];
+        if (!profileId && contractRowId) {
+          await loadLeaguePlayers();
+        }
+      });
+    });
+    tr.querySelectorAll('[data-player-transaction-field]').forEach((el) => {
+      const transactionId = el.dataset.playerTransactionId;
+      const field = el.dataset.playerTransactionField;
+      if (!transactionId) return;
+      attachInlineEditor(el, async () => {
+        const value = String(el.value || '').trim();
+        if (field === 'summary' && !value) return;
+        await api(`/api/player-transactions/${transactionId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ [field]: value || null }),
+        });
+        const log = (player.transaction_logs || []).find((item) => String(item.id) === String(transactionId));
+        if (log) log[field] = value || null;
+      });
+    });
+    tr.querySelectorAll('[data-player-transaction-delete]').forEach((btn) => {
+      const transactionId = btn.dataset.playerTransactionDelete;
+      if (!transactionId) return;
+      btn.addEventListener('click', async () => {
+        const confirmed = window.confirm('¿Eliminar este movimiento del historial?');
+        if (!confirmed) return;
+        await api(`/api/player-transactions/${transactionId}`, { method: 'DELETE' });
+        player.transaction_logs = (player.transaction_logs || []).filter((item) => String(item.id) !== String(transactionId));
+        const row = btn.closest('[data-player-transaction-row]');
+        if (row) row.remove();
+      });
+    });
+    const addLogBtn = tr.querySelector('[data-player-log-add]');
+    if (addLogBtn) {
+      addLogBtn.addEventListener('click', async () => {
+        if (!profileId) {
+          alert('Guarda primero un dato del perfil para crear el perfil del jugador.');
+          return;
+        }
+        const summary = window.prompt('Movimiento a añadir');
+        const trimmed = String(summary || '').trim();
+        if (!trimmed) return;
+        await api(`/api/player-profiles/${profileId}/transactions`, {
+          method: 'POST',
+          body: JSON.stringify({
+            summary: trimmed,
+            action: 'manual',
+            team_code: player.team_code || null,
+          }),
+        });
+        await loadLeaguePlayers();
+      });
+    }
+    tbody.appendChild(tr);
+  });
 }
 
 function draftOrderRows(round) {
@@ -3872,10 +4115,10 @@ function renderImportantFigures() {
   const seasons = balanceSeasonYears();
   const seasonData = seasons.map((season) => ({ season, balances: seasonBalances(season) }));
   const rows = [
-    ['CAP TOTAL', 'cap_total'],
-    ['GASTO TOTAL', 'gasto_total'],
-    ['Cuenta del APRON', 'apron_account'],
-    ['Luxury tax', 'luxury_tax'],
+    { label: 'CAP TOTAL', key: 'cap_total', tooltip: capTotalTooltipText() },
+    { label: 'GASTO TOTAL', key: 'gasto_total' },
+    { label: 'Cuenta del APRON', key: 'apron_account', tooltip: apronTooltipText() },
+    { label: 'Luxury tax', key: 'luxury_tax' },
   ];
   table.innerHTML = `
     <thead>
@@ -3887,9 +4130,9 @@ function renderImportantFigures() {
       </tr>
     </thead>
     <tbody>
-      ${rows.map(([label, key]) => `
+      ${rows.map(({ label, key, tooltip }) => `
         <tr>
-          <th class="balance-row-label">${label}</th>
+          <th class="balance-row-label"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>${label}</th>
           ${seasonData.map(({ season, balances }) => {
             const value = Number(balances[key] || 0);
             const isLiability = key === 'luxury_tax';
@@ -3898,7 +4141,7 @@ function renderImportantFigures() {
               : (value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '');
             return `
               <td class="${season === selectedYear ? 'is-current-year' : ''}">
-                <span class="balance-value ${valueClass}">${formatMoneyDots(value)}</span>
+                <span class="balance-value ${valueClass}"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>${formatMoneyDots(value)}</span>
               </td>
             `;
           }).join('')}
@@ -4060,7 +4303,7 @@ function ownerOfficeBackgroundUploadHtml(profile) {
         </label>
         <span class="owner-office-upload-status" data-owner-background-status></span>
       </div>
-      <p>PNG, JPG o WebP. Recomendado: formato horizontal 16:9.</p>
+      <p>PNG, JPG o WebP. Máximo 12 MB. Recomendado: formato horizontal 16:9.</p>
     </div>
   `;
 }
@@ -4521,7 +4764,6 @@ function collectOwnerProfile() {
   });
   return {
     owner_photo_url: fieldValue('owner_photo_url'),
-    owner_office_background_url: fieldValue('owner_office_background_url'),
     owner_name: fieldValue('owner_name'),
     owner_birth_date: fieldValue('owner_birth_date'),
     owner_bio: fieldValue('owner_bio'),
@@ -4571,6 +4813,18 @@ function setupOwnerBackgroundUploadControls(root) {
     const file = input.files?.[0];
     if (!file) return;
     const status = root.querySelector('[data-owner-background-status]');
+    if (file.size > 12 * 1024 * 1024) {
+      if (status) status.textContent = 'Archivo demasiado grande';
+      alert('La imagen no puede superar 12 MB.');
+      input.value = '';
+      return;
+    }
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      if (status) status.textContent = 'Formato no válido';
+      alert('Formato no válido. Usa PNG, JPG o WebP.');
+      input.value = '';
+      return;
+    }
     if (status) status.textContent = 'Subiendo...';
     input.disabled = true;
     try {
@@ -5149,6 +5403,7 @@ function appendAddPlayerRow(tbody) {
         <option value="TMid">TMid</option>
         <option value="Bi">Bi</option>
         <option value="10d">10d</option>
+        <option value="E10">E10</option>
         <option value="R">R</option>
         <option value="R(2)">R(2)</option>
         <option value="TW">TW</option>
@@ -5263,6 +5518,11 @@ function renderPlayers() {
         }
         await refreshSummary();
       });
+      if (key === 'name') {
+        const title = playerIdentityTitle(p);
+        fieldEl.title = title;
+        wrapper.title = title;
+      }
 
       if (key.startsWith('salary_')) {
         wrapper.classList.add('salary-edit');
@@ -6630,36 +6890,6 @@ async function loadTeam(code) {
   await refreshAdminLogsSafe();
 }
 
-async function fetchTrackerRowsFallback() {
-  const season = freeAgencyModeActive() ? capHoldTargetSeason() : currentSeasonStart();
-  const salaryCap = capForSeason(season);
-  const luxuryCap = luxuryCapForSeason(season);
-  const firstApron = firstApronForSeason(season);
-  const secondApron = secondApronForSeason(season);
-  const rows = await Promise.all(state.teams.map(async (t) => {
-    const data = await api(`/api/teams/${t.code}`);
-    const s = data.summary || {};
-    const balances = teamSeasonBalances(data, season);
-    const draftCounts = draftPickCountsFromAssets(data.assets || []);
-    return {
-      team_code: t.code,
-      team_name: t.name,
-      cap_total: Number(balances.cap_total || 0),
-      gasto_total: Number(balances.gasto_total || 0),
-      espacio_cap: salaryCap - Number(balances.cap_total || 0),
-      espacio_luxury: luxuryCap - Number(balances.cap_total || 0),
-      luxury_tax: Number(balances.luxury_tax || 0),
-      espacio_1er_apron: firstApron - Number(balances.apron_account || 0),
-      espacio_2do_apron: secondApron - Number(balances.apron_account || 0),
-      roster_standard_count: Number(s.roster_standard_count || rosterCountFromPlayers(data.players || []).standard),
-      roster_two_way_count: Number(s.roster_two_way_count || rosterCountFromPlayers(data.players || []).twoWay),
-      draft_first_count: draftCounts.first,
-      draft_second_count: draftCounts.second,
-    };
-  }));
-  return rows;
-}
-
 async function loadTrackerEconomy(season = null) {
   const selected = normalizeTrackerEconomySeason(season ?? state.ui.trackerEconomySeason ?? currentSeasonStart());
   try {
@@ -6685,17 +6915,8 @@ async function loadTrackerEconomy(season = null) {
 }
 
 async function loadTracker() {
-  try {
-    const res = await api('/api/tracker');
-    state.trackerRows = res.tracker || [];
-    if (freeAgencyModeActive()) {
-      state.trackerRows = await fetchTrackerRowsFallback();
-    }
-  } catch (err) {
-    if (!String(err.message || '').includes('API 404')) throw err;
-    console.warn('API /api/tracker not available, using client fallback.');
-    state.trackerRows = await fetchTrackerRowsFallback();
-  }
+  const res = await api('/api/tracker');
+  state.trackerRows = res.tracker || [];
   state.teamCode = null;
   state.teamData = null;
   state.selectedPlayerIds.clear();
@@ -6741,6 +6962,63 @@ async function loadFreeAgents() {
   renderTeamPicker();
   renderAdminMobileTeamGrid();
   renderFreeAgents();
+  await refreshAdminLogsSafe();
+}
+
+async function fetchLeaguePlayersFallback() {
+  if (!state.teams.length) {
+    const teamsRes = await api('/api/teams');
+    state.teams = teamsRes.teams || [];
+  }
+  const loaded = await Promise.all((state.teams || []).map(async (team) => {
+    const code = String(team.code || '').trim().toUpperCase();
+    if (!code) return [];
+    const data = await api(`/api/teams/${encodeURIComponent(code)}`);
+    return (data.players || []).map((player) => ({
+      ...player,
+      profile_id: player.profile_id || null,
+      player_id: player.id,
+      status: 'active',
+      status_label: 'En roster',
+      team_code: data.team?.code || code,
+      team_name: data.team?.name || team.name || code,
+      active_contract: true,
+      active_contract_summary: [
+        data.team?.code || code,
+        player.position,
+        player.bird_rights,
+        player.years_left ? `${player.years_left} birds` : '',
+      ].filter(Boolean).join(' · ') || 'Sí',
+      transaction_logs: Array.isArray(player.transaction_logs) ? player.transaction_logs : [],
+    }));
+  }));
+  return loaded.flat().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es'));
+}
+
+async function loadLeaguePlayers() {
+  let players = [];
+  try {
+    const res = await api('/api/players');
+    players = Array.isArray(res.players) ? res.players : [];
+  } catch (err) {
+    console.warn('API /api/players not available, using team roster fallback.', err);
+  }
+  if (!players.length) {
+    players = await fetchLeaguePlayersFallback();
+  }
+  state.leaguePlayers = players;
+  state.teamCode = null;
+  state.teamData = null;
+  state.selectedPlayerIds.clear();
+  applyTeamTheme('');
+  setViewMode('league-players');
+  setPageHeading('Jugadores', 'Perfiles de jugadores de la liga');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderTeamPicker();
+  renderAdminMobileTeamGrid();
+  renderLeaguePlayers();
+  updateSortIndicators('leaguePlayersTable', state.sort.league_players);
   await refreshAdminLogsSafe();
 }
 
@@ -8162,6 +8440,9 @@ async function init() {
   document.getElementById('draftHomeBtn').addEventListener('click', async () => {
     await loadDraftOrder();
   });
+  document.getElementById('leaguePlayersHomeBtn').addEventListener('click', async () => {
+    await loadLeaguePlayers();
+  });
   document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
     await loadFreeAgents();
   });
@@ -8249,7 +8530,10 @@ async function init() {
     if (selectedYear !== previousYear) {
       const fromLabel = seasonLabel(previousYear);
       const toLabel = seasonLabel(selectedYear);
-      if (!confirm(`Change current year from ${fromLabel} to ${toLabel}? This updates CAP Total and GASTO Total calculations.`)) {
+      const birdYearsNote = selectedYear > previousYear
+        ? ` It will also add +${selectedYear - previousYear} to every player bird-year counter.`
+        : '';
+      if (!confirm(`Change current year from ${fromLabel} to ${toLabel}? This updates CAP Total and GASTO Total calculations.${birdYearsNote}`)) {
         currentYearSelect.value = String(previousYear);
         return;
       }
@@ -8321,7 +8605,7 @@ async function init() {
     const fromLabel = seasonLabel(previousYear);
     const toLabel = seasonLabel(previousYear + 1);
     const confirmed = confirm(
-      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- reset cash balances\n- delete ${fromLabel} draft assets\n- hide ${fromLabel} salary columns across the site`
+      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- add +1 to every player bird-year counter\n- reset cash balances\n- delete ${fromLabel} draft assets\n- hide ${fromLabel} salary columns across the site`
     );
     if (!confirmed) return;
 

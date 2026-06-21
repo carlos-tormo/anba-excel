@@ -2,6 +2,7 @@
 import argparse
 import base64
 import csv
+import hashlib
 import io
 import json
 import math
@@ -9,7 +10,6 @@ import os
 import re
 import secrets
 import sqlite3
-import tempfile
 import unicodedata
 from datetime import UTC, datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -19,21 +19,105 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+try:
+    from .domain_rules import (
+        CAP_FORECAST_MAX_YEAR,
+        CAP_FORECAST_MIN_YEAR,
+        CAP_FORECAST_WINDOW,
+        ROSTER_STANDARD_MAX_DEFAULT,
+        ROSTER_STANDARD_MIN_DEFAULT,
+        ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT,
+        ROSTER_TWO_WAY_MAX_DEFAULT,
+        ROSTER_TWO_WAY_MIN_DEFAULT,
+        TRADE_MACHINE_MAX_TEAMS,
+        TRADE_MACHINE_MIN_TEAMS,
+        TRADE_MATCH_CUSHION,
+        TRADE_MATCH_EXPANDED_BUFFER_FALLBACK,
+        TRADE_MATCH_EXPANDED_BUFFER_RATIO,
+        TRADE_MATCH_HIGH_BAND,
+        TRADE_MATCH_LOW_BAND,
+        TRADE_PICK_ACTION_SEND,
+        TRADE_PICK_ACTION_SWAP,
+        TRADE_ROOM_TPE_BUFFER,
+        apron_yos_adjustment,
+        cap_hold_amount,
+        format_trade_money,
+        increment_bird_years_value,
+        is_exhibit10_player,
+        is_two_way_player,
+        luxury_tax_amount,
+        minimum_salary_2_yos_for_cap,
+        normalize_bird_years,
+        normalize_experience_years,
+        normalize_move_phase,
+        normalize_trade_bucket,
+        parse_amount_like,
+        parse_bool,
+        parse_float,
+        parse_int,
+        public_settings_payload,
+        row_salary_num,
+        season_label,
+        settings_int,
+    )
+    from .maintenance import CURRENT_SCHEMA_MIGRATION_KEY, CURRENT_SCHEMA_VERSION, DatabaseMaintenanceMixin
+except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
+    from domain_rules import (
+        CAP_FORECAST_MAX_YEAR,
+        CAP_FORECAST_MIN_YEAR,
+        CAP_FORECAST_WINDOW,
+        ROSTER_STANDARD_MAX_DEFAULT,
+        ROSTER_STANDARD_MIN_DEFAULT,
+        ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT,
+        ROSTER_TWO_WAY_MAX_DEFAULT,
+        ROSTER_TWO_WAY_MIN_DEFAULT,
+        TRADE_MACHINE_MAX_TEAMS,
+        TRADE_MACHINE_MIN_TEAMS,
+        TRADE_MATCH_CUSHION,
+        TRADE_MATCH_EXPANDED_BUFFER_FALLBACK,
+        TRADE_MATCH_EXPANDED_BUFFER_RATIO,
+        TRADE_MATCH_HIGH_BAND,
+        TRADE_MATCH_LOW_BAND,
+        TRADE_PICK_ACTION_SEND,
+        TRADE_PICK_ACTION_SWAP,
+        TRADE_ROOM_TPE_BUFFER,
+        apron_yos_adjustment,
+        cap_hold_amount,
+        format_trade_money,
+        increment_bird_years_value,
+        is_exhibit10_player,
+        is_two_way_player,
+        luxury_tax_amount,
+        minimum_salary_2_yos_for_cap,
+        normalize_bird_years,
+        normalize_experience_years,
+        normalize_move_phase,
+        normalize_trade_bucket,
+        parse_amount_like,
+        parse_bool,
+        parse_float,
+        parse_int,
+        public_settings_payload,
+        row_salary_num,
+        season_label,
+        settings_int,
+    )
+    from maintenance import CURRENT_SCHEMA_MIGRATION_KEY, CURRENT_SCHEMA_VERSION, DatabaseMaintenanceMixin
+
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
-OWNER_BACKGROUND_UPLOAD_DIR = Path(
-    os.getenv("OWNER_BACKGROUND_UPLOAD_DIR", str(ROOT / "data" / "uploads" / "owner-office"))
-)
 OWNER_BACKGROUND_MAX_BYTES = 12_000_000
+OWNER_BACKGROUND_ALLOWED_MIME_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+DISCORD_CUSTOM_IMAGE_ALLOWED_MIME_TYPES = {
+    **OWNER_BACKGROUND_ALLOWED_MIME_TYPES,
+    "image/gif": "gif",
+}
+MULTIPART_UPLOAD_MAX_OVERHEAD_BYTES = 16_384
 DEFAULT_ENV_FILE = ROOT / ".env"
-ROSTER_STANDARD_MIN_DEFAULT = 14
-ROSTER_STANDARD_MAX_DEFAULT = 15
-ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT = 18
-ROSTER_TWO_WAY_MIN_DEFAULT = 0
-ROSTER_TWO_WAY_MAX_DEFAULT = 3
-CAP_FORECAST_MIN_YEAR = 2025
-CAP_FORECAST_MAX_YEAR = 2035
-CAP_FORECAST_WINDOW = 6
 OWNER_SEASON_OBJECTIVES = [
     "Campeones",
     "Finalistas",
@@ -192,150 +276,102 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def parse_float(value: Optional[str]) -> Optional[float]:
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    s = s.replace(" ", "")
-    if "," in s and "." not in s:
-        s = s.replace(",", ".")
+def sanitize_http_image_url(value: Any, limit: int = 1000) -> str:
+    raw = str(value or "").strip()[:limit]
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return raw
+
+
+def sanitize_owner_background_url(value: Any, limit: int = 1000) -> str:
+    raw = str(value or "").strip()[:limit]
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme or parsed.netloc:
+        return ""
+    if not re.fullmatch(r"/api/teams/[A-Z0-9]{2,4}/owner-office/background-image", parsed.path or ""):
+        return ""
+    return raw
+
+
+def detect_safe_image_type(
+    data: bytes,
+    declared_mime: str = "",
+    allowed_mime_types: Optional[Dict[str, str]] = None,
+) -> tuple[str, str]:
+    allowed = allowed_mime_types or OWNER_BACKGROUND_ALLOWED_MIME_TYPES
+    declared = (declared_mime or "").split(";", 1)[0].strip().lower()
+    if declared and declared not in allowed:
+        raise ValueError("unsupported_upload_type")
+
+    detected_mime = ""
+    if len(data) >= 3 and data.startswith(b"\xff\xd8\xff"):
+        detected_mime = "image/jpeg"
+    elif len(data) >= 24 and data.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected_mime = "image/png"
+    elif len(data) >= 16 and data[:4] == b"RIFF" and data[8:12] == b"WEBP" and data[12:16] in {b"VP8 ", b"VP8L", b"VP8X"}:
+        detected_mime = "image/webp"
+    elif len(data) >= 6 and data[:6] in {b"GIF87a", b"GIF89a"}:
+        detected_mime = "image/gif"
+
+    if detected_mime not in allowed:
+        raise ValueError("unsupported_upload_type")
+    if declared and declared != detected_mime:
+        raise ValueError("unsupported_upload_type")
+    return allowed[detected_mime], detected_mime
+
+
+def normalize_same_site(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "strict":
+        return "Strict"
+    if raw == "none":
+        return "None"
+    return "Lax"
+
+
+def pbkdf2_sha256_password_hash(password: str, *, iterations: int = 600_000, salt_hex: Optional[str] = None) -> str:
+    salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+
+
+def verify_password_hash(password: str, encoded_hash: str) -> bool:
+    parts = str(encoded_hash or "").strip().split("$")
+    if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+        return False
+    iterations = parse_int(parts[1])
+    if iterations is None or iterations < 100_000:
+        return False
     try:
-        return float(s)
+        salt = bytes.fromhex(parts[2])
+        expected = bytes.fromhex(parts[3])
     except ValueError:
-        return None
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, iterations)
+    return secrets.compare_digest(actual, expected)
 
 
-def normalize_bird_years(value: Any) -> Optional[str]:
-    raw = str(value or "").strip()
-    if not raw or raw == "0":
-        return None
-    compact = raw.replace(" ", "").replace(",", ".")
-    if compact in {"1", "1.0"}:
-        return "1"
-    if compact in {"2", "2.0"}:
-        return "2"
-    if compact == "2+":
-        return "2+"
-    return None
+def verify_admin_password(password: str, plaintext_password: str, encoded_hash: str = "") -> bool:
+    if str(encoded_hash or "").strip():
+        return verify_password_hash(password, encoded_hash)
+    return secrets.compare_digest(str(password or ""), str(plaintext_password or ""))
 
 
-def parse_amount_like(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if "e" in text.lower():
-        try:
-            parsed = float(text)
-            return parsed if math.isfinite(parsed) else None
-        except ValueError:
-            return None
-    cleaned = re.sub(r"[€$]", "", text.replace(" ", ""))
-    if "," in cleaned and "." in cleaned:
-        cleaned = cleaned.replace(".", "").replace(",", ".")
-    elif "," in cleaned:
-        cleaned = cleaned.replace(",", ".")
-    elif "." in cleaned and re.fullmatch(r"-?\d+\.\d{1,2}", cleaned):
-        pass
-    else:
-        cleaned = cleaned.replace(".", "")
-    cleaned = re.sub(r"[^0-9.-]", "", cleaned)
-    if cleaned in {"", "-", "."}:
-        return None
-    try:
-        parsed = float(cleaned)
-        return parsed if math.isfinite(parsed) else None
-    except ValueError:
-        return None
-
-
-def parse_int(value: Optional[str]) -> Optional[int]:
-    if value is None:
-        return None
-    try:
-        return int(str(value).strip())
-    except ValueError:
-        return None
-
-
-def season_label(start_year: Any) -> str:
-    year = parse_int(str(start_year)) or 2025
-    return f"{year}-{(year + 1) % 100:02d}"
-
-
-def settings_int(settings: Dict[str, str], key: str, default: int) -> int:
-    parsed = parse_int(settings.get(key))
-    if parsed is None or parsed < 0:
-        return default
-    return parsed
-
-
-def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
-    current_year = parse_int(settings.get("current_year")) or 2025
-    if current_year < 2025 or current_year > 2030:
-        current_year = 2025
-    salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
-    first_apron = parse_float(settings.get("first_apron")) or 195945000.0
-    second_apron = parse_float(settings.get("second_apron")) or 207824000.0
-    payload = {
-        "salary_cap_2025": salary_cap,
-        "current_year": current_year,
-        "first_apron": first_apron,
-        "second_apron": second_apron,
-        "cash_limit_total": parse_float(settings.get("cash_limit_total")) or 0.0,
-        "trade_move_limit_pre30": max(0, parse_int(settings.get("trade_move_limit_pre30")) or 0),
-        "trade_move_limit_post30": max(0, parse_int(settings.get("trade_move_limit_post30")) or 0),
-        "trade_move_phase": normalize_move_phase(settings.get("trade_move_phase")),
-        "free_agency_mode": parse_bool(settings.get("free_agency_mode")),
-        "roster_standard_min": settings_int(settings, "roster_standard_min", ROSTER_STANDARD_MIN_DEFAULT),
-        "roster_standard_max": settings_int(settings, "roster_standard_max", ROSTER_STANDARD_MAX_DEFAULT),
-        "roster_standard_offseason_max": settings_int(settings, "roster_standard_offseason_max", ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT),
-        "roster_two_way_min": settings_int(settings, "roster_two_way_min", ROSTER_TWO_WAY_MIN_DEFAULT),
-        "roster_two_way_max": settings_int(settings, "roster_two_way_max", ROSTER_TWO_WAY_MAX_DEFAULT),
-        "luxury_cap": salary_cap * 1.215,
-        "minimum_cap_allowed": salary_cap * 0.9,
-    }
-    for season in range(current_year, current_year + CAP_FORECAST_WINDOW):
-        season_cap = parse_float(settings.get(f"salary_cap_{season}")) or salary_cap
-        season_first_apron = parse_float(settings.get(f"first_apron_{season}")) or first_apron
-        season_second_apron = parse_float(settings.get(f"second_apron_{season}")) or second_apron
-        season_average_salary = parse_float(settings.get(f"average_salary_{season}"))
-        payload[f"salary_cap_{season}"] = season_cap
-        payload[f"first_apron_{season}"] = season_first_apron
-        payload[f"second_apron_{season}"] = season_second_apron
-        payload[f"average_salary_{season}"] = season_average_salary if season_average_salary and season_average_salary > 0 else 0.0
-    return payload
-
-
-def luxury_tax_amount(overage: float, repeater: bool) -> float:
-    remaining = max(0.0, float(overage or 0.0))
-    if remaining <= 0:
-        return 0.0
-    tier_size = 5_000_000.0
-    base_rates = [2.5, 2.75, 3.5, 4.25] if repeater else [1.5, 1.75, 2.5, 3.25]
-    tax = 0.0
-    tier_index = 0
-    while remaining > 0:
-        taxable = min(tier_size, remaining)
-        if tier_index < len(base_rates):
-            rate = base_rates[tier_index]
-        else:
-            rate = base_rates[-1] + ((tier_index - len(base_rates) + 1) * 0.5)
-        tax += taxable * rate
-        remaining -= taxable
-        tier_index += 1
-    return tax
-
-
-def parse_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "checked"}
+def parse_allowed_origins(value: Any) -> set[str]:
+    origins: set[str] = set()
+    for raw in str(value or "").split(","):
+        origin = raw.strip().rstrip("/")
+        if not origin:
+            continue
+        parsed = urlparse(origin)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            origins.add(f"{parsed.scheme.lower()}://{parsed.netloc.lower()}")
+    return origins
 
 
 def normalize_dead_type(value: Any) -> str:
@@ -366,13 +402,6 @@ def dead_contract_excluded_from_gasto(dead_contract: Dict[str, Any]) -> bool:
 
 def dead_contract_excluded_from_cap(dead_contract: Dict[str, Any]) -> bool:
     return parse_bool(dead_contract.get("exclude_from_cap"))
-
-
-def row_salary_num(row: Dict[str, Any], season: int) -> float:
-    value = row.get(f"salary_{season}_num")
-    if value is not None:
-        return float(value or 0.0)
-    return parse_amount_like(row.get(f"salary_{season}_text")) or 0.0
 
 
 def normalize_pick_type(value: Any) -> str:
@@ -486,20 +515,6 @@ def normalize_exception_type(value: Any) -> Optional[str]:
     if "mid" in raw:
         return "Mid-Level"
     return str(value).strip() or None
-
-
-def normalize_move_phase(value: Any) -> str:
-    raw = str(value or "").strip().lower().replace("_", "").replace("-", "")
-    if raw in {"post30", "post"}:
-        return "post30"
-    return "pre30"
-
-
-def normalize_trade_bucket(value: Any) -> str:
-    raw = str(value or "").strip().lower().replace("_", "").replace("-", "")
-    if raw in {"post30", "post"}:
-        return "post30"
-    return "pre30"
 
 
 def normalize_apron_hard_cap(value: Any) -> Optional[str]:
@@ -622,33 +637,13 @@ def owner_office_import_schema() -> Dict[str, List[Dict[str, str]]]:
     return schema
 
 
-class LeagueDB:
+class LeagueDB(DatabaseMaintenanceMixin):
     def __init__(self, db_path: str):
         self.db_path = db_path
 
-    def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
-
-    def backup_bytes(self) -> bytes:
-        fd, tmp_path = tempfile.mkstemp(prefix="anba-backup-", suffix=".db")
-        os.close(fd)
-        try:
-            with self.connect() as source:
-                with sqlite3.connect(tmp_path) as target:
-                    source.backup(target)
-            with open(tmp_path, "rb") as fh:
-                return fh.read()
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-
     def ensure_auth_schema(self) -> None:
         with self.connect() as conn:
+            self._ensure_maintenance_schema(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -816,6 +811,7 @@ class LeagueDB:
                 CREATE TABLE IF NOT EXISTS dead_contracts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL,
                     row_order INTEGER NOT NULL DEFAULT 0,
                     dead_type TEXT NOT NULL DEFAULT 'normal',
                     label TEXT,
@@ -832,6 +828,7 @@ class LeagueDB:
                 """
                 CREATE TABLE IF NOT EXISTS free_agents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL,
                     name TEXT NOT NULL,
                     position TEXT,
                     bird_rights TEXT,
@@ -850,10 +847,20 @@ class LeagueDB:
                     created_at TEXT NOT NULL,
                     actor_email TEXT,
                     actor_name TEXT,
+                    actor_role TEXT,
+                    actor_user_id INTEGER,
+                    request_id TEXT,
+                    method TEXT,
+                    path TEXT,
                     action TEXT NOT NULL,
                     entity TEXT NOT NULL,
                     entity_id TEXT,
                     team_code TEXT,
+                    team_codes_json TEXT,
+                    player_id TEXT,
+                    profile_id TEXT,
+                    before_json TEXT,
+                    after_json TEXT,
                     details_json TEXT
                 )
                 """
@@ -985,6 +992,42 @@ class LeagueDB:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS player_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    date_of_birth TEXT,
+                    nationality TEXT,
+                    experience_years INTEGER,
+                    yos_source TEXT,
+                    reference_image_url TEXT,
+                    profile_notes TEXT,
+                    transaction_notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS player_transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL REFERENCES player_profiles(id) ON DELETE CASCADE,
+                    player_id INTEGER,
+                    free_agent_id INTEGER,
+                    dead_contract_id INTEGER,
+                    action TEXT NOT NULL,
+                    team_code TEXT,
+                    from_team_code TEXT,
+                    to_team_code TEXT,
+                    summary TEXT NOT NULL,
+                    details_json TEXT,
+                    source_log_id INTEGER,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS owner_exit_interviews (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_id INTEGER NOT NULL,
@@ -1007,6 +1050,7 @@ class LeagueDB:
                 )
                 """
             )
+            self._drop_player_identity_guards(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -1077,6 +1121,28 @@ class LeagueDB:
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(team_owner_profiles)").fetchall()
             }
+            admin_log_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(admin_logs)").fetchall()
+            }
+            admin_log_add_columns = {
+                "actor_role": "TEXT",
+                "actor_user_id": "INTEGER",
+                "request_id": "TEXT",
+                "method": "TEXT",
+                "path": "TEXT",
+                "team_codes_json": "TEXT",
+                "player_id": "TEXT",
+                "profile_id": "TEXT",
+                "before_json": "TEXT",
+                "after_json": "TEXT",
+            }
+            for col, ddl in admin_log_add_columns.items():
+                if col not in admin_log_cols:
+                    conn.execute(f"ALTER TABLE admin_logs ADD COLUMN {col} {ddl}")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_request_id ON admin_logs(request_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_profile_id ON admin_logs(profile_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_player_id ON admin_logs(player_id)")
             if "performance_json" not in owner_office_cols:
                 conn.execute("ALTER TABLE team_owner_office ADD COLUMN performance_json TEXT NOT NULL DEFAULT '[]'")
             if "new_gm_after_dismissal" not in owner_office_cols:
@@ -1133,6 +1199,48 @@ class LeagueDB:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
             if "reference_image_url" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN reference_image_url TEXT")
+            if "experience_years" not in cols:
+                conn.execute("ALTER TABLE players ADD COLUMN experience_years INTEGER")
+            if "signed_as_free_agent" not in cols:
+                conn.execute("ALTER TABLE players ADD COLUMN signed_as_free_agent INTEGER NOT NULL DEFAULT 0")
+            if "profile_notes" not in cols:
+                conn.execute("ALTER TABLE players ADD COLUMN profile_notes TEXT")
+            if "profile_id" not in cols:
+                conn.execute("ALTER TABLE players ADD COLUMN profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL")
+            free_agent_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(free_agents)").fetchall()
+            }
+            if "profile_id" not in free_agent_cols:
+                conn.execute("ALTER TABLE free_agents ADD COLUMN profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL")
+            self._backfill_player_profiles(conn)
+            profile_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(player_profiles)").fetchall()
+            }
+            if "date_of_birth" not in profile_cols:
+                conn.execute("ALTER TABLE player_profiles ADD COLUMN date_of_birth TEXT")
+            if "nationality" not in profile_cols:
+                conn.execute("ALTER TABLE player_profiles ADD COLUMN nationality TEXT")
+            if "yos_source" not in profile_cols:
+                conn.execute("ALTER TABLE player_profiles ADD COLUMN yos_source TEXT")
+            if "transaction_notes" not in profile_cols:
+                conn.execute("ALTER TABLE player_profiles ADD COLUMN transaction_notes TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_players_profile_id ON players(profile_id)")
+            duplicate_active_profile = conn.execute(
+                """
+                SELECT profile_id
+                FROM players
+                WHERE profile_id IS NOT NULL
+                GROUP BY profile_id
+                HAVING COUNT(*) > 1
+                LIMIT 1
+                """
+            ).fetchone()
+            if not duplicate_active_profile:
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_unique_active_profile ON players(profile_id) WHERE profile_id IS NOT NULL")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_profile_id ON free_agents(profile_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_player_profiles_name ON player_profiles(name)")
             asset_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(assets)").fetchall()
@@ -1168,6 +1276,9 @@ class LeagueDB:
                 conn.execute("ALTER TABLE dead_contracts ADD COLUMN exclude_from_gasto INTEGER NOT NULL DEFAULT 0")
             if "exclude_from_cap" not in dead_cols:
                 conn.execute("ALTER TABLE dead_contracts ADD COLUMN exclude_from_cap INTEGER NOT NULL DEFAULT 0")
+            if "profile_id" not in dead_cols:
+                conn.execute("ALTER TABLE dead_contracts ADD COLUMN profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL")
+                dead_cols.add("profile_id")
             for season in [2025, 2026, 2027, 2028, 2029, 2030]:
                 text_col = f"salary_{season}_text"
                 num_col = f"salary_{season}_num"
@@ -1212,7 +1323,464 @@ class LeagueDB:
                   )
                 """
             )
+            self._backfill_dead_contract_profiles(conn)
+            self._backfill_player_transactions(conn)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dead_contracts_profile_id ON dead_contracts(profile_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_player_transactions_profile_created ON player_transactions(profile_id, created_at DESC, id DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_player_transactions_source_log ON player_transactions(source_log_id)")
+            self._install_player_identity_guards(conn)
+            self._record_schema_migration(
+                conn,
+                CURRENT_SCHEMA_MIGRATION_KEY,
+                "Runtime schema contract for ANBA app tables, indexes, compatibility columns, and player identity guards.",
+                "success",
+                {
+                    "schema_version": CURRENT_SCHEMA_VERSION,
+                    "schema_signature": self._schema_signature(conn),
+                },
+            )
             conn.commit()
+
+    def _create_player_profile(
+        self,
+        conn: sqlite3.Connection,
+        name: Any,
+        experience_years: Any = None,
+        reference_image_url: Any = None,
+        profile_notes: Any = None,
+        timestamp: Optional[str] = None,
+    ) -> int:
+        now = timestamp or now_iso()
+        profile_name = str(name or "").strip() or "New Player"
+        cur = conn.execute(
+            """
+            INSERT INTO player_profiles (
+                name, experience_years, reference_image_url, profile_notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                profile_name,
+                normalize_experience_years(experience_years),
+                str(reference_image_url or "").strip() or None,
+                str(profile_notes or "").strip() or None,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def _drop_player_identity_guards(self, conn: sqlite3.Connection) -> None:
+        for table in ["players", "free_agents", "dead_contracts"]:
+            conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_profile_required_insert")
+            conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_profile_required_update")
+
+    def _existing_profile_id(self, conn: sqlite3.Connection, profile_id: Any) -> Optional[int]:
+        parsed_profile_id = parse_int(profile_id)
+        if parsed_profile_id is None:
+            return None
+        row = conn.execute("SELECT id FROM player_profiles WHERE id = ?", (parsed_profile_id,)).fetchone()
+        return int(row["id"]) if row else None
+
+    def _resolve_profile_for_new_row(
+        self,
+        conn: sqlite3.Connection,
+        payload: Dict[str, Any],
+        *,
+        name: Any,
+        timestamp: str,
+        forbid_active_contract: bool = False,
+    ) -> int:
+        profile_id = self._existing_profile_id(conn, payload.get("profile_id"))
+        if profile_id is not None:
+            if forbid_active_contract:
+                active = conn.execute(
+                    "SELECT id FROM players WHERE profile_id = ? LIMIT 1",
+                    (profile_id,),
+                ).fetchone()
+                if active:
+                    raise ValueError("profile_has_active_contract")
+            return profile_id
+
+        return self._create_player_profile(
+            conn,
+            name,
+            payload.get("experience_years"),
+            payload.get("reference_image_url"),
+            payload.get("profile_notes"),
+            timestamp,
+        )
+
+    def _install_player_identity_guards(self, conn: sqlite3.Connection) -> None:
+        trigger_specs = [
+            ("players", "players_profile_id_required"),
+            ("free_agents", "free_agents_profile_id_required"),
+            ("dead_contracts", "dead_contracts_profile_id_required"),
+        ]
+        for table, message in trigger_specs:
+            conn.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS trg_{table}_profile_required_insert
+                BEFORE INSERT ON {table}
+                WHEN NEW.profile_id IS NULL
+                BEGIN
+                    SELECT RAISE(ABORT, '{message}');
+                END
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS trg_{table}_profile_required_update
+                BEFORE UPDATE OF profile_id ON {table}
+                WHEN NEW.profile_id IS NULL
+                BEGIN
+                    SELECT RAISE(ABORT, '{message}');
+                END
+                """
+            )
+
+    def _backfill_player_profiles(self, conn: sqlite3.Connection) -> None:
+        timestamp = now_iso()
+        player_rows = conn.execute(
+            """
+            SELECT id, name, experience_years, reference_image_url, profile_notes, created_at, updated_at
+            FROM players
+            WHERE profile_id IS NULL
+            ORDER BY id
+            """
+        ).fetchall()
+        for row in player_rows:
+            profile_id = self._create_player_profile(
+                conn,
+                row["name"],
+                row["experience_years"],
+                row["reference_image_url"],
+                row["profile_notes"],
+                row["created_at"] or row["updated_at"] or timestamp,
+            )
+            conn.execute("UPDATE players SET profile_id = ? WHERE id = ?", (profile_id, int(row["id"])))
+
+        free_agent_rows = conn.execute(
+            """
+            SELECT id, name, created_at, updated_at
+            FROM free_agents
+            WHERE profile_id IS NULL
+            ORDER BY id
+            """
+        ).fetchall()
+        for row in free_agent_rows:
+            profile_id = self._create_player_profile(
+                conn,
+                row["name"],
+                None,
+                None,
+                None,
+                row["created_at"] or row["updated_at"] or timestamp,
+            )
+            conn.execute("UPDATE free_agents SET profile_id = ? WHERE id = ?", (profile_id, int(row["id"])))
+
+        self._backfill_dead_contract_profiles(conn)
+
+    def _find_profile_id(
+        self,
+        conn: sqlite3.Connection,
+        player_id: Any = None,
+        free_agent_id: Any = None,
+        dead_contract_id: Any = None,
+        name: Any = None,
+    ) -> Optional[int]:
+        parsed_player_id = parse_int(player_id)
+        if parsed_player_id is not None:
+            row = conn.execute("SELECT profile_id FROM players WHERE id = ?", (parsed_player_id,)).fetchone()
+            profile_id = parse_int(row["profile_id"]) if row else None
+            if profile_id is not None:
+                return profile_id
+
+        parsed_free_agent_id = parse_int(free_agent_id)
+        if parsed_free_agent_id is not None:
+            row = conn.execute("SELECT profile_id FROM free_agents WHERE id = ?", (parsed_free_agent_id,)).fetchone()
+            profile_id = parse_int(row["profile_id"]) if row else None
+            if profile_id is not None:
+                return profile_id
+
+        parsed_dead_contract_id = parse_int(dead_contract_id)
+        if parsed_dead_contract_id is not None:
+            row = conn.execute("SELECT profile_id FROM dead_contracts WHERE id = ?", (parsed_dead_contract_id,)).fetchone()
+            profile_id = parse_int(row["profile_id"]) if row else None
+            if profile_id is not None:
+                return profile_id
+
+        profile_name = str(name or "").strip()
+        if profile_name:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM player_profiles
+                WHERE lower(trim(name)) = lower(trim(?))
+                ORDER BY id
+                LIMIT 1
+                """,
+                (profile_name,),
+            ).fetchone()
+            if row:
+                return int(row["id"])
+        return None
+
+    def _backfill_dead_contract_profiles(self, conn: sqlite3.Connection) -> None:
+        dead_cols = {row["name"] for row in conn.execute("PRAGMA table_info(dead_contracts)").fetchall()}
+        if "profile_id" not in dead_cols:
+            return
+        rows = conn.execute(
+            """
+            SELECT id, label, created_at, updated_at
+            FROM dead_contracts
+            WHERE profile_id IS NULL
+            ORDER BY id
+            """
+        ).fetchall()
+        for row in rows:
+            label = str(row["label"] or "").strip() or f"Dead Contract {int(row['id'])}"
+            profile_id = self._find_profile_id(conn, name=label)
+            if profile_id is None:
+                profile_id = self._create_player_profile(
+                    conn,
+                    label,
+                    timestamp=row["created_at"] or row["updated_at"] or now_iso(),
+                )
+            if not str(row["label"] or "").strip():
+                conn.execute("UPDATE dead_contracts SET label = ? WHERE id = ?", (label, int(row["id"])))
+            conn.execute("UPDATE dead_contracts SET profile_id = ? WHERE id = ?", (profile_id, int(row["id"])))
+
+    def _record_player_transaction(
+        self,
+        conn: sqlite3.Connection,
+        profile_id: Any,
+        action: str,
+        summary: str,
+        *,
+        player_id: Any = None,
+        free_agent_id: Any = None,
+        dead_contract_id: Any = None,
+        team_code: Any = None,
+        from_team_code: Any = None,
+        to_team_code: Any = None,
+        details: Optional[Dict[str, Any]] = None,
+        source_log_id: Any = None,
+        created_at: Optional[str] = None,
+    ) -> None:
+        parsed_profile_id = parse_int(profile_id)
+        if parsed_profile_id is None:
+            return
+        action_text = str(action or "").strip().lower() or "update"
+        summary_text = str(summary or "").strip() or "Movimiento registrado"
+        parsed_source_log_id = parse_int(source_log_id)
+        if parsed_source_log_id is not None:
+            exists = conn.execute(
+                """
+                SELECT 1
+                FROM player_transactions
+                WHERE source_log_id = ?
+                  AND profile_id = ?
+                  AND action = ?
+                  AND summary = ?
+                LIMIT 1
+                """,
+                (parsed_source_log_id, parsed_profile_id, action_text, summary_text),
+            ).fetchone()
+            if exists:
+                return
+
+        conn.execute(
+            """
+            INSERT INTO player_transactions (
+                profile_id, player_id, free_agent_id, dead_contract_id, action,
+                team_code, from_team_code, to_team_code, summary, details_json, source_log_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                parsed_profile_id,
+                parse_int(player_id),
+                parse_int(free_agent_id),
+                parse_int(dead_contract_id),
+                action_text,
+                normalize_team_code(team_code),
+                normalize_team_code(from_team_code),
+                normalize_team_code(to_team_code),
+                summary_text,
+                json.dumps(details or {}, ensure_ascii=True) if details else None,
+                parsed_source_log_id,
+                created_at or now_iso(),
+            ),
+        )
+
+    def _backfill_player_transactions(self, conn: sqlite3.Connection) -> None:
+        tx_exists = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'player_transactions'").fetchone()
+        if not tx_exists:
+            return
+        log_cur = conn.execute(
+            """
+            SELECT id, created_at, action, entity, entity_id, team_code, details_json
+            FROM admin_logs
+            ORDER BY id
+            """
+        )
+        for row in log_cur.fetchall():
+            log = row_to_dict(log_cur, row)
+            try:
+                details = json.loads(str(log.get("details_json") or "{}"))
+                if not isinstance(details, dict):
+                    details = {}
+            except json.JSONDecodeError:
+                details = {}
+            action = str(log.get("action") or "").strip().lower()
+            entity = str(log.get("entity") or "").strip().lower()
+            source_log_id = parse_int(log.get("id"))
+            created_at = str(log.get("created_at") or "") or now_iso()
+
+            if entity == "trade" and action in {"trade", "process"}:
+                team_a = normalize_team_code(details.get("team_a"))
+                team_b = normalize_team_code(details.get("team_b"))
+                for player_id in details.get("players_a") or []:
+                    profile_id = self._find_profile_id(conn, player_id=player_id)
+                    if profile_id is None:
+                        continue
+                    summary = f"Traspasado de {team_a} a {team_b}" if team_a and team_b else "Traspaso procesado"
+                    self._record_player_transaction(
+                        conn,
+                        profile_id,
+                        "trade",
+                        summary,
+                        player_id=player_id,
+                        team_code=team_b,
+                        from_team_code=team_a,
+                        to_team_code=team_b,
+                        details=details,
+                        source_log_id=source_log_id,
+                        created_at=created_at,
+                    )
+                for player_id in details.get("players_b") or []:
+                    profile_id = self._find_profile_id(conn, player_id=player_id)
+                    if profile_id is None:
+                        continue
+                    summary = f"Traspasado de {team_b} a {team_a}" if team_a and team_b else "Traspaso procesado"
+                    self._record_player_transaction(
+                        conn,
+                        profile_id,
+                        "trade",
+                        summary,
+                        player_id=player_id,
+                        team_code=team_a,
+                        from_team_code=team_b,
+                        to_team_code=team_a,
+                        details=details,
+                        source_log_id=source_log_id,
+                        created_at=created_at,
+                    )
+                continue
+
+            profile_id = parse_int(details.get("profile_id"))
+            if profile_id is None:
+                profile_id = self._find_profile_id(
+                    conn,
+                    player_id=log.get("entity_id") if entity == "player" else details.get("player_id"),
+                    free_agent_id=log.get("entity_id") if entity == "free_agent" else details.get("free_agent_id"),
+                    dead_contract_id=details.get("dead_contract_id"),
+                    name=details.get("player_name") or details.get("name"),
+                )
+            if profile_id is None:
+                continue
+            self._record_player_transaction(
+                conn,
+                profile_id,
+                action,
+                self._player_log_summary(log, details),
+                player_id=log.get("entity_id") if entity == "player" else details.get("player_id"),
+                free_agent_id=log.get("entity_id") if entity == "free_agent" else details.get("free_agent_id"),
+                dead_contract_id=details.get("dead_contract_id"),
+                team_code=log.get("team_code"),
+                to_team_code=details.get("to_team_code"),
+                details=details,
+                source_log_id=source_log_id,
+                created_at=created_at,
+            )
+
+    def _player_select_columns(self) -> str:
+        return """
+            p.*,
+            pp.name AS profile_name,
+            pp.date_of_birth AS profile_date_of_birth,
+            pp.nationality AS profile_nationality,
+            pp.experience_years AS profile_experience_years,
+            pp.yos_source AS profile_yos_source,
+            pp.reference_image_url AS profile_reference_image_url,
+            pp.profile_notes AS profile_profile_notes,
+            pp.transaction_notes AS profile_transaction_notes
+        """
+
+    def _merge_player_profile(self, player: Dict[str, Any]) -> Dict[str, Any]:
+        if player.get("profile_name"):
+            player["contract_name"] = player.get("name")
+            player["name"] = player.get("profile_name")
+        if player.get("profile_experience_years") is not None:
+            player["experience_years"] = player.get("profile_experience_years")
+        if player.get("profile_date_of_birth") is not None:
+            player["date_of_birth"] = player.get("profile_date_of_birth")
+        if player.get("profile_nationality") is not None:
+            player["nationality"] = player.get("profile_nationality")
+        if player.get("profile_yos_source") is not None:
+            player["yos_source"] = player.get("profile_yos_source")
+        if player.get("profile_reference_image_url"):
+            player["reference_image_url"] = player.get("profile_reference_image_url")
+        if player.get("profile_profile_notes") is not None:
+            player["profile_notes"] = player.get("profile_profile_notes")
+        if player.get("profile_transaction_notes") is not None:
+            player["transaction_notes"] = player.get("profile_transaction_notes")
+        return player
+
+    def _player_rows_from_cursor(self, cursor: sqlite3.Cursor, rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
+        return [self._merge_player_profile(row_to_dict(cursor, row)) for row in rows]
+
+    def _select_team_players(self, conn: sqlite3.Connection, team_id: int) -> List[Dict[str, Any]]:
+        cur = conn.execute(
+            f"""
+            SELECT {self._player_select_columns()}
+            FROM players p
+            LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+            WHERE p.team_id = ?
+            ORDER BY p.row_order, p.id
+            """,
+            (team_id,),
+        )
+        return self._player_rows_from_cursor(cur, cur.fetchall())
+
+    def _ensure_profile_for_player(
+        self,
+        conn: sqlite3.Connection,
+        player_id: int,
+        timestamp: Optional[str] = None,
+    ) -> Optional[int]:
+        row = conn.execute(
+            """
+            SELECT id, profile_id, name, experience_years, reference_image_url, profile_notes, created_at, updated_at
+            FROM players
+            WHERE id = ?
+            """,
+            (player_id,),
+        ).fetchone()
+        if not row:
+            return None
+        existing = parse_int(row["profile_id"])
+        if existing is not None:
+            return existing
+        profile_id = self._create_player_profile(
+            conn,
+            row["name"],
+            row["experience_years"],
+            row["reference_image_url"],
+            row["profile_notes"],
+            timestamp or row["created_at"] or row["updated_at"] or now_iso(),
+        )
+        conn.execute("UPDATE players SET profile_id = ? WHERE id = ?", (profile_id, player_id))
+        return profile_id
 
     def get_settings(self) -> Dict[str, str]:
         with self.connect() as conn:
@@ -1225,8 +1793,7 @@ class LeagueDB:
         payload_teams: List[Dict[str, Any]] = []
         for team in teams:
             team_id = team["id"]
-            player_cur = conn.execute("SELECT * FROM players WHERE team_id = ? ORDER BY row_order, id", (team_id,))
-            players = [row_to_dict(player_cur, row) for row in player_cur.fetchall()]
+            players = self._select_team_players(conn, int(team_id))
             assets_cur = conn.execute(
                 "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
                 (team_id,),
@@ -1247,7 +1814,16 @@ class LeagueDB:
                 (team_id, season_year),
             )
             move_logs = [row_to_dict(move_log_cur, row) for row in move_log_cur.fetchall()]
-            summary = self._calc_summary(team, players, assets, dead_contracts, settings)
+            luxury_repeater = self._team_luxury_repeater_for_season(conn, int(team_id), season_year)
+            summary = self._calc_summary(
+                team,
+                players,
+                assets,
+                dead_contracts,
+                settings,
+                season_year=season_year,
+                luxury_repeater=luxury_repeater,
+            )
             payload_teams.append(
                 {
                     "team": team,
@@ -1316,6 +1892,51 @@ class LeagueDB:
             )
             conn.commit()
 
+    def _increment_player_bird_years(self, conn: sqlite3.Connection, seasons: int, timestamp: str) -> int:
+        steps = max(0, int(seasons or 0))
+        if steps <= 0:
+            return 0
+        cur = conn.execute("SELECT id, years_left FROM players")
+        updates: List[tuple[Optional[str], str, int]] = []
+        for row in cur.fetchall():
+            normalized_current = normalize_bird_years(row["years_left"])
+            next_value = increment_bird_years_value(row["years_left"], steps)
+            if next_value != normalized_current:
+                updates.append((next_value, timestamp, int(row["id"])))
+        if updates:
+            conn.executemany(
+                "UPDATE players SET years_left = ?, updated_at = ? WHERE id = ?",
+                updates,
+            )
+        return len(updates)
+
+    def update_current_year(self, next_year: int) -> Dict[str, Any]:
+        with self.connect() as conn:
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            previous_year = parse_int(settings.get("current_year")) or 2025
+            if previous_year < 2025 or previous_year > 2030:
+                previous_year = 2025
+            delta = max(0, int(next_year) - previous_year)
+            timestamp = now_iso()
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('current_year', ?, ?)
+                ON CONFLICT(key)
+                DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (str(next_year), timestamp),
+            )
+            updated_bird_years = self._increment_player_bird_years(conn, delta, timestamp)
+            conn.commit()
+            return {
+                "previous_year": previous_year,
+                "current_year": int(next_year),
+                "bird_year_steps": delta,
+                "bird_year_players_updated": updated_bird_years,
+            }
+
     def progress_to_next_year(self) -> Dict[str, Any]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
@@ -1361,11 +1982,14 @@ class LeagueDB:
                 "UPDATE teams SET cash_received = 0, cash_sent = 0, updated_at = ?",
                 (timestamp,),
             )
+            updated_bird_years = self._increment_player_bird_years(conn, 1, timestamp)
             conn.commit()
             return {
                 "previous_year": current_year,
                 "current_year": next_year,
                 "deleted_draft_assets": int(deleted_draft_assets),
+                "bird_year_steps": 1,
+                "bird_year_players_updated": updated_bird_years,
             }
 
     def upsert_google_user(self, google_sub: str, email: str, display_name: Optional[str], avatar_url: Optional[str]) -> Dict[str, Any]:
@@ -1549,8 +2173,9 @@ class LeagueDB:
         with self.connect() as conn:
             cur = conn.execute(
                 f"""
-                SELECT p.id, p.name, p.team_id, p.{field} AS current_option, t.code AS team_code
+                SELECT p.id, COALESCE(pp.name, p.name) AS name, p.team_id, p.{field} AS current_option, t.code AS team_code
                 FROM players p
+                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
                 JOIN teams t ON t.id = p.team_id
                 WHERE p.id = ?
                 """,
@@ -1937,8 +2562,7 @@ class LeagueDB:
                 return None
             team = row_to_dict(team_cur, row)
 
-            player_cur = conn.execute("SELECT * FROM players WHERE team_id = ? ORDER BY row_order, id", (team["id"],))
-            players = [row_to_dict(player_cur, r) for r in player_cur.fetchall()]
+            players = self._select_team_players(conn, int(team["id"]))
             self._attach_option_decisions(conn, players, int(team["id"]))
 
             assets_cur = conn.execute(
@@ -1954,7 +2578,9 @@ class LeagueDB:
             dead_contracts = [row_to_dict(dead_cur, r) for r in dead_cur.fetchall()]
 
             settings = self.get_settings()
-            summary = self._calc_summary(team, players, assets, dead_contracts, settings)
+            luxury_repeater = self._team_luxury_repeater_for_season(conn, int(team["id"]), parse_int(settings.get("current_year")) or 2025)
+            summary = self._calc_summary(team, players, assets, dead_contracts, settings, luxury_repeater=luxury_repeater)
+            season_summaries = self._team_season_summaries(conn, team, players, assets, dead_contracts, settings)
             move_summary = self._team_move_summary(conn, int(team["id"]), int(summary["current_year"]), settings)
             luxury_history = self._team_luxury_history(conn, int(team["id"]), int(summary["current_year"]))
             gm_cur = conn.execute(
@@ -1983,6 +2609,7 @@ class LeagueDB:
                 "assets": assets,
                 "dead_contracts": dead_contracts,
                 "summary": summary,
+                "season_summaries": season_summaries,
                 "move_summary": move_summary,
                 "luxury_history": luxury_history,
                 "gm_history": gm_history,
@@ -1991,16 +2618,522 @@ class LeagueDB:
     def get_player_record(self, player_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             cur = conn.execute(
-                """
-                SELECT p.*, t.code AS team_code, t.name AS team_name
+                f"""
+                SELECT {self._player_select_columns()}, t.code AS team_code, t.name AS team_name
                 FROM players p
+                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
                 JOIN teams t ON t.id = p.team_id
                 WHERE p.id = ?
                 """,
                 (player_id,),
             )
             row = cur.fetchone()
+            return self._merge_player_profile(row_to_dict(cur, row)) if row else None
+
+    def get_asset_record(self, asset_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT a.*, t.code AS team_code, t.name AS team_name
+                FROM assets a
+                JOIN teams t ON t.id = a.team_id
+                WHERE a.id = ?
+                """,
+                (asset_id,),
+            )
+            row = cur.fetchone()
             return row_to_dict(cur, row) if row else None
+
+    def get_dead_contract_record(self, dead_contract_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT d.*, t.code AS team_code, t.name AS team_name
+                FROM dead_contracts d
+                JOIN teams t ON t.id = d.team_id
+                WHERE d.id = ?
+                """,
+                (dead_contract_id,),
+            )
+            row = cur.fetchone()
+            return row_to_dict(cur, row) if row else None
+
+    def audit_trade_snapshot(
+        self,
+        team_codes: List[str],
+        player_ids: Optional[List[Any]] = None,
+        asset_ids: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        def clean_ints(values: Optional[List[Any]]) -> List[int]:
+            out: List[int] = []
+            seen: set[int] = set()
+            if not isinstance(values, list):
+                return out
+            for value in values:
+                parsed = parse_int(str(value))
+                if parsed is None or parsed <= 0 or parsed in seen:
+                    continue
+                seen.add(parsed)
+                out.append(parsed)
+            return out
+
+        normalized_team_codes: List[str] = []
+        for code in team_codes or []:
+            normalized = normalize_team_code(code)
+            if normalized and normalized not in normalized_team_codes:
+                normalized_team_codes.append(normalized)
+
+        clean_player_ids = clean_ints(player_ids)
+        clean_asset_ids = clean_ints(asset_ids)
+        snapshot: Dict[str, Any] = {
+            "teams": [],
+            "players": [],
+            "assets": [],
+        }
+
+        with self.connect() as conn:
+            for code in normalized_team_codes:
+                team_cur = conn.execute(
+                    """
+                    SELECT
+                        t.id,
+                        t.code,
+                        t.gm,
+                        t.cash_received,
+                        t.cash_sent,
+                        t.apron_hard_cap,
+                        COALESCE(SUM(CASE WHEN p.id IS NULL THEN 0 WHEN COALESCE(p.is_two_way, 0) = 1 OR UPPER(COALESCE(p.bird_rights, '')) = 'TW' THEN 0 ELSE 1 END), 0) AS standard_contracts,
+                        COALESCE(SUM(CASE WHEN p.id IS NULL THEN 0 WHEN COALESCE(p.is_two_way, 0) = 1 OR UPPER(COALESCE(p.bird_rights, '')) = 'TW' THEN 1 ELSE 0 END), 0) AS two_way_contracts
+                    FROM teams t
+                    LEFT JOIN players p ON p.team_id = t.id
+                    WHERE t.code = ?
+                    GROUP BY t.id
+                    """,
+                    (code,),
+                )
+                row = team_cur.fetchone()
+                if row:
+                    snapshot["teams"].append(row_to_dict(team_cur, row))
+
+            if clean_player_ids:
+                placeholders = ",".join("?" for _ in clean_player_ids)
+                player_cur = conn.execute(
+                    f"""
+                    SELECT
+                        p.id,
+                        p.profile_id,
+                        COALESCE(pp.name, p.name) AS name,
+                        t.code AS team_code,
+                        p.position,
+                        p.bird_rights,
+                        p.rating,
+                        p.years_left,
+                        p.is_two_way
+                    FROM players p
+                    LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                    JOIN teams t ON t.id = p.team_id
+                    WHERE p.id IN ({placeholders})
+                    ORDER BY p.id
+                    """,
+                    clean_player_ids,
+                )
+                snapshot["players"] = [row_to_dict(player_cur, row) for row in player_cur.fetchall()]
+
+            if clean_asset_ids:
+                placeholders = ",".join("?" for _ in clean_asset_ids)
+                asset_cur = conn.execute(
+                    f"""
+                    SELECT
+                        a.id,
+                        t.code AS team_code,
+                        a.asset_type,
+                        a.year,
+                        a.label,
+                        a.draft_pick_type,
+                        a.draft_round,
+                        a.original_owner,
+                        a.draft_pick_sold_to,
+                        a.draft_pick_conditional_teams,
+                        a.detail
+                    FROM assets a
+                    JOIN teams t ON t.id = a.team_id
+                    WHERE a.id IN ({placeholders})
+                    ORDER BY a.id
+                    """,
+                    clean_asset_ids,
+                )
+                snapshot["assets"] = [row_to_dict(asset_cur, row) for row in asset_cur.fetchall()]
+
+        return snapshot
+
+    def _player_log_summary(self, log: Dict[str, Any], details: Dict[str, Any]) -> str:
+        action = str(log.get("action") or "").strip().lower()
+        entity = str(log.get("entity") or "").strip().lower()
+        if action == "cut" and entity == "player":
+            return "Corte registrado"
+        if action == "move" and entity == "player":
+            target = str(details.get("to_team_code") or log.get("team_code") or "").strip().upper()
+            return f"Movimiento a {target}" if target else "Movimiento de equipo"
+        if action == "sign" and entity == "free_agent":
+            return "Firmado como agente libre"
+        if action == "create" and entity == "player":
+            return "Jugador creado"
+        if action == "delete" and entity == "player":
+            return "Jugador eliminado"
+        if action == "update" and entity == "player":
+            return "Perfil/contrato actualizado"
+        if action in {"process", "trade"} and entity == "trade":
+            return "Traspaso procesado"
+        return " ".join(part for part in [action, entity] if part).strip() or "Movimiento registrado"
+
+    def list_players(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            if current_year < 2025 or current_year > 2030:
+                current_year = 2025
+
+            profile_cur = conn.execute(
+                """
+                SELECT
+                    id, name, date_of_birth, nationality, experience_years, yos_source,
+                    reference_image_url, profile_notes, transaction_notes, created_at, updated_at
+                FROM player_profiles
+                ORDER BY name COLLATE NOCASE, id
+                """
+            )
+            profiles: Dict[int, Dict[str, Any]] = {}
+            for row in profile_cur.fetchall():
+                profile = row_to_dict(profile_cur, row)
+                profile_id = int(profile["id"])
+                profiles[profile_id] = {
+                    **profile,
+                    "profile_id": profile_id,
+                    "status": "inactive",
+                    "status_label": "Sin contrato",
+                    "team_code": None,
+                    "team_name": None,
+                    "player_id": None,
+                    "free_agent_id": None,
+                    "dead_contract_id": None,
+                    "dead_contracts": [],
+                    "dead_contract_count": 0,
+                    "dead_contract_summary": "",
+                    "position": None,
+                    "bird_rights": None,
+                    "rating": None,
+                    "years_left": None,
+                    "signed_as_free_agent": None,
+                    "active_contract": False,
+                    "active_contract_summary": "No",
+                    "transaction_logs": [],
+                }
+
+            active_cur = conn.execute(
+                f"""
+                SELECT
+                    p.id AS player_id,
+                    p.profile_id,
+                    p.position,
+                    p.bird_rights,
+                    p.rating,
+                    p.years_left,
+                    p.signed_as_free_agent,
+                    p.salary_{current_year}_text AS current_salary_text,
+                    t.code AS team_code,
+                    t.name AS team_name
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.profile_id IS NOT NULL
+                ORDER BY p.profile_id, p.row_order, p.id
+                """
+            )
+            for row in active_cur.fetchall():
+                item = row_to_dict(active_cur, row)
+                profile_id = parse_int(item.get("profile_id"))
+                if profile_id is None or profile_id not in profiles or profiles[profile_id]["active_contract"]:
+                    continue
+                contract_parts = [
+                    str(item.get("team_code") or "").strip().upper(),
+                    str(item.get("position") or "").strip(),
+                    str(item.get("bird_rights") or "").strip(),
+                ]
+                birds = normalize_bird_years(item.get("years_left"))
+                if birds is not None:
+                    contract_parts.append(f"{birds} birds")
+                salary_text = str(item.get("current_salary_text") or "").strip()
+                if salary_text:
+                    contract_parts.append(salary_text)
+                profiles[profile_id].update(
+                    {
+                        "status": "active",
+                        "status_label": "En roster",
+                        "team_code": item.get("team_code"),
+                        "team_name": item.get("team_name"),
+                        "player_id": item.get("player_id"),
+                        "position": item.get("position"),
+                        "bird_rights": item.get("bird_rights"),
+                        "rating": item.get("rating"),
+                        "years_left": item.get("years_left"),
+                        "signed_as_free_agent": item.get("signed_as_free_agent"),
+                        "active_contract": True,
+                        "active_contract_summary": " · ".join(part for part in contract_parts if part) or "Sí",
+                    }
+                )
+
+            free_agent_cur = conn.execute(
+                """
+                SELECT id AS free_agent_id, profile_id, position, bird_rights, rating, years_left
+                FROM free_agents
+                WHERE profile_id IS NOT NULL
+                ORDER BY profile_id, id
+                """
+            )
+            for row in free_agent_cur.fetchall():
+                item = row_to_dict(free_agent_cur, row)
+                profile_id = parse_int(item.get("profile_id"))
+                if profile_id is None or profile_id not in profiles or profiles[profile_id]["active_contract"]:
+                    continue
+                profiles[profile_id].update(
+                    {
+                        "status": "free_agent",
+                        "status_label": "Agente libre",
+                        "free_agent_id": item.get("free_agent_id"),
+                        "position": profiles[profile_id].get("position") or item.get("position"),
+                        "bird_rights": profiles[profile_id].get("bird_rights") or item.get("bird_rights"),
+                        "rating": profiles[profile_id].get("rating") or item.get("rating"),
+                        "years_left": profiles[profile_id].get("years_left") if profiles[profile_id].get("years_left") is not None else item.get("years_left"),
+                    }
+                )
+
+            dead_cur = conn.execute(
+                """
+                SELECT
+                    d.id AS dead_contract_id,
+                    d.profile_id,
+                    d.dead_type,
+                    d.label,
+                    t.code AS team_code,
+                    t.name AS team_name
+                FROM dead_contracts d
+                JOIN teams t ON t.id = d.team_id
+                WHERE d.profile_id IS NOT NULL
+                ORDER BY d.profile_id, t.code, d.id DESC
+                """
+            )
+            for row in dead_cur.fetchall():
+                item = row_to_dict(dead_cur, row)
+                profile_id = parse_int(item.get("profile_id"))
+                if profile_id is None or profile_id not in profiles:
+                    continue
+                dead_item = {
+                    "dead_contract_id": item.get("dead_contract_id"),
+                    "team_code": item.get("team_code"),
+                    "team_name": item.get("team_name"),
+                    "dead_type": item.get("dead_type"),
+                    "label": item.get("label"),
+                }
+                profiles[profile_id]["dead_contracts"].append(dead_item)
+                profiles[profile_id]["dead_contract_count"] = len(profiles[profile_id]["dead_contracts"])
+                profiles[profile_id]["dead_contract_id"] = profiles[profile_id].get("dead_contract_id") or item.get("dead_contract_id")
+                dead_teams = [
+                    str(dead.get("team_code") or "").strip().upper()
+                    for dead in profiles[profile_id]["dead_contracts"]
+                    if str(dead.get("team_code") or "").strip()
+                ]
+                profiles[profile_id]["dead_contract_summary"] = ", ".join(dead_teams)
+                if profiles[profile_id]["status"] == "inactive":
+                    profiles[profile_id].update(
+                        {
+                            "status": "dead_contract",
+                            "status_label": "Dead contract",
+                            "team_code": item.get("team_code"),
+                            "team_name": item.get("team_name"),
+                        }
+                    )
+
+            tx_cur = conn.execute(
+                """
+                SELECT id, profile_id, created_at, action, team_code, from_team_code, to_team_code, summary, details_json
+                FROM player_transactions
+                ORDER BY profile_id, created_at DESC, id DESC
+                """
+            )
+            for row in tx_cur.fetchall():
+                tx = row_to_dict(tx_cur, row)
+                profile_id = parse_int(tx.get("profile_id"))
+                if profile_id is None or profile_id not in profiles:
+                    continue
+                logs = profiles[profile_id]["transaction_logs"]
+                if len(logs) >= 10:
+                    continue
+                logs.append(tx)
+
+            return sorted(profiles.values(), key=lambda item: str(item.get("name") or "").lower())
+
+    def player_identity_integrity_report(self) -> Dict[str, Any]:
+        checks = [
+            (
+                "players_missing_profile",
+                """
+                SELECT id
+                FROM players
+                WHERE profile_id IS NULL
+                ORDER BY id
+                """,
+            ),
+            (
+                "players_orphan_profile",
+                """
+                SELECT p.id
+                FROM players p
+                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                WHERE p.profile_id IS NOT NULL AND pp.id IS NULL
+                ORDER BY p.id
+                """,
+            ),
+            (
+                "free_agents_missing_profile",
+                """
+                SELECT id
+                FROM free_agents
+                WHERE profile_id IS NULL
+                ORDER BY id
+                """,
+            ),
+            (
+                "free_agents_orphan_profile",
+                """
+                SELECT f.id
+                FROM free_agents f
+                LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                WHERE f.profile_id IS NOT NULL AND pp.id IS NULL
+                ORDER BY f.id
+                """,
+            ),
+            (
+                "dead_contracts_missing_profile",
+                """
+                SELECT id
+                FROM dead_contracts
+                WHERE profile_id IS NULL
+                ORDER BY id
+                """,
+            ),
+            (
+                "dead_contracts_orphan_profile",
+                """
+                SELECT d.id
+                FROM dead_contracts d
+                LEFT JOIN player_profiles pp ON pp.id = d.profile_id
+                WHERE d.profile_id IS NOT NULL AND pp.id IS NULL
+                ORDER BY d.id
+                """,
+            ),
+            (
+                "duplicate_active_contract_profiles",
+                """
+                SELECT profile_id
+                FROM players
+                WHERE profile_id IS NOT NULL
+                GROUP BY profile_id
+                HAVING COUNT(*) > 1
+                ORDER BY profile_id
+                """,
+            ),
+            (
+                "active_and_free_agent_profiles",
+                """
+                SELECT DISTINCT p.profile_id
+                FROM players p
+                JOIN free_agents f ON f.profile_id = p.profile_id
+                WHERE p.profile_id IS NOT NULL
+                ORDER BY p.profile_id
+                """,
+            ),
+            (
+                "transaction_orphan_profiles",
+                """
+                SELECT tx.id
+                FROM player_transactions tx
+                LEFT JOIN player_profiles pp ON pp.id = tx.profile_id
+                WHERE pp.id IS NULL
+                ORDER BY tx.id
+                """,
+            ),
+            (
+                "transaction_player_profile_mismatch",
+                """
+                SELECT tx.id
+                FROM player_transactions tx
+                JOIN players p ON p.id = tx.player_id
+                WHERE tx.player_id IS NOT NULL
+                  AND p.profile_id IS NOT NULL
+                  AND tx.profile_id != p.profile_id
+                ORDER BY tx.id
+                """,
+            ),
+            (
+                "transaction_free_agent_profile_mismatch",
+                """
+                SELECT tx.id
+                FROM player_transactions tx
+                JOIN free_agents f ON f.id = tx.free_agent_id
+                WHERE tx.free_agent_id IS NOT NULL
+                  AND f.profile_id IS NOT NULL
+                  AND tx.profile_id != f.profile_id
+                ORDER BY tx.id
+                """,
+            ),
+            (
+                "transaction_dead_contract_profile_mismatch",
+                """
+                SELECT tx.id
+                FROM player_transactions tx
+                JOIN dead_contracts d ON d.id = tx.dead_contract_id
+                WHERE tx.dead_contract_id IS NOT NULL
+                  AND d.profile_id IS NOT NULL
+                  AND tx.profile_id != d.profile_id
+                ORDER BY tx.id
+                """,
+            ),
+        ]
+        errors: List[Dict[str, Any]] = []
+        with self.connect() as conn:
+            fk_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_rows:
+                errors.append(
+                    {
+                        "check": "foreign_key_check",
+                        "ids": [
+                            {
+                                "table": row["table"],
+                                "rowid": row["rowid"],
+                                "parent": row["parent"],
+                                "fkid": row["fkid"],
+                            }
+                            for row in fk_rows
+                        ],
+                    }
+                )
+            for check_name, query in checks:
+                rows = conn.execute(query).fetchall()
+                if not rows:
+                    continue
+                first_key = rows[0].keys()[0]
+                errors.append(
+                    {
+                        "check": check_name,
+                        "ids": [row[first_key] for row in rows],
+                    }
+                )
+        return {"ok": not errors, "errors": errors}
+
+    def assert_player_identity_integrity(self) -> None:
+        report = self.player_identity_integrity_report()
+        if not report["ok"]:
+            raise AssertionError(json.dumps(report["errors"], ensure_ascii=True, sort_keys=True))
 
     def list_gm_history(self, code: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         with self.connect() as conn:
@@ -2082,8 +3215,10 @@ class LeagueDB:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
             current_year = parse_int(settings.get("current_year")) or 2025
-            if current_year < 2025 or current_year > 2030:
-                current_year = 2025
+            if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
+                current_year = CAP_FORECAST_MIN_YEAR
+            tracker_year = current_year + 1 if parse_bool(settings.get("free_agency_mode")) else current_year
+            tracker_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, tracker_year))
             team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
             teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
             rows: List[Dict[str, Any]] = []
@@ -2117,11 +3252,7 @@ class LeagueDB:
 
             for team in teams:
                 team_id = int(team["id"])
-                player_cur = conn.execute(
-                    "SELECT * FROM players WHERE team_id = ? ORDER BY row_order, id",
-                    (team_id,),
-                )
-                players = [row_to_dict(player_cur, row) for row in player_cur.fetchall()]
+                players = self._select_team_players(conn, team_id)
                 asset_cur = conn.execute(
                     "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
                     (team_id,),
@@ -2132,10 +3263,15 @@ class LeagueDB:
                     (team_id,),
                 )
                 dead_contracts = [row_to_dict(dead_cur, row) for row in dead_cur.fetchall()]
-                summary = self._calc_summary(team, players, assets, dead_contracts, settings)
-                luxury_cap = float(summary["salary_cap_2025"]) * 1.215
-                luxury_overage = max(0.0, float(summary["cap_figure"]) - luxury_cap)
-                luxury_repeater = self._team_luxury_repeater_for_season(conn, team_id, current_year)
+                summary = self._calc_summary(
+                    team,
+                    players,
+                    assets,
+                    dead_contracts,
+                    settings,
+                    season_year=tracker_year,
+                    luxury_repeater=self._team_luxury_repeater_for_season(conn, team_id, tracker_year),
+                )
                 draft_counts = draft_counts_for_tracker(assets)
                 rows.append(
                     {
@@ -2145,7 +3281,7 @@ class LeagueDB:
                         "gasto_total": float(summary["payroll"]),
                         "espacio_cap": float(summary["room_to_cap"]),
                         "espacio_luxury": float(summary["room_to_luxury"]),
-                        "luxury_tax": float(luxury_tax_amount(luxury_overage, luxury_repeater)),
+                        "luxury_tax": float(summary["luxury_tax"]),
                         "espacio_1er_apron": float(summary["room_to_first_apron"]),
                         "espacio_2do_apron": float(summary["room_to_second_apron"]),
                         "roster_standard_count": int(summary["roster_standard_count"]),
@@ -3280,8 +4416,8 @@ class LeagueDB:
                 {
                     "owner_name": str(row["owner_name"] or ""),
                     "owner_birth_date": str(row["owner_birth_date"] or ""),
-                    "owner_photo_url": str(row["owner_photo_url"] or ""),
-                    "owner_office_background_url": str(row["owner_office_background_url"] or ""),
+                    "owner_photo_url": sanitize_http_image_url(row["owner_photo_url"]),
+                    "owner_office_background_url": sanitize_owner_background_url(row["owner_office_background_url"]),
                     "owner_bio": str(row["owner_bio"] or ""),
                 }
             )
@@ -3306,8 +4442,7 @@ class LeagueDB:
         return {
             "owner_name": text_value("owner_name", 120),
             "owner_birth_date": text_value("owner_birth_date", 32),
-            "owner_photo_url": text_value("owner_photo_url", 1000),
-            "owner_office_background_url": text_value("owner_office_background_url", 1000),
+            "owner_photo_url": sanitize_http_image_url(text_value("owner_photo_url", 1000)),
             "owner_bio": text_value("owner_bio", 2000),
             "ambicion_competitiva": self._owner_attribute_value(attributes.get("ambicion_competitiva")),
             "paciencia": self._owner_attribute_value(attributes.get("paciencia")),
@@ -3747,7 +4882,6 @@ class LeagueDB:
                         owner_name,
                         owner_birth_date,
                         owner_photo_url,
-                        owner_office_background_url,
                         owner_bio,
                         ambicion_competitiva,
                         paciencia,
@@ -3756,12 +4890,11 @@ class LeagueDB:
                         orientacion_marca,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(team_id) DO UPDATE SET
                         owner_name = excluded.owner_name,
                         owner_birth_date = excluded.owner_birth_date,
                         owner_photo_url = excluded.owner_photo_url,
-                        owner_office_background_url = excluded.owner_office_background_url,
                         owner_bio = excluded.owner_bio,
                         ambicion_competitiva = excluded.ambicion_competitiva,
                         paciencia = excluded.paciencia,
@@ -3775,7 +4908,6 @@ class LeagueDB:
                         profile_payload["owner_name"],
                         profile_payload["owner_birth_date"],
                         profile_payload["owner_photo_url"],
-                        profile_payload["owner_office_background_url"],
                         profile_payload["owner_bio"],
                         profile_payload["ambicion_competitiva"],
                         profile_payload["paciencia"],
@@ -3865,6 +4997,7 @@ class LeagueDB:
         return self.get_team_owner_office(code, include_private=True)
 
     def update_owner_background_url(self, code: str, background_url: str) -> Optional[Dict[str, Any]]:
+        safe_background_url = sanitize_owner_background_url(background_url)
         with self.connect() as conn:
             team = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
             if not team:
@@ -3882,25 +5015,24 @@ class LeagueDB:
                     owner_office_background_url = excluded.owner_office_background_url,
                     updated_at = excluded.updated_at
                 """,
-                (int(team["id"]), str(background_url or "").strip()[:1000], timestamp),
+                (int(team["id"]), safe_background_url, timestamp),
             )
             conn.commit()
         return self.get_team_owner_office(code, include_private=True)
 
     def update_owner_background_image(self, code: str, file_bytes: bytes, mime_type: str) -> Optional[Dict[str, Any]]:
         normalized_code = code.upper()
-        if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
-            raise ValueError("unsupported_upload_type")
         if not file_bytes:
             raise ValueError("missing_upload")
         if len(file_bytes) > OWNER_BACKGROUND_MAX_BYTES:
             raise ValueError("upload_too_large")
+        _ext, safe_mime_type = detect_safe_image_type(file_bytes, mime_type, OWNER_BACKGROUND_ALLOWED_MIME_TYPES)
         with self.connect() as conn:
             team = conn.execute("SELECT id FROM teams WHERE code = ?", (normalized_code,)).fetchone()
             if not team:
                 return None
             timestamp = now_iso()
-            cache_key = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+            cache_key = secrets.token_urlsafe(12)
             background_url = f"/api/teams/{normalized_code}/owner-office/background-image?v={cache_key}"
             conn.execute(
                 """
@@ -3918,7 +5050,7 @@ class LeagueDB:
                     owner_office_background_mime = excluded.owner_office_background_mime,
                     updated_at = excluded.updated_at
                 """,
-                (int(team["id"]), background_url, sqlite3.Binary(file_bytes), mime_type, timestamp),
+                (int(team["id"]), background_url, sqlite3.Binary(file_bytes), safe_mime_type, timestamp),
             )
             conn.commit()
         return self.get_team_owner_office(normalized_code, include_private=True)
@@ -3941,7 +5073,11 @@ class LeagueDB:
             mime_type = str(row["mime_type"] or "application/octet-stream")
             if not image_bytes:
                 return None
-            return image_bytes, mime_type
+            try:
+                _ext, safe_mime_type = detect_safe_image_type(image_bytes, mime_type, OWNER_BACKGROUND_ALLOWED_MIME_TYPES)
+            except ValueError:
+                return None
+            return image_bytes, safe_mime_type
 
     def upsert_team_economy(self, season_year: int, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         if season_year < 2000 or season_year > 2100:
@@ -4063,19 +5199,48 @@ class LeagueDB:
         assets: List[Dict[str, Any]],
         dead_contracts: List[Dict[str, Any]],
         settings: Dict[str, str],
+        season_year: Optional[int] = None,
+        luxury_repeater: bool = False,
     ) -> Dict[str, float]:
-        current_year = parse_int(settings.get("current_year")) or 2025
+        current_year = parse_int(season_year) or parse_int(settings.get("current_year")) or 2025
         if current_year < 2025 or current_year > 2030:
-            current_year = 2025
+            current_year = max(2025, min(CAP_FORECAST_MAX_YEAR, current_year))
+        salary_cap = (
+            parse_float(settings.get(f"salary_cap_{current_year}"))
+            or parse_float(settings.get("salary_cap_2025"))
+            or team["salary_cap"]
+        )
 
-        # CAP Total: current-year player salaries excluding TW contracts.
-        cap_figure_players = sum(row_salary_num(p, current_year) for p in players if not p.get("is_two_way"))
-        # GASTO Total: current-year player salaries including TW contracts.
-        player_payroll = sum(row_salary_num(p, current_year) for p in players)
+        def player_salary_for_gasto(player: Dict[str, Any]) -> float:
+            if is_exhibit10_player(player):
+                return 0.0
+            return row_salary_num(player, current_year)
+
+        def player_salary_for_cap(player: Dict[str, Any]) -> float:
+            hold = cap_hold_amount(player, current_year, settings, salary_cap)
+            if hold > 0:
+                return hold
+            if is_two_way_player(player) or is_exhibit10_player(player):
+                return 0.0
+            return row_salary_num(player, current_year)
+
+        def player_salary_for_apron(player: Dict[str, Any]) -> float:
+            if cap_hold_amount(player, current_year, settings, salary_cap) > 0:
+                return 0.0
+            if is_two_way_player(player) or is_exhibit10_player(player):
+                return 0.0
+            return row_salary_num(player, current_year) + apron_yos_adjustment(player, current_year, salary_cap)
+
+        # CAP Total: player team salary excluding Two-Way and Exhibit 10 contracts.
+        cap_figure_players = sum(player_salary_for_cap(p) for p in players)
+        # APRON Team Salary: Team Salary less cap holds, plus applicable 0-1 YOS adjustments.
+        apron_figure_players = sum(player_salary_for_apron(p) for p in players)
+        # GASTO Total: player payroll excluding non-financial Exhibit 10 contracts.
+        player_payroll = sum(player_salary_for_gasto(p) for p in players)
         roster_standard_count = sum(
             1
             for p in players
-            if not p.get("is_two_way") and str(p.get("bird_rights") or "").strip().upper() != "TW"
+            if not is_two_way_player(p)
         )
         roster_two_way_count = len(players) - roster_standard_count
 
@@ -4100,12 +5265,21 @@ class LeagueDB:
         exceptions = sum((a.get("amount_num") or 0.0) for a in assets if a.get("asset_type") == "exception")
 
         cap_figure = cap_figure_players + dead_cap_normal
+        apron_figure = apron_figure_players + dead_cap_normal
         payroll = player_payroll + dead_gasto_normal + dead_gasto_two_way
 
-        salary_cap = parse_float(settings.get("salary_cap_2025")) or team["salary_cap"]
         luxury = salary_cap * 1.215
-        first_apron = parse_float(settings.get("first_apron")) or team["first_apron"]
-        second_apron = parse_float(settings.get("second_apron")) or team["second_apron"]
+        luxury_overage = max(0.0, cap_figure - luxury)
+        first_apron = (
+            parse_float(settings.get(f"first_apron_{current_year}"))
+            or parse_float(settings.get("first_apron"))
+            or team["first_apron"]
+        )
+        second_apron = (
+            parse_float(settings.get(f"second_apron_{current_year}"))
+            or parse_float(settings.get("second_apron"))
+            or team["second_apron"]
+        )
         cash_limit_total = parse_float(settings.get("cash_limit_total")) or 0.0
         cash_received = float(team.get("cash_received") or 0.0)
         cash_sent = float(team.get("cash_sent") or 0.0)
@@ -4119,13 +5293,18 @@ class LeagueDB:
             "dead_gasto_two_way": dead_gasto_two_way,
             "exceptions_total": exceptions,
             "cap_figure": cap_figure,
+            "apron_account": apron_figure,
             "payroll": payroll,
             "salary_cap_2025": salary_cap,
+            "salary_cap": salary_cap,
+            "first_apron": first_apron,
+            "second_apron": second_apron,
             "current_year": current_year,
             "room_to_cap": salary_cap - cap_figure,
             "room_to_luxury": luxury - cap_figure,
-            "room_to_first_apron": first_apron - cap_figure,
-            "room_to_second_apron": second_apron - cap_figure,
+            "room_to_first_apron": first_apron - apron_figure,
+            "room_to_second_apron": second_apron - apron_figure,
+            "luxury_tax": luxury_tax_amount(luxury_overage, luxury_repeater),
             "cash_received": cash_received,
             "cash_sent": cash_sent,
             "cash_limit_total": cash_limit_total,
@@ -4137,6 +5316,33 @@ class LeagueDB:
             "apron_hard_cap": normalize_apron_hard_cap(team.get("apron_hard_cap")) or "",
         }
 
+    def _team_season_summaries(
+        self,
+        conn: sqlite3.Connection,
+        team: Dict[str, Any],
+        players: List[Dict[str, Any]],
+        assets: List[Dict[str, Any]],
+        dead_contracts: List[Dict[str, Any]],
+        settings: Dict[str, str],
+    ) -> Dict[str, Dict[str, Any]]:
+        current_year = parse_int(settings.get("current_year")) or 2025
+        start_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, current_year))
+        team_id = parse_int(team.get("id"))
+        summaries: Dict[str, Dict[str, Any]] = {}
+        for season_year in range(start_year, CAP_FORECAST_MAX_YEAR + 1):
+            repeater = self._team_luxury_repeater_for_season(conn, int(team_id), season_year) if team_id is not None else False
+            summary = self._calc_summary(
+                team,
+                players,
+                assets,
+                dead_contracts,
+                settings,
+                season_year=season_year,
+                luxury_repeater=repeater,
+            )
+            summaries[str(season_year)] = summary
+        return summaries
+
     def update_player(self, player_id: int, payload: Dict[str, Any]) -> bool:
         fields = [
             "name", "bird_rights", "rating", "position", "years_left",
@@ -4147,7 +5353,7 @@ class LeagueDB:
             "salary_2025_note_text", "salary_2026_note_text", "salary_2027_note_text",
             "salary_2028_note_text", "salary_2029_note_text", "salary_2030_note_text",
             "option_2025", "option_2026", "option_2027", "option_2028", "option_2029", "option_2030",
-            "notes", "reference_image_url",
+            "notes", "reference_image_url", "profile_notes",
         ]
         bool_fields = [
             "provisional_amounts", "partially_guaranteed", "contract_notes",
@@ -4157,6 +5363,7 @@ class LeagueDB:
             "salary_2028_partially_guaranteed", "salary_2029_partially_guaranteed", "salary_2030_partially_guaranteed",
             "salary_2025_note", "salary_2026_note", "salary_2027_note",
             "salary_2028_note", "salary_2029_note", "salary_2030_note",
+            "signed_as_free_agent",
         ]
         assignments = []
         values: List[Any] = []
@@ -4184,31 +5391,236 @@ class LeagueDB:
             assignments.append("is_two_way = ?")
             values.append(1 if str(payload["bird_rights"]).upper() == "TW" else 0)
 
-        if not assignments:
+        if "experience_years" in payload:
+            assignments.append("experience_years = ?")
+            values.append(normalize_experience_years(payload.get("experience_years")))
+
+        profile_field_present = any(
+            field in payload
+            for field in [
+                "name",
+                "experience_years",
+                "reference_image_url",
+                "profile_notes",
+                "date_of_birth",
+                "nationality",
+                "yos_source",
+                "transaction_notes",
+            ]
+        )
+
+        if not assignments and not profile_field_present:
             return False
 
-        assignments.append("updated_at = ?")
-        values.append(now_iso())
-        values.append(player_id)
+        timestamp = now_iso()
 
         with self.connect() as conn:
-            cur = conn.execute(f"UPDATE players SET {', '.join(assignments)} WHERE id = ?", values)
+            player_exists = False
+            row_changed = False
+            if assignments:
+                assignments.append("updated_at = ?")
+                values.append(timestamp)
+                values.append(player_id)
+                cur = conn.execute(f"UPDATE players SET {', '.join(assignments)} WHERE id = ?", values)
+                row_changed = cur.rowcount > 0
+                player_exists = row_changed
+            else:
+                player_exists = conn.execute("SELECT 1 FROM players WHERE id = ?", (player_id,)).fetchone() is not None
+                row_changed = player_exists
+
+            if not player_exists:
+                conn.commit()
+                return False
+
+            profile_updates = []
+            profile_values: List[Any] = []
+            if "name" in payload:
+                profile_updates.append("name = ?")
+                profile_values.append(str(payload.get("name") or "").strip() or "New Player")
+            if "experience_years" in payload:
+                profile_updates.append("experience_years = ?")
+                profile_values.append(normalize_experience_years(payload.get("experience_years")))
+            if "reference_image_url" in payload:
+                profile_updates.append("reference_image_url = ?")
+                profile_values.append(str(payload.get("reference_image_url") or "").strip() or None)
+            if "profile_notes" in payload:
+                profile_updates.append("profile_notes = ?")
+                profile_values.append(str(payload.get("profile_notes") or "").strip() or None)
+            if "date_of_birth" in payload:
+                profile_updates.append("date_of_birth = ?")
+                profile_values.append(str(payload.get("date_of_birth") or "").strip() or None)
+            if "nationality" in payload:
+                profile_updates.append("nationality = ?")
+                profile_values.append(str(payload.get("nationality") or "").strip() or None)
+            if "yos_source" in payload:
+                profile_updates.append("yos_source = ?")
+                profile_values.append(str(payload.get("yos_source") or "").strip() or None)
+            if "transaction_notes" in payload:
+                profile_updates.append("transaction_notes = ?")
+                profile_values.append(str(payload.get("transaction_notes") or "").strip() or None)
+            if profile_updates:
+                profile_id = self._ensure_profile_for_player(conn, player_id, timestamp)
+                if profile_id is not None:
+                    profile_updates.append("updated_at = ?")
+                    profile_values.append(timestamp)
+                    profile_values.append(profile_id)
+                    conn.execute(
+                        f"UPDATE player_profiles SET {', '.join(profile_updates)} WHERE id = ?",
+                        profile_values,
+                    )
+            conn.commit()
+            return row_changed
+
+    def update_player_profile(self, profile_id: int, payload: Dict[str, Any]) -> bool:
+        fields: Dict[str, Any] = {}
+        if "name" in payload:
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                return False
+            fields["name"] = name
+        if "date_of_birth" in payload:
+            fields["date_of_birth"] = str(payload.get("date_of_birth") or "").strip() or None
+        if "nationality" in payload:
+            fields["nationality"] = str(payload.get("nationality") or "").strip() or None
+        if "experience_years" in payload:
+            fields["experience_years"] = normalize_experience_years(payload.get("experience_years"))
+        if "yos_source" in payload:
+            fields["yos_source"] = str(payload.get("yos_source") or "").strip() or None
+        if "reference_image_url" in payload:
+            fields["reference_image_url"] = str(payload.get("reference_image_url") or "").strip() or None
+        if "profile_notes" in payload:
+            fields["profile_notes"] = str(payload.get("profile_notes") or "").strip() or None
+        if "transaction_notes" in payload:
+            fields["transaction_notes"] = str(payload.get("transaction_notes") or "").strip() or None
+        if not fields:
+            return False
+
+        assignments = [f"{field} = ?" for field in fields]
+        values = list(fields.values())
+        timestamp = now_iso()
+        values.extend([timestamp, profile_id])
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"UPDATE player_profiles SET {', '.join(assignments)}, updated_at = ? WHERE id = ?",
+                values,
+            )
+            if cur.rowcount:
+                if "name" in fields:
+                    conn.execute("UPDATE players SET name = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
+                    conn.execute("UPDATE free_agents SET name = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
+                    conn.execute("UPDATE dead_contracts SET label = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
+                if "experience_years" in fields:
+                    conn.execute("UPDATE players SET experience_years = ?, updated_at = ? WHERE profile_id = ?", (fields["experience_years"], timestamp, profile_id))
+                if "reference_image_url" in fields:
+                    conn.execute("UPDATE players SET reference_image_url = ?, updated_at = ? WHERE profile_id = ?", (fields["reference_image_url"], timestamp, profile_id))
+                if "profile_notes" in fields:
+                    conn.execute("UPDATE players SET profile_notes = ?, updated_at = ? WHERE profile_id = ?", (fields["profile_notes"], timestamp, profile_id))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def create_player_transaction(self, profile_id: int, payload: Dict[str, Any]) -> Optional[int]:
+        summary = str(payload.get("summary") or "").strip()
+        if not summary:
+            return None
+        action = str(payload.get("action") or "manual").strip().lower() or "manual"
+        created_at = str(payload.get("created_at") or "").strip() or now_iso()
+        with self.connect() as conn:
+            exists = conn.execute("SELECT id FROM player_profiles WHERE id = ?", (profile_id,)).fetchone()
+            if not exists:
+                return None
+            cur = conn.execute(
+                """
+                INSERT INTO player_transactions (
+                    profile_id, player_id, free_agent_id, dead_contract_id, action,
+                    team_code, from_team_code, to_team_code, summary, details_json, source_log_id, created_at
+                ) VALUES (?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, ?)
+                """,
+                (
+                    profile_id,
+                    action,
+                    normalize_team_code(payload.get("team_code")),
+                    normalize_team_code(payload.get("from_team_code")),
+                    normalize_team_code(payload.get("to_team_code")),
+                    summary,
+                    json.dumps({"manual": True}, ensure_ascii=True),
+                    created_at,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def update_player_transaction(self, transaction_id: int, payload: Dict[str, Any]) -> bool:
+        fields: Dict[str, Any] = {}
+        if "summary" in payload:
+            summary = str(payload.get("summary") or "").strip()
+            if not summary:
+                return False
+            fields["summary"] = summary
+        if "action" in payload:
+            fields["action"] = str(payload.get("action") or "").strip().lower() or "manual"
+        for key in ["team_code", "from_team_code", "to_team_code"]:
+            if key in payload:
+                fields[key] = normalize_team_code(payload.get(key))
+        if "created_at" in payload:
+            fields["created_at"] = str(payload.get("created_at") or "").strip() or now_iso()
+        if not fields:
+            return False
+        assignments = [f"{key} = ?" for key in fields]
+        values = list(fields.values())
+        values.append(transaction_id)
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"UPDATE player_transactions SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_player_transaction(self, transaction_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM player_transactions WHERE id = ?", (transaction_id,))
             conn.commit()
             return cur.rowcount > 0
 
     def move_player(self, player_id: int, to_team_code: str) -> bool:
         with self.connect() as conn:
-            target = conn.execute("SELECT id FROM teams WHERE code = ?", (to_team_code.upper(),)).fetchone()
+            player = conn.execute(
+                """
+                SELECT p.id, p.profile_id, COALESCE(pp.name, p.name) AS name, t.code AS from_team_code
+                FROM players p
+                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.id = ?
+                """,
+                (player_id,),
+            ).fetchone()
+            if not player:
+                return False
+            target = conn.execute("SELECT id, code FROM teams WHERE code = ?", (to_team_code.upper(),)).fetchone()
             if not target:
                 return False
             max_row = conn.execute(
                 "SELECT COALESCE(MAX(row_order), 3) AS mx FROM players WHERE team_id = ?",
                 (target["id"],),
             ).fetchone()["mx"]
+            timestamp = now_iso()
             cur = conn.execute(
                 "UPDATE players SET team_id = ?, row_order = ?, updated_at = ? WHERE id = ?",
-                (target["id"], int(max_row) + 1, now_iso(), player_id),
+                (target["id"], int(max_row) + 1, timestamp, player_id),
             )
+            if cur.rowcount:
+                self._record_player_transaction(
+                    conn,
+                    player["profile_id"],
+                    "move",
+                    f"Movimiento de {player['from_team_code']} a {target['code']}",
+                    player_id=player_id,
+                    team_code=target["code"],
+                    from_team_code=player["from_team_code"],
+                    to_team_code=target["code"],
+                    details={"player_name": player["name"]},
+                    created_at=timestamp,
+                )
             conn.commit()
             return cur.rowcount > 0
 
@@ -4262,11 +5674,46 @@ class LeagueDB:
                 "salary_2029_partially_guaranteed": 1 if parse_bool(payload.get("salary_2029_partially_guaranteed")) else 0,
                 "salary_2030_partially_guaranteed": 1 if parse_bool(payload.get("salary_2030_partially_guaranteed")) else 0,
                 "notes": payload.get("notes"),
+                "profile_notes": payload.get("profile_notes"),
+                "experience_years": normalize_experience_years(payload.get("experience_years")),
+                "signed_as_free_agent": 1 if parse_bool(payload.get("signed_as_free_agent")) else 0,
             }
+            profile_payload = dict(payload)
+            profile_payload["experience_years"] = values["experience_years"]
+            profile_payload["reference_image_url"] = values["reference_image_url"]
+            profile_payload["profile_notes"] = values["profile_notes"]
+            profile_id = self._resolve_profile_for_new_row(
+                conn,
+                profile_payload,
+                name=values["name"],
+                timestamp=now,
+                forbid_active_contract=True,
+            )
+            if parse_int(payload.get("profile_id")) is not None:
+                conn.execute(
+                    """
+                    UPDATE player_profiles
+                    SET
+                        name = ?,
+                        experience_years = COALESCE(?, experience_years),
+                        reference_image_url = COALESCE(NULLIF(?, ''), reference_image_url),
+                        profile_notes = COALESCE(?, profile_notes),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        str(values["name"] or "").strip() or "New Player",
+                        values["experience_years"],
+                        values["reference_image_url"],
+                        values["profile_notes"],
+                        now,
+                        profile_id,
+                    ),
+                )
             cur = conn.execute(
                 """
                 INSERT INTO players (
-                    team_id, row_order, bird_rights, rating, name, position, years_left,
+                    team_id, profile_id, row_order, bird_rights, rating, name, position, years_left,
                     salary_2025_text, salary_2025_num,
                     salary_2026_text, salary_2026_num,
                     salary_2027_text, salary_2027_num,
@@ -4281,11 +5728,13 @@ class LeagueDB:
                     salary_2028_partially_guaranteed, salary_2029_partially_guaranteed, salary_2030_partially_guaranteed,
                     salary_2025_guaranteed_text, salary_2026_guaranteed_text, salary_2027_guaranteed_text,
                     salary_2028_guaranteed_text, salary_2029_guaranteed_text, salary_2030_guaranteed_text,
-                    notes, reference_image_url, is_two_way, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    notes, reference_image_url, profile_notes, experience_years, signed_as_free_agent,
+                    is_two_way, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
+                    profile_id,
                     int(mx) + 1,
                     values["bird_rights"],
                     values["rating"],
@@ -4332,17 +5781,51 @@ class LeagueDB:
                     values["salary_2030_guaranteed_text"],
                     values["notes"],
                     values["reference_image_url"],
+                    values["profile_notes"],
+                    values["experience_years"],
+                    values["signed_as_free_agent"],
                     1 if str(values["bird_rights"] or "").upper() == "TW" else 0,
                     now,
                     now,
                 ),
             )
+            player_id = int(cur.lastrowid)
+            self._record_player_transaction(
+                conn,
+                profile_id,
+                "create",
+                f"Alta en {team_code.upper()}",
+                player_id=player_id,
+                team_code=team_code,
+                details={"player_name": values["name"]},
+                created_at=now,
+            )
             conn.commit()
-            return int(cur.lastrowid)
+            return player_id
 
     def delete_player(self, player_id: int) -> bool:
         with self.connect() as conn:
+            player = conn.execute(
+                """
+                SELECT p.profile_id, COALESCE(pp.name, p.name) AS name, t.code AS team_code
+                FROM players p
+                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.id = ?
+                """,
+                (player_id,),
+            ).fetchone()
             cur = conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+            if cur.rowcount and player:
+                self._record_player_transaction(
+                    conn,
+                    player["profile_id"],
+                    "delete",
+                    f"Contrato eliminado de {player['team_code']}",
+                    player_id=player_id,
+                    team_code=player["team_code"],
+                    details={"player_name": player["name"]},
+                )
             conn.commit()
             return cur.rowcount > 0
 
@@ -4350,18 +5833,45 @@ class LeagueDB:
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                SELECT id, name, position, bird_rights, rating, years_left, notes, created_at, updated_at
-                FROM free_agents
-                ORDER BY name COLLATE NOCASE, id
+                SELECT
+                    f.*,
+                    pp.name AS profile_name,
+                    pp.date_of_birth AS profile_date_of_birth,
+                    pp.nationality AS profile_nationality,
+                    pp.experience_years AS profile_experience_years,
+                    pp.yos_source AS profile_yos_source,
+                    pp.reference_image_url AS profile_reference_image_url,
+                    pp.profile_notes AS profile_profile_notes,
+                    pp.transaction_notes AS profile_transaction_notes
+                FROM free_agents f
+                LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                ORDER BY COALESCE(pp.name, f.name) COLLATE NOCASE, f.id
                 """
             )
-            return [row_to_dict(cur, row) for row in cur.fetchall()]
+            return [self._merge_player_profile(row_to_dict(cur, row)) for row in cur.fetchall()]
 
     def get_free_agent(self, free_agent_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
-            cur = conn.execute("SELECT * FROM free_agents WHERE id = ?", (free_agent_id,))
+            cur = conn.execute(
+                """
+                SELECT
+                    f.*,
+                    pp.name AS profile_name,
+                    pp.date_of_birth AS profile_date_of_birth,
+                    pp.nationality AS profile_nationality,
+                    pp.experience_years AS profile_experience_years,
+                    pp.yos_source AS profile_yos_source,
+                    pp.reference_image_url AS profile_reference_image_url,
+                    pp.profile_notes AS profile_profile_notes,
+                    pp.transaction_notes AS profile_transaction_notes
+                FROM free_agents f
+                LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                WHERE f.id = ?
+                """,
+                (free_agent_id,),
+            )
             row = cur.fetchone()
-            return row_to_dict(cur, row) if row else None
+            return self._merge_player_profile(row_to_dict(cur, row)) if row else None
 
     def create_free_agent(self, payload: Dict[str, Any]) -> Optional[int]:
         name = str(payload.get("name") or "").strip()
@@ -4369,13 +5879,20 @@ class LeagueDB:
             return None
         now = now_iso()
         with self.connect() as conn:
+            profile_id = self._resolve_profile_for_new_row(
+                conn,
+                payload,
+                name=name,
+                timestamp=now,
+            )
             cur = conn.execute(
                 """
                 INSERT INTO free_agents (
-                    name, position, bird_rights, rating, years_left, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    profile_id, name, position, bird_rights, rating, years_left, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    profile_id,
                     name,
                     str(payload.get("position") or "").strip() or None,
                     str(payload.get("bird_rights") or "").strip() or None,
@@ -4385,6 +5902,15 @@ class LeagueDB:
                     now,
                     now,
                 ),
+            )
+            self._record_player_transaction(
+                conn,
+                profile_id,
+                "free_agent",
+                "Añadido a agentes libres",
+                free_agent_id=int(cur.lastrowid),
+                details={"player_name": name},
+                created_at=now,
             )
             conn.commit()
             return int(cur.lastrowid)
@@ -4410,17 +5936,50 @@ class LeagueDB:
                 vals.append(str(payload.get(field) or "").strip() or None)
         if not assigns:
             return False
+        timestamp = now_iso()
         assigns.append("updated_at = ?")
-        vals.append(now_iso())
+        vals.append(timestamp)
         vals.append(free_agent_id)
         with self.connect() as conn:
+            profile_id: Optional[int] = None
+            if "name" in payload:
+                row = conn.execute("SELECT profile_id, name FROM free_agents WHERE id = ?", (free_agent_id,)).fetchone()
+                if not row:
+                    return False
+                profile_id = parse_int(row["profile_id"])
+                if profile_id is None:
+                    profile_id = self._create_player_profile(conn, payload.get("name") or row["name"], timestamp=timestamp)
+                    conn.execute("UPDATE free_agents SET profile_id = ? WHERE id = ?", (profile_id, free_agent_id))
             cur = conn.execute(f"UPDATE free_agents SET {', '.join(assigns)} WHERE id = ?", vals)
+            if profile_id is not None:
+                conn.execute(
+                    "UPDATE player_profiles SET name = ?, updated_at = ? WHERE id = ?",
+                    (str(payload.get("name") or "").strip() or "New Player", timestamp, profile_id),
+                )
             conn.commit()
             return cur.rowcount > 0
 
-    def delete_free_agent(self, free_agent_id: int) -> bool:
+    def delete_free_agent(self, free_agent_id: int, record_transaction: bool = True) -> bool:
         with self.connect() as conn:
+            agent = conn.execute(
+                """
+                SELECT f.profile_id, COALESCE(pp.name, f.name) AS name
+                FROM free_agents f
+                LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                WHERE f.id = ?
+                """,
+                (free_agent_id,),
+            ).fetchone()
             cur = conn.execute("DELETE FROM free_agents WHERE id = ?", (free_agent_id,))
+            if record_transaction and cur.rowcount and agent:
+                self._record_player_transaction(
+                    conn,
+                    agent["profile_id"],
+                    "delete",
+                    "Eliminado de agentes libres",
+                    free_agent_id=free_agent_id,
+                    details={"player_name": agent["name"]},
+                )
             conn.commit()
             return cur.rowcount > 0
 
@@ -4430,21 +5989,39 @@ class LeagueDB:
             return None
         player_payload = dict(payload)
         player_payload["name"] = str(player_payload.get("name") or agent.get("name") or "").strip() or "New Player"
+        if agent.get("profile_id") is not None and player_payload.get("profile_id") in (None, ""):
+            player_payload["profile_id"] = agent.get("profile_id")
         for key in ["position", "bird_rights", "rating", "years_left", "notes"]:
             if player_payload.get(key) in (None, "") and agent.get(key) not in (None, ""):
                 player_payload[key] = agent.get(key)
+        player_payload.setdefault("signed_as_free_agent", True)
         player_id = self.create_player(team_code, player_payload)
         if not player_id:
             return None
-        self.delete_free_agent(free_agent_id)
+        with self.connect() as conn:
+            profile_id = self._find_profile_id(conn, player_id=player_id) or parse_int(agent.get("profile_id"))
+            self._record_player_transaction(
+                conn,
+                profile_id,
+                "sign",
+                f"Firmado por {team_code.upper()}",
+                player_id=player_id,
+                free_agent_id=free_agent_id,
+                team_code=team_code,
+                to_team_code=team_code,
+                details={"player_name": player_payload["name"]},
+            )
+            conn.commit()
+        self.delete_free_agent(free_agent_id, record_transaction=False)
         return player_id
 
     def cut_player(self, player_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             cur = conn.execute(
-                """
-                SELECT p.*, t.code AS team_code, t.name AS team_name
+                f"""
+                SELECT {self._player_select_columns()}, t.code AS team_code, t.name AS team_name
                 FROM players p
+                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
                 JOIN teams t ON t.id = p.team_id
                 WHERE p.id = ?
                 """,
@@ -4453,8 +6030,12 @@ class LeagueDB:
             row = cur.fetchone()
             if not row:
                 return None
-            player = row_to_dict(cur, row)
+            player = self._merge_player_profile(row_to_dict(cur, row))
             now = now_iso()
+            profile_id = self._ensure_profile_for_player(conn, player_id, now)
+            if profile_id is None:
+                return None
+            player["profile_id"] = profile_id
             team_id = int(player["team_id"])
             team_code = str(player["team_code"])
             dead_mx = conn.execute(
@@ -4469,7 +6050,7 @@ class LeagueDB:
             dead_cur = conn.execute(
                 """
                 INSERT INTO dead_contracts (
-                    team_id, row_order, dead_type, label, amount_text, amount_num,
+                    team_id, profile_id, row_order, dead_type, label, amount_text, amount_num,
                     salary_2025_text, salary_2025_num,
                     salary_2026_text, salary_2026_num,
                     salary_2027_text, salary_2027_num,
@@ -4478,10 +6059,11 @@ class LeagueDB:
                     salary_2030_text, salary_2030_num,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team_id,
+                    player.get("profile_id"),
                     int(dead_mx) + 1,
                     "two_way" if str(player.get("bird_rights") or "").upper() == "TW" else "normal",
                     player.get("name") or "Cut Player",
@@ -4506,10 +6088,11 @@ class LeagueDB:
             free_cur = conn.execute(
                 """
                 INSERT INTO free_agents (
-                    name, position, bird_rights, rating, years_left, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    profile_id, name, position, bird_rights, rating, years_left, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    player.get("profile_id"),
                     player.get("name") or "Cut Player",
                     player.get("position"),
                     player.get("bird_rights"),
@@ -4520,12 +6103,26 @@ class LeagueDB:
                     now,
                 ),
             )
+            self._record_player_transaction(
+                conn,
+                player.get("profile_id"),
+                "cut",
+                f"Cortado por {team_code}",
+                player_id=player_id,
+                free_agent_id=int(free_cur.lastrowid),
+                dead_contract_id=int(dead_cur.lastrowid),
+                team_code=team_code,
+                from_team_code=team_code,
+                details={"player_name": player.get("name")},
+                created_at=now,
+            )
             conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
             conn.commit()
             return {
                 "team_code": team_code,
                 "team_name": player.get("team_name"),
                 "player_name": player.get("name"),
+                "profile_id": player.get("profile_id"),
                 "reference_image_url": player.get("reference_image_url"),
                 "dead_contract_id": int(dead_cur.lastrowid),
                 "free_agent_id": int(free_cur.lastrowid),
@@ -4667,10 +6264,17 @@ class LeagueDB:
             if legacy_amount_text is not None and salary_texts[2025] is None:
                 salary_texts[2025] = legacy_amount_text
             amount_text = salary_texts[2025]
+            label = str(payload.get("label") or "Dead Contract").strip() or "Dead Contract"
+            profile_id = self._resolve_profile_for_new_row(
+                conn,
+                payload,
+                name=label,
+                timestamp=now,
+            )
             cur = conn.execute(
                 """
                 INSERT INTO dead_contracts (
-                    team_id, row_order, dead_type, label, amount_text, amount_num,
+                    team_id, profile_id, row_order, dead_type, label, amount_text, amount_num,
                     exclude_from_gasto, exclude_from_cap,
                     salary_2025_text, salary_2025_num,
                     salary_2026_text, salary_2026_num,
@@ -4680,13 +6284,14 @@ class LeagueDB:
                     salary_2030_text, salary_2030_num,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
+                    profile_id,
                     int(mx) + 1,
                     normalize_dead_type(payload.get("dead_type")),
-                    payload.get("label", "Dead Contract"),
+                    label,
                     amount_text,
                     parse_float(amount_text),
                     1 if parse_bool(payload.get("exclude_from_gasto")) else 0,
@@ -4743,9 +6348,29 @@ class LeagueDB:
         if not assigns:
             return False
         assigns.append("updated_at = ?")
-        vals.append(now_iso())
-        vals.append(dead_contract_id)
+        timestamp = now_iso()
+        vals.append(timestamp)
         with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT profile_id, label FROM dead_contracts WHERE id = ?",
+                (dead_contract_id,),
+            ).fetchone()
+            if not existing:
+                return False
+            profile_id = parse_int(existing["profile_id"])
+            if profile_id is None:
+                profile_name = str(payload.get("label") or existing["label"] or f"Dead Contract {dead_contract_id}").strip()
+                profile_id = self._create_player_profile(conn, profile_name, timestamp=timestamp)
+                assigns.append("profile_id = ?")
+                vals.append(profile_id)
+            if "label" in payload and profile_id is not None:
+                profile_name = str(payload.get("label") or "").strip()
+                if profile_name:
+                    conn.execute(
+                        "UPDATE player_profiles SET name = ?, updated_at = ? WHERE id = ?",
+                        (profile_name, timestamp, profile_id),
+                    )
+            vals.append(dead_contract_id)
             cur = conn.execute(f"UPDATE dead_contracts SET {', '.join(assigns)} WHERE id = ?", vals)
             conn.commit()
             return cur.rowcount > 0
@@ -4848,6 +6473,771 @@ class LeagueDB:
                 "delta": int(delta),
             }
 
+    def _clean_trade_ids(self, values: Any) -> List[int]:
+        if not isinstance(values, list):
+            return []
+        out: List[int] = []
+        seen: set[int] = set()
+        for value in values:
+            parsed = parse_int(str(value))
+            if parsed is None or parsed <= 0 or parsed in seen:
+                continue
+            seen.add(parsed)
+            out.append(parsed)
+        return out
+
+    def _trade_machine_season(self, payload: Dict[str, Any], settings: Dict[str, str]) -> int:
+        current_year = parse_int(settings.get("current_year")) or 2025
+        if current_year < 2025 or current_year > 2030:
+            current_year = 2025
+        season = parse_int(payload.get("season") or payload.get("season_start") or payload.get("seasonStart"))
+        if season is None:
+            season = current_year
+        return min(2030, max(2025, season))
+
+    def _trade_machine_thresholds(self, settings: Dict[str, str], season: int) -> Dict[str, float]:
+        salary_cap = (
+            parse_float(settings.get(f"salary_cap_{season}"))
+            or parse_float(settings.get("salary_cap_2025"))
+            or 154_647_000.0
+        )
+        luxury_cap = salary_cap * 1.215
+        first_apron = (
+            parse_float(settings.get(f"first_apron_{season}"))
+            or parse_float(settings.get("first_apron"))
+            or 195_945_000.0
+        )
+        second_apron = (
+            parse_float(settings.get(f"second_apron_{season}"))
+            or parse_float(settings.get("second_apron"))
+            or 207_824_000.0
+        )
+        return {
+            "salaryCap": salary_cap,
+            "luxuryCap": luxury_cap,
+            "firstApron": first_apron,
+            "secondApron": second_apron,
+        }
+
+    def _trade_machine_roster_limits(self, settings: Dict[str, str]) -> Dict[str, int]:
+        standard_min = settings_int(settings, "roster_standard_min", ROSTER_STANDARD_MIN_DEFAULT)
+        standard_max = max(standard_min, settings_int(settings, "roster_standard_max", ROSTER_STANDARD_MAX_DEFAULT))
+        offseason_max = max(standard_max, settings_int(settings, "roster_standard_offseason_max", ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT))
+        two_way_min = settings_int(settings, "roster_two_way_min", ROSTER_TWO_WAY_MIN_DEFAULT)
+        two_way_max = max(two_way_min, settings_int(settings, "roster_two_way_max", ROSTER_TWO_WAY_MAX_DEFAULT))
+        return {
+            "standardMin": max(0, standard_min),
+            "standardMax": max(0, standard_max),
+            "standardOffseasonMax": max(0, offseason_max),
+            "twoWayMin": max(0, two_way_min),
+            "twoWayMax": max(0, two_way_max),
+        }
+
+    def _trade_machine_balance_snapshot(self, thresholds: Dict[str, float], cap_figure: float, apron_figure: Optional[float] = None) -> List[Dict[str, Any]]:
+        apron = cap_figure if apron_figure is None else apron_figure
+        return [
+            {"key": "cap", "label": "CAP", "value": thresholds["salaryCap"] - cap_figure},
+            {"key": "tax", "label": "Impuesto lujo", "value": thresholds["luxuryCap"] - cap_figure},
+            {"key": "first_apron", "label": "1er apron", "value": thresholds["firstApron"] - apron},
+            {"key": "second_apron", "label": "2do apron", "value": thresholds["secondApron"] - apron},
+        ]
+
+    def _trade_machine_team_balances(
+        self,
+        team_data: Dict[str, Any],
+        season: int,
+        salary_cap: float,
+    ) -> Dict[str, float]:
+        players = team_data.get("players") or []
+        dead_contracts = team_data.get("dead_contracts") or []
+
+        def player_cap_value(player: Dict[str, Any]) -> float:
+            if is_two_way_player(player) or is_exhibit10_player(player):
+                return 0.0
+            return row_salary_num(player, season)
+
+        def player_apron_value(player: Dict[str, Any]) -> float:
+            if is_two_way_player(player) or is_exhibit10_player(player):
+                return 0.0
+            return row_salary_num(player, season) + apron_yos_adjustment(player, season, salary_cap)
+
+        dead_cap_normal = sum(
+            dead_contract_salary_num(d, season)
+            for d in dead_contracts
+            if normalize_dead_type(d.get("dead_type")) == "normal"
+            and not dead_contract_excluded_from_cap(d)
+        )
+        return {
+            "cap_total": sum(player_cap_value(p) for p in players) + dead_cap_normal,
+            "apron_account": sum(player_apron_value(p) for p in players) + dead_cap_normal,
+        }
+
+    def _trade_machine_flow_skeleton(
+        self,
+        code: str,
+        team_data: Dict[str, Any],
+        season: int,
+        thresholds: Dict[str, float],
+    ) -> Dict[str, Any]:
+        balances = self._trade_machine_team_balances(team_data, season, thresholds["salaryCap"])
+        players = team_data.get("players") or []
+        standard_count = sum(1 for p in players if not is_two_way_player(p))
+        two_way_count = len(players) - standard_count
+        before_cap = float(balances["cap_total"])
+        before_apron = float(balances["apron_account"])
+        return {
+            "code": code,
+            "beforeCap": before_cap,
+            "beforeApronAccount": before_apron,
+            "incomingSalary": 0.0,
+            "outgoingSalary": 0.0,
+            "incomingCapSalary": 0.0,
+            "outgoingCapSalary": 0.0,
+            "incomingApronSalary": 0.0,
+            "outgoingApronSalary": 0.0,
+            "incomingAssets": [],
+            "outgoingAssets": [],
+            "postCap": before_cap,
+            "postApronAccount": before_apron,
+            "beforeRosterStandard": standard_count,
+            "beforeRosterTwoWay": two_way_count,
+            "postRosterStandard": standard_count,
+            "postRosterTwoWay": two_way_count,
+            "beforeBalances": self._trade_machine_balance_snapshot(thresholds, before_cap, before_apron),
+            "afterBalances": self._trade_machine_balance_snapshot(thresholds, before_cap, before_apron),
+        }
+
+    def _trade_machine_pick_owner(self, asset: Dict[str, Any], team_code: str) -> str:
+        if normalize_pick_type(asset.get("draft_pick_type")) == "conditional":
+            raw = asset.get("draft_pick_conditional_teams")
+            try:
+                teams = json.loads(raw) if raw else []
+            except json.JSONDecodeError:
+                teams = []
+            if isinstance(teams, list):
+                for item in teams:
+                    code = normalize_team_code(item)
+                    if code:
+                        return code
+        return self._pick_actual_owner(asset, team_code)
+
+    def _trade_machine_pick_label(self, asset: Dict[str, Any], team_code: str) -> str:
+        year = parse_int(asset.get("year"))
+        year_label = str(year) if year is not None else "Sin año"
+        owner = self._trade_machine_pick_owner(asset, team_code) or team_code
+        return f"{year_label} {normalize_pick_round(asset.get('draft_round')).upper()} {owner}"
+
+    def _trade_machine_asset_meta(
+        self,
+        team_data: Dict[str, Any],
+        from_team: str,
+        asset_type: str,
+        asset_id: int,
+        season: int,
+        thresholds: Dict[str, float],
+    ) -> Optional[Dict[str, Any]]:
+        if asset_type == "player":
+            player = next((p for p in team_data.get("players") or [] if parse_int(p.get("id")) == asset_id), None)
+            if not player:
+                return None
+            salary = 0.0 if is_exhibit10_player(player) else row_salary_num(player, season)
+            cap_salary = 0.0 if is_two_way_player(player) or is_exhibit10_player(player) else row_salary_num(player, season)
+            apron_salary = (
+                0.0
+                if is_two_way_player(player) or is_exhibit10_player(player)
+                else row_salary_num(player, season) + apron_yos_adjustment(player, season, thresholds["salaryCap"])
+            )
+            minimum_cutoff = minimum_salary_2_yos_for_cap(thresholds["salaryCap"])
+            return {
+                "key": f"player:{from_team}:{asset_id}",
+                "type": "player",
+                "id": asset_id,
+                "fromTeam": from_team,
+                "label": player.get("name") or "Jugador",
+                "detail": " · ".join(str(part) for part in [player.get("position"), player.get("bird_rights")] if part),
+                "salary": salary,
+                "capSalary": cap_salary,
+                "apronSalary": apron_salary,
+                "rating": parse_float(player.get("rating")) or 0.0,
+                "ratingText": str(player.get("rating") or "").strip(),
+                "isMinimumContract": salary > 0 and salary <= minimum_cutoff,
+                "isTwoWay": is_two_way_player(player),
+                "restricted": False,
+                "protected": False,
+                "conditional": False,
+            }
+        if asset_type == "pick":
+            pick = next(
+                (
+                    a for a in team_data.get("assets") or []
+                    if a.get("asset_type") == "draft_pick" and parse_int(a.get("id")) == asset_id
+                ),
+                None,
+            )
+            if not pick:
+                return None
+            return {
+                "key": f"pick:{from_team}:{asset_id}",
+                "type": "pick",
+                "id": asset_id,
+                "fromTeam": from_team,
+                "label": self._trade_machine_pick_label(pick, from_team),
+                "detail": str(pick.get("detail") or "").strip(),
+                "salary": 0.0,
+                "capSalary": 0.0,
+                "apronSalary": 0.0,
+                "restricted": parse_bool(pick.get("draft_pick_restricted")),
+                "protected": parse_bool(pick.get("draft_pick_protected")),
+                "conditional": normalize_pick_type(pick.get("draft_pick_type")) == "conditional",
+                "sold": normalize_pick_type(pick.get("draft_pick_type")) == "sold",
+                "round": normalize_pick_round(pick.get("draft_round")),
+            }
+        if asset_type == "right":
+            right = next(
+                (
+                    a for a in team_data.get("assets") or []
+                    if a.get("asset_type") == "player_right" and parse_int(a.get("id")) == asset_id
+                ),
+                None,
+            )
+            if not right:
+                return None
+            return {
+                "key": f"right:{from_team}:{asset_id}",
+                "type": "right",
+                "id": asset_id,
+                "fromTeam": from_team,
+                "label": right.get("label") or "Derecho de jugador",
+                "detail": str(right.get("detail") or "").strip(),
+                "salary": 0.0,
+                "capSalary": 0.0,
+                "apronSalary": 0.0,
+                "restricted": False,
+                "protected": False,
+                "conditional": False,
+            }
+        return None
+
+    def _trade_machine_pick_action(self, value: Any) -> str:
+        return TRADE_PICK_ACTION_SWAP if str(value or "").strip() == TRADE_PICK_ACTION_SWAP else TRADE_PICK_ACTION_SEND
+
+    def _trade_machine_asset_for_selection(self, meta: Dict[str, Any], selection: Dict[str, Any]) -> Dict[str, Any]:
+        if meta.get("type") != "pick":
+            return dict(meta)
+        pick_action = self._trade_machine_pick_action(selection.get("pick_action") or selection.get("pickAction"))
+        asset = dict(meta)
+        asset["pickAction"] = pick_action
+        if pick_action == TRADE_PICK_ACTION_SWAP:
+            asset["type"] = "swap_right"
+            asset["label"] = f"Swap {asset.get('label') or ''}".strip()
+            detail = str(asset.get("detail") or "").strip()
+            asset["detail"] = " · ".join(part for part in [detail, "La ronda no cambia de dueño; se venden derechos de intercambio."] if part)
+        return asset
+
+    def _trade_machine_normalized_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        raw_teams = payload.get("teams")
+        if raw_teams is None:
+            raw_teams = payload.get("selectedTeams")
+        teams: List[str] = []
+        seen: set[str] = set()
+        if isinstance(raw_teams, list):
+            for item in raw_teams:
+                code = normalize_team_code(item)
+                if code and code not in seen:
+                    seen.add(code)
+                    teams.append(code)
+        selections: List[Dict[str, Any]] = []
+        raw_selections = payload.get("selections")
+        if isinstance(raw_selections, dict):
+            iterable = raw_selections.values()
+        elif isinstance(raw_selections, list):
+            iterable = raw_selections
+        else:
+            iterable = []
+        for item in iterable:
+            if not isinstance(item, dict):
+                continue
+            asset_type = str(item.get("type") or item.get("asset_type") or "").strip().lower()
+            if asset_type not in {"player", "pick", "right"}:
+                continue
+            asset_id = parse_int(item.get("id") or item.get("asset_id"))
+            from_team = normalize_team_code(item.get("from_team") or item.get("fromTeam"))
+            to_team = normalize_team_code(item.get("to_team") or item.get("toTeam"))
+            if asset_id is None:
+                continue
+            selections.append(
+                {
+                    "type": asset_type,
+                    "id": asset_id,
+                    "fromTeam": from_team,
+                    "toTeam": to_team,
+                    "pickAction": self._trade_machine_pick_action(item.get("pick_action") or item.get("pickAction")),
+                    "countsMove": False if parse_bool(item.get("no_count") or item.get("noCount")) else True,
+                }
+            )
+            if from_team and from_team not in seen:
+                seen.add(from_team)
+                teams.append(from_team)
+            if to_team and to_team not in seen:
+                seen.add(to_team)
+                teams.append(to_team)
+        return {"teams": teams, "selections": selections}
+
+    def _trade_machine_expanded_buffer(self, salary_cap: float) -> float:
+        calculated = round(float(salary_cap or 0.0) * TRADE_MATCH_EXPANDED_BUFFER_RATIO)
+        return float(calculated if calculated > 0 else TRADE_MATCH_EXPANDED_BUFFER_FALLBACK)
+
+    def _trade_machine_expanded_tpe_limit(self, outgoing_salary: float, salary_cap: float) -> float:
+        outgoing = float(outgoing_salary or 0.0)
+        if outgoing < TRADE_MATCH_LOW_BAND:
+            return outgoing * 2 + TRADE_MATCH_CUSHION
+        if outgoing <= TRADE_MATCH_HIGH_BAND:
+            return outgoing + self._trade_machine_expanded_buffer(salary_cap)
+        return outgoing * 1.25
+
+    def _trade_machine_first_apron_limited(self, flow: Dict[str, Any], thresholds: Dict[str, float]) -> bool:
+        first_apron = float(thresholds.get("firstApron") or 0.0)
+        before = float(flow.get("beforeApronAccount") or flow.get("beforeCap") or 0.0)
+        post = float(flow.get("postApronAccount") or flow.get("postCap") or 0.0)
+        return first_apron > 0 and (before >= first_apron or post >= first_apron)
+
+    def _trade_machine_second_apron_limited(self, flow: Dict[str, Any], thresholds: Dict[str, float]) -> bool:
+        second_apron = float(thresholds.get("secondApron") or 0.0)
+        before = float(flow.get("beforeApronAccount") or flow.get("beforeCap") or 0.0)
+        post = float(flow.get("postApronAccount") or flow.get("postCap") or 0.0)
+        return second_apron > 0 and (before >= second_apron or post >= second_apron)
+
+    def _trade_machine_salary_match_profile(
+        self,
+        code: str,
+        flow: Dict[str, Any],
+        team_data: Dict[str, Any],
+        thresholds: Dict[str, float],
+    ) -> Dict[str, Any]:
+        incoming = float(flow.get("incomingSalary") or 0.0)
+        outgoing = float(flow.get("outgoingSalary") or 0.0)
+        before_cap = float(flow.get("beforeCap") or 0.0)
+        post_cap = float(flow.get("postCap") or 0.0)
+        outgoing_players = len([a for a in flow.get("outgoingAssets") or [] if a.get("type") == "player"])
+        incoming_players = len([a for a in flow.get("incomingAssets") or [] if a.get("type") == "player"])
+        first_limited = self._trade_machine_first_apron_limited(flow, thresholds)
+        second_limited = self._trade_machine_second_apron_limited(flow, thresholds)
+        standard_limit = outgoing + TRADE_MATCH_CUSHION if outgoing_players > 0 and incoming_players > 0 else 0.0
+        if incoming <= 0 or incoming <= outgoing:
+            return {
+                "legal": True,
+                "tpe": "none",
+                "label": "Sin TPE",
+                "limit": outgoing,
+                "message": "No recibe salario de jugadores."
+                if incoming <= 0
+                else f"Recibe {format_trade_money(incoming)} y envía {format_trade_money(outgoing)}; no necesita recibir más salario del que envía.",
+            }
+        if second_limited:
+            return {
+                "legal": False,
+                "tpe": "second_apron_block",
+                "label": "Restricción 2do apron",
+                "limit": outgoing,
+                "message": f"Está limitado por el 2do apron: no puede recibir más salario del que envía ({format_trade_money(outgoing)}). Recibe {format_trade_money(incoming)}.",
+            }
+        if first_limited:
+            label = "TPE agregada" if outgoing_players > 1 else "TPE estándar"
+            return {
+                "legal": outgoing_players > 0 and incoming_players > 0 and incoming <= standard_limit,
+                "tpe": "aggregated" if outgoing_players > 1 else "standard",
+                "label": label,
+                "limit": standard_limit,
+                "hardCapTrigger": "second" if outgoing_players > 1 else "",
+                "message": (
+                    f"Necesita enviar al menos un jugador para usar {label}."
+                    if outgoing_players <= 0
+                    else f"Necesita recibir al menos un jugador para usar {label}."
+                    if incoming_players <= 0
+                    else f"{label}: puede recibir hasta {format_trade_money(standard_limit)} (100% del salario enviado + $250k)."
+                    if incoming <= standard_limit
+                    else f"{label}: puede recibir hasta {format_trade_money(standard_limit)} (100% del salario enviado + $250k), pero recibe {format_trade_money(incoming)}."
+                ),
+            }
+
+        salary_cap = thresholds["salaryCap"]
+        room_limit = outgoing + max(0.0, salary_cap + TRADE_ROOM_TPE_BUFFER - before_cap)
+        cap_space_legal = before_cap < salary_cap and incoming_players > 0 and post_cap <= salary_cap
+        room_legal = before_cap < salary_cap and outgoing_players > 0 and incoming_players > 0 and post_cap <= salary_cap + TRADE_ROOM_TPE_BUFFER
+        expanded_limit = self._trade_machine_expanded_tpe_limit(outgoing, salary_cap) if outgoing_players > 0 else 0.0
+        expanded_legal = outgoing_players > 0 and incoming_players > 0 and incoming <= expanded_limit
+        if cap_space_legal:
+            return {
+                "legal": True,
+                "tpe": "cap_room",
+                "label": "Espacio salarial",
+                "limit": room_limit,
+                "message": f"Absorbe el salario con espacio salarial; límite {format_trade_money(room_limit)} antes de usar el buffer Room TPE.",
+            }
+        if standard_limit > 0 and incoming <= standard_limit:
+            label = "TPE agregada" if outgoing_players > 1 else "TPE estándar"
+            return {
+                "legal": True,
+                "tpe": "aggregated" if outgoing_players > 1 else "standard",
+                "label": label,
+                "limit": standard_limit,
+                "hardCapTrigger": "second" if outgoing_players > 1 else "",
+                "message": f"{label}: puede recibir hasta {format_trade_money(standard_limit)} (100% del salario enviado + $250k).",
+            }
+        if expanded_legal:
+            return {
+                "legal": True,
+                "tpe": "expanded",
+                "label": "TPE expandida",
+                "limit": expanded_limit,
+                "hardCapTrigger": "first",
+                "message": f"TPE expandida: puede recibir hasta {format_trade_money(expanded_limit)} según el salario enviado.",
+            }
+        if room_legal:
+            return {
+                "legal": True,
+                "tpe": "room",
+                "label": "Room TPE",
+                "limit": room_limit,
+                "message": f"Room TPE: queda hasta $250k por encima del salary cap; límite {format_trade_money(room_limit)} de salario recibido.",
+            }
+        best_limit = max(expanded_limit, room_limit if before_cap < salary_cap else 0.0)
+        reason = (
+            "no envía ningún jugador para crear una TPE"
+            if outgoing_players <= 0
+            else "no recibe ningún jugador"
+            if incoming_players <= 0
+            else "supera los límites de TPE disponibles"
+        )
+        return {
+            "legal": False,
+            "tpe": "none",
+            "label": "Sin TPE válida",
+            "limit": best_limit,
+            "message": f"No hay TPE válida: {reason}. Puede recibir hasta {format_trade_money(best_limit)}, pero recibe {format_trade_money(incoming)}.",
+        }
+
+    def _trade_machine_issue_messages(self, issues: List[Dict[str, Any]], rule: str) -> List[str]:
+        messages = []
+        for issue in issues:
+            if issue.get("rule") != rule:
+                continue
+            prefix = f"{issue.get('teamCode')}: " if issue.get("teamCode") else ""
+            messages.append(f"{prefix}{issue.get('message')}")
+        return messages
+
+    def _trade_machine_rule_checklist(
+        self,
+        issues: List[Dict[str, Any]],
+        selected_count: int,
+        flows: Dict[str, Any],
+        salary_pass_messages: List[str],
+    ) -> List[Dict[str, Any]]:
+        def has(rule: str, severity: Optional[str] = None) -> bool:
+            return any(i.get("rule") == rule and (severity is None or i.get("severity") == severity) for i in issues)
+
+        def messages(rule: str, fallback: List[str]) -> List[str]:
+            return self._trade_machine_issue_messages(issues, rule) or fallback
+
+        return [
+            {
+                "key": "salary",
+                "label": "Cuadre salarial básico",
+                "status": "pending" if not selected_count else "fail" if has("salary") else "pass",
+                "messages": ["Añade activos para evaluar el cuadre salarial."] if not selected_count else messages("salary", salary_pass_messages),
+            },
+            {
+                "key": "moves",
+                "label": "Movimientos disponibles",
+                "status": "pending" if not selected_count else "fail" if has("moves", "illegal") else "warning" if has("moves", "warning") else "pass",
+                "messages": ["Añade activos para evaluar los movimientos disponibles."] if not selected_count else messages("moves", ["Todos los equipos tienen movimientos suficientes para los activos que envían."]),
+            },
+            {
+                "key": "multi_team",
+                "label": "Traspaso multi-equipo",
+                "status": "fail" if has("multi_team") else "pass",
+                "messages": messages("multi_team", ["Si hay más de dos equipos, todos envían y reciben algo."]),
+            },
+            {
+                "key": "hard_cap",
+                "label": "Límite duro",
+                "status": "fail" if has("hard_cap") else "pass",
+                "messages": messages("hard_cap", ["No se detecta conflicto de límite duro en el 1er/2do apron."]),
+            },
+            {
+                "key": "hard_cap_trigger",
+                "label": "Hard cap generado",
+                "status": "warning" if has("hard_cap_trigger") else "pass",
+                "messages": messages("hard_cap_trigger", ["El traspaso no genera un nuevo hard cap de apron para los equipos seleccionados."]),
+            },
+            {
+                "key": "second_apron_aggregation",
+                "label": "Agregación 2do apron",
+                "status": "fail" if has("second_apron_aggregation") else "pass",
+                "messages": messages("second_apron_aggregation", ["No se detecta agregación salarial prohibida para equipos en 2do apron."]),
+            },
+            {
+                "key": "minimum_stacking",
+                "label": "Stacking mínimos",
+                "status": "fail" if has("minimum_stacking", "illegal") else "warning" if has("minimum_stacking", "warning") else "pass",
+                "messages": messages("minimum_stacking", ["No se detecta combinación de 3+ jugadores con múltiples contratos mínimos enviados por menos jugadores recibidos."]),
+            },
+            {
+                "key": "restricted_pick",
+                "label": "Ronda restringida",
+                "status": "fail" if has("restricted_pick") else "pass",
+                "messages": messages("restricted_pick", ["No hay ninguna ronda restringida seleccionada."]),
+            },
+            {
+                "key": "manual_review",
+                "label": "Revisión manual ANBA",
+                "status": "warning" if has("manual_review") else "pass",
+                "messages": messages("manual_review", ["No se activa revisión por protecciones, condiciones, Stepien, Ley Randle, BYC/S&T ni restricciones de aprons no modeladas."]),
+            },
+            {
+                "key": "roster_count",
+                "label": "Tamaño de plantilla",
+                "status": "fail" if has("roster_count", "illegal") else "warning" if has("roster_count", "warning") else "pass",
+                "messages": messages("roster_count", ["El tamaño de plantilla queda dentro de los límites configurados."]),
+            },
+        ]
+
+    def validate_trade_machine(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        settings = self.get_settings()
+        season = self._trade_machine_season(payload, settings)
+        thresholds = self._trade_machine_thresholds(settings, season)
+        roster_limits = self._trade_machine_roster_limits(settings)
+        normalized = self._trade_machine_normalized_request(payload)
+        teams = normalized["teams"]
+        selections = normalized["selections"]
+        issues: List[Dict[str, Any]] = []
+        if len(teams) < TRADE_MACHINE_MIN_TEAMS:
+            issues.append({"severity": "illegal", "rule": "setup", "message": "Selecciona al menos dos equipos."})
+        if len(teams) > TRADE_MACHINE_MAX_TEAMS:
+            issues.append({"severity": "illegal", "rule": "setup", "message": "Selecciona seis equipos o menos."})
+        if not selections:
+            issues.append({"severity": "warning", "rule": "setup", "message": "Selecciona al menos un activo."})
+
+        team_data_by_code: Dict[str, Dict[str, Any]] = {}
+        for code in teams:
+            data = self.get_team(code)
+            if not data:
+                issues.append({"severity": "illegal", "rule": "setup", "teamCode": code, "message": "Equipo no encontrado."})
+                continue
+            team_data_by_code[code] = data
+
+        flows = {
+            code: self._trade_machine_flow_skeleton(code, data, season, thresholds)
+            for code, data in team_data_by_code.items()
+        }
+        selected_count = 0
+        any_player_selected = False
+        selected_keys: set[str] = set()
+        selected_assets: List[Dict[str, Any]] = []
+        for selection in selections:
+            from_team = selection.get("fromTeam")
+            to_team = selection.get("toTeam")
+            asset_type = selection.get("type")
+            asset_id = parse_int(selection.get("id"))
+            if not from_team or from_team not in team_data_by_code:
+                issues.append({"severity": "illegal", "rule": "setup", "message": "Un activo seleccionado no tiene equipo origen válido."})
+                continue
+            if not to_team or to_team not in team_data_by_code or to_team == from_team:
+                issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": "Un activo seleccionado necesita un equipo de destino válido."})
+                continue
+            if asset_id is None:
+                issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": "Un activo seleccionado tiene un identificador inválido."})
+                continue
+            meta = self._trade_machine_asset_meta(team_data_by_code[from_team], from_team, str(asset_type), asset_id, season, thresholds)
+            if not meta:
+                issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": "Un activo seleccionado ya no está disponible."})
+                continue
+            if meta["key"] in selected_keys:
+                issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": f"{meta.get('label')} está seleccionado más de una vez."})
+                continue
+            selected_keys.add(meta["key"])
+            selected_count += 1
+            selected = self._trade_machine_asset_for_selection(meta, selection)
+            selected["toTeam"] = to_team
+            selected["fromTeam"] = from_team
+            selected["countsMove"] = bool(selection.get("countsMove", True))
+            selected_assets.append(selected)
+            if meta.get("sold"):
+                issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": f"{meta.get('label')} ya está vendida y no se puede mover."})
+            if meta.get("restricted"):
+                issues.append({"severity": "illegal", "rule": "restricted_pick", "teamCode": from_team, "message": f"{meta.get('label')} está restringida y no se puede mover."})
+            if meta.get("conditional") or meta.get("protected"):
+                issues.append({"severity": "warning", "rule": "manual_review", "teamCode": from_team, "message": f"{meta.get('label')} necesita revisión manual por condiciones/protecciones."})
+            if meta.get("type") == "pick" and selected.get("pickAction") == TRADE_PICK_ACTION_SWAP:
+                issues.append({"severity": "warning", "rule": "manual_review", "teamCode": from_team, "message": f"{meta.get('label')}: derecho de swap seleccionado; revisa protecciones, prioridad y equipo que acabaría eligiendo."})
+            elif meta.get("type") == "pick" and meta.get("round") == "1st":
+                issues.append({"severity": "warning", "rule": "manual_review", "teamCode": from_team, "message": f"{meta.get('label')} necesita revisión de la regla Stepien."})
+            if selected.get("type") == "player":
+                any_player_selected = True
+            salary = float(selected.get("salary") or 0.0)
+            cap_salary = float(selected.get("capSalary") if selected.get("capSalary") is not None else salary)
+            apron_salary = float(selected.get("apronSalary") if selected.get("apronSalary") is not None else cap_salary)
+            from_flow = flows[from_team]
+            to_flow = flows[to_team]
+            from_flow["outgoingSalary"] += salary
+            from_flow["outgoingCapSalary"] += cap_salary
+            from_flow["outgoingApronSalary"] += apron_salary
+            from_flow["outgoingAssets"].append({**selected, "toTeam": to_team})
+            to_flow["incomingSalary"] += salary
+            to_flow["incomingCapSalary"] += cap_salary
+            to_flow["incomingApronSalary"] += apron_salary
+            to_flow["incomingAssets"].append({**selected, "fromTeam": from_team})
+            if selected.get("type") == "player":
+                if selected.get("isTwoWay"):
+                    from_flow["postRosterTwoWay"] -= 1
+                    to_flow["postRosterTwoWay"] += 1
+                else:
+                    from_flow["postRosterStandard"] -= 1
+                    to_flow["postRosterStandard"] += 1
+
+        for flow in flows.values():
+            flow["postCap"] = flow["beforeCap"] + flow["incomingCapSalary"] - flow["outgoingCapSalary"]
+            flow["postApronAccount"] = flow["beforeApronAccount"] + flow["incomingApronSalary"] - flow["outgoingApronSalary"]
+            flow["afterBalances"] = self._trade_machine_balance_snapshot(thresholds, flow["postCap"], flow["postApronAccount"])
+
+        if any_player_selected:
+            issues.append({
+                "severity": "warning",
+                "rule": "manual_review",
+                "message": "Revisar manualmente si algún jugador es extendido o BYC/S&T: la máquina todavía no tiene campos estructurados para aplicar salario promedio, 30 partidos o 50%/100%.",
+            })
+
+        salary_pass_messages: List[str] = []
+        for code in teams:
+            flow = flows.get(code)
+            data = team_data_by_code.get(code)
+            if not flow or not data:
+                continue
+            if len(teams) > 2:
+                incoming_count = len(flow.get("incomingAssets") or [])
+                outgoing_count = len(flow.get("outgoingAssets") or [])
+                if not incoming_count and not outgoing_count:
+                    issues.append({"severity": "illegal", "rule": "multi_team", "teamCode": code, "message": "En un traspaso de más de dos equipos, cada equipo seleccionado debe enviar y recibir algo."})
+                elif not incoming_count or not outgoing_count:
+                    issues.append({
+                        "severity": "illegal",
+                        "rule": "multi_team",
+                        "teamCode": code,
+                        "message": f"En un traspaso de más de dos equipos debe enviar y recibir algo; ahora {'recibe' if incoming_count else 'no recibe'} y {'envía' if outgoing_count else 'no envía'}.",
+                    })
+            elif not flow.get("incomingAssets") and not flow.get("outgoingAssets"):
+                issues.append({"severity": "warning", "rule": "setup", "teamCode": code, "message": "Seleccionado, pero todavía no participa."})
+
+            hard_cap = normalize_apron_hard_cap((data.get("summary") or {}).get("apron_hard_cap"))
+            if hard_cap == "first" and thresholds["firstApron"] > 0 and flow["postApronAccount"] > thresholds["firstApron"]:
+                issues.append({"severity": "illegal", "rule": "hard_cap", "teamCode": code, "message": "Tiene límite duro en el 1er apron y acabaría por encima."})
+            if hard_cap == "second" and thresholds["secondApron"] > 0 and flow["postApronAccount"] > thresholds["secondApron"]:
+                issues.append({"severity": "illegal", "rule": "hard_cap", "teamCode": code, "message": "Tiene límite duro en el 2do apron y acabaría por encima."})
+
+            profile = self._trade_machine_salary_match_profile(code, flow, data, thresholds)
+            if profile.get("legal"):
+                if flow.get("incomingAssets") or flow.get("outgoingAssets"):
+                    if not (profile.get("tpe") == "none" and float(flow.get("incomingSalary") or 0.0) <= 0):
+                        salary_pass_messages.append(f"{code}: {profile.get('message')}")
+                trigger = str(profile.get("hardCapTrigger") or "").strip().lower()
+                if trigger in {"first", "second"}:
+                    current_rank = 2 if hard_cap == "first" else 1 if hard_cap == "second" else 0
+                    trigger_rank = 2 if trigger == "first" else 1
+                    if current_rank < trigger_rank:
+                        apron_label = "1er apron" if trigger == "first" else "2do apron"
+                        reason = "usar la TPE expandida" if trigger == "first" else "agregar salarios de varios jugadores"
+                        issues.append({"severity": "warning", "rule": "hard_cap_trigger", "teamCode": code, "message": f"El traspaso dejaría al equipo hard-capped en el {apron_label} por {reason}."})
+            else:
+                issues.append({"severity": "illegal", "rule": "salary", "teamCode": code, "message": profile.get("message")})
+
+            bucket = normalize_trade_bucket(settings.get("trade_move_phase"))
+            move_summary = data.get("move_summary") or {}
+            remaining = parse_int(move_summary.get(f"remaining_{bucket}"))
+            outgoing_count = len([a for a in flow.get("outgoingAssets") or [] if a.get("countsMove", True)])
+            if outgoing_count:
+                if remaining is None:
+                    issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Envía {outgoing_count} activo(s); no se pudo leer el saldo de movimientos {'post-30' if bucket == 'post30' else 'pre-30'}."})
+                elif outgoing_count > remaining:
+                    issues.append({"severity": "illegal", "rule": "moves", "teamCode": code, "message": f"Necesita {outgoing_count} movimiento(s) y solo tiene {remaining} disponible(s) en {'post-30' if bucket == 'post30' else 'pre-30'}."})
+
+            if self._trade_machine_second_apron_limited(flow, thresholds):
+                outgoing_players = [a for a in flow.get("outgoingAssets") or [] if a.get("type") == "player"]
+                if len(outgoing_players) > 1 and float(flow.get("incomingSalary") or 0.0) > 0:
+                    issues.append({"severity": "illegal", "rule": "second_apron_aggregation", "teamCode": code, "message": f"Equipo en 2do apron: no puede agregar salarios de varios jugadores ({len(outgoing_players)}) para recibir salario."})
+            if self._trade_machine_first_apron_limited(flow, thresholds):
+                issues.append({"severity": "warning", "rule": "manual_review", "teamCode": code, "message": "Equipo limitado por 1er apron: revisar manualmente TPE de temporada anterior, excepciones y jugadores cortados con salario previo > MID si aplican."})
+            if self._trade_machine_second_apron_limited(flow, thresholds):
+                issues.append({"severity": "warning", "rule": "manual_review", "teamCode": code, "message": "Equipo limitado por 2do apron: revisar manualmente que no haya cash, TPMID ni TPE creada mediante S&T."})
+
+            outgoing_players = [a for a in flow.get("outgoingAssets") or [] if a.get("type") == "player"]
+            incoming_players = [a for a in flow.get("incomingAssets") or [] if a.get("type") == "player"]
+            minimum_outgoing = [a for a in outgoing_players if a.get("isMinimumContract")]
+            if len(outgoing_players) >= 3 and len(incoming_players) < len(outgoing_players) and len(minimum_outgoing) > 1:
+                issues.append({"severity": "warning", "rule": "minimum_stacking", "teamCode": code, "message": f"Envía {len(outgoing_players)} jugadores, {len(minimum_outgoing)} mínimos, y recibe menos jugadores. Puede ser ilegal fuera del periodo 15-Dic/deadline; falta configurar fecha de trade para convertirlo en bloqueo automático."})
+            for asset in outgoing_players:
+                rating = float(asset.get("rating") or 0.0)
+                if 85 <= rating <= 90:
+                    issues.append({"severity": "warning", "rule": "manual_review", "teamCode": code, "message": f"Ley Randle: {asset.get('label')} ({int(rating)}) no puede salir si llegó vía trade esta temporada, salvo lesión de temporada."})
+                elif 80 <= rating < 85:
+                    issues.append({"severity": "warning", "rule": "manual_review", "teamCode": code, "message": f"Ley Randle: {asset.get('label')} ({int(rating)}) debe esperar 2 meses/preseason o 30 partidos/season desde su llegada vía trade."})
+
+            standard = int(flow.get("postRosterStandard") or 0)
+            two_way = int(flow.get("postRosterTwoWay") or 0)
+            if standard > roster_limits["standardOffseasonMax"]:
+                issues.append({"severity": "illegal", "rule": "roster_count", "teamCode": code, "message": f"Quedaría con {standard} contratos estándar; el máximo configurado para offseason es {roster_limits['standardOffseasonMax']}."})
+            elif standard > roster_limits["standardMax"]:
+                issues.append({"severity": "warning", "rule": "roster_count", "teamCode": code, "message": f"Quedaría con {standard} contratos estándar. Solo sería válido en offseason; durante la temporada el máximo es {roster_limits['standardMax']}."})
+            if standard < roster_limits["standardMin"]:
+                issues.append({"severity": "warning", "rule": "roster_count", "teamCode": code, "message": f"Quedaría con {standard} contratos estándar, por debajo del mínimo configurado ({roster_limits['standardMin']})."})
+            if two_way > roster_limits["twoWayMax"]:
+                issues.append({"severity": "illegal", "rule": "roster_count", "teamCode": code, "message": f"Quedaría con {two_way} contratos two-way; el máximo configurado es {roster_limits['twoWayMax']}."})
+            if two_way < roster_limits["twoWayMin"]:
+                issues.append({"severity": "warning", "rule": "roster_count", "teamCode": code, "message": f"Quedaría con {two_way} contratos two-way, por debajo del mínimo configurado ({roster_limits['twoWayMin']})."})
+
+        has_illegal = any(issue.get("severity") == "illegal" for issue in issues)
+        has_warning = any(issue.get("severity") == "warning" for issue in issues)
+        checklist = self._trade_machine_rule_checklist(
+            issues,
+            selected_count,
+            flows,
+            salary_pass_messages or ["El cuadre salarial básico pasa para todos los equipos seleccionados."],
+        )
+        return {
+            "ok": True,
+            "authoritative": True,
+            "season": season,
+            "status": "illegal" if has_illegal else "review" if has_warning else "legal",
+            "issues": issues,
+            "checklist": checklist,
+            "flows": flows,
+        }
+
+    def trade_validation_from_process_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        team_a = normalize_team_code(payload.get("team_a")) or ""
+        team_b = normalize_team_code(payload.get("team_b")) or ""
+        no_count_a = set(self._clean_trade_ids(payload.get("no_count_players_a") or []))
+        no_count_b = set(self._clean_trade_ids(payload.get("no_count_players_b") or []))
+        selections: List[Dict[str, Any]] = []
+        for player_id in self._clean_trade_ids(payload.get("players_a") or []):
+            selections.append({"type": "player", "id": player_id, "from_team": team_a, "to_team": team_b, "no_count": player_id in no_count_a})
+        for player_id in self._clean_trade_ids(payload.get("players_b") or []):
+            selections.append({"type": "player", "id": player_id, "from_team": team_b, "to_team": team_a, "no_count": player_id in no_count_b})
+        for pick_id in self._clean_trade_ids(payload.get("pick_ids_a") or []):
+            selections.append({"type": "pick", "id": pick_id, "from_team": team_a, "to_team": team_b})
+        for pick_id in self._clean_trade_ids(payload.get("pick_ids_b") or []):
+            selections.append({"type": "pick", "id": pick_id, "from_team": team_b, "to_team": team_a})
+        for right_id in self._clean_trade_ids(payload.get("right_ids_a") or []):
+            selections.append({"type": "right", "id": right_id, "from_team": team_a, "to_team": team_b})
+        for right_id in self._clean_trade_ids(payload.get("right_ids_b") or []):
+            selections.append({"type": "right", "id": right_id, "from_team": team_b, "to_team": team_a})
+        settings = self.get_settings()
+        season = parse_int(payload.get("season")) or parse_int(settings.get("current_year")) or 2025
+        return self.validate_trade_machine({
+            "teams": [team_a, team_b],
+            "season": season,
+            "selections": selections,
+        })
+
     def process_trade(
         self,
         team_a_code: str,
@@ -4901,13 +7291,29 @@ class LeagueDB:
 
             players_a_rows: List[Dict[str, Any]] = []
             for player_id in ids_a:
-                row = conn.execute("SELECT id, team_id, name FROM players WHERE id = ?", (player_id,)).fetchone()
+                row = conn.execute(
+                    """
+                    SELECT p.id, p.profile_id, p.team_id, COALESCE(pp.name, p.name) AS name
+                    FROM players p
+                    LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                    WHERE p.id = ?
+                    """,
+                    (player_id,),
+                ).fetchone()
                 if not row or int(row["team_id"]) != int(team_a["id"]):
                     return None
                 players_a_rows.append(dict(row))
             players_b_rows: List[Dict[str, Any]] = []
             for player_id in ids_b:
-                row = conn.execute("SELECT id, team_id, name FROM players WHERE id = ?", (player_id,)).fetchone()
+                row = conn.execute(
+                    """
+                    SELECT p.id, p.profile_id, p.team_id, COALESCE(pp.name, p.name) AS name
+                    FROM players p
+                    LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                    WHERE p.id = ?
+                    """,
+                    (player_id,),
+                ).fetchone()
                 if not row or int(row["team_id"]) != int(team_b["id"]):
                     return None
                 players_b_rows.append(dict(row))
@@ -4992,6 +7398,19 @@ class LeagueDB:
                     "UPDATE players SET team_id = ?, row_order = ?, updated_at = ? WHERE id = ?",
                     (team_b["id"], int(mx) + 1, timestamp, player_id),
                 )
+            for row in players_a_rows:
+                self._record_player_transaction(
+                    conn,
+                    row.get("profile_id"),
+                    "trade",
+                    f"Traspasado de {team_a['code']} a {team_b['code']}",
+                    player_id=row.get("id"),
+                    team_code=team_b["code"],
+                    from_team_code=team_a["code"],
+                    to_team_code=team_b["code"],
+                    details={"player_name": row.get("name")},
+                    created_at=timestamp,
+                )
 
             for player_id in ids_b:
                 mx = conn.execute(
@@ -5001,6 +7420,19 @@ class LeagueDB:
                 conn.execute(
                     "UPDATE players SET team_id = ?, row_order = ?, updated_at = ? WHERE id = ?",
                     (team_a["id"], int(mx) + 1, timestamp, player_id),
+                )
+            for row in players_b_rows:
+                self._record_player_transaction(
+                    conn,
+                    row.get("profile_id"),
+                    "trade",
+                    f"Traspasado de {team_b['code']} a {team_a['code']}",
+                    player_id=row.get("id"),
+                    team_code=team_a["code"],
+                    from_team_code=team_b["code"],
+                    to_team_code=team_a["code"],
+                    details={"player_name": row.get("name")},
+                    created_at=timestamp,
                 )
 
             def move_pick(source_team: sqlite3.Row, target_team: sqlite3.Row, pick_row: Dict[str, Any]) -> None:
@@ -5180,22 +7612,51 @@ class LeagueDB:
         entity_id: Optional[str] = None,
         team_code: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
+        actor_role: Optional[str] = None,
+        actor_user_id: Optional[int] = None,
+        request_id: Optional[str] = None,
+        method: Optional[str] = None,
+        path: Optional[str] = None,
+        team_codes: Optional[List[str]] = None,
+        player_id: Optional[str] = None,
+        profile_id: Optional[str] = None,
+        before: Optional[Dict[str, Any]] = None,
+        after: Optional[Dict[str, Any]] = None,
     ) -> None:
+        normalized_team_codes: List[str] = []
+        for code in team_codes or []:
+            normalized = normalize_team_code(code)
+            if normalized and normalized not in normalized_team_codes:
+                normalized_team_codes.append(normalized)
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO admin_logs (created_at, actor_email, actor_name, action, entity, entity_id, team_code, details_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO admin_logs (
+                    created_at, actor_email, actor_name, actor_role, actor_user_id,
+                    request_id, method, path, action, entity, entity_id, team_code,
+                    team_codes_json, player_id, profile_id, before_json, after_json, details_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     now_iso(),
                     actor_email,
                     actor_name,
+                    actor_role,
+                    actor_user_id,
+                    request_id,
+                    method,
+                    path,
                     action,
                     entity,
                     entity_id,
                     team_code.upper() if team_code else None,
-                    json.dumps(details or {}, ensure_ascii=True),
+                    json.dumps(normalized_team_codes, ensure_ascii=True) if normalized_team_codes else None,
+                    str(player_id) if player_id is not None else None,
+                    str(profile_id) if profile_id is not None else None,
+                    json.dumps(before, ensure_ascii=True, default=str) if before is not None else None,
+                    json.dumps(after, ensure_ascii=True, default=str) if after is not None else None,
+                    json.dumps(details or {}, ensure_ascii=True, default=str),
                 ),
             )
             conn.commit()
@@ -5207,7 +7668,10 @@ class LeagueDB:
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
         query = """
-            SELECT id, created_at, actor_email, actor_name, action, entity, entity_id, team_code, details_json
+            SELECT
+                id, created_at, actor_email, actor_name, actor_role, actor_user_id,
+                request_id, method, path, action, entity, entity_id, team_code,
+                team_codes_json, player_id, profile_id, before_json, after_json, details_json
             FROM admin_logs
         """
         clauses: List[str] = []
@@ -5232,6 +7696,16 @@ class LeagueDB:
                     row["details"] = json.loads(raw) if raw else {}
                 except json.JSONDecodeError:
                     row["details"] = {}
+                for json_field, public_field, default in [
+                    ("team_codes_json", "team_codes", []),
+                    ("before_json", "before", None),
+                    ("after_json", "after", None),
+                ]:
+                    raw_json = row.get(json_field)
+                    try:
+                        row[public_field] = json.loads(raw_json) if raw_json else default
+                    except json.JSONDecodeError:
+                        row[public_field] = default
             return rows
 
 
@@ -5240,6 +7714,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     admin_user = os.getenv("ADMIN_USER", "admin")
     admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+    admin_password_hash = os.getenv("ADMIN_PASSWORD_HASH", "").strip()
     admin_emails = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
     gm_accounts = parse_gm_account_map(
         os.getenv("GM_ACCOUNTS")
@@ -5248,9 +7723,10 @@ class Handler(SimpleHTTPRequestHandler):
         or ""
     )
     session_ttl_seconds = max(300, parse_int(os.getenv("SESSION_TTL_SECONDS")) or 28800)
-    cookie_secure = str(os.getenv("COOKIE_SECURE", "false")).strip().lower() in {"1", "true", "yes", "on"}
-    cookie_same_site = str(os.getenv("COOKIE_SAMESITE", "Lax")).strip() or "Lax"
+    cookie_secure_policy = str(os.getenv("COOKIE_SECURE", "auto")).strip().lower() or "auto"
+    cookie_same_site = normalize_same_site(os.getenv("COOKIE_SAMESITE", "Lax"))
     cookie_domain = str(os.getenv("COOKIE_DOMAIN", "")).strip() or None
+    allowed_origins = parse_allowed_origins(os.getenv("ALLOWED_ORIGINS", ""))
 
     google_client_id = os.getenv("GOOGLE_CLIENT_ID", "")
     google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -5284,25 +7760,59 @@ class Handler(SimpleHTTPRequestHandler):
         parse_int(os.getenv("OPENAI_REFERENCE_IMAGE_MAX_BYTES")) or 6_000_000,
     )
 
-    pending_oauth_states: set[str] = set()
+    pending_oauth_states: Dict[str, int] = {}
     login_attempts: Dict[str, Dict[str, Any]] = {}
+    sensitive_attempts: Dict[str, Dict[str, Any]] = {}
     login_window_seconds = max(60, parse_int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS")) or 600)
     login_max_attempts = max(1, parse_int(os.getenv("LOGIN_RATE_LIMIT_MAX_ATTEMPTS")) or 5)
     login_block_seconds = max(60, parse_int(os.getenv("LOGIN_RATE_LIMIT_BLOCK_SECONDS")) or 900)
+    oauth_state_ttl_seconds = max(60, parse_int(os.getenv("OAUTH_STATE_TTL_SECONDS")) or 600)
+    oauth_start_window_seconds = max(60, parse_int(os.getenv("OAUTH_START_RATE_LIMIT_WINDOW_SECONDS")) or 600)
+    oauth_start_max_attempts = max(1, parse_int(os.getenv("OAUTH_START_RATE_LIMIT_MAX_ATTEMPTS")) or 20)
+    sensitive_window_seconds = max(10, parse_int(os.getenv("SENSITIVE_RATE_LIMIT_WINDOW_SECONDS")) or 60)
+    sensitive_max_requests = max(10, parse_int(os.getenv("SENSITIVE_RATE_LIMIT_MAX_REQUESTS")) or 600)
     session_cleanup_interval_seconds = max(30, parse_int(os.getenv("SESSION_CLEANUP_INTERVAL_SECONDS")) or 120)
     _last_session_cleanup_ts = 0
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
+    def _request_id(self) -> str:
+        existing = getattr(self, "_audit_request_id", None)
+        if existing:
+            return str(existing)
+        raw = ""
+        try:
+            raw = str(
+                self.headers.get("X-Request-ID")
+                or self.headers.get("X-Correlation-ID")
+                or ""
+            )
+        except AttributeError:
+            raw = ""
+        request_id = re.sub(r"[^A-Za-z0-9_.:-]", "", raw).strip()[:80]
+        if not request_id:
+            request_id = secrets.token_urlsafe(12)
+        self._audit_request_id = request_id
+        return request_id
+
+    def _send_extra_headers(self, headers: Optional[Dict[str, Any]] = None) -> None:
+        if not headers:
+            return
+        for key, value in headers.items():
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    self.send_header(key, str(item))
+            else:
+                self.send_header(key, str(value))
+
     def _json(self, status: int, payload: Any, headers: Optional[Dict[str, str]] = None) -> None:
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        if headers:
-            for k, v in headers.items():
-                self.send_header(k, v)
+        self.send_header("X-Request-ID", self._request_id())
+        self._send_extra_headers(headers)
         self.end_headers()
         self.wfile.write(data)
 
@@ -5310,9 +7820,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        if headers:
-            for k, v in headers.items():
-                self.send_header(k, v)
+        self._send_extra_headers(headers)
         self.end_headers()
         self.wfile.write(data)
 
@@ -5320,6 +7828,8 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.lower()
         query = parsed.query
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
         if path.endswith(".html") or path in {"/", "/login", "/admin"}:
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         elif path.endswith((".css", ".js", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico")):
@@ -5332,9 +7842,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _redirect(self, location: str, headers: Optional[Dict[str, str]] = None) -> None:
         self.send_response(302)
         self.send_header("Location", location)
-        if headers:
-            for k, v in headers.items():
-                self.send_header(k, v)
+        self._send_extra_headers(headers)
         self.end_headers()
 
     def _read_json(self) -> Dict[str, Any]:
@@ -5346,14 +7854,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _read_multipart_image_upload(self, field_name: str) -> tuple[bytes, str, str]:
         content_type = str(self.headers.get("Content-Type") or "")
+        if not content_type.lower().startswith("multipart/form-data"):
+            raise ValueError("invalid_multipart_upload")
         boundary_match = re.search(r'boundary=(?:"([^"]+)"|([^;]+))', content_type)
         if not boundary_match:
             raise ValueError("missing_multipart_boundary")
         boundary = (boundary_match.group(1) or boundary_match.group(2) or "").encode("utf-8")
+        if not boundary or len(boundary) > 200 or any(byte < 33 or byte > 126 for byte in boundary):
+            raise ValueError("invalid_multipart_boundary")
         length = parse_int(self.headers.get("Content-Length"))
         if length is None or length <= 0:
             raise ValueError("missing_upload")
-        if length > OWNER_BACKGROUND_MAX_BYTES + 8192:
+        if length > OWNER_BACKGROUND_MAX_BYTES + MULTIPART_UPLOAD_MAX_OVERHEAD_BYTES:
             raise ValueError("upload_too_large")
         body = self.rfile.read(length)
         delimiter = b"--" + boundary
@@ -5375,6 +7887,8 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ValueError("missing_upload")
             mime_header = next((line for line in headers if line.lower().startswith("content-type:")), "")
             declared_mime = mime_header.split(":", 1)[1].strip().lower() if ":" in mime_header else ""
+            if declared_mime.split(";", 1)[0].strip().lower() not in OWNER_BACKGROUND_ALLOWED_MIME_TYPES:
+                raise ValueError("unsupported_upload_type")
             file_bytes = file_bytes.rstrip(b"\r\n")
             if not file_bytes:
                 raise ValueError("missing_upload")
@@ -5385,44 +7899,7 @@ class Handler(SimpleHTTPRequestHandler):
         raise ValueError("missing_upload")
 
     def _uploaded_image_type(self, data: bytes, declared_mime: str = "") -> tuple[str, str]:
-        if data.startswith(b"\xff\xd8\xff"):
-            return "jpg", "image/jpeg"
-        if data.startswith(b"\x89PNG\r\n\x1a\n"):
-            return "png", "image/png"
-        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-            return "webp", "image/webp"
-        raise ValueError("unsupported_upload_type")
-
-    def _serve_owner_background_upload(self, path: str) -> None:
-        filename = path.rsplit("/", 1)[-1]
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", filename or ""):
-            self._json(404, {"error": "not_found"})
-            return
-        file_path = OWNER_BACKGROUND_UPLOAD_DIR / filename
-        if not file_path.is_file():
-            self._json(404, {"error": "not_found"})
-            return
-        ext = file_path.suffix.lower().lstrip(".")
-        content_type = {
-            "jpg": "image/jpeg",
-            "jpeg": "image/jpeg",
-            "png": "image/png",
-            "webp": "image/webp",
-        }.get(ext, "application/octet-stream")
-        try:
-            data = file_path.read_bytes()
-        except OSError:
-            self._json(404, {"error": "not_found"})
-            return
-        self._bytes_response(
-            200,
-            data,
-            content_type,
-            headers={
-                "Cache-Control": "public, max-age=31536000, immutable",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        return detect_safe_image_type(data, declared_mime, OWNER_BACKGROUND_ALLOWED_MIME_TYPES)
 
     def _client_ip(self) -> str:
         xff = self.headers.get("X-Forwarded-For", "").strip()
@@ -5440,6 +7917,50 @@ class Handler(SimpleHTTPRequestHandler):
             k, v = piece.split("=", 1)
             out[k] = v
         return out
+
+    def _request_is_secure(self) -> bool:
+        proto = str(self.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+        if proto == "https":
+            return True
+        forwarded = str(self.headers.get("Forwarded") or "").lower()
+        return "proto=https" in forwarded
+
+    def _should_set_secure_cookie(self) -> bool:
+        if self.cookie_same_site == "None":
+            return True
+        if self.cookie_secure_policy in {"1", "true", "yes", "on"}:
+            return True
+        if self.cookie_secure_policy in {"0", "false", "no", "off"}:
+            return False
+        return self._request_is_secure()
+
+    def _request_origin(self) -> str:
+        host = str(self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",", 1)[0].strip().lower()
+        if not host:
+            return ""
+        proto = str(self.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+        if proto not in {"http", "https"}:
+            proto = "https" if self._request_is_secure() else "http"
+        return f"{proto}://{host}"
+
+    def _same_origin_request_ok(self) -> bool:
+        origin = str(self.headers.get("Origin") or "").strip().rstrip("/")
+        referer = str(self.headers.get("Referer") or "").strip()
+        presented = origin
+        if not presented and referer:
+            parsed_referer = urlparse(referer)
+            if parsed_referer.scheme and parsed_referer.netloc:
+                presented = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+        if not presented:
+            return True
+        presented = presented.lower()
+        if presented == "null":
+            return False
+        allowed = set(self.allowed_origins)
+        request_origin = self._request_origin()
+        if request_origin:
+            allowed.add(request_origin.rstrip("/").lower())
+        return presented in allowed
 
     def _maybe_cleanup_sessions(self) -> None:
         now_ts = int(datetime.now(UTC).timestamp())
@@ -5485,6 +8006,16 @@ class Handler(SimpleHTTPRequestHandler):
         normalized = normalize_team_code(team_code)
         return bool(normalized and normalized in self._current_session_team_codes())
 
+    def _require_team_write_access(self, team_code: Any) -> bool:
+        normalized = normalize_team_code(team_code)
+        if not normalized:
+            self._json(400, {"error": "invalid_team"})
+            return False
+        if self._can_manage_team(normalized):
+            return True
+        self._json(403, {"error": "team_access_required"})
+        return False
+
     def _require_admin(self) -> bool:
         if self._is_admin():
             return True
@@ -5503,6 +8034,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _start_session(self, session_payload: Dict[str, Any]) -> tuple[str, str]:
         self._maybe_cleanup_sessions()
+        self._clear_session()
         now_ts = int(datetime.now(UTC).timestamp())
         data = dict(session_payload)
         csrf_token = secrets.token_urlsafe(24)
@@ -5528,10 +8060,11 @@ class Handler(SimpleHTTPRequestHandler):
             f"SameSite={self.cookie_same_site}",
             f"Max-Age={self.session_ttl_seconds}",
         ]
-        if self.cookie_secure:
+        if self._should_set_secure_cookie():
             parts.append("Secure")
         if self.cookie_domain:
             parts.append(f"Domain={self.cookie_domain}")
+        parts.append("Priority=High")
         return "; ".join(parts)
 
     def _clear_session_cookie(self) -> str:
@@ -5542,7 +8075,35 @@ class Handler(SimpleHTTPRequestHandler):
             f"SameSite={self.cookie_same_site}",
             "Max-Age=0",
         ]
-        if self.cookie_secure:
+        if self._should_set_secure_cookie():
+            parts.append("Secure")
+        if self.cookie_domain:
+            parts.append(f"Domain={self.cookie_domain}")
+        return "; ".join(parts)
+
+    def _oauth_state_cookie(self, state: str) -> str:
+        parts = [
+            f"oauth_state={state}",
+            "Path=/api/auth/google/callback",
+            "HttpOnly",
+            f"SameSite={self.cookie_same_site}",
+            f"Max-Age={self.oauth_state_ttl_seconds}",
+        ]
+        if self._should_set_secure_cookie():
+            parts.append("Secure")
+        if self.cookie_domain:
+            parts.append(f"Domain={self.cookie_domain}")
+        return "; ".join(parts)
+
+    def _clear_oauth_state_cookie(self) -> str:
+        parts = [
+            "oauth_state=",
+            "Path=/api/auth/google/callback",
+            "HttpOnly",
+            f"SameSite={self.cookie_same_site}",
+            "Max-Age=0",
+        ]
+        if self._should_set_secure_cookie():
             parts.append("Secure")
         if self.cookie_domain:
             parts.append(f"Domain={self.cookie_domain}")
@@ -5551,6 +8112,8 @@ class Handler(SimpleHTTPRequestHandler):
     def _csrf_ok(self) -> bool:
         sess = self._current_session()
         if not sess:
+            return False
+        if not self._same_origin_request_ok():
             return False
         expected = str(sess.get("csrf_token") or "")
         provided = str(self.headers.get("X-CSRF-Token", "")).strip()
@@ -5563,6 +8126,27 @@ class Handler(SimpleHTTPRequestHandler):
             return True
         self._json(403, {"error": "csrf_invalid"})
         return False
+
+    def _cleanup_oauth_states(self) -> None:
+        now_ts = int(datetime.now(UTC).timestamp())
+        expired = [state for state, expires_at in self.pending_oauth_states.items() if expires_at <= now_ts]
+        for state in expired:
+            self.pending_oauth_states.pop(state, None)
+
+    def _store_oauth_state(self, state: str) -> None:
+        self._cleanup_oauth_states()
+        self.pending_oauth_states[state] = int(datetime.now(UTC).timestamp()) + self.oauth_state_ttl_seconds
+
+    def _oauth_state_ok(self, state: str) -> bool:
+        self._cleanup_oauth_states()
+        expected_cookie = self._cookie_dict().get("oauth_state", "")
+        expires_at = self.pending_oauth_states.get(state)
+        if not state or not expected_cookie or not expires_at:
+            return False
+        if not secrets.compare_digest(state, expected_cookie):
+            return False
+        self.pending_oauth_states.pop(state, None)
+        return True
 
     def _rate_limit_status(self, ip: str) -> tuple[bool, int]:
         now_ts = int(datetime.now(UTC).timestamp())
@@ -5590,6 +8174,50 @@ class Handler(SimpleHTTPRequestHandler):
         if ip in self.login_attempts:
             del self.login_attempts[ip]
 
+    def _throttle_hit(
+        self,
+        store: Dict[str, Dict[str, Any]],
+        key: str,
+        *,
+        max_requests: int,
+        window_seconds: int,
+    ) -> tuple[bool, int]:
+        now_ts = int(datetime.now(UTC).timestamp())
+        rec = store.get(key)
+        if not rec or (parse_int(str(rec.get("window_start"))) or 0) + window_seconds <= now_ts:
+            rec = {"window_start": now_ts, "count": 0}
+        rec["count"] = int(rec.get("count", 0)) + 1
+        store[key] = rec
+        if rec["count"] <= max_requests:
+            return False, 0
+        retry_after = max(1, ((parse_int(str(rec.get("window_start"))) or now_ts) + window_seconds) - now_ts)
+        return True, retry_after
+
+    def _require_oauth_start_rate_limit(self) -> bool:
+        limited, retry_after = self._throttle_hit(
+            self.sensitive_attempts,
+            f"oauth_start:{self._client_ip()}",
+            max_requests=self.oauth_start_max_attempts,
+            window_seconds=self.oauth_start_window_seconds,
+        )
+        if not limited:
+            return True
+        self._json(429, {"error": "too_many_attempts", "retry_after_seconds": retry_after})
+        return False
+
+    def _require_sensitive_rate_limit(self, scope: str) -> bool:
+        token = self._cookie_dict().get("session") or self._client_ip()
+        limited, retry_after = self._throttle_hit(
+            self.sensitive_attempts,
+            f"{scope}:{token}",
+            max_requests=self.sensitive_max_requests,
+            window_seconds=self.sensitive_window_seconds,
+        )
+        if not limited:
+            return True
+        self._json(429, {"error": "rate_limited", "retry_after_seconds": retry_after})
+        return False
+
     def _google_enabled(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret and self.google_redirect_uri)
 
@@ -5614,6 +8242,80 @@ class Handler(SimpleHTTPRequestHandler):
                 return f"/?team={team_code}"
         return "/"
 
+    def _audit_team_codes(
+        self,
+        team_code: Optional[str],
+        details: Optional[Dict[str, Any]],
+        extra_team_codes: Optional[List[Any]] = None,
+    ) -> List[str]:
+        codes: List[str] = []
+
+        def add_code(value: Any) -> None:
+            normalized = normalize_team_code(value)
+            if normalized and normalized not in codes:
+                codes.append(normalized)
+
+        add_code(team_code)
+        for value in extra_team_codes or []:
+            add_code(value)
+        if isinstance(details, dict):
+            for key in [
+                "team_code",
+                "team_a",
+                "team_b",
+                "from_team_code",
+                "to_team_code",
+                "current_team_code",
+                "request_team_code",
+                "owner_team_code",
+            ]:
+                add_code(details.get(key))
+            raw_team_codes = details.get("team_codes")
+            if isinstance(raw_team_codes, list):
+                for value in raw_team_codes:
+                    add_code(value)
+        return codes
+
+    def _audit_entity_ids(
+        self,
+        entity: str,
+        entity_id: Optional[str],
+        details: Optional[Dict[str, Any]],
+        before: Optional[Dict[str, Any]],
+        after: Optional[Dict[str, Any]],
+    ) -> tuple[Optional[str], Optional[str]]:
+        player_id: Optional[str] = None
+        profile_id: Optional[str] = None
+
+        def maybe_set_from(source: Optional[Dict[str, Any]]) -> None:
+            nonlocal player_id, profile_id
+            if not isinstance(source, dict):
+                return
+            if player_id is None:
+                parsed_player = parse_int(source.get("player_id"))
+                if parsed_player is None and "id" in source and entity.strip().lower() == "player":
+                    parsed_player = parse_int(source.get("id"))
+                if parsed_player is not None:
+                    player_id = str(parsed_player)
+            if profile_id is None:
+                parsed_profile = parse_int(source.get("profile_id"))
+                if parsed_profile is not None:
+                    profile_id = str(parsed_profile)
+
+        if entity.strip().lower() == "player" and entity_id:
+            parsed_entity_id = parse_int(str(entity_id))
+            if parsed_entity_id is not None:
+                player_id = str(parsed_entity_id)
+        if entity.strip().lower() == "player_profile" and entity_id:
+            parsed_entity_id = parse_int(str(entity_id))
+            if parsed_entity_id is not None:
+                profile_id = str(parsed_entity_id)
+
+        maybe_set_from(details)
+        maybe_set_from(before)
+        maybe_set_from(after)
+        return player_id, profile_id
+
     def _log_admin_action(
         self,
         action: str,
@@ -5621,17 +8323,32 @@ class Handler(SimpleHTTPRequestHandler):
         entity_id: Optional[str] = None,
         team_code: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
+        before: Optional[Dict[str, Any]] = None,
+        after: Optional[Dict[str, Any]] = None,
+        team_codes: Optional[List[Any]] = None,
     ) -> None:
         sess = self._current_session() or {}
         if sess.get("role") != "admin":
             return
+        audit_team_codes = self._audit_team_codes(team_code, details, team_codes)
+        player_id, profile_id = self._audit_entity_ids(entity, entity_id, details, before, after)
         self.db.log_admin_action(
             actor_email=sess.get("email"),
             actor_name=sess.get("name"),
+            actor_role=str(sess.get("role") or ""),
+            actor_user_id=parse_int(sess.get("user_id")),
+            request_id=self._request_id(),
+            method=getattr(self, "command", None),
+            path=urlparse(getattr(self, "path", "")).path,
             action=action.strip().lower(),
             entity=entity.strip().lower(),
             entity_id=entity_id,
             team_code=team_code,
+            team_codes=audit_team_codes,
+            player_id=player_id,
+            profile_id=profile_id,
+            before=before,
+            after=after,
             details=details or {},
         )
 
@@ -6378,12 +9095,6 @@ QUALITY REQUIREMENTS
     def _discord_custom_image_attachment(self, payload: Any) -> Optional[tuple[bytes, str, str]]:
         if not isinstance(payload, dict):
             return None
-        allowed_mime_types = {
-            "image/png": "png",
-            "image/jpeg": "jpg",
-            "image/webp": "webp",
-            "image/gif": "gif",
-        }
         data_url = str(payload.get("data_url") or "").strip()
         mime_type = str(payload.get("mime_type") or "").strip().lower()
         base64_text = str(payload.get("base64") or "").strip()
@@ -6394,7 +9105,7 @@ QUALITY REQUIREMENTS
                 return None
             mime_type = match.group(1).lower()
             base64_text = match.group(2)
-        if mime_type not in allowed_mime_types or not base64_text:
+        if mime_type not in DISCORD_CUSTOM_IMAGE_ALLOWED_MIME_TYPES or not base64_text:
             self.log_error("Discord custom image ignored: unsupported image type.")
             return None
         compact_base64 = re.sub(r"\s+", "", base64_text)
@@ -6408,11 +9119,20 @@ QUALITY REQUIREMENTS
         if len(file_bytes) > 8 * 1024 * 1024:
             self.log_error("Discord custom image ignored: file is larger than 8 MB.")
             return None
+        try:
+            detected_ext, detected_mime = detect_safe_image_type(
+                file_bytes,
+                mime_type,
+                DISCORD_CUSTOM_IMAGE_ALLOWED_MIME_TYPES,
+            )
+        except ValueError:
+            self.log_error("Discord custom image ignored: image bytes do not match an allowed type.")
+            return None
         raw_filename = str(payload.get("filename") or "notification-image").strip()
         safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_filename).strip("._-") or "notification-image"
         safe_stem = re.sub(r"\.(png|jpe?g|webp|gif)$", "", safe_stem, flags=re.IGNORECASE)[:80] or "notification-image"
-        filename = f"{safe_stem}.{allowed_mime_types[mime_type]}"
-        return file_bytes, filename, mime_type
+        filename = f"{safe_stem}.{detected_ext}"
+        return file_bytes, filename, detected_mime
 
     def _notify_player_cut(
         self,
@@ -6660,10 +9380,6 @@ QUALITY REQUIREMENTS
             )
             return
 
-        if parsed.path.startswith("/uploads/owner-office/"):
-            self._serve_owner_background_upload(parsed.path)
-            return
-
         if parsed.path == "/":
             self._route_html("index.html")
             return
@@ -6686,8 +9402,10 @@ QUALITY REQUIREMENTS
             if not self._google_enabled():
                 self._redirect("/login?error=google_not_configured")
                 return
+            if not self._require_oauth_start_rate_limit():
+                return
             state = secrets.token_urlsafe(24)
-            self.pending_oauth_states.add(state)
+            self._store_oauth_state(state)
             params = urlencode(
                 {
                     "client_id": self.google_client_id,
@@ -6698,30 +9416,44 @@ QUALITY REQUIREMENTS
                     "prompt": "select_account",
                 }
             )
-            self._redirect(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+            self._redirect(
+                f"https://accounts.google.com/o/oauth2/v2/auth?{params}",
+                headers={"Set-Cookie": self._oauth_state_cookie(state)},
+            )
             return
 
         if parsed.path == "/api/auth/google/callback":
             qs = parse_qs(parsed.query)
             if "error" in qs:
-                self._redirect("/login?error=google_auth_denied")
+                self._redirect(
+                    "/login?error=google_auth_denied",
+                    headers={"Set-Cookie": self._clear_oauth_state_cookie()},
+                )
                 return
             code = (qs.get("code") or [""])[0]
             state = (qs.get("state") or [""])[0]
-            if not code or not state or state not in self.pending_oauth_states:
-                self._redirect("/login?error=google_state_invalid")
+            if not code or not self._oauth_state_ok(state):
+                self._redirect(
+                    "/login?error=google_state_invalid",
+                    headers={"Set-Cookie": self._clear_oauth_state_cookie()},
+                )
                 return
-            self.pending_oauth_states.discard(state)
 
             try:
                 token_data = self._exchange_google_code(code)
                 access_token = token_data.get("access_token")
                 if not access_token:
-                    self._redirect("/login?error=google_token_failed")
+                    self._redirect(
+                        "/login?error=google_token_failed",
+                        headers={"Set-Cookie": self._clear_oauth_state_cookie()},
+                    )
                     return
                 userinfo = self._fetch_google_userinfo(access_token)
             except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
-                self._redirect("/login?error=google_exchange_failed")
+                self._redirect(
+                    "/login?error=google_exchange_failed",
+                    headers={"Set-Cookie": self._clear_oauth_state_cookie()},
+                )
                 return
 
             google_sub = str(userinfo.get("sub") or "").strip()
@@ -6730,7 +9462,10 @@ QUALITY REQUIREMENTS
             picture = str(userinfo.get("picture") or "").strip() or None
 
             if not google_sub or not email:
-                self._redirect("/login?error=google_profile_invalid")
+                self._redirect(
+                    "/login?error=google_profile_invalid",
+                    headers={"Set-Cookie": self._clear_oauth_state_cookie()},
+                )
                 return
 
             user = self.db.upsert_google_user(google_sub, email, name, picture)
@@ -6749,7 +9484,10 @@ QUALITY REQUIREMENTS
                 }
             )
             cookie = self._session_cookie(token)
-            self._redirect(self._landing_path_for_session(role, team_codes), headers={"Set-Cookie": cookie})
+            self._redirect(
+                self._landing_path_for_session(role, team_codes),
+                headers={"Set-Cookie": [cookie, self._clear_oauth_state_cookie()]},
+            )
             return
 
         if parsed.path == "/api/auth/status":
@@ -6788,6 +9526,10 @@ QUALITY REQUIREMENTS
 
         if parsed.path == "/api/teams":
             self._json(200, {"teams": self.db.list_teams()})
+            return
+
+        if parsed.path == "/api/players":
+            self._json(200, {"players": self.db.list_players()})
             return
 
         if parsed.path == "/api/tracker":
@@ -6848,6 +9590,12 @@ QUALITY REQUIREMENTS
             entity = (qs.get("entity") or [""])[0].strip() or None
             limit = parse_int((qs.get("limit") or ["200"])[0]) or 200
             self._json(200, {"logs": self.db.list_admin_logs(action=action, entity=entity, limit=limit)})
+            return
+
+        if parsed.path == "/api/admin/maintenance":
+            if not self._require_admin():
+                return
+            self._json(200, self.db.maintenance_status())
             return
 
         if parsed.path == "/api/admin/users":
@@ -6915,6 +9663,8 @@ QUALITY REQUIREMENTS
                 return
             if not self._require_csrf():
                 return
+            if not self._require_sensitive_rate_limit("admin_upload"):
+                return
             parts = parsed.path.split("/")
             if len(parts) < 6:
                 self._json(404, {"error": "not_found"})
@@ -6922,6 +9672,8 @@ QUALITY REQUIREMENTS
             code = normalize_team_code(parts[3])
             if not code:
                 self._json(400, {"error": "invalid_team"})
+                return
+            if not self._require_team_write_access(code):
                 return
             try:
                 file_bytes, _ext, mime_type = self._read_multipart_image_upload("background")
@@ -6966,7 +9718,7 @@ QUALITY REQUIREMENTS
                 return
             username = str(payload.get("username") or "")
             password = str(payload.get("password") or "")
-            if username != self.admin_user or password != self.admin_password:
+            if username != self.admin_user or not verify_admin_password(password, self.admin_password, self.admin_password_hash):
                 self._rate_limit_fail(ip)
                 self._json(401, {"error": "invalid_credentials"})
                 return
@@ -6984,6 +9736,11 @@ QUALITY REQUIREMENTS
             self._rate_limit_success(ip)
             cookie = self._session_cookie(token)
             self._json(200, {"ok": True, "csrf_token": csrf_token}, headers={"Set-Cookie": cookie})
+            return
+
+        if parsed.path == "/api/trades/validate":
+            result = self.db.validate_trade_machine(payload)
+            self._json(200, result)
             return
 
         if parsed.path == "/api/gm/option-requests":
@@ -7143,6 +9900,8 @@ QUALITY REQUIREMENTS
             return
         if not self._require_csrf():
             return
+        if not self._require_sensitive_rate_limit("admin_post"):
+            return
 
         if parsed.path == "/api/admin/economy-import/preview":
             csv_text = str(payload.get("csv_text") or "")
@@ -7154,6 +9913,11 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/economy-import/import":
+            try:
+                backup = self.db.create_verified_backup("pre_owner_economy_import")
+            except (OSError, sqlite3.Error, ValueError) as err:
+                self._json(500, {"error": "pre_import_backup_failed", "detail": str(err)})
+                return
             try:
                 result = self.db.apply_owner_economy_import(payload.get("records"))
             except ValueError as err:
@@ -7169,8 +9933,15 @@ QUALITY REQUIREMENTS
                 "owner_economy",
                 ",".join(str(season) for season in result.get("seasons", [])),
                 None,
-                {"record_count": result.get("record_count"), "group_count": result.get("group_count")},
+                {
+                    "record_count": result.get("record_count"),
+                    "group_count": result.get("group_count"),
+                    "backup_id": backup.get("id"),
+                    "backup_path": backup.get("path"),
+                    "backup_sha256": backup.get("sha256"),
+                },
             )
+            result["backup"] = backup
             self._json(200, result)
             return
 
@@ -7184,6 +9955,11 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/owner-office-import/import":
+            try:
+                backup = self.db.create_verified_backup("pre_owner_office_import")
+            except (OSError, sqlite3.Error, ValueError) as err:
+                self._json(500, {"error": "pre_import_backup_failed", "detail": str(err)})
+                return
             try:
                 result = self.db.apply_owner_office_import(payload.get("records"))
             except ValueError as err:
@@ -7199,20 +9975,42 @@ QUALITY REQUIREMENTS
                 "owner_office",
                 ",".join(str(season) for season in result.get("seasons", [])),
                 None,
-                {"record_count": result.get("record_count"), "group_count": result.get("group_count")},
+                {
+                    "record_count": result.get("record_count"),
+                    "group_count": result.get("group_count"),
+                    "backup_id": backup.get("id"),
+                    "backup_path": backup.get("path"),
+                    "backup_sha256": backup.get("sha256"),
+                },
             )
+            result["backup"] = backup
             self._json(200, result)
             return
 
         if parsed.path == "/api/admin/backup":
             try:
-                data = self.db.backup_bytes()
+                backup = self.db.create_verified_backup("manual_download")
+                data = Path(str(backup["path"])).read_bytes()
             except (OSError, sqlite3.Error):
                 self._json(500, {"error": "backup_failed"})
                 return
+            except ValueError as err:
+                self._json(500, {"error": "backup_failed", "detail": str(err)})
+                return
             timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
             filename = f"anba-league-{timestamp}.db"
-            self._log_admin_action("download", "backup", filename, None, {"bytes": len(data)})
+            self._log_admin_action(
+                "download",
+                "backup",
+                filename,
+                None,
+                {
+                    "bytes": len(data),
+                    "backup_id": backup.get("id"),
+                    "backup_path": backup.get("path"),
+                    "backup_sha256": backup.get("sha256"),
+                },
+            )
             self._bytes_response(
                 200,
                 data,
@@ -7265,20 +10063,30 @@ QUALITY REQUIREMENTS
             except ValueError:
                 self._json(400, {"error": "invalid_free_agent_id"})
                 return
-            team_code = str(payload.get("team_code") or "").strip().upper()
+            team_code = normalize_team_code(payload.get("team_code")) or ""
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            player_id = self.db.sign_free_agent(free_agent_id, team_code, payload)
+            if not self._require_team_write_access(team_code):
+                return
+            try:
+                player_id = self.db.sign_free_agent(free_agent_id, team_code, payload)
+            except ValueError as err:
+                if str(err) == "profile_has_active_contract":
+                    self._json(409, {"error": "profile_has_active_contract"})
+                    return
+                raise
             if not player_id:
                 self._json(404, {"error": "free_agent_or_team_not_found"})
                 return
+            player_after = self.db.get_player_record(player_id)
             self._log_admin_action(
                 "sign",
                 "free_agent",
                 str(free_agent_id),
                 team_code,
                 {"player_id": player_id, "name": payload.get("name")},
+                after=player_after,
             )
             self._json(200, {"ok": True, "player_id": player_id})
             return
@@ -7293,6 +10101,12 @@ QUALITY REQUIREMENTS
             except ValueError:
                 self._json(400, {"error": "invalid_player_id"})
                 return
+            player_before = self.db.get_player_record(player_id)
+            if not player_before:
+                self._json(404, {"error": "player_not_found"})
+                return
+            if not self._require_team_write_access(player_before.get("team_code")):
+                return
             result = self.db.cut_player(player_id)
             if not result:
                 self._json(404, {"error": "player_not_found"})
@@ -7303,10 +10117,13 @@ QUALITY REQUIREMENTS
                 str(player_id),
                 str(result.get("team_code") or ""),
                 {
+                    "profile_id": result.get("profile_id"),
                     "player_name": result.get("player_name"),
                     "dead_contract_id": result.get("dead_contract_id"),
                     "free_agent_id": result.get("free_agent_id"),
                 },
+                before=player_before,
+                after={"cut_result": result},
             )
             if self._discord_notify_requested(payload):
                 self._notify_player_cut(
@@ -7317,40 +10134,99 @@ QUALITY REQUIREMENTS
             self._json(200, {"ok": True, "result": result})
             return
 
+        if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/transactions"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                profile_id = int(parts[2])
+            except ValueError:
+                self._json(400, {"error": "invalid_profile_id"})
+                return
+            transaction_id = self.db.create_player_transaction(profile_id, payload)
+            if not transaction_id:
+                self._json(400, {"error": "transaction_summary_required_or_profile_not_found"})
+                return
+            self._log_admin_action(
+                "create",
+                "player_transaction",
+                str(transaction_id),
+                payload.get("team_code"),
+                {"profile_id": profile_id, "summary": payload.get("summary")},
+            )
+            self._json(201, {"transaction_id": transaction_id})
+            return
+
         if parsed.path == "/api/players":
-            team_code = payload.get("team_code")
+            team_code = normalize_team_code(payload.get("team_code")) or ""
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            player_id = self.db.create_player(team_code, payload)
+            if not self._require_team_write_access(team_code):
+                return
+            try:
+                player_id = self.db.create_player(team_code, payload)
+            except ValueError as err:
+                if str(err) == "profile_has_active_contract":
+                    self._json(409, {"error": "profile_has_active_contract"})
+                    return
+                raise
             if not player_id:
                 self._json(404, {"error": "team_not_found"})
                 return
-            self._log_admin_action("create", "player", str(player_id), str(team_code), {"name": payload.get("name")})
+            player_after = self.db.get_player_record(player_id)
+            self._log_admin_action(
+                "create",
+                "player",
+                str(player_id),
+                str(team_code),
+                {"name": payload.get("name")},
+                after=player_after,
+            )
             self._json(201, {"player_id": player_id})
             return
 
         if parsed.path == "/api/players/move":
             player_id = payload.get("player_id")
-            to_team_code = payload.get("to_team_code")
+            to_team_code = normalize_team_code(payload.get("to_team_code"))
             if not player_id or not to_team_code:
                 self._json(400, {"error": "player_id_and_to_team_code_required"})
                 return
-            ok = self.db.move_player(int(player_id), str(to_team_code))
+            parsed_player_id = parse_int(str(player_id))
+            if parsed_player_id is None:
+                self._json(400, {"error": "invalid_player_id"})
+                return
+            player_before = self.db.get_player_record(parsed_player_id)
+            if not player_before:
+                self._json(404, {"error": "player_not_found"})
+                return
+            if not self._require_team_write_access(player_before.get("team_code")):
+                return
+            if not self._require_team_write_access(to_team_code):
+                return
+            ok = self.db.move_player(parsed_player_id, str(to_team_code))
             if ok:
+                player_after = self.db.get_player_record(parsed_player_id)
                 self._log_admin_action(
                     "move",
                     "player",
-                    str(player_id),
-                    str(to_team_code),
-                    {"to_team_code": str(to_team_code).upper()},
+                    str(parsed_player_id),
+                    str(player_before.get("team_code") or ""),
+                    {
+                        "from_team_code": player_before.get("team_code"),
+                        "to_team_code": str(to_team_code).upper(),
+                    },
+                    before=player_before,
+                    after=player_after,
+                    team_codes=[player_before.get("team_code"), to_team_code],
                 )
             self._json(200 if ok else 404, {"ok": ok})
             return
 
         if parsed.path == "/api/trades/process":
-            team_a = str(payload.get("team_a") or "").strip().upper()
-            team_b = str(payload.get("team_b") or "").strip().upper()
+            team_a = normalize_team_code(payload.get("team_a")) or ""
+            team_b = normalize_team_code(payload.get("team_b")) or ""
             players_a = payload.get("players_a")
             players_b = payload.get("players_b")
             pick_ids_a = payload.get("pick_ids_a")
@@ -7360,6 +10236,27 @@ QUALITY REQUIREMENTS
             no_count_players_a = payload.get("no_count_players_a")
             no_count_players_b = payload.get("no_count_players_b")
             trade_bucket = payload.get("trade_bucket")
+            if not self._require_team_write_access(team_a):
+                return
+            if not self._require_team_write_access(team_b):
+                return
+            validation = self.db.trade_validation_from_process_payload({
+                **payload,
+                "team_a": team_a,
+                "team_b": team_b,
+            })
+            if any(issue.get("severity") == "illegal" for issue in validation.get("issues") or []):
+                self._json(422, {"ok": False, "error": "trade_invalid", "validation": validation})
+                return
+            trade_player_ids: List[Any] = []
+            for values in [players_a, players_b]:
+                if isinstance(values, list):
+                    trade_player_ids.extend(values)
+            trade_asset_ids: List[Any] = []
+            for values in [pick_ids_a, pick_ids_b, right_ids_a, right_ids_b]:
+                if isinstance(values, list):
+                    trade_asset_ids.extend(values)
+            trade_before = self.db.audit_trade_snapshot([team_a, team_b], trade_player_ids, trade_asset_ids)
             result = self.db.process_trade(
                 team_a,
                 team_b,
@@ -7374,6 +10271,7 @@ QUALITY REQUIREMENTS
                 trade_bucket=trade_bucket,
             )
             if result:
+                trade_after = self.db.audit_trade_snapshot([team_a, team_b], trade_player_ids, trade_asset_ids)
                 self._log_admin_action(
                     "trade",
                     "trade",
@@ -7397,15 +10295,19 @@ QUALITY REQUIREMENTS
                         "trade_bucket": result.get("trade_bucket"),
                         "move_count_a": result.get("team_a", {}).get("move_count"),
                         "move_count_b": result.get("team_b", {}).get("move_count"),
+                        "validation_issues": validation.get("issues") or [],
                     },
+                    before=trade_before,
+                    after=trade_after,
+                    team_codes=[team_a, team_b],
                 )
                 if self._discord_notify_requested(payload):
                     self._notify_trade_processed(
                         result,
                         generate_image=self._discord_image_requested(payload),
                         custom_image=payload.get("discord_custom_image"),
-                    )
-            self._json(200 if result else 400, {"ok": bool(result), "result": result})
+                )
+            self._json(200 if result else 400, {"ok": bool(result), "result": result, "validation": validation})
             return
 
         if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/move-adjustment"):
@@ -7424,6 +10326,8 @@ QUALITY REQUIREMENTS
             if target_remaining is None or target_remaining < 0:
                 self._json(400, {"error": "invalid_target_remaining"})
                 return
+            if not self._require_team_write_access(code):
+                return
             result = self.db.adjust_team_move_remaining(code, season_year, bucket, target_remaining, note)
             if result:
                 self._log_admin_action("update", "team_move", code.upper(), code.upper(), result)
@@ -7431,9 +10335,11 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/assets":
-            team_code = payload.get("team_code")
+            team_code = normalize_team_code(payload.get("team_code")) or ""
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
+                return
+            if not self._require_team_write_access(team_code):
                 return
             if str(payload.get("asset_type") or "").strip().lower() == "dead_cap":
                 self._json(400, {"error": "dead_cap_moved_to_dead_contracts"})
@@ -7447,9 +10353,11 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/dead-contracts":
-            team_code = payload.get("team_code")
+            team_code = normalize_team_code(payload.get("team_code")) or ""
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
+                return
+            if not self._require_team_write_access(team_code):
                 return
             dead_contract_id = self.db.create_dead_contract(team_code, payload)
             if not dead_contract_id:
@@ -7469,6 +10377,8 @@ QUALITY REQUIREMENTS
             team_code = str(payload.get("team_code") or "").strip().upper()
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
+                return
+            if not self._require_team_write_access(team_code):
                 return
             raw_entries = payload.get("entries")
             if not isinstance(raw_entries, list):
@@ -7518,6 +10428,8 @@ QUALITY REQUIREMENTS
         if not self._require_admin():
             return
         if not self._require_csrf():
+            return
+        if not self._require_sensitive_rate_limit("admin_patch"):
             return
         parsed = urlparse(self.path)
         payload = self._read_json()
@@ -7592,6 +10504,8 @@ QUALITY REQUIREMENTS
                         "option_field": request.get("option_field"),
                         "option_value": request.get("option_value"),
                     },
+                    before={"request": request},
+                    after={"request": updated},
                 )
                 self._json(200, {"ok": True, "request": updated})
                 return
@@ -7618,6 +10532,20 @@ QUALITY REQUIREMENTS
             if not player_before:
                 self._json(404, {"error": "player_not_found"})
                 return
+            current_team_code = normalize_team_code(player_before.get("team_code"))
+            request_team_code = normalize_team_code(request.get("team_code"))
+            if request_team_code and current_team_code != request_team_code:
+                self._json(
+                    409,
+                    {
+                        "error": "player_team_changed",
+                        "current_team_code": current_team_code,
+                        "request_team_code": request_team_code,
+                    },
+                )
+                return
+            if not self._require_team_write_access(current_team_code):
+                return
             current_option = str(player_before.get(option_field) or "").strip().upper()
             if current_option != option_value:
                 self._json(409, {"error": "option_changed", "current_option": current_option})
@@ -7636,6 +10564,7 @@ QUALITY REQUIREMENTS
             if not ok:
                 self._json(404, {"error": "player_not_found"})
                 return
+            player_after = self.db.get_player_record(player_id)
             updated = self.db.mark_gm_option_request_decided(
                 request_id,
                 "approved",
@@ -7659,6 +10588,8 @@ QUALITY REQUIREMENTS
                     "option_action_season": option_action_season,
                     "applied_fields": sorted(player_payload.keys()),
                 },
+                before={"request": request, "player": player_before},
+                after={"request": updated, "player": player_after},
             )
             if self._discord_notify_requested(payload):
                 self._notify_contract_option_action(
@@ -7868,10 +10799,11 @@ QUALITY REQUIREMENTS
                 self._json(400, {"error": "settings_payload_required"})
                 return
 
+            current_year_update_result: Optional[Dict[str, Any]] = None
             if next_salary_cap is not None:
                 self.db.update_setting("salary_cap_2025", str(int(next_salary_cap)))
             if next_current_year is not None:
-                self.db.update_setting("current_year", str(next_current_year))
+                current_year_update_result = self.db.update_current_year(next_current_year)
             if next_first_apron is not None:
                 self.db.update_setting("first_apron", str(int(next_first_apron)))
             if next_second_apron is not None:
@@ -7909,6 +10841,7 @@ QUALITY REQUIREMENTS
                     "first_apron": next_first_apron,
                     "second_apron": next_second_apron,
                     "cash_limit_total": next_cash_limit_total,
+                    "current_year_update": current_year_update_result,
                     "trade_move_limit_pre30": next_trade_move_limit_pre30,
                     "trade_move_limit_post30": next_trade_move_limit_post30,
                     "trade_move_phase": next_trade_move_phase,
@@ -7966,13 +10899,58 @@ QUALITY REQUIREMENTS
             self._json(200 if ok else 404, {"ok": ok})
             return
 
+        if parsed.path.startswith("/api/player-transactions/"):
+            try:
+                transaction_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_transaction_id"})
+                return
+            ok = self.db.update_player_transaction(transaction_id, payload)
+            if ok:
+                self._log_admin_action(
+                    "update",
+                    "player_transaction",
+                    str(transaction_id),
+                    payload.get("team_code"),
+                    {"fields": sorted(payload.keys())},
+                )
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
+        if parsed.path.startswith("/api/player-profiles/"):
+            try:
+                profile_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_profile_id"})
+                return
+            ok = self.db.update_player_profile(profile_id, payload)
+            if ok:
+                self._log_admin_action(
+                    "update",
+                    "player_profile",
+                    str(profile_id),
+                    None,
+                    {"fields": sorted(payload.keys())},
+                )
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
         if parsed.path.startswith("/api/players/"):
-            player_id = int(parsed.path.split("/")[-1])
+            try:
+                player_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_player_id"})
+                return
             option_action = str(payload.get("option_action") or "").strip().lower()
             option_action_field = str(payload.get("option_action_field") or "").strip()
             option_action_value = str(payload.get("option_action_value") or "").strip().upper()
             option_action_season: Optional[int] = None
-            player_before: Optional[Dict[str, Any]] = None
+            player_before = self.db.get_player_record(player_id)
+            if not player_before:
+                self._json(404, {"error": "player_not_found"})
+                return
+            if not self._require_team_write_access(player_before.get("team_code")):
+                return
             if option_action:
                 if option_action not in {"accepted", "rejected"}:
                     self._json(400, {"error": "invalid_option_action"})
@@ -7985,10 +10963,6 @@ QUALITY REQUIREMENTS
                 if option_action_season is None:
                     self._json(400, {"error": "invalid_option_action_season"})
                     return
-                player_before = self.db.get_player_record(player_id)
-                if not player_before:
-                    self._json(404, {"error": "player_not_found"})
-                    return
                 if not option_action_value:
                     option_action_value = str(payload.get(option_action_field) or player_before.get(option_action_field) or "").strip().upper()
                 if option_action_value not in {"TO", "PO", "QO", "GAP"}:
@@ -7998,6 +10972,7 @@ QUALITY REQUIREMENTS
                     payload[option_action_field] = None
             ok = self.db.update_player(player_id, payload)
             if ok:
+                player_after = self.db.get_player_record(player_id)
                 log_details: Dict[str, Any] = {"fields": sorted(payload.keys())}
                 if option_action and option_action_season is not None:
                     log_details.update(
@@ -8008,7 +10983,15 @@ QUALITY REQUIREMENTS
                             "option_action_season": option_action_season,
                         }
                     )
-                self._log_admin_action("update", "player", str(player_id), None, log_details)
+                self._log_admin_action(
+                    "update",
+                    "player",
+                    str(player_id),
+                    player_before.get("team_code"),
+                    log_details,
+                    before=player_before,
+                    after=player_after,
+                )
                 if (
                     option_action
                     and option_action_season is not None
@@ -8032,6 +11015,8 @@ QUALITY REQUIREMENTS
                 self._json(404, {"error": "not_found"})
                 return
             code = parts[3]
+            if not self._require_team_write_access(code):
+                return
             season_year = parse_int(payload.get("season_year"))
             if season_year is None or season_year < 2000 or season_year > 2100:
                 self._json(400, {"error": "invalid_season_year"})
@@ -8055,6 +11040,8 @@ QUALITY REQUIREMENTS
                 self._json(404, {"error": "not_found"})
                 return
             code = parts[3]
+            if not self._require_team_write_access(code):
+                return
             try:
                 owner_office = self.db.update_team_owner_office(code, payload)
             except ValueError as err:
@@ -8077,6 +11064,8 @@ QUALITY REQUIREMENTS
 
         if parsed.path.startswith("/api/teams/"):
             code = parsed.path.split("/")[-1]
+            if not self._require_team_write_access(code):
+                return
             update_payload: Dict[str, Any] = {}
             if "gm" in payload:
                 gm_raw = payload.get("gm")
@@ -8110,21 +11099,59 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/assets/"):
-            asset_id = int(parsed.path.split("/")[-1])
+            try:
+                asset_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_asset_id"})
+                return
+            asset_before = self.db.get_asset_record(asset_id)
+            if not asset_before:
+                self._json(404, {"error": "asset_not_found"})
+                return
+            if not self._require_team_write_access(asset_before.get("team_code")):
+                return
             if "asset_type" in payload and str(payload.get("asset_type") or "").strip().lower() == "dead_cap":
                 self._json(400, {"error": "dead_cap_moved_to_dead_contracts"})
                 return
             ok = self.db.update_asset(asset_id, payload)
             if ok:
-                self._log_admin_action("update", "asset", str(asset_id), None, {"fields": sorted(payload.keys())})
+                asset_after = self.db.get_asset_record(asset_id)
+                self._log_admin_action(
+                    "update",
+                    "asset",
+                    str(asset_id),
+                    asset_before.get("team_code"),
+                    {"fields": sorted(payload.keys())},
+                    before=asset_before,
+                    after=asset_after,
+                )
             self._json(200 if ok else 404, {"ok": ok})
             return
 
         if parsed.path.startswith("/api/dead-contracts/"):
-            dead_contract_id = int(parsed.path.split("/")[-1])
+            try:
+                dead_contract_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_dead_contract_id"})
+                return
+            dead_before = self.db.get_dead_contract_record(dead_contract_id)
+            if not dead_before:
+                self._json(404, {"error": "dead_contract_not_found"})
+                return
+            if not self._require_team_write_access(dead_before.get("team_code")):
+                return
             ok = self.db.update_dead_contract(dead_contract_id, payload)
             if ok:
-                self._log_admin_action("update", "dead_contract", str(dead_contract_id), None, {"fields": sorted(payload.keys())})
+                dead_after = self.db.get_dead_contract_record(dead_contract_id)
+                self._log_admin_action(
+                    "update",
+                    "dead_contract",
+                    str(dead_contract_id),
+                    dead_before.get("team_code"),
+                    {"fields": sorted(payload.keys())},
+                    before=dead_before,
+                    after=dead_after,
+                )
             self._json(200 if ok else 404, {"ok": ok})
             return
 
@@ -8134,6 +11161,8 @@ QUALITY REQUIREMENTS
         if not self._require_admin():
             return
         if not self._require_csrf():
+            return
+        if not self._require_sensitive_rate_limit("admin_delete"):
             return
         parsed = urlparse(self.path)
 
@@ -8161,27 +11190,87 @@ QUALITY REQUIREMENTS
             self._json(200 if ok else 404, {"ok": ok})
             return
 
+        if parsed.path.startswith("/api/player-transactions/"):
+            try:
+                transaction_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_transaction_id"})
+                return
+            ok = self.db.delete_player_transaction(transaction_id)
+            if ok:
+                self._log_admin_action("delete", "player_transaction", str(transaction_id))
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
         if parsed.path.startswith("/api/players/"):
-            player_id = int(parsed.path.split("/")[-1])
+            try:
+                player_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_player_id"})
+                return
+            player_before = self.db.get_player_record(player_id)
+            if not player_before:
+                self._json(404, {"error": "player_not_found"})
+                return
+            if not self._require_team_write_access(player_before.get("team_code")):
+                return
             ok = self.db.delete_player(player_id)
             if ok:
-                self._log_admin_action("delete", "player", str(player_id))
+                self._log_admin_action(
+                    "delete",
+                    "player",
+                    str(player_id),
+                    player_before.get("team_code"),
+                    before=player_before,
+                )
             self._json(200 if ok else 404, {"ok": ok})
             return
 
         if parsed.path.startswith("/api/assets/"):
-            asset_id = int(parsed.path.split("/")[-1])
+            try:
+                asset_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_asset_id"})
+                return
+            asset_before = self.db.get_asset_record(asset_id)
+            if not asset_before:
+                self._json(404, {"error": "asset_not_found"})
+                return
+            if not self._require_team_write_access(asset_before.get("team_code")):
+                return
             ok = self.db.delete_asset(asset_id)
             if ok:
-                self._log_admin_action("delete", "asset", str(asset_id))
+                self._log_admin_action(
+                    "delete",
+                    "asset",
+                    str(asset_id),
+                    asset_before.get("team_code"),
+                    before=asset_before,
+                )
             self._json(200 if ok else 404, {"ok": ok})
             return
 
         if parsed.path.startswith("/api/dead-contracts/"):
-            dead_contract_id = int(parsed.path.split("/")[-1])
+            try:
+                dead_contract_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_dead_contract_id"})
+                return
+            dead_before = self.db.get_dead_contract_record(dead_contract_id)
+            if not dead_before:
+                self._json(404, {"error": "dead_contract_not_found"})
+                return
+            if not self._require_team_write_access(dead_before.get("team_code")):
+                return
             ok = self.db.delete_dead_contract(dead_contract_id)
             if ok:
-                self._log_admin_action("delete", "dead_contract", str(dead_contract_id))
+                self._log_admin_action(
+                    "delete",
+                    "dead_contract",
+                    str(dead_contract_id),
+                    dead_before.get("team_code"),
+                    before=dead_before,
+                )
             self._json(200 if ok else 404, {"ok": ok})
             return
 

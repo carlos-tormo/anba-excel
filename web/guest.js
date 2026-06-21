@@ -6,6 +6,7 @@ const state = {
   trackerRows: [],
   trackerEconomyRows: [],
   trackerEconomySeasons: [],
+  leaguePlayers: [],
   freeAgents: [],
   draftOrder: {
     draft_year: null,
@@ -37,6 +38,7 @@ const state = {
     dead_contracts: { key: 'label', dir: 'asc' },
     exceptions: { key: 'label', dir: 'asc' },
     player_rights: { key: 'label', dir: 'asc' },
+    league_players: { key: 'name', dir: 'asc' },
     free_agents: { key: 'name', dir: 'asc' },
   },
   ui: {
@@ -62,6 +64,11 @@ const state = {
     selections: {},
     seasonStart: null,
     loading: false,
+    validationResult: null,
+    validationSignature: null,
+    validationLoadingSignature: null,
+    validationErrorSignature: null,
+    validationError: null,
   },
   filters: {
     guaranteedOnly: false,
@@ -73,12 +80,6 @@ const state = {
 const SEASON_WINDOW_SIZE = 6;
 const TRADE_MACHINE_MIN_TEAMS = 2;
 const TRADE_MACHINE_MAX_TEAMS = 6;
-const TRADE_MATCH_LOW_BAND = 7_250_000;
-const TRADE_MATCH_HIGH_BAND = 29_000_000;
-const TRADE_MATCH_CUSHION = 250_000;
-const TRADE_MATCH_EXPANDED_BUFFER_RATIO = 0.05513854478;
-const TRADE_MATCH_EXPANDED_BUFFER_FALLBACK = 8_527_000;
-const TRADE_ROOM_TPE_BUFFER = 250_000;
 const TRADE_PICK_ACTION_SEND = 'send_pick';
 const TRADE_PICK_ACTION_SWAP = 'swap_rights';
 const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
@@ -1262,12 +1263,14 @@ function capHoldInfo(player, season) {
 }
 
 function salaryDisplayNumericValue(row, season) {
+  if (isExhibit10Player(row)) return 0;
   const hold = capHoldInfo(row, season);
   if (hold.displayable && hold.amount > 0) return hold.amount;
   return salaryNumericValue(row, season);
 }
 
 function playerCapCountValue(player, season) {
+  if (isExhibit10Player(player)) return 0;
   const hold = capHoldInfo(player, season);
   if (hold.displayable && hold.amount > 0) return hold.amount;
   if (isTwoWayPlayer(player)) return 0;
@@ -1275,10 +1278,12 @@ function playerCapCountValue(player, season) {
 }
 
 function playerApronCountValue(player, season) {
+  if (isExhibit10Player(player)) return 0;
   const hold = capHoldInfo(player, season);
   if (hold.displayable) return 0;
   if (isTwoWayPlayer(player)) return 0;
-  return salaryNumericValue(player, season);
+  const salary = salaryNumericValue(player, season);
+  return salary + apronYosAdjustmentValue(player, season, salary);
 }
 
 function amountNumericValue(row) {
@@ -1291,6 +1296,42 @@ function amountNumericValue(row) {
 
 function isTwoWayPlayer(player) {
   return boolValue(player?.is_two_way) || String(player?.bird_rights || '').trim().toUpperCase() === 'TW';
+}
+
+function isExhibit10Player(player) {
+  const normalized = String(player?.bird_rights || '').trim().toUpperCase().replace(/[\s_-]/g, '');
+  return normalized === 'E10' || normalized === 'EXHIBIT10';
+}
+
+function normalizeExperienceYears(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const parsed = Number(raw.replace('+', '').replace(',', '.'));
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.min(50, Math.floor(parsed)));
+}
+
+function isFreeAgentSignedContract(player) {
+  return boolValue(player?.signed_as_free_agent);
+}
+
+function apronYosAdjustmentValue(player, season, salary = salaryNumericValue(player, season)) {
+  const experience = normalizeExperienceYears(player?.experience_years);
+  if (experience !== 0 && experience !== 1) return 0;
+  if (!isFreeAgentSignedContract(player)) return 0;
+  const salaryValue = Number(salary || 0);
+  if (!Number.isFinite(salaryValue) || salaryValue <= 0) return 0;
+  const minimumTwoYos = minimumSalaryForSeason(season, 2, 1);
+  if (!minimumTwoYos) return 0;
+  return Math.max(0, minimumTwoYos - salaryValue);
+}
+
+function capTotalTooltipText() {
+  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato y cap holds activos. Excluye: cap holds renunciados, contratos Two-Way y contratos Exhibit 10.';
+}
+
+function apronTooltipText() {
+  return 'Cuenta del APRON = Team Salary sin cap holds. Incluye salarios de jugadores, Dead Contracts y el ajuste 0-1 YOS cuando aplica: si un jugador con 0 o 1 año de servicio firma como agente libre, cuenta como mínimo de 2 YOS si su salario queda por debajo. Excluye cap holds, Two-Way y Exhibit 10. Unlikely bonuses, grievances, QO/matches, tenders y SRP Exception no aplican o se omiten por ahora.';
 }
 
 function rosterLimits() {
@@ -1434,50 +1475,22 @@ function luxuryRepeaterForSeason(data, season) {
   return false;
 }
 
-function luxuryTaxAmount(overage, repeater) {
-  let remaining = Math.max(0, Number(overage || 0));
-  if (!remaining) return 0;
-  const tierSize = 5_000_000;
-  const baseRates = repeater
-    ? [2.5, 2.75, 3.5, 4.25]
-    : [1.5, 1.75, 2.5, 3.25];
-  let tax = 0;
-  let tierIndex = 0;
-  while (remaining > 0) {
-    const taxable = Math.min(tierSize, remaining);
-    const rate = tierIndex < baseRates.length
-      ? baseRates[tierIndex]
-      : baseRates[baseRates.length - 1] + ((tierIndex - baseRates.length + 1) * 0.5);
-    tax += taxable * rate;
-    remaining -= taxable;
-    tierIndex += 1;
-  }
-  return tax;
+function serverSeasonSummary(data, season) {
+  const summaries = data?.season_summaries || {};
+  const direct = summaries[String(season)];
+  if (direct) return direct;
+  const base = data?.summary || null;
+  return Number(base?.current_year) === Number(season) ? base : null;
 }
 
 function teamSeasonBalances(data, season) {
-  const players = data?.players || [];
-  const deadContracts = data?.dead_contracts || [];
-  const playerTotal = players.reduce((sum, player) => sum + salaryNumericValue(player, season), 0);
-  const capPlayerTotal = players.reduce((sum, player) => sum + playerCapCountValue(player, season), 0);
-  const apronPlayerTotal = players.reduce((sum, player) => sum + playerApronCountValue(player, season), 0);
-  const normalDeadCapTotal = deadContracts
-    .filter((dead) => !isTwoWayDeadContract(dead) && !deadContractExcludedFromCap(dead))
-    .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
-  const deadGastoTotal = deadContracts
-    .filter((dead) => !deadContractExcludedFromGasto(dead))
-    .reduce((sum, dead) => sum + salaryNumericValue(dead, season), 0);
-  const capTotal = capPlayerTotal + normalDeadCapTotal;
-  const apronAccount = apronPlayerTotal + normalDeadCapTotal;
-  const gastoTotal = playerTotal + deadGastoTotal;
-  const salaryCap = capForSeason(season);
-  const luxuryCap = luxuryCapForSeason(season);
-  const luxuryOverage = Math.max(0, capTotal - luxuryCap);
+  const serverSummary = serverSeasonSummary(data, season);
   return {
-    cap_total: capTotal,
-    gasto_total: gastoTotal,
-    apron_account: apronAccount,
-    luxury_tax: luxuryTaxAmount(luxuryOverage, luxuryRepeaterForSeason(data, season)),
+    cap_total: Number(serverSummary?.cap_figure || 0),
+    gasto_total: Number(serverSummary?.payroll || 0),
+    apron_account: Number(serverSummary?.apron_account || 0),
+    luxury_tax: Number(serverSummary?.luxury_tax || 0),
+    missing_server_summary: !serverSummary,
   };
 }
 
@@ -1491,20 +1504,22 @@ function displayBalanceSeason() {
 
 function summaryForBalanceSeason(data, season = displayBalanceSeason()) {
   const base = data?.summary || {};
-  const balances = teamSeasonBalances(data, season);
-  const salaryCap = capForSeason(season) || Number(base.salary_cap_2025 || 0);
-  const luxuryCap = luxuryCapForSeason(season);
-  const firstApron = firstApronForSeason(season) || Number(base.first_apron || 0);
-  const secondApron = secondApronForSeason(season) || Number(base.second_apron || 0);
+  const serverSummary = serverSeasonSummary(data, season);
+  if (serverSummary) {
+    return { ...base, ...serverSummary, current_year: season };
+  }
   return {
     ...base,
     current_year: season,
-    cap_figure: balances.cap_total,
-    payroll: balances.gasto_total,
-    room_to_cap: salaryCap - balances.cap_total,
-    room_to_luxury: luxuryCap - balances.cap_total,
-    room_to_first_apron: firstApron - balances.apron_account,
-    room_to_second_apron: secondApron - balances.apron_account,
+    cap_figure: 0,
+    payroll: 0,
+    apron_account: 0,
+    luxury_tax: 0,
+    room_to_cap: 0,
+    room_to_luxury: 0,
+    room_to_first_apron: 0,
+    room_to_second_apron: 0,
+    missing_server_summary: true,
   };
 }
 
@@ -1915,8 +1930,10 @@ function tradeMachineAssetMeta(key) {
   if (type === 'player') {
     const player = (data.players || []).find((item) => Number(item.id) === id);
     if (!player) return null;
-    const salary = salaryNumericValue(player, tradeMachineSeasonStart());
-    const capSalary = playerApronCountValue(player, tradeMachineSeasonStart());
+    const season = tradeMachineSeasonStart();
+    const salary = isExhibit10Player(player) ? 0 : salaryNumericValue(player, season);
+    const capSalary = playerCapCountValue(player, season);
+    const apronSalary = playerApronCountValue(player, season);
     return {
       key,
       type,
@@ -1926,6 +1943,7 @@ function tradeMachineAssetMeta(key) {
       detail: [player.position, player.bird_rights].filter(Boolean).join(' · '),
       salary,
       capSalary,
+      apronSalary,
       rating: Number(player.rating || 0) || 0,
       ratingText: String(player.rating || '').trim(),
       isMinimumContract: salaryLooksLikeMinimum(salary, tradeMachineSeasonStart()),
@@ -1947,6 +1965,7 @@ function tradeMachineAssetMeta(key) {
       detail: String(pick.detail || '').trim(),
       salary: 0,
       capSalary: 0,
+      apronSalary: 0,
       restricted: draftPickIsRestricted(pick),
       protected: draftPickIsProtected(pick),
       conditional: draftPickType(pick) === 'conditional',
@@ -1965,6 +1984,7 @@ function tradeMachineAssetMeta(key) {
       detail: String(right.detail || '').trim(),
       salary: 0,
       capSalary: 0,
+      apronSalary: 0,
       restricted: false,
       protected: false,
       conditional: false,
@@ -2064,6 +2084,8 @@ function tradeMachineFlowSkeleton(code) {
     outgoingSalary: 0,
     incomingCapSalary: 0,
     outgoingCapSalary: 0,
+    incomingApronSalary: 0,
+    outgoingApronSalary: 0,
     incomingAssets: [],
     outgoingAssets: [],
     postCap: beforeCap,
@@ -2088,11 +2110,14 @@ function tradeMachineFlows() {
     const asset = tradeMachineAssetForSelection(meta, selection);
     const salary = Number(asset.salary || 0);
     const capSalary = Number(asset.capSalary ?? asset.salary ?? 0);
+    const apronSalary = Number(asset.apronSalary ?? asset.capSalary ?? asset.salary ?? 0);
     flows[selection.fromTeam].outgoingSalary += salary;
     flows[selection.fromTeam].outgoingCapSalary += capSalary;
+    flows[selection.fromTeam].outgoingApronSalary += apronSalary;
     flows[selection.fromTeam].outgoingAssets.push({ ...asset, toTeam: selection.toTeam });
     flows[selection.toTeam].incomingSalary += salary;
     flows[selection.toTeam].incomingCapSalary += capSalary;
+    flows[selection.toTeam].incomingApronSalary += apronSalary;
     flows[selection.toTeam].incomingAssets.push({ ...asset, fromTeam: selection.fromTeam });
     if (asset.type === 'player') {
       if (asset.isTwoWay) {
@@ -2106,621 +2131,70 @@ function tradeMachineFlows() {
   });
   Object.values(flows).forEach((flow) => {
     flow.postCap = flow.beforeCap + flow.incomingCapSalary - flow.outgoingCapSalary;
-    flow.postApronAccount = flow.beforeApronAccount + flow.incomingCapSalary - flow.outgoingCapSalary;
+    flow.postApronAccount = flow.beforeApronAccount + flow.incomingApronSalary - flow.outgoingApronSalary;
     flow.afterBalances = tradeMachineBalanceSnapshot(flow.postCap, flow.postApronAccount);
   });
   return flows;
 }
 
-function tradeMachineExpandedBuffer(salaryCap) {
-  const cap = Number(salaryCap || state.settings.salary_cap_2025 || 0);
-  const calculated = Math.round(cap * TRADE_MATCH_EXPANDED_BUFFER_RATIO);
-  return calculated > 0 ? calculated : TRADE_MATCH_EXPANDED_BUFFER_FALLBACK;
-}
-
-function tradeMachineExpandedTpeLimit(outgoingSalary, salaryCap) {
-  const outgoing = Number(outgoingSalary || 0);
-  if (outgoing < TRADE_MATCH_LOW_BAND) return outgoing * 2 + TRADE_MATCH_CUSHION;
-  if (outgoing <= TRADE_MATCH_HIGH_BAND) return outgoing + tradeMachineExpandedBuffer(salaryCap);
-  return outgoing * 1.25;
-}
-
-function tradeMachineAggregatedTpeLimit(outgoingSalary) {
-  return Number(outgoingSalary || 0) + TRADE_MATCH_CUSHION;
-}
-
-function tradeMachineStandardOrAggregatedTpeLabel(outgoingPlayers) {
-  return Number(outgoingPlayers || 0) > 1 ? 'TPE agregada' : 'TPE estándar';
-}
-
-function tradeMachineSalaryMatchProfile(code, flow) {
-  const data = state.tradeMachine.teamDataByCode[code];
-  const summary = data?.summary || {};
-  const thresholds = tradeMachineThresholds();
-  const salaryCap = thresholds.salaryCap || Number(summary.salary_cap_2025 || 0);
-  const incoming = Number(flow?.incomingSalary || 0);
-  const outgoing = Number(flow?.outgoingSalary || 0);
-  const beforeCap = Number(flow?.beforeCap || 0);
-  const postCap = Number(flow?.postCap || 0);
-  const outgoingPlayers = (flow?.outgoingAssets || []).filter((asset) => asset.type === 'player').length;
-  const incomingPlayers = (flow?.incomingAssets || []).filter((asset) => asset.type === 'player').length;
-  const firstApronLimited = tradeMachineFirstApronLimited(code, flow);
-  const secondApronLimited = tradeMachineSecondApronLimited(code, flow);
-  const standardLimit = outgoingPlayers > 0 && incomingPlayers > 0
-    ? tradeMachineAggregatedTpeLimit(outgoing)
-    : 0;
-
-  if (incoming <= 0 || incoming <= outgoing) {
-    return {
-      legal: true,
-      tpe: 'none',
-      label: 'Sin TPE',
-      limit: outgoing,
-      message: incoming <= 0
-        ? 'No recibe salario de jugadores.'
-        : `Recibe ${formatBalanceMoney(incoming)} y envía ${formatBalanceMoney(outgoing)}; no necesita recibir más salario del que envía.`,
-    };
-  }
-
-  if (secondApronLimited) {
-    return {
-      legal: false,
-      tpe: 'second_apron_block',
-      label: 'Restricción 2do apron',
-      limit: outgoing,
-      message: `Está limitado por el 2do apron: no puede recibir más salario del que envía (${formatBalanceMoney(outgoing)}). Recibe ${formatBalanceMoney(incoming)}.`,
-    };
-  }
-
-  if (firstApronLimited) {
-    const label = tradeMachineStandardOrAggregatedTpeLabel(outgoingPlayers);
-    const hardCapTrigger = outgoingPlayers > 1 ? 'second' : '';
-    return {
-      legal: outgoingPlayers > 0 && incomingPlayers > 0 && incoming <= standardLimit,
-      tpe: outgoingPlayers > 1 ? 'aggregated' : 'standard',
-      label,
-      limit: standardLimit,
-      hardCapTrigger,
-      message: outgoingPlayers <= 0
-        ? `Necesita enviar al menos un jugador para usar ${label}.`
-        : incomingPlayers <= 0
-          ? `Necesita recibir al menos un jugador para usar ${label}.`
-          : incoming <= standardLimit
-            ? `${label}: puede recibir hasta ${formatBalanceMoney(standardLimit)} (100% del salario enviado + $250k).`
-            : `${label}: puede recibir hasta ${formatBalanceMoney(standardLimit)} (100% del salario enviado + $250k), pero recibe ${formatBalanceMoney(incoming)}.`,
-    };
-  }
-
-  const roomLimit = outgoing + Math.max(0, salaryCap + TRADE_ROOM_TPE_BUFFER - beforeCap);
-  const capSpaceLegal = beforeCap < salaryCap
-    && incomingPlayers > 0
-    && postCap <= salaryCap;
-  const roomLegal = beforeCap < salaryCap
-    && outgoingPlayers > 0
-    && incomingPlayers > 0
-    && postCap <= salaryCap + TRADE_ROOM_TPE_BUFFER;
-  const expandedLimit = outgoingPlayers > 0
-    ? tradeMachineExpandedTpeLimit(outgoing, salaryCap)
-    : 0;
-  const expandedLegal = outgoingPlayers > 0 && incomingPlayers > 0 && incoming <= expandedLimit;
-
-  if (capSpaceLegal) {
-    return {
-      legal: true,
-      tpe: 'cap_room',
-      label: 'Espacio salarial',
-      limit: roomLimit,
-      message: `Absorbe el salario con espacio salarial; límite ${formatBalanceMoney(roomLimit)} antes de usar el buffer Room TPE.`,
-    };
-  }
-
-  if (standardLimit > 0 && incoming <= standardLimit) {
-    const label = tradeMachineStandardOrAggregatedTpeLabel(outgoingPlayers);
-    const hardCapTrigger = outgoingPlayers > 1 ? 'second' : '';
-    return {
-      legal: true,
-      tpe: outgoingPlayers > 1 ? 'aggregated' : 'standard',
-      label,
-      limit: standardLimit,
-      hardCapTrigger,
-      message: `${label}: puede recibir hasta ${formatBalanceMoney(standardLimit)} (100% del salario enviado + $250k).`,
-    };
-  }
-
-  if (expandedLegal) {
-    return {
-      legal: true,
-      tpe: 'expanded',
-      label: 'TPE expandida',
-      limit: expandedLimit,
-      hardCapTrigger: 'first',
-      message: `TPE expandida: puede recibir hasta ${formatBalanceMoney(expandedLimit)} según el salario enviado.`,
-    };
-  }
-
-  if (roomLegal) {
-    return {
-      legal: true,
-      tpe: 'room',
-      label: 'Room TPE',
-      limit: roomLimit,
-      message: `Room TPE: queda hasta $250k por encima del salary cap; límite ${formatBalanceMoney(roomLimit)} de salario recibido.`,
-    };
-  }
-
-  const bestLimit = Math.max(expandedLimit, beforeCap < salaryCap ? roomLimit : 0);
-  const reason = outgoingPlayers <= 0
-    ? 'no envía ningún jugador para crear una TPE'
-    : incomingPlayers <= 0
-      ? 'no recibe ningún jugador'
-      : 'supera los límites de TPE disponibles';
-  return {
-    legal: false,
-    tpe: 'none',
-    label: 'Sin TPE válida',
-    limit: bestLimit,
-    message: `No hay TPE válida: ${reason}. Puede recibir hasta ${formatBalanceMoney(bestLimit)}, pero recibe ${formatBalanceMoney(incoming)}.`,
-  };
-}
-
-function tradeMachineSalaryMatchIssue(code, flow) {
-  const data = state.tradeMachine.teamDataByCode[code];
-  if (!data) return null;
-  const summary = data.summary || {};
-  const thresholds = tradeMachineThresholds();
-  const firstApron = thresholds.firstApron;
-  const secondApron = thresholds.secondApron;
-  const hardCap = String(summary.apron_hard_cap || '').trim().toLowerCase();
-  const postApronAccount = Number(flow.postApronAccount ?? flow.postCap ?? 0);
-  if (hardCap === 'first' && firstApron > 0 && postApronAccount > firstApron) {
-    return {
-      severity: 'illegal',
-      rule: 'hard_cap',
-      teamCode: code,
-      message: 'Tiene límite duro en el 1er apron y acabaría por encima.',
-    };
-  }
-  if (hardCap === 'second' && secondApron > 0 && postApronAccount > secondApron) {
-    return {
-      severity: 'illegal',
-      rule: 'hard_cap',
-      teamCode: code,
-      message: 'Tiene límite duro en el 2do apron y acabaría por encima.',
-    };
-  }
-  const profile = tradeMachineSalaryMatchProfile(code, flow);
-  if (profile.legal) return null;
-  return {
-    severity: 'illegal',
-    rule: 'salary',
-    teamCode: code,
-    message: profile.message,
-  };
-}
-
-function tradeMachineFirstApronLimited(code, flow) {
-  const thresholds = tradeMachineThresholds();
-  const firstApron = Number(thresholds.firstApron || 0);
-  const beforeApronAccount = Number(flow?.beforeApronAccount ?? flow?.beforeCap ?? 0);
-  const postApronAccount = Number(flow?.postApronAccount ?? flow?.postCap ?? 0);
-  return firstApron > 0 && (beforeApronAccount >= firstApron || postApronAccount >= firstApron);
-}
-
-function tradeMachineSecondApronLimited(code, flow) {
-  const thresholds = tradeMachineThresholds();
-  const secondApron = Number(thresholds.secondApron || 0);
-  const beforeApronAccount = Number(flow?.beforeApronAccount ?? flow?.beforeCap ?? 0);
-  const postApronAccount = Number(flow?.postApronAccount ?? flow?.postCap ?? 0);
-  return secondApron > 0 && (beforeApronAccount >= secondApron || postApronAccount >= secondApron);
-}
-
-function tradeMachineMoveBucket() {
-  return normalizeMoveBucket(state.settings.trade_move_phase || 'pre30');
-}
-
-function tradeMachineMoveCountIssues(code, flow) {
-  const outgoingCount = (flow?.outgoingAssets || []).length;
-  if (!outgoingCount) return [];
-  const data = state.tradeMachine.teamDataByCode[code] || {};
-  const moveSummary = data.move_summary || {};
-  const bucket = tradeMachineMoveBucket();
-  const remaining = Number(moveSummary[`remaining_${bucket}`]);
-  if (!Number.isFinite(remaining)) {
-    return [{
-      severity: 'warning',
-      rule: 'moves',
-      teamCode: code,
-      message: `Envía ${outgoingCount} activo(s); no se pudo leer el saldo de movimientos ${bucket === 'post30' ? 'post-30' : 'pre-30'}.`,
-    }];
-  }
-  if (outgoingCount > remaining) {
-    return [{
-      severity: 'illegal',
-      rule: 'moves',
-      teamCode: code,
-      message: `Necesita ${outgoingCount} movimiento(s) y solo tiene ${remaining} disponible(s) en ${bucket === 'post30' ? 'post-30' : 'pre-30'}.`,
-    }];
-  }
-  return [];
-}
-
-function tradeMachineMultiTeamParticipationIssue(code, flow, teamCount) {
-  if (teamCount <= 2) return null;
-  const incomingCount = (flow?.incomingAssets || []).length;
-  const outgoingCount = (flow?.outgoingAssets || []).length;
-  if (!incomingCount && !outgoingCount) {
-    return {
-      severity: 'illegal',
-      rule: 'multi_team',
-      teamCode: code,
-      message: 'En un traspaso de más de dos equipos, cada equipo seleccionado debe enviar y recibir algo.',
-    };
-  }
-  if (!incomingCount || !outgoingCount) {
-    return {
-      severity: 'illegal',
-      rule: 'multi_team',
-      teamCode: code,
-      message: `En un traspaso de más de dos equipos debe enviar y recibir algo; ahora ${incomingCount ? 'recibe' : 'no recibe'} y ${outgoingCount ? 'envía' : 'no envía'}.`,
-    };
-  }
-  return null;
-}
-
-function tradeMachineSecondApronAggregationIssues(code, flow) {
-  if (!tradeMachineSecondApronLimited(code, flow)) return [];
-  const outgoingPlayers = (flow?.outgoingAssets || []).filter((asset) => asset.type === 'player');
-  if (outgoingPlayers.length <= 1 || Number(flow?.incomingSalary || 0) <= 0) return [];
-  return [{
-    severity: 'illegal',
-    rule: 'second_apron_aggregation',
-    teamCode: code,
-    message: `Equipo en 2do apron: no puede agregar salarios de varios jugadores (${outgoingPlayers.length}) para recibir salario.`,
-  }];
-}
-
-function tradeMachineApronManualReviewIssues(code, flow) {
-  const issues = [];
-  if (!flow?.incomingAssets?.length && !flow?.outgoingAssets?.length) return issues;
-  if (tradeMachineFirstApronLimited(code, flow)) {
-    issues.push({
-      severity: 'warning',
-      rule: 'manual_review',
-      teamCode: code,
-      message: 'Equipo limitado por 1er apron: revisar manualmente TPE de temporada anterior, excepciones y jugadores cortados con salario previo > MID si aplican.',
-    });
-  }
-  if (tradeMachineSecondApronLimited(code, flow)) {
-    issues.push({
-      severity: 'warning',
-      rule: 'manual_review',
-      teamCode: code,
-      message: 'Equipo limitado por 2do apron: revisar manualmente que no haya cash, TPMID ni TPE creada mediante S&T.',
-    });
-  }
-  return issues;
-}
-
-function tradeMachineLeyRandleIssues(code, flow) {
-  const issues = [];
-  (flow?.outgoingAssets || [])
-    .filter((asset) => asset.type === 'player')
-    .forEach((asset) => {
-      const rating = Number(asset.rating || 0);
-      if (rating >= 85 && rating <= 90) {
-        issues.push({
-          severity: 'warning',
-          rule: 'manual_review',
-          teamCode: code,
-          message: `Ley Randle: ${asset.label} (${rating}) no puede salir si llegó vía trade esta temporada, salvo lesión de temporada.`,
-        });
-      } else if (rating >= 80 && rating < 85) {
-        issues.push({
-          severity: 'warning',
-          rule: 'manual_review',
-          teamCode: code,
-          message: `Ley Randle: ${asset.label} (${rating}) debe esperar 2 meses/preseason o 30 partidos/season desde su llegada vía trade.`,
-        });
-      }
-    });
-  return issues;
-}
-
-function tradeMachineStackingMinimumIssues(code, flow) {
-  const outgoingPlayers = (flow?.outgoingAssets || []).filter((asset) => asset.type === 'player');
-  const incomingPlayers = (flow?.incomingAssets || []).filter((asset) => asset.type === 'player');
-  const minimumOutgoing = outgoingPlayers.filter((asset) => asset.isMinimumContract);
-  if (outgoingPlayers.length < 3 || incomingPlayers.length >= outgoingPlayers.length || minimumOutgoing.length <= 1) {
-    return [];
-  }
-  return [{
-    severity: 'warning',
-    rule: 'minimum_stacking',
-    teamCode: code,
-    message: `Envía ${outgoingPlayers.length} jugadores, ${minimumOutgoing.length} mínimos, y recibe menos jugadores. Puede ser ilegal fuera del periodo 15-Dic/deadline; falta configurar fecha de trade para convertirlo en bloqueo automático.`,
-  }];
-}
-
-function tradeMachineHardCapRank(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'first') return 2;
-  if (normalized === 'second') return 1;
-  return 0;
-}
-
-function tradeMachineHardCapTriggerIssues(code, flow) {
-  const data = state.tradeMachine.teamDataByCode[code] || {};
-  const currentHardCap = String(data.summary?.apron_hard_cap || '').trim().toLowerCase();
-  const profile = tradeMachineSalaryMatchProfile(code, flow);
-  const trigger = String(profile.hardCapTrigger || '').trim().toLowerCase();
-  if (!profile.legal || !['first', 'second'].includes(trigger)) return [];
-  if (tradeMachineHardCapRank(currentHardCap) >= tradeMachineHardCapRank(trigger)) return [];
-  const apronLabel = trigger === 'first' ? '1er apron' : '2do apron';
-  const reason = trigger === 'first'
-    ? 'usar la TPE expandida'
-    : 'agregar salarios de varios jugadores';
-  return [{
-    severity: 'warning',
-    rule: 'hard_cap_trigger',
-    teamCode: code,
-    message: `El traspaso dejaría al equipo hard-capped en el ${apronLabel} por ${reason}.`,
-  }];
-}
-
-function tradeMachineIssuesForRule(issues, rule) {
-  return (issues || []).filter((issue) => issue.rule === rule);
-}
-
-function tradeMachineIssueMessage(issue) {
-  const teamPrefix = issue.teamCode ? `${issue.teamCode}: ` : '';
-  return `${teamPrefix}${issue.message}`;
-}
-
-function tradeMachineSalaryPassMessages(flows) {
-  const messages = Object.entries(flows || {})
-    .map(([code, flow]) => {
-      if (!flow?.incomingAssets?.length && !flow?.outgoingAssets?.length) return '';
-      const profile = tradeMachineSalaryMatchProfile(code, flow);
-      if (!profile.legal) return '';
-      if (profile.tpe === 'none' && Number(flow.incomingSalary || 0) <= 0) return '';
-      return `${code}: ${profile.message}`;
-    })
-    .filter(Boolean);
-  return messages.length
-    ? messages
-    : ['El cuadre salarial básico pasa para todos los equipos seleccionados.'];
-}
-
-function tradeMachineRuleChecklist(issues, selectedCount, flows = {}) {
-  const salaryIssues = tradeMachineIssuesForRule(issues, 'salary');
-  const moveIssues = tradeMachineIssuesForRule(issues, 'moves');
-  const multiTeamIssues = tradeMachineIssuesForRule(issues, 'multi_team');
-  const hardCapIssues = tradeMachineIssuesForRule(issues, 'hard_cap');
-  const hardCapTriggerIssues = tradeMachineIssuesForRule(issues, 'hard_cap_trigger');
-  const secondApronAggregationIssues = tradeMachineIssuesForRule(issues, 'second_apron_aggregation');
-  const minimumStackingIssues = tradeMachineIssuesForRule(issues, 'minimum_stacking');
-  const restrictedIssues = tradeMachineIssuesForRule(issues, 'restricted_pick');
-  const manualIssues = tradeMachineIssuesForRule(issues, 'manual_review');
-  const rosterIssues = tradeMachineIssuesForRule(issues, 'roster_count');
-  return [
-    {
-      key: 'salary',
-      label: 'Cuadre salarial básico',
-      status: !selectedCount ? 'pending' : salaryIssues.length ? 'fail' : 'pass',
-      messages: !selectedCount
-        ? ['Añade activos para evaluar el cuadre salarial.']
-        : salaryIssues.length
-          ? salaryIssues.map(tradeMachineIssueMessage)
-          : tradeMachineSalaryPassMessages(flows),
-    },
-    {
-      key: 'moves',
-      label: 'Movimientos disponibles',
-      status: !selectedCount
-        ? 'pending'
-        : moveIssues.some((issue) => issue.severity === 'illegal')
-          ? 'fail'
-          : moveIssues.some((issue) => issue.severity === 'warning')
-            ? 'warning'
-            : 'pass',
-      messages: !selectedCount
-        ? ['Añade activos para evaluar los movimientos disponibles.']
-        : moveIssues.length
-          ? moveIssues.map(tradeMachineIssueMessage)
-          : ['Todos los equipos tienen movimientos suficientes para los activos que envían.'],
-    },
-    {
-      key: 'multi_team',
-      label: 'Traspaso multi-equipo',
-      status: multiTeamIssues.length ? 'fail' : 'pass',
-      messages: multiTeamIssues.length
-        ? multiTeamIssues.map(tradeMachineIssueMessage)
-        : ['Si hay más de dos equipos, todos envían y reciben algo.'],
-    },
-    {
-      key: 'hard_cap',
-      label: 'Límite duro',
-      status: hardCapIssues.length ? 'fail' : 'pass',
-      messages: hardCapIssues.length
-        ? hardCapIssues.map(tradeMachineIssueMessage)
-        : ['No se detecta conflicto de límite duro en el 1er/2do apron.'],
-    },
-    {
-      key: 'hard_cap_trigger',
-      label: 'Hard cap generado',
-      status: hardCapTriggerIssues.length ? 'warning' : 'pass',
-      messages: hardCapTriggerIssues.length
-        ? hardCapTriggerIssues.map(tradeMachineIssueMessage)
-        : ['El traspaso no genera un nuevo hard cap de apron para los equipos seleccionados.'],
-    },
-    {
-      key: 'second_apron_aggregation',
-      label: 'Agregación 2do apron',
-      status: secondApronAggregationIssues.length ? 'fail' : 'pass',
-      messages: secondApronAggregationIssues.length
-        ? secondApronAggregationIssues.map(tradeMachineIssueMessage)
-        : ['No se detecta agregación salarial prohibida para equipos en 2do apron.'],
-    },
-    {
-      key: 'minimum_stacking',
-      label: 'Stacking mínimos',
-      status: minimumStackingIssues.some((issue) => issue.severity === 'illegal')
-        ? 'fail'
-        : minimumStackingIssues.length
-          ? 'warning'
-          : 'pass',
-      messages: minimumStackingIssues.length
-        ? minimumStackingIssues.map(tradeMachineIssueMessage)
-        : ['No se detecta combinación de 3+ jugadores con múltiples contratos mínimos enviados por menos jugadores recibidos.'],
-    },
-    {
-      key: 'restricted_pick',
-      label: 'Ronda restringida',
-      status: restrictedIssues.length ? 'fail' : 'pass',
-      messages: restrictedIssues.length
-        ? restrictedIssues.map(tradeMachineIssueMessage)
-        : ['No hay ninguna ronda restringida seleccionada.'],
-    },
-    {
-      key: 'manual_review',
-      label: 'Revisión manual ANBA',
-      status: manualIssues.length ? 'warning' : 'pass',
-      messages: manualIssues.length
-        ? manualIssues.map(tradeMachineIssueMessage)
-        : ['No se activa revisión por protecciones, condiciones, Stepien, Ley Randle, BYC/S&T ni restricciones de aprons no modeladas.'],
-    },
-    {
-      key: 'roster_count',
-      label: 'Tamaño de plantilla',
-      status: rosterIssues.some((issue) => issue.severity === 'illegal')
-        ? 'fail'
-        : rosterIssues.some((issue) => issue.severity === 'warning')
-          ? 'warning'
-          : 'pass',
-      messages: rosterIssues.length
-        ? rosterIssues.map(tradeMachineIssueMessage)
-        : ['El tamaño de plantilla queda dentro de los límites configurados.'],
-    },
-  ];
-}
-
-function tradeMachineRosterCountIssues(code, flow) {
-  const limits = rosterLimits();
-  const issues = [];
-  const standard = Number(flow.postRosterStandard || 0);
-  const twoWay = Number(flow.postRosterTwoWay || 0);
-  if (standard > limits.standardOffseasonMax) {
-    issues.push({
-      severity: 'illegal',
-      rule: 'roster_count',
-      teamCode: code,
-      message: `Quedaría con ${standard} contratos estándar; el máximo configurado para offseason es ${limits.standardOffseasonMax}.`,
-    });
-  } else if (standard > limits.standardMax) {
-    issues.push({
-      severity: 'warning',
-      rule: 'roster_count',
-      teamCode: code,
-      message: `Quedaría con ${standard} contratos estándar. Solo sería válido en offseason; durante la temporada el máximo es ${limits.standardMax}.`,
-    });
-  }
-  if (standard < limits.standardMin) {
-    issues.push({
-      severity: 'warning',
-      rule: 'roster_count',
-      teamCode: code,
-      message: `Quedaría con ${standard} contratos estándar, por debajo del mínimo configurado (${limits.standardMin}).`,
-    });
-  }
-  if (twoWay > limits.twoWayMax) {
-    issues.push({
-      severity: 'illegal',
-      rule: 'roster_count',
-      teamCode: code,
-      message: `Quedaría con ${twoWay} contratos two-way; el máximo configurado es ${limits.twoWayMax}.`,
-    });
-  }
-  if (twoWay < limits.twoWayMin) {
-    issues.push({
-      severity: 'warning',
-      rule: 'roster_count',
-      teamCode: code,
-      message: `Quedaría con ${twoWay} contratos two-way, por debajo del mínimo configurado (${limits.twoWayMin}).`,
-    });
-  }
-  return issues;
-}
-
-function validateTradeMachine() {
-  pruneTradeMachineSelections();
-  const teams = state.tradeMachine.selectedTeams || [];
-  const flows = tradeMachineFlows();
-  const issues = [];
-  if (teams.length < TRADE_MACHINE_MIN_TEAMS) {
-    issues.push({ severity: 'illegal', rule: 'setup', message: 'Selecciona al menos dos equipos.' });
-  }
-  if (teams.length > TRADE_MACHINE_MAX_TEAMS) {
-    issues.push({ severity: 'illegal', rule: 'setup', message: 'Selecciona seis equipos o menos.' });
-  }
-  const selectedEntries = Object.entries(state.tradeMachine.selections || {});
-  if (!selectedEntries.length) {
-    issues.push({ severity: 'warning', rule: 'setup', message: 'Selecciona al menos un activo.' });
-  }
-  selectedEntries.forEach(([key, selection]) => {
+function tradeMachineValidationPayload() {
+  const selections = Object.entries(state.tradeMachine.selections || {}).map(([key, selection]) => {
     const meta = tradeMachineAssetMeta(key);
-    if (!meta) {
-      issues.push({ severity: 'illegal', rule: 'setup', message: 'Un activo seleccionado ya no está disponible.' });
-      return;
-    }
-    const pickAction = meta.type === 'pick' ? tradeMachinePickAction(selection.pickAction) : null;
-    if (!selection.toTeam || selection.toTeam === selection.fromTeam) {
-      issues.push({ severity: 'illegal', rule: 'setup', teamCode: selection.fromTeam, message: `${meta.label} necesita un equipo de destino.` });
-    }
-    if (meta.restricted) {
-      issues.push({ severity: 'illegal', rule: 'restricted_pick', teamCode: selection.fromTeam, message: `${meta.label} está restringida y no se puede mover.` });
-    }
-    if (meta.conditional || meta.protected) {
-      issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label} necesita revisión manual por condiciones/protecciones.` });
-    }
-    if (meta.type === 'pick' && pickAction === TRADE_PICK_ACTION_SWAP) {
-      issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label}: derecho de swap seleccionado; revisa protecciones, prioridad y equipo que acabaría eligiendo.` });
-    } else if (meta.type === 'pick' && meta.round === '1st') {
-      issues.push({ severity: 'warning', rule: 'manual_review', teamCode: selection.fromTeam, message: `${meta.label} necesita revisión de la regla Stepien.` });
-    }
-  });
-  if (selectedEntries.some(([key]) => tradeMachineAssetMeta(key)?.type === 'player')) {
-    issues.push({
-      severity: 'warning',
-      rule: 'manual_review',
-      message: 'Revisar manualmente si algún jugador es extendido o BYC/S&T: la máquina todavía no tiene campos estructurados para aplicar salario promedio, 30 partidos o 50%/100%.',
-    });
-  }
-  teams.forEach((code) => {
-    const flow = flows[code];
-    if (!flow) return;
-    const multiTeamIssue = tradeMachineMultiTeamParticipationIssue(code, flow, teams.length);
-    if (multiTeamIssue) issues.push(multiTeamIssue);
-    if (teams.length <= 2 && !flow.incomingAssets.length && !flow.outgoingAssets.length) {
-      issues.push({ severity: 'warning', rule: 'setup', teamCode: code, message: 'Seleccionado, pero todavía no participa.' });
-    }
-    const salaryIssue = tradeMachineSalaryMatchIssue(code, flow);
-    if (salaryIssue) issues.push(salaryIssue);
-    tradeMachineHardCapTriggerIssues(code, flow).forEach((issue) => issues.push(issue));
-    tradeMachineMoveCountIssues(code, flow).forEach((issue) => issues.push(issue));
-    tradeMachineSecondApronAggregationIssues(code, flow).forEach((issue) => issues.push(issue));
-    tradeMachineStackingMinimumIssues(code, flow).forEach((issue) => issues.push(issue));
-    tradeMachineLeyRandleIssues(code, flow).forEach((issue) => issues.push(issue));
-    tradeMachineApronManualReviewIssues(code, flow).forEach((issue) => issues.push(issue));
-    tradeMachineRosterCountIssues(code, flow).forEach((issue) => issues.push(issue));
-  });
-  const hasIllegal = issues.some((issue) => issue.severity === 'illegal');
-  const hasWarning = issues.some((issue) => issue.severity === 'warning');
+    const [type, fromTeam, rawId] = key.split(':');
+    const id = meta?.id || Number(rawId);
+    if (!Number.isFinite(id)) return null;
+    return {
+      type: meta?.type || type,
+      id,
+      from_team: selection?.fromTeam || meta?.fromTeam || fromTeam,
+      to_team: selection?.toTeam || '',
+      pick_action: selection?.pickAction,
+      no_count: selection?.countsMove === false,
+    };
+  }).filter(Boolean);
   return {
-    status: hasIllegal ? 'illegal' : hasWarning ? 'review' : 'legal',
-    issues,
-    checklist: tradeMachineRuleChecklist(issues, selectedEntries.length, flows),
-    flows,
+    teams: state.tradeMachine.selectedTeams || [],
+    season: tradeMachineSeasonStart(),
+    selections,
   };
+}
+
+function tradeMachineValidationSignature(payload = tradeMachineValidationPayload()) {
+  return JSON.stringify(payload);
+}
+
+async function refreshTradeMachineValidation() {
+  const payload = tradeMachineValidationPayload();
+  const signature = tradeMachineValidationSignature(payload);
+  if (state.tradeMachine.validationLoadingSignature === signature) return;
+  state.tradeMachine.validationLoadingSignature = signature;
+  try {
+    const result = await api('/api/trades/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (state.tradeMachine.validationLoadingSignature !== signature) return;
+    state.tradeMachine.validationSignature = signature;
+    state.tradeMachine.validationResult = result;
+    state.tradeMachine.validationErrorSignature = null;
+    state.tradeMachine.validationError = null;
+    renderTradeMachine();
+  } catch (err) {
+    console.warn('Trade validation failed', err);
+    if (state.tradeMachine.validationLoadingSignature === signature) {
+      state.tradeMachine.validationSignature = null;
+      state.tradeMachine.validationResult = null;
+      state.tradeMachine.validationErrorSignature = signature;
+      state.tradeMachine.validationError = err;
+    }
+  } finally {
+    if (state.tradeMachine.validationLoadingSignature === signature) {
+      state.tradeMachine.validationLoadingSignature = null;
+    }
+    if (state.tradeMachine.validationErrorSignature === signature) {
+      renderTradeMachine();
+    }
+  }
 }
 
 function tradeMachineAssetDetailHtml(detail, mobileDetail) {
@@ -2779,7 +2253,7 @@ function tradeMachinePlayerRowsHtml(data, code) {
   return players.map((player) => {
     const key = tradeMachineAssetKey('player', code, player.id);
     const detail = [player.position, player.bird_rights].filter(Boolean).join(' · ');
-    const salary = salaryNumericValue(player, season);
+    const salary = isExhibit10Player(player) ? 0 : salaryNumericValue(player, season);
     return tradeMachineAssetRowHtml({
       key,
       type: 'player',
@@ -2964,8 +2438,9 @@ function tradeMachineBalanceRowsHtml(flow) {
   const after = flow.afterBalances || tradeMachineBalanceSnapshot(flow.postCap);
   return before.map((item, idx) => {
     const afterItem = after[idx] || item;
+    const tooltip = String(item.label || '').toUpperCase().includes('APRON') ? apronTooltipText() : '';
     return `
-      <tr>
+      <tr${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>
         <th>${escapeHtml(item.label)}</th>
         <td class="${tradeMachineBalanceClass(item.value)}">${formatBalanceMoney(item.value)}</td>
         <td class="${tradeMachineBalanceClass(afterItem.value)}">${formatBalanceMoney(afterItem.value)}</td>
@@ -3074,6 +2549,27 @@ function tradeMachineChecklistHtml(checklist) {
   `;
 }
 
+function tradeMachineServerValidationPlaceholder(flows, validationState = 'loading') {
+  const isError = validationState === 'error';
+  return {
+    status: isError ? 'review' : 'pending',
+    issues: [],
+    checklist: [
+      {
+        key: 'server_validation',
+        label: 'Validación del servidor',
+        status: isError ? 'warning' : 'pending',
+        messages: [
+          isError
+            ? 'No se pudo completar la validación del servidor. Cambia el traspaso o recarga para volver a intentarlo.'
+            : 'Validando reglas con el servidor. El resultado local solo muestra el resumen visual, no determina si el traspaso es válido.',
+        ],
+      },
+    ],
+    flows,
+  };
+}
+
 function renderTradeMachineTeamCard(code, index, flow) {
   const data = state.tradeMachine.teamDataByCode[code];
   const canRemove = (state.tradeMachine.selectedTeams || []).length > TRADE_MACHINE_MIN_TEAMS;
@@ -3130,7 +2626,13 @@ function renderTradeMachineTeamCard(code, index, flow) {
 function renderTradeMachineResults(result) {
   const resultEl = document.getElementById('tradeMachineResults');
   if (!resultEl) return;
-  const statusLabel = result.status === 'legal' ? 'Válido' : result.status === 'illegal' ? 'No válido' : 'Requiere revisión';
+  const statusLabel = result.status === 'legal'
+    ? 'Válido'
+    : result.status === 'illegal'
+      ? 'No válido'
+      : result.status === 'pending'
+        ? 'Validando...'
+        : 'Requiere revisión';
   const selectedCount = Object.keys(state.tradeMachine.selections || {}).length;
   const assetLabel = selectedCount === 1 ? 'activo seleccionado' : 'activos seleccionados';
   const summaryHtml = (state.tradeMachine.selectedTeams || []).map((code) => {
@@ -3161,13 +2663,30 @@ function renderTradeMachine() {
   const addBtn = document.getElementById('tradeMachineAddTeamBtn');
   if (!grid) return;
   const codes = state.tradeMachine.selectedTeams || [];
-  const result = validateTradeMachine();
+  pruneTradeMachineSelections();
+  const previewFlows = tradeMachineFlows();
+  const validationPayload = tradeMachineValidationPayload();
+  const validationSignature = tradeMachineValidationSignature(validationPayload);
+  const serverResult = state.tradeMachine.validationSignature === validationSignature
+    ? state.tradeMachine.validationResult
+    : null;
+  const validationError = state.tradeMachine.validationErrorSignature === validationSignature
+    ? state.tradeMachine.validationError
+    : null;
+  const result = serverResult || tradeMachineServerValidationPlaceholder(previewFlows, validationError ? 'error' : 'loading');
   if (status) status.textContent = `${seasonLabel(tradeMachineSeasonStart())} · ${codes.length} equipos`;
   if (addBtn) addBtn.disabled = codes.length >= TRADE_MACHINE_MAX_TEAMS;
   grid.innerHTML = codes
     .map((code, index) => renderTradeMachineTeamCard(code, index, result.flows[code] || tradeMachineFlowSkeleton(code)))
     .join('');
   renderTradeMachineResults(result);
+  if (
+    !serverResult
+    && !validationError
+    && state.tradeMachine.validationLoadingSignature !== validationSignature
+  ) {
+    void refreshTradeMachineValidation();
+  }
 }
 
 async function loadTradeMachine(seedCodes = []) {
@@ -3505,6 +3024,7 @@ function setupSorting() {
   updateSortIndicators('deadContractsTable', state.sort.dead_contracts);
   updateSortIndicators('exceptionsTable', state.sort.exceptions);
   updateSortIndicators('playerRightsTable', state.sort.player_rights);
+  updateSortIndicators('leaguePlayersTable', state.sort.league_players);
   updateSortIndicators('freeAgentsTable', state.sort.free_agents);
 
   document.querySelectorAll('#deadContractsTable thead th[data-sort]').forEach((th) => {
@@ -3564,6 +3084,21 @@ function setupSorting() {
       };
       renderFreeAgents();
       updateSortIndicators('freeAgentsTable', state.sort.free_agents);
+    });
+  });
+
+  document.querySelectorAll('#leaguePlayersTable thead th[data-sort]').forEach((th) => {
+    if (!th.dataset.label) th.dataset.label = th.textContent.trim();
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const curr = state.sort.league_players;
+      state.sort.league_players = {
+        key,
+        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+      };
+      renderLeaguePlayers();
+      updateSortIndicators('leaguePlayersTable', state.sort.league_players);
     });
   });
 }
@@ -3885,8 +3420,9 @@ function buildBalanceCard(label, value, isWarning = false) {
   const numeric = Number(value || 0);
   const signClass = numeric < 0 ? ' is-negative' : numeric > 0 ? ' is-positive' : '';
   const warningClass = isWarning || numeric < 0 ? ' is-warning' : '';
+  const tooltip = String(label || '').toUpperCase().includes('APRON') ? apronTooltipText() : '';
   return `
-    <div class="team-balance-card${warningClass}${signClass}">
+    <div class="team-balance-card${warningClass}${signClass}"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>
       <div class="team-balance-label">${escapeHtml(label)}</div>
       <div class="team-balance-value">${formatBalanceMoney(value)}</div>
     </div>
@@ -4087,17 +3623,20 @@ function setViewMode(mode) {
   const trackerSection = document.getElementById('trackerSection');
   const figuresSection = document.getElementById('figuresSection');
   const freeAgentsSection = document.getElementById('freeAgentsSection');
+  const leaguePlayersSection = document.getElementById('leaguePlayersSection');
   const draftOrderSection = document.getElementById('draftOrderSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
   const showTracker = mode === 'tracker';
   const showFigures = mode === 'figures';
   const showFreeAgents = mode === 'free-agents';
+  const showLeaguePlayers = mode === 'league-players';
   const showDraftOrder = mode === 'draft-order';
   const showTradeMachine = mode === 'trade-machine';
 
   trackerSection.classList.toggle('section-hidden', !showTracker);
   if (figuresSection) figuresSection.classList.toggle('section-hidden', !showFigures);
   freeAgentsSection.classList.toggle('section-hidden', !showFreeAgents);
+  if (leaguePlayersSection) leaguePlayersSection.classList.toggle('section-hidden', !showLeaguePlayers);
   if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
   syncTrackerTabs();
@@ -4114,13 +3653,13 @@ function renderTracker() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><button type="button" class="tracker-team-btn" data-team-code="${row.team_code}">${row.team_code}</button></td>
-      <td>${formatMoneyDots(row.cap_total)}</td>
+      <td><span class="cap-total-tooltip" title="${escapeHtml(capTotalTooltipText())}">${formatMoneyDots(row.cap_total)}</span></td>
       <td>${formatMoneyDots(row.gasto_total)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_cap)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_luxury)}</td>
       <td>${trackerLuxuryTaxValueHtml(row.luxury_tax)}</td>
-      <td>${trackerSpaceValueHtml(row.espacio_1er_apron)}</td>
-      <td>${trackerSpaceValueHtml(row.espacio_2do_apron)}</td>
+      <td title="${escapeHtml(apronTooltipText())}">${trackerSpaceValueHtml(row.espacio_1er_apron)}</td>
+      <td title="${escapeHtml(apronTooltipText())}">${trackerSpaceValueHtml(row.espacio_2do_apron)}</td>
       <td>${trackerRosterCountChipHtml('standard', Number(row.roster_standard_count || 0))}</td>
       <td>${trackerRosterCountChipHtml('twoWay', Number(row.roster_two_way_count || 0))}</td>
       <td>${draftPickCountChipHtml(Number(row.draft_first_count || 0), '1st')}</td>
@@ -4193,6 +3732,100 @@ function renderFreeAgents() {
       <td class="bird-years-cell">${birdYearsCellHtml(agent.years_left)}</td>
       <td class="details-cell">${escapeHtml(agent.notes || '')}</td>
     `;
+    tbody.appendChild(tr);
+  });
+}
+
+function leaguePlayerLogsHtml(player) {
+  const logs = Array.isArray(player?.transaction_logs) ? player.transaction_logs : [];
+  if (!logs.length) return '<span class="muted-text">Sin movimientos recientes</span>';
+  return `
+    <ul class="player-log-list">
+      ${logs.slice(0, 3).map((log) => `
+        <li>
+          <span>${escapeHtml(log.summary || 'Movimiento registrado')}</span>
+          ${log.created_at ? `<small>${escapeHtml(shortDateTime(log.created_at))}</small>` : ''}
+        </li>
+      `).join('')}
+    </ul>
+  `;
+}
+
+function shortDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || '');
+  return date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
+function leaguePlayerTeamHtml(player) {
+  const code = String(player?.team_code || '').trim().toUpperCase();
+  if (!code) return '<span class="muted-text">Sin equipo</span>';
+  return `
+    <button type="button" class="tracker-team-btn league-player-team-btn" data-team-code="${escapeHtml(code)}">
+      ${draftOrderLogoHtml(code, 'league-player-team-logo')}
+      <span>${escapeHtml(code)}</span>
+    </button>
+  `;
+}
+
+function leaguePlayerStatusHtml(player) {
+  const status = String(player?.status || 'inactive').trim().toLowerCase();
+  const label = String(player?.status_label || 'Sin contrato').trim();
+  return `<span class="league-player-status league-player-status--${escapeHtml(status)}">${escapeHtml(label)}</span>`;
+}
+
+function leaguePlayerContractHtml(player) {
+  const summary = String(player?.active_contract_summary || '').trim();
+  if (!summary || summary === 'No') return '<span class="muted-text">Sin contrato activo</span>';
+  return `<span class="league-player-contract">${escapeHtml(summary)}</span>`;
+}
+
+function leaguePlayerProfileSummaryHtml(player) {
+  const items = [
+    ['DOB', player?.date_of_birth],
+    ['Nacionalidad', player?.nationality],
+    ['Fuente YOS', player?.yos_source],
+    ['Notas', player?.profile_notes],
+    ['Movimientos', player?.transaction_notes],
+  ].filter(([, value]) => String(value || '').trim());
+  if (!items.length) return '<span class="muted-text">Sin datos de perfil</span>';
+  return `
+    <div class="league-player-profile-summary">
+      ${items.map(([label, value]) => `
+        <span><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</span>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderLeaguePlayers() {
+  const tbody = document.querySelector('#leaguePlayersTable tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const rows = sortedRows(state.leaguePlayers || [], state.sort.league_players);
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="7">No hay jugadores cargados.</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+  rows.forEach((player) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(player.name || '')}</td>
+      <td>${leaguePlayerStatusHtml(player)}</td>
+      <td>${leaguePlayerTeamHtml(player)}</td>
+      <td>${player.experience_years == null ? '' : escapeHtml(player.experience_years)}</td>
+      <td>${leaguePlayerProfileSummaryHtml(player)}</td>
+      <td>${leaguePlayerContractHtml(player)}</td>
+      <td>${leaguePlayerLogsHtml(player)}</td>
+    `;
+    const teamBtn = tr.querySelector('[data-team-code]');
+    if (teamBtn) {
+      teamBtn.addEventListener('click', async () => {
+        await loadTeam(teamBtn.dataset.teamCode);
+      });
+    }
     tbody.appendChild(tr);
   });
 }
@@ -4822,10 +4455,10 @@ function renderImportantFigures() {
   const seasons = balanceSeasonYears();
   const seasonData = seasons.map((season) => ({ season, balances: seasonBalances(season) }));
   const rows = [
-    ['CAP TOTAL', 'cap_total'],
-    ['GASTO TOTAL', 'gasto_total'],
-    ['Cuenta del APRON', 'apron_account'],
-    ['Luxury tax', 'luxury_tax'],
+    { label: 'CAP TOTAL', key: 'cap_total', tooltip: capTotalTooltipText() },
+    { label: 'GASTO TOTAL', key: 'gasto_total' },
+    { label: 'Cuenta del APRON', key: 'apron_account', tooltip: apronTooltipText() },
+    { label: 'Luxury tax', key: 'luxury_tax' },
   ];
   table.innerHTML = `
     <thead>
@@ -4837,9 +4470,9 @@ function renderImportantFigures() {
       </tr>
     </thead>
     <tbody>
-      ${rows.map(([label, key]) => `
+      ${rows.map(({ label, key, tooltip }) => `
         <tr>
-          <th class="balance-row-label">${label}</th>
+          <th class="balance-row-label"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>${label}</th>
           ${seasonData.map(({ season, balances }) => {
             const value = Number(balances[key] || 0);
             const isLiability = key === 'luxury_tax';
@@ -4848,7 +4481,7 @@ function renderImportantFigures() {
               : (value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '');
             return `
               <td class="${season === selectedYear ? 'is-current-year' : ''}">
-                <span class="balance-value ${valueClass}">${formatMoneyDots(value)}</span>
+                <span class="balance-value ${valueClass}"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>${formatMoneyDots(value)}</span>
               </td>
             `;
           }).join('')}
@@ -5805,36 +5438,6 @@ async function loadTeam(code) {
   renderGmTimelineSection();
 }
 
-async function fetchTrackerRowsFallback() {
-  const season = freeAgencyModeActive() ? defaultSeasonViewStart() : currentSeasonStart();
-  const salaryCap = capForSeason(season);
-  const luxuryCap = luxuryCapForSeason(season);
-  const firstApron = firstApronForSeason(season);
-  const secondApron = secondApronForSeason(season);
-  const rows = await Promise.all(state.teams.map(async (t) => {
-    const data = await api(`/api/teams/${t.code}`);
-    const s = data.summary || {};
-    const balances = teamSeasonBalances(data, season);
-    const draftCounts = draftPickCountsFromAssets(data.assets || []);
-    return {
-      team_code: t.code,
-      team_name: t.name,
-      cap_total: Number(balances.cap_total || 0),
-      gasto_total: Number(balances.gasto_total || 0),
-      espacio_cap: salaryCap - Number(balances.cap_total || 0),
-      espacio_luxury: luxuryCap - Number(balances.cap_total || 0),
-      luxury_tax: Number(balances.luxury_tax || 0),
-      espacio_1er_apron: firstApron - Number(balances.apron_account || 0),
-      espacio_2do_apron: secondApron - Number(balances.apron_account || 0),
-      roster_standard_count: Number(s.roster_standard_count || rosterCountFromPlayers(data.players || []).standard),
-      roster_two_way_count: Number(s.roster_two_way_count || rosterCountFromPlayers(data.players || []).twoWay),
-      draft_first_count: draftCounts.first,
-      draft_second_count: draftCounts.second,
-    };
-  }));
-  return rows;
-}
-
 async function loadTrackerEconomy(season = null) {
   const selected = normalizeTrackerEconomySeason(season ?? state.ui.trackerEconomySeason ?? currentSeasonStart());
   try {
@@ -5860,17 +5463,8 @@ async function loadTrackerEconomy(season = null) {
 }
 
 async function loadTracker() {
-  try {
-    const res = await api('/api/tracker');
-    state.trackerRows = res.tracker || [];
-    if (freeAgencyModeActive()) {
-      state.trackerRows = await fetchTrackerRowsFallback();
-    }
-  } catch (err) {
-    if (!String(err.message || '').includes('API 404')) throw err;
-    console.warn('API /api/tracker not available, using client fallback.');
-    state.trackerRows = await fetchTrackerRowsFallback();
-  }
+  const res = await api('/api/tracker');
+  state.trackerRows = res.tracker || [];
   state.teamCode = null;
   state.teamData = null;
   setTeamInUrl(null);
@@ -5926,6 +5520,66 @@ async function loadFreeAgents() {
   renderTeamStrip();
   renderMobileTeamGrid();
   renderFreeAgents();
+}
+
+async function fetchLeaguePlayersFallback() {
+  if (!state.teams.length) {
+    const teamsRes = await api('/api/teams');
+    state.teams = teamsRes.teams || [];
+  }
+  const loaded = await Promise.all((state.teams || []).map(async (team) => {
+    const code = String(team.code || '').trim().toUpperCase();
+    if (!code) return [];
+    const data = await api(`/api/teams/${encodeURIComponent(code)}`);
+    return (data.players || []).map((player) => ({
+      ...player,
+      profile_id: player.profile_id || player.id,
+      player_id: player.id,
+      status: 'active',
+      status_label: 'En roster',
+      team_code: data.team?.code || code,
+      team_name: data.team?.name || team.name || code,
+      active_contract: true,
+      active_contract_summary: [
+        data.team?.code || code,
+        player.position,
+        player.bird_rights,
+        player.years_left ? `${player.years_left} birds` : '',
+      ].filter(Boolean).join(' · ') || 'Sí',
+      transaction_logs: Array.isArray(player.transaction_logs) ? player.transaction_logs : [],
+    }));
+  }));
+  return loaded.flat().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es'));
+}
+
+async function loadLeaguePlayers() {
+  let players = [];
+  try {
+    const res = await api('/api/players');
+    players = Array.isArray(res.players) ? res.players : [];
+  } catch (err) {
+    console.warn('API /api/players not available, using team roster fallback.', err);
+  }
+  if (!players.length) {
+    players = await fetchLeaguePlayersFallback();
+  }
+  state.leaguePlayers = players;
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('league-players');
+  setPageHeading('Jugadores', 'Perfiles de jugadores de la liga');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  renderLeaguePlayers();
+  updateSortIndicators('leaguePlayersTable', state.sort.league_players);
 }
 
 async function loadDraftOrder() {
@@ -6040,7 +5694,9 @@ async function ensureLocatorIndex() {
       (data.players || []).forEach((player) => {
         if (!String(player.name || '').trim()) return;
         playerEntries.push({
-          id: `player-${player.id}`,
+          id: `profile-${player.profile_id || player.id}`,
+          profile_id: player.profile_id || null,
+          player_id: player.id,
           name: player.name,
           team_code: teamCode,
           team_name: teamName,
@@ -6051,7 +5707,9 @@ async function ensureLocatorIndex() {
       (data.dead_contracts || []).forEach((item) => {
         if (!String(item.label || '').trim()) return;
         playerEntries.push({
-          id: `dead-${item.id}`,
+          id: item.profile_id ? `profile-${item.profile_id}` : `dead-${item.id}`,
+          profile_id: item.profile_id || null,
+          dead_contract_id: item.id,
           name: item.label,
           team_code: teamCode,
           team_name: teamName,
@@ -6282,6 +5940,7 @@ function setupMobileNav() {
   const trackerBtn = document.getElementById('mobileTrackerBtn');
   const figuresBtn = document.getElementById('mobileFiguresBtn');
   const draftBtn = document.getElementById('mobileDraftBtn');
+  const leaguePlayersBtn = document.getElementById('mobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
   const tradeMachineBtn = document.getElementById('mobileTradeMachineBtn');
   const mobileLogoutBtn = document.getElementById('mobileLogoutBtn');
@@ -6314,6 +5973,12 @@ function setupMobileNav() {
     draftBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadDraftOrder();
+    });
+  }
+  if (leaguePlayersBtn) {
+    leaguePlayersBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadLeaguePlayers();
     });
   }
   if (freeAgentsBtn) {
@@ -6370,6 +6035,9 @@ async function init() {
   });
   document.getElementById('draftHomeBtn').addEventListener('click', async () => {
     await loadDraftOrder();
+  });
+  document.getElementById('leaguePlayersHomeBtn').addEventListener('click', async () => {
+    await loadLeaguePlayers();
   });
   document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
     await loadFreeAgents();
