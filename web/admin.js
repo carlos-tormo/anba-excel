@@ -1,5 +1,9 @@
 const MOVE_LIMIT_PRE30 = 20;
 const MOVE_LIMIT_POST30 = 4;
+const TRADE_PICK_ACTION_SEND = 'send_pick';
+const TRADE_PICK_ACTION_SWAP = 'swap_rights';
+const TRADE_MACHINE_MIN_TEAMS = 2;
+const TRADE_MACHINE_MAX_TEAMS = 6;
 
 const state = {
   teams: [],
@@ -44,6 +48,10 @@ const state = {
   trade: {
     teamA: null,
     teamB: null,
+    selectedTeams: [],
+    teamDataByCode: {},
+    selections: {},
+    seasonStart: null,
     playersByTeam: {},
     picksByTeam: {},
     rightsByTeam: {},
@@ -55,6 +63,11 @@ const state = {
     selectedRightsB: new Set(),
     noCountA: new Set(),
     noCountB: new Set(),
+    pickActionsA: {},
+    pickActionsB: {},
+    validation: null,
+    validationLoading: false,
+    validationError: null,
   },
   ui: {
     viewMode: 'tracker',
@@ -95,6 +108,7 @@ const PLAYER_SORT_CYCLE = [
   { key: 'rating', dir: 'desc' },
   { key: 'rating', dir: 'asc' },
 ];
+let tradeValidationTimer = null;
 const POSITION_ORDER = { PG: 1, SG: 2, SF: 3, PF: 4, C: 5, TW: 6 };
 const ALL_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030];
 const TAXPAYER_MLE_BASE_AMOUNT = 5_500_007;
@@ -996,7 +1010,7 @@ function isExhibit10Player(player) {
 }
 
 function capTotalTooltipText() {
-  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato y cap holds activos. Excluye: cap holds renunciados, contratos Two-Way y contratos Exhibit 10.';
+  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
 }
 
 function apronTooltipText() {
@@ -1211,6 +1225,27 @@ function summaryForBalanceSeason(data, season = displayBalanceSeason()) {
     room_to_second_apron: 0,
     missing_server_summary: true,
   };
+}
+
+function openRosterSpotHoldForSeason(season) {
+  const summary = serverSeasonSummary(state.teamData, season);
+  const amount = Number(summary?.open_roster_spot_cap_hold || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return {
+    amount,
+    count: Number(summary?.open_roster_spot_count || 0),
+    rosterCount: Number(summary?.open_roster_spot_roster_count || 0),
+    minimumSalary: Number(summary?.open_roster_spot_minimum_salary || 0),
+  };
+}
+
+function openRosterSpotDeadContractRow(seasons) {
+  const values = new Map();
+  seasons.forEach((season) => {
+    const hold = openRosterSpotHoldForSeason(season);
+    if (hold) values.set(season, hold);
+  });
+  return values.size ? values : null;
 }
 
 function capForSeason(season) {
@@ -1684,8 +1719,7 @@ function sortValue(row, key) {
   const val = row?.[key];
   if (val === null || val === undefined || val === '') return null;
   if (key === 'position') {
-    if (isTwoWayPlayer(row)) return POSITION_ORDER.TW;
-    return POSITION_ORDER[String(val).toUpperCase()] ?? 999;
+    return POSITION_ORDER[rosterPositionKey(row)] ?? 999;
   }
   if (key === 'years_left') return birdYearsSortValue(val);
   if (typeof val === 'number') return val;
@@ -1694,6 +1728,11 @@ function sortValue(row, key) {
     return num;
   }
   return String(val).toLowerCase();
+}
+
+function playerSalarySortValue(row) {
+  const value = salaryDisplayNumericValue(row, selectedSeasonStart());
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
 function sortedRows(rows, sortCfg) {
@@ -1706,6 +1745,14 @@ function sortedRows(rows, sortCfg) {
     if (vb === null) return -1;
     if (va < vb) return -1 * dir;
     if (va > vb) return 1 * dir;
+    if (sortCfg.key === 'position') {
+      const salaryDiff = playerSalarySortValue(b) - playerSalarySortValue(a);
+      if (salaryDiff !== 0) return salaryDiff;
+      const nameA = String(a?.name || '').toLowerCase();
+      const nameB = String(b?.name || '').toLowerCase();
+      if (nameA < nameB) return -1;
+      if (nameA > nameB) return 1;
+    }
     return 0;
   });
 }
@@ -2295,227 +2342,895 @@ function setupAddEntryPopover() {
   });
 }
 
-async function loadTradeTeamPlayers(teamCode) {
-  if (!teamCode) return [];
-  if (state.trade.playersByTeam[teamCode]) return state.trade.playersByTeam[teamCode];
-  const data = await api(`/api/teams/${teamCode}`);
-  state.trade.playersByTeam[teamCode] = data.players || [];
-  const currentYear = Number(state.settings.current_year || 2025);
-  state.trade.picksByTeam[teamCode] = (data.assets || []).filter((asset) => {
-    return asset.asset_type === 'draft_pick'
-      && Number(asset.year) === currentYear + 1
-      && String(asset.draft_round || '').trim().toLowerCase().includes('1')
-      && String(asset.draft_pick_type || '').trim().toLowerCase() !== 'sold';
-  });
-  state.trade.rightsByTeam[teamCode] = (data.assets || [])
-    .filter((asset) => asset.asset_type === 'player_right');
-  return state.trade.playersByTeam[teamCode];
+function tradeValidTeamCodes() {
+  return new Set((state.teams || []).map((team) => String(team.code || '').toUpperCase()).filter(Boolean));
 }
 
-function renderTradePlayers(side) {
-  const isA = side === 'A';
-  const teamCode = isA ? state.trade.teamA : state.trade.teamB;
-  const list = document.getElementById(isA ? 'tradePlayersA' : 'tradePlayersB');
-  const selected = isA ? state.trade.selectedA : state.trade.selectedB;
-  const noCount = isA ? state.trade.noCountA : state.trade.noCountB;
+function tradeUniqueCodes(codes = []) {
+  const valid = tradeValidTeamCodes();
+  const seen = new Set();
+  return (codes || [])
+    .map((code) => String(code || '').trim().toUpperCase())
+    .filter((code) => code && valid.has(code) && !seen.has(code) && seen.add(code));
+}
 
-  if (!teamCode) {
-    list.innerHTML = '<div>Select a team</div>';
-    return;
+function defaultTradeTeams(seedCodes = []) {
+  const codes = tradeUniqueCodes(seedCodes);
+  (state.teams || []).forEach((team) => {
+    if (codes.length >= TRADE_MACHINE_MIN_TEAMS) return;
+    if (!codes.includes(team.code)) codes.push(team.code);
+  });
+  return codes.slice(0, TRADE_MACHINE_MIN_TEAMS);
+}
+
+function tradeSeasonStart() {
+  const current = currentSeasonStart();
+  const selected = Number(state.trade.seasonStart || current);
+  return selected === current + 1 ? current + 1 : current;
+}
+
+function tradeSeasonOptionsHtml() {
+  const current = currentSeasonStart();
+  return [current, current + 1].map((season) => `
+    <option value="${season}" ${season === tradeSeasonStart() ? 'selected' : ''}>${seasonLabel(season)}${season === current ? ' (actual)' : ''}</option>
+  `).join('');
+}
+
+async function ensureTradeTeamData(codes) {
+  const unique = tradeUniqueCodes(codes);
+  const missing = unique.filter((code) => !state.trade.teamDataByCode[code]);
+  if (!missing.length) return;
+  const loaded = await Promise.all(missing.map(async (code) => [code, await api(`/api/teams/${code}`)]));
+  loaded.forEach(([code, data]) => {
+    state.trade.teamDataByCode[code] = data;
+    state.trade.playersByTeam[code] = data.players || [];
+    state.trade.picksByTeam[code] = (data.assets || []).filter((asset) => asset.asset_type === 'draft_pick');
+    state.trade.rightsByTeam[code] = (data.assets || []).filter((asset) => asset.asset_type === 'player_right');
+  });
+}
+
+function draftPickIsHardRestricted(asset) {
+  return boolValue(asset?.draft_pick_restricted);
+}
+
+function draftPickIsStepienRestricted(asset) {
+  return boolValue(asset?.draft_pick_stepien_restricted);
+}
+
+function draftPickIsProtected(asset) {
+  return boolValue(asset?.draft_pick_protected);
+}
+
+function draftPickTradeOwner(asset, teamCode) {
+  if (draftPickType(asset) === 'conditional') {
+    const teams = parseDraftConditionalTeams(asset?.draft_pick_conditional_teams);
+    return teams[0] || String(asset?.original_owner || teamCode || '').toUpperCase();
   }
+  return String(asset?.original_owner || teamCode || '').toUpperCase();
+}
 
-  const players = state.trade.playersByTeam[teamCode] || [];
-  if (players.length === 0) {
-    list.innerHTML = '<div>No players on this roster.</div>';
-    return;
+function draftPickTradeLabel(asset, teamCode) {
+  const year = Number(asset?.year);
+  const yearLabel = Number.isFinite(year) ? String(year) : 'Sin año';
+  const owner = draftPickTradeOwner(asset, teamCode);
+  return `${yearLabel} ${draftPickRound(asset).toUpperCase()} ${owner || teamCode}`;
+}
+
+function tradePickAction(value) {
+  return value === TRADE_PICK_ACTION_SWAP ? TRADE_PICK_ACTION_SWAP : TRADE_PICK_ACTION_SEND;
+}
+
+function tradePickActionOptions(selectedAction, stepienOnly = false) {
+  const selected = tradePickAction(selectedAction);
+  const actions = stepienOnly ? [
+    [TRADE_PICK_ACTION_SWAP, 'Vender swap'],
+  ] : [
+    [TRADE_PICK_ACTION_SEND, 'Enviar ronda'],
+    [TRADE_PICK_ACTION_SWAP, 'Vender swap'],
+  ];
+  return actions.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+}
+
+function tradeAssetKey(type, fromTeam, id) {
+  return `${type}:${fromTeam}:${id}`;
+}
+
+function tradeSelectedAsset(key) {
+  return state.trade.selections[key] || null;
+}
+
+function tradeDefaultRecipient(fromTeam) {
+  return (state.trade.selectedTeams || []).find((code) => code !== fromTeam) || '';
+}
+
+function tradeRecipientOptions(fromTeam, selectedTo) {
+  return (state.trade.selectedTeams || [])
+    .filter((code) => code !== fromTeam)
+    .map((code) => `<option value="${code}" ${code === selectedTo ? 'selected' : ''}>${code}</option>`)
+    .join('');
+}
+
+function tradeAssetMeta(key) {
+  const [type, fromTeam, rawId] = String(key || '').split(':');
+  const id = Number(rawId);
+  const data = state.trade.teamDataByCode[fromTeam];
+  if (!data || !Number.isFinite(id)) return null;
+  const season = tradeSeasonStart();
+  if (type === 'player') {
+    const player = (data.players || []).find((item) => Number(item.id) === id);
+    if (!player) return null;
+    const salary = isExhibit10Player(player) ? 0 : salaryNumericValue(player, season);
+    return {
+      key,
+      type,
+      id,
+      fromTeam,
+      label: player.name || 'Jugador',
+      detail: [player.position, player.bird_rights].filter(Boolean).join(' · '),
+      salary,
+      capSalary: salaryDisplayNumericValue(player, season),
+      apronSalary: salary,
+      isTwoWay: isTwoWayPlayer(player),
+      isExhibit10: isExhibit10Player(player),
+    };
   }
+  if (type === 'pick') {
+    const pick = (data.assets || []).find((item) => item.asset_type === 'draft_pick' && Number(item.id) === id);
+    if (!pick) return null;
+    return {
+      key,
+      type,
+      id,
+      fromTeam,
+      label: draftPickTradeLabel(pick, fromTeam),
+      detail: String(pick.detail || '').trim(),
+      salary: 0,
+      capSalary: 0,
+      apronSalary: 0,
+      restricted: draftPickIsHardRestricted(pick),
+      stepienRestricted: draftPickIsStepienRestricted(pick),
+      protected: draftPickIsProtected(pick),
+      conditional: draftPickType(pick) === 'conditional',
+      sold: draftPickType(pick) === 'sold',
+      round: draftPickRound(pick),
+    };
+  }
+  if (type === 'right') {
+    const right = (data.assets || []).find((item) => item.asset_type === 'player_right' && Number(item.id) === id);
+    if (!right) return null;
+    return {
+      key,
+      type,
+      id,
+      fromTeam,
+      label: right.label || 'Derecho de jugador',
+      detail: String(right.detail || '').trim(),
+      salary: 0,
+      capSalary: 0,
+      apronSalary: 0,
+    };
+  }
+  return null;
+}
 
-  list.innerHTML = '';
-  players.forEach((p) => {
-    const row = document.createElement('div');
-    row.className = 'trade-player-row';
-    row.innerHTML = `
-      <input type="checkbox" data-player-id="${p.id}" ${selected.has(p.id) ? 'checked' : ''} aria-label="Include ${escapeHtml(p.name || 'Unnamed')} in trade">
-      <span class="trade-player-name">${p.name || 'Unnamed'}</span>
-      <span>${p.position || ''}</span>
-      <span>${p.bird_rights || ''}</span>
-      <label class="trade-player-flag">
-        <input type="checkbox" data-no-count-player-id="${p.id}" ${noCount.has(p.id) ? 'checked' : ''} aria-label="Exclude ${escapeHtml(p.name || 'Unnamed')} from move count">
-        <small>No count</small>
+function tradeAssetForSelection(meta, selection) {
+  if (meta?.type !== 'pick') return meta;
+  const pickAction = tradePickAction(selection?.pickAction);
+  if (pickAction !== TRADE_PICK_ACTION_SWAP) return { ...meta, pickAction };
+  const detail = [meta.detail, 'La ronda no cambia de dueño; se venden derechos de intercambio.'].filter(Boolean).join(' · ');
+  return { ...meta, type: 'swap_right', pickAction, label: `Swap ${meta.label}`, detail };
+}
+
+function tradeTeamSelectHtml(code, index) {
+  const used = new Set((state.trade.selectedTeams || []).filter((_, idx) => idx !== index));
+  const options = (state.teams || []).map((team) => `
+    <option value="${team.code}" ${team.code === code ? 'selected' : ''} ${used.has(team.code) ? 'disabled' : ''}>
+      ${team.code} - ${escapeHtml(team.name || team.code)}
+    </option>
+  `).join('');
+  return `<select data-official-trade-team-select="${index}" aria-label="Equipo ${index + 1}">${options}</select>`;
+}
+
+function tradeTeamLogoHtml(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  const src = teamLogoCandidates(normalized)[0] || '';
+  return `
+    <span class="trade-machine-team-kicker-logo" aria-hidden="true">
+      <span>${escapeHtml(normalized)}</span>
+      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+    </span>
+  `;
+}
+
+function tradeSummaryLogoHtml(code, className = 'trade-machine-summary-mini-logo') {
+  const normalized = String(code || '').trim().toUpperCase();
+  if (!normalized) return '';
+  const src = teamLogoCandidates(normalized)[0] || '';
+  return `
+    <span class="${className}" title="${escapeHtml(normalized)}" aria-label="${escapeHtml(normalized)}">
+      <span>${escapeHtml(normalized)}</span>
+      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+    </span>
+  `;
+}
+
+function tradeLocalBalanceSnapshot(capFigure, apronFigure = capFigure) {
+  const season = tradeSeasonStart();
+  const salaryCap = capForSeason(season);
+  const luxuryCap = luxuryCapForSeason(season);
+  const firstApron = firstApronForSeason(season);
+  const secondApron = secondApronForSeason(season);
+  return [
+    { key: 'cap', label: 'CAP', value: salaryCap - Number(capFigure || 0) },
+    { key: 'tax', label: 'Impuesto lujo', value: luxuryCap - Number(capFigure || 0) },
+    { key: 'first_apron', label: '1er apron', value: firstApron - Number(apronFigure || 0) },
+    { key: 'second_apron', label: '2do apron', value: secondApron - Number(apronFigure || 0) },
+  ];
+}
+
+function tradeLocalFlowSkeleton(code) {
+  const data = state.trade.teamDataByCode[code] || {};
+  const season = tradeSeasonStart();
+  const balances = teamSeasonBalances(data, season);
+  const rosterCounts = rosterCountFromPlayers(data.players || []);
+  const beforeCap = Number(balances.cap_total || 0);
+  const beforeApronAccount = Number(balances.apron_account || beforeCap);
+  return {
+    code,
+    beforeCap,
+    beforeApronAccount,
+    incomingSalary: 0,
+    outgoingSalary: 0,
+    incomingCapSalary: 0,
+    outgoingCapSalary: 0,
+    incomingApronSalary: 0,
+    outgoingApronSalary: 0,
+    incomingAssets: [],
+    outgoingAssets: [],
+    postCap: beforeCap,
+    postApronAccount: beforeApronAccount,
+    beforeRosterStandard: rosterCounts.standard,
+    beforeRosterTwoWay: rosterCounts.twoWay,
+    postRosterStandard: rosterCounts.standard,
+    postRosterTwoWay: rosterCounts.twoWay,
+    beforeBalances: tradeLocalBalanceSnapshot(beforeCap, beforeApronAccount),
+    afterBalances: tradeLocalBalanceSnapshot(beforeCap, beforeApronAccount),
+  };
+}
+
+function tradeLocalFlows() {
+  const flows = {};
+  (state.trade.selectedTeams || []).forEach((code) => {
+    flows[code] = tradeLocalFlowSkeleton(code);
+  });
+  Object.entries(state.trade.selections || {}).forEach(([key, selection]) => {
+    const meta = tradeAssetMeta(key);
+    if (!meta || !flows[selection.fromTeam] || !flows[selection.toTeam]) return;
+    const asset = tradeAssetForSelection(meta, selection);
+    const salary = Number(asset.salary || 0);
+    const capSalary = Number(asset.capSalary ?? salary);
+    const apronSalary = Number(asset.apronSalary ?? capSalary);
+    flows[selection.fromTeam].outgoingSalary += salary;
+    flows[selection.fromTeam].outgoingCapSalary += capSalary;
+    flows[selection.fromTeam].outgoingApronSalary += apronSalary;
+    flows[selection.fromTeam].outgoingAssets.push({ ...asset, toTeam: selection.toTeam });
+    flows[selection.toTeam].incomingSalary += salary;
+    flows[selection.toTeam].incomingCapSalary += capSalary;
+    flows[selection.toTeam].incomingApronSalary += apronSalary;
+    flows[selection.toTeam].incomingAssets.push({ ...asset, fromTeam: selection.fromTeam });
+    if (asset.type === 'player') {
+      if (asset.isTwoWay) {
+        flows[selection.fromTeam].postRosterTwoWay -= 1;
+        flows[selection.toTeam].postRosterTwoWay += 1;
+      } else if (!asset.isExhibit10) {
+        flows[selection.fromTeam].postRosterStandard -= 1;
+        flows[selection.toTeam].postRosterStandard += 1;
+      }
+    }
+  });
+  Object.values(flows).forEach((flow) => {
+    flow.postCap = flow.beforeCap + flow.incomingCapSalary - flow.outgoingCapSalary;
+    flow.postApronAccount = flow.beforeApronAccount + flow.incomingApronSalary - flow.outgoingApronSalary;
+    flow.afterBalances = tradeLocalBalanceSnapshot(flow.postCap, flow.postApronAccount);
+  });
+  return flows;
+}
+
+function buildTradeProcessPayload() {
+  const selections = Object.entries(state.trade.selections || {}).map(([key, selection]) => {
+    const meta = tradeAssetMeta(key);
+    const [type, fromTeam, rawId] = key.split(':');
+    const id = meta?.id || Number(rawId);
+    if (!Number.isFinite(id)) return null;
+    return {
+      type: meta?.type || type,
+      id,
+      from_team: selection?.fromTeam || meta?.fromTeam || fromTeam,
+      to_team: selection?.toTeam || '',
+      pick_action: selection?.pickAction,
+      no_count: selection?.countsMove === false,
+    };
+  }).filter(Boolean);
+  return {
+    teams: state.trade.selectedTeams || [],
+    season: tradeSeasonStart(),
+    selections,
+    trade_bucket: normalizeMoveBucket(document.getElementById('tradeBucketSelect')?.value || state.settings.trade_move_phase),
+    force_trade: Boolean(document.getElementById('forceTradeCheckbox')?.checked),
+  };
+}
+
+function tradeValidationSignature(payload = buildTradeProcessPayload()) {
+  return JSON.stringify({
+    teams: payload.teams,
+    season: payload.season,
+    selections: payload.selections,
+    trade_bucket: payload.trade_bucket,
+  });
+}
+
+function tradePayloadHasMinimumAssets(payload) {
+  return (payload.selections || []).length > 0;
+}
+
+function resetTradeValidation() {
+  if (tradeValidationTimer) {
+    window.clearTimeout(tradeValidationTimer);
+    tradeValidationTimer = null;
+  }
+  state.trade.validation = null;
+  state.trade.validationLoading = false;
+  state.trade.validationError = null;
+  state.trade.validationSignature = null;
+  renderTradeValidation();
+}
+
+function tradeValidationStatusLabel(status) {
+  if (status === 'pass') return 'Correcto';
+  if (status === 'fail') return 'Error';
+  if (status === 'warning') return 'Revisión';
+  if (status === 'legal') return 'Válido';
+  if (status === 'review') return 'Revisión manual';
+  if (status === 'illegal') return 'No válido';
+  if (status === 'loading') return 'Validando...';
+  if (status === 'error') return 'Error';
+  return 'Pendiente';
+}
+
+function tradeBalanceClass(value) {
+  const amount = Number(value || 0);
+  if (amount < 0) return 'is-negative';
+  if (amount > 0) return 'is-positive';
+  return '';
+}
+
+function tradeBalanceRowsHtml(flow) {
+  const before = flow.beforeBalances || tradeLocalBalanceSnapshot(flow.beforeCap);
+  const after = flow.afterBalances || tradeLocalBalanceSnapshot(flow.postCap);
+  return before.map((item, idx) => {
+    const afterItem = after[idx] || item;
+    return `
+      <tr>
+        <th>${escapeHtml(item.label)}</th>
+        <td class="${tradeBalanceClass(item.value)}">${formatBalanceMoney(item.value)}</td>
+        <td class="${tradeBalanceClass(afterItem.value)}">${formatBalanceMoney(afterItem.value)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function tradeAssetTypeLabel(type) {
+  if (type === 'player') return 'Jugador';
+  if (type === 'pick') return 'Ronda';
+  if (type === 'swap_right') return 'Derecho swap';
+  if (type === 'right') return 'Derecho';
+  return 'Activo';
+}
+
+function tradePreviewChipHtml(asset, direction) {
+  const partner = direction === 'incoming' ? asset.fromTeam : asset.toTeam;
+  const partnerLabel = partner ? `${direction === 'incoming' ? 'desde' : 'a'} ${partner}` : '';
+  const salaryLabel = asset.salary > 0 ? formatBalanceMoney(asset.salary) : tradeAssetTypeLabel(asset.type);
+  return `
+    <span class="trade-machine-preview-chip">
+      <span class="trade-machine-preview-chip-main">
+        <strong>${escapeHtml(asset.label)}</strong>
+        <small>${escapeHtml([partnerLabel, salaryLabel].filter(Boolean).join(' · '))}</small>
+      </span>
+      <button type="button" data-official-trade-remove-asset="${asset.key}" aria-label="Quitar ${escapeHtml(asset.label)}">&times;</button>
+    </span>
+  `;
+}
+
+function tradePreviewListHtml(assets, direction) {
+  if (!assets.length) return '<div class="trade-machine-preview-empty">Sin activos</div>';
+  return `<div class="trade-machine-preview-chips">${assets.map((asset) => tradePreviewChipHtml(asset, direction)).join('')}</div>`;
+}
+
+function tradeTeamPreviewHtml(flow) {
+  const hasAssets = flow.incomingAssets.length || flow.outgoingAssets.length;
+  return `
+    <div class="trade-machine-team-preview ${hasAssets ? '' : 'is-empty'}" aria-label="Vista previa del traspaso">
+      <section><div class="trade-machine-preview-head"><span>Salen</span></div>${tradePreviewListHtml(flow.outgoingAssets, 'outgoing')}</section>
+      <section><div class="trade-machine-preview-head"><span>Entran</span></div>${tradePreviewListHtml(flow.incomingAssets, 'incoming')}</section>
+    </div>
+  `;
+}
+
+function tradeLedgerHtml(flow) {
+  const net = Number(flow.incomingSalary || 0) - Number(flow.outgoingSalary || 0);
+  return `
+    <div class="trade-machine-ledger">
+      <div><span>Recibe</span><strong>${formatBalanceMoney(flow.incomingSalary)}</strong></div>
+      <div><span>Envía</span><strong>${formatBalanceMoney(flow.outgoingSalary)}</strong></div>
+      <div><span>Neto</span><strong class="${net > 0 ? 'is-negative' : net < 0 ? 'is-positive' : ''}">${formatBalanceMoney(net)}</strong></div>
+      <div><span>CAP después</span><strong>${formatBalanceMoney(flow.postCap)}</strong></div>
+    </div>
+  `;
+}
+
+function tradeRosterHtml(flow) {
+  const standardStatus = rosterCountStatus('standard', Number(flow.postRosterStandard || 0));
+  const twoWayStatus = rosterCountStatus('twoWay', Number(flow.postRosterTwoWay || 0));
+  return `
+    <div class="trade-machine-roster-counts" aria-label="Tamaño de plantilla después del traspaso">
+      <span class="trade-machine-roster-count trade-machine-roster-count--${standardStatus.key}">
+        <small>Estándar</small><strong>${flow.beforeRosterStandard} → ${flow.postRosterStandard}</strong><em>${escapeHtml(standardStatus.label)}</em>
+      </span>
+      <span class="trade-machine-roster-count trade-machine-roster-count--${twoWayStatus.key}">
+        <small>Two-way</small><strong>${flow.beforeRosterTwoWay} → ${flow.postRosterTwoWay}</strong><em>${escapeHtml(twoWayStatus.label)}</em>
+      </span>
+    </div>
+  `;
+}
+
+function tradePickBadges(asset) {
+  const badges = [];
+  if (draftPickIsHardRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--danger">Restringida</span>');
+  if (draftPickIsStepienRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--warning">Stepien</span>');
+  if (draftPickIsProtected(asset)) badges.push('<span class="trade-machine-tag">Protegida</span>');
+  if (draftPickType(asset) === 'conditional') badges.push('<span class="trade-machine-tag">Condicional</span>');
+  if (draftPickType(asset) === 'acquired') badges.push('<span class="trade-machine-tag">Adquirida</span>');
+  return badges.join('');
+}
+
+function tradeAssetRowHtml({ key, type, label, detail, salary = 0, badges = '', disabled = false, stepienRestricted = false }) {
+  const selected = tradeSelectedAsset(key);
+  const fromTeam = key.split(':')[1];
+  const selectedTo = selected?.toTeam || tradeDefaultRecipient(fromTeam);
+  const hasPickAction = type === 'pick' && Boolean(selected);
+  const salaryHtml = salary > 0
+    ? `<span class="trade-machine-asset-salary">${formatBalanceMoney(salary)}</span>`
+    : '<span class="trade-machine-asset-salary trade-machine-asset-salary--empty" aria-hidden="true"></span>';
+  const pickActionHtml = hasPickAction
+    ? `<select class="trade-machine-pick-action-select" data-official-trade-pick-action="${key}" aria-label="Acción para ${escapeHtml(label)}">${tradePickActionOptions(tradePickAction(selected?.pickAction), stepienRestricted)}</select>`
+    : '';
+  return `
+    <div class="trade-machine-asset-row ${disabled ? 'is-disabled' : ''}">
+      <label>
+        <input type="checkbox" data-official-trade-asset-key="${key}" data-official-trade-asset-type="${type}" ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+        <span class="trade-machine-asset-main">
+          <span class="trade-machine-asset-name">${escapeHtml(label)}</span>
+          ${detail ? `<span class="trade-machine-asset-detail">${escapeHtml(detail)}</span>` : ''}
+          ${badges ? `<span class="trade-machine-tags">${badges}</span>` : ''}
+        </span>
       </label>
+      <div class="trade-machine-asset-route trade-machine-asset-route--${type} ${hasPickAction ? 'has-pick-action' : ''}">
+        ${type === 'pick' ? pickActionHtml : salaryHtml}
+        <select class="trade-machine-recipient-select" data-official-trade-recipient="${key}" ${selected ? '' : 'disabled'} aria-label="Destino de ${escapeHtml(label)}">
+          ${tradeRecipientOptions(fromTeam, selectedTo)}
+        </select>
+        ${selected && type === 'player' ? `
+          <label class="trade-no-count-toggle" title="No consumir movimiento de traspaso">
+            <input type="checkbox" data-official-trade-no-count="${key}" ${selected.countsMove === false ? 'checked' : ''}>
+            <span>No count</span>
+          </label>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function tradePlayerRowsHtml(data, code) {
+  const season = tradeSeasonStart();
+  const players = sortedRows(data.players || [], { key: 'position', dir: 'asc' });
+  if (!players.length) return '<div class="trade-machine-empty">Sin jugadores</div>';
+  return players.map((player) => tradeAssetRowHtml({
+    key: tradeAssetKey('player', code, player.id),
+    type: 'player',
+    label: player.name || 'Jugador',
+    detail: [player.position, player.bird_rights].filter(Boolean).join(' · '),
+    salary: isExhibit10Player(player) ? 0 : salaryNumericValue(player, season),
+  })).join('');
+}
+
+function tradePickRowsHtml(data, code) {
+  const minDraftYear = tradeSeasonStart() + 1;
+  const picks = (data.assets || [])
+    .filter((asset) => asset.asset_type === 'draft_pick')
+    .filter((asset) => draftPickType(asset) !== 'sold')
+    .filter((asset) => {
+      const year = Number(asset.year);
+      return !Number.isFinite(year) || year >= minDraftYear;
+    })
+    .sort((a, b) => {
+      const yearA = Number(a.year || 0);
+      const yearB = Number(b.year || 0);
+      if (yearA !== yearB) return yearA - yearB;
+      return draftPickRound(a).localeCompare(draftPickRound(b));
+    });
+  if (!picks.length) return '<div class="trade-machine-empty">Sin rondas traspasables</div>';
+  return picks.map((pick) => tradeAssetRowHtml({
+    key: tradeAssetKey('pick', code, pick.id),
+    type: 'pick',
+    label: draftPickTradeLabel(pick, code),
+    detail: draftPickType(pick) === 'conditional'
+      ? parseDraftConditionalTeams(pick.draft_pick_conditional_teams).join(' / ')
+      : String(pick.detail || '').trim(),
+    badges: tradePickBadges(pick),
+    disabled: draftPickIsHardRestricted(pick),
+    stepienRestricted: draftPickIsStepienRestricted(pick),
+    salary: 0,
+  })).join('');
+}
+
+function tradeRightsRowsHtml(data, code) {
+  const rights = (data.assets || []).filter((asset) => asset.asset_type === 'player_right');
+  if (!rights.length) return '<div class="trade-machine-empty">Sin derechos de jugadores</div>';
+  return rights.map((right) => tradeAssetRowHtml({
+    key: tradeAssetKey('right', code, right.id),
+    type: 'right',
+    label: right.label || 'Derecho de jugador',
+    detail: right.detail || '',
+    salary: 0,
+  })).join('');
+}
+
+function renderTradeTeamCard(code, index, flow) {
+  const data = state.trade.teamDataByCode[code];
+  const canRemove = (state.trade.selectedTeams || []).length > TRADE_MACHINE_MIN_TEAMS;
+  if (!data) {
+    return `
+      <article class="trade-machine-team-card">
+        <div class="trade-machine-team-top">
+          <div class="trade-machine-team-select">
+            <span class="trade-machine-team-kicker">Equipo ${index + 1} ${tradeTeamLogoHtml(code)}</span>
+            ${tradeTeamSelectHtml(code, index)}
+          </div>
+          ${canRemove ? `<button type="button" class="trade-machine-remove" data-official-trade-remove-team="${index}">Quitar</button>` : ''}
+        </div>
+        <div class="trade-machine-empty">Cargando equipo...</div>
+      </article>
     `;
-    const cb = row.querySelector('input[type="checkbox"]');
-    const noCountCb = row.querySelector('[data-no-count-player-id]');
-    cb.addEventListener('change', () => {
-      if (cb.checked) selected.add(p.id);
-      else selected.delete(p.id);
+  }
+  return `
+    <article class="trade-machine-team-card">
+      <div class="trade-machine-team-top">
+        <div class="trade-machine-team-select">
+          <span class="trade-machine-team-kicker">Equipo ${index + 1} ${tradeTeamLogoHtml(code)}</span>
+          ${tradeTeamSelectHtml(code, index)}
+        </div>
+        ${canRemove ? `<button type="button" class="trade-machine-remove" data-official-trade-remove-team="${index}">Quitar</button>` : ''}
+      </div>
+      ${tradeLedgerHtml(flow)}
+      ${tradeRosterHtml(flow)}
+      ${tradeTeamPreviewHtml(flow)}
+      <div class="trade-machine-assets">
+        <section><h3>Plantilla (${(data.players || []).length})</h3><div class="trade-machine-asset-list">${tradePlayerRowsHtml(data, code)}</div></section>
+        <section><h3>Rondas del draft</h3><div class="trade-machine-asset-list">${tradePickRowsHtml(data, code)}</div></section>
+        <section><h3>Derechos de jugadores</h3><div class="trade-machine-asset-list">${tradeRightsRowsHtml(data, code)}</div></section>
+      </div>
+    </article>
+  `;
+}
+
+function tradeAssetSummaryHtml(asset, direction) {
+  const partner = direction === 'incoming' ? asset.fromTeam : asset.toTeam;
+  const salaryHtml = asset.salary > 0 ? `<span class="trade-machine-summary-asset-money">${formatBalanceMoney(asset.salary)}</span>` : '';
+  return `
+    <li class="trade-machine-summary-asset trade-machine-summary-asset--${escapeHtml(asset.type || 'asset')}">
+      <div class="trade-machine-summary-asset-head">
+        <strong>${escapeHtml(asset.label)}</strong>
+        ${tradeSummaryLogoHtml(partner)}
+      </div>
+      ${asset.detail ? `<small>${escapeHtml(asset.detail)}</small>` : ''}
+      ${salaryHtml}
+    </li>
+  `;
+}
+
+function tradeAssetSummaryListHtml(assets, direction) {
+  if (!assets.length) return '<div class="trade-machine-summary-empty">Nada seleccionado</div>';
+  return `<ul>${assets.map((asset) => tradeAssetSummaryHtml(asset, direction)).join('')}</ul>`;
+}
+
+function tradeTeamSummaryHtml(code, flow) {
+  const net = Number(flow.incomingSalary || 0) - Number(flow.outgoingSalary || 0);
+  return `
+    <article class="trade-machine-summary-team">
+      <div class="trade-machine-summary-team-head">
+        <div class="trade-machine-summary-team-title">
+          ${tradeSummaryLogoHtml(code, 'trade-machine-summary-team-logo')}
+          <div><strong>${escapeHtml(code)}</strong><span>${(flow.incomingAssets || []).length} entran · ${(flow.outgoingAssets || []).length} salen</span></div>
+        </div>
+      </div>
+      <div class="trade-machine-summary-assets">
+        <section><h4>Recibe</h4>${tradeAssetSummaryListHtml(flow.incomingAssets || [], 'incoming')}</section>
+        <section><h4>Envía</h4>${tradeAssetSummaryListHtml(flow.outgoingAssets || [], 'outgoing')}</section>
+      </div>
+      <div class="trade-machine-summary-money">
+        <span>Salario recibido <strong>${formatBalanceMoney(flow.incomingSalary)}</strong></span>
+        <span>Salario enviado <strong>${formatBalanceMoney(flow.outgoingSalary)}</strong></span>
+        <span>Neto <strong class="${net > 0 ? 'is-negative' : net < 0 ? 'is-positive' : ''}">${formatBalanceMoney(net)}</strong></span>
+      </div>
+      <table class="trade-machine-balance-table">
+        <thead><tr><th>Balance</th><th>Antes</th><th>Después</th></tr></thead>
+        <tbody>${tradeBalanceRowsHtml(flow)}</tbody>
+      </table>
+    </article>
+  `;
+}
+
+function renderTradeValidation() {
+  const panel = document.getElementById('tradeValidationPanel');
+  if (!panel) return;
+  const statusEl = document.getElementById('tradeValidationStatus');
+  const seasonEl = document.getElementById('tradeValidationSeason');
+  const checklistEl = document.getElementById('tradeValidationChecklist');
+  const issuesEl = document.getElementById('tradeValidationIssues');
+  const validation = state.trade.validation;
+  const status = state.trade.validationLoading
+    ? 'loading'
+    : state.trade.validationError
+      ? 'error'
+      : validation?.status || 'pending';
+  panel.className = `trade-validation-panel trade-validation-panel--${status}`;
+  if (statusEl) statusEl.textContent = tradeValidationStatusLabel(status);
+  if (seasonEl) seasonEl.textContent = `Temporada ${seasonLabel(Number(validation?.season || tradeSeasonStart()))}`;
+
+  if (state.trade.validationLoading) {
+    if (checklistEl) checklistEl.innerHTML = '<div class="trade-validation-empty">Comprobando reglas...</div>';
+    if (issuesEl) issuesEl.innerHTML = '';
+    return;
+  }
+  if (state.trade.validationError) {
+    if (checklistEl) checklistEl.innerHTML = '';
+    if (issuesEl) issuesEl.innerHTML = `<div class="trade-validation-error">${escapeHtml(state.trade.validationError)}</div>`;
+    return;
+  }
+  if (!validation) {
+    if (checklistEl) checklistEl.innerHTML = '<div class="trade-validation-empty">Selecciona activos y valida el traspaso antes de procesarlo.</div>';
+    if (issuesEl) issuesEl.innerHTML = '';
+    return;
+  }
+
+  const flows = validation.flows || tradeLocalFlows();
+  const summaryHtml = (state.trade.selectedTeams || [])
+    .map((code) => tradeTeamSummaryHtml(code, flows[code] || tradeLocalFlowSkeleton(code)))
+    .join('');
+  const checklist = Array.isArray(validation.checklist) ? validation.checklist : [];
+  if (checklistEl) {
+    checklistEl.innerHTML = `
+      <section class="trade-machine-summary-panel">
+        <div class="trade-machine-panel-title"><h3>Resumen del traspaso</h3><span>${seasonLabel(tradeSeasonStart())}</span></div>
+        <div class="trade-machine-summary-grid">${summaryHtml}</div>
+      </section>
+      <div class="trade-validation-checklist">
+        ${checklist.length ? checklist.map((check) => `
+          <article class="trade-validation-check trade-validation-check--${escapeHtml(check.status || 'pending')}">
+            <div class="trade-validation-check-head">
+              <strong>${escapeHtml(check.label || check.rule || 'Regla')}</strong>
+              <span>${escapeHtml(tradeValidationStatusLabel(check.status || 'pending'))}</span>
+            </div>
+            ${(check.messages || []).slice(0, 3).map((message) => `<p>${escapeHtml(message)}</p>`).join('')}
+          </article>
+        `).join('') : '<div class="trade-validation-empty">No hay checklist disponible.</div>'}
+      </div>
+    `;
+  }
+
+  const issues = Array.isArray(validation.issues) ? validation.issues : [];
+  if (issuesEl) {
+    const importantIssues = issues.filter((issue) => issue.severity === 'illegal' || issue.severity === 'warning').slice(0, 12);
+    issuesEl.innerHTML = importantIssues.length
+      ? `<strong>Alertas</strong><ul>${importantIssues.map((issue) => `
+          <li class="trade-validation-issue trade-validation-issue--${escapeHtml(issue.severity || 'warning')}">
+            ${escapeHtml(issue.teamCode ? `${issue.teamCode}: ` : '')}${escapeHtml(issue.message || '')}
+          </li>
+        `).join('')}</ul>`
+      : '<div class="trade-validation-empty">Sin alertas.</div>';
+  }
+}
+
+async function validateTradeModal({ silent = false } = {}) {
+  const payload = buildTradeProcessPayload();
+  if ((payload.teams || []).length < TRADE_MACHINE_MIN_TEAMS) {
+    state.trade.validation = null;
+    state.trade.validationError = 'Selecciona al menos dos equipos.';
+    renderTradeValidation();
+    return null;
+  }
+  state.trade.validationLoading = true;
+  state.trade.validationError = null;
+  if (!silent) renderTradeValidation();
+  try {
+    const result = await api('/api/trades/process/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     });
-    noCountCb.addEventListener('change', () => {
-      if (noCountCb.checked) noCount.add(p.id);
-      else noCount.delete(p.id);
-    });
-    list.appendChild(row);
+    state.trade.validation = result.validation || result;
+    state.trade.validationSignature = tradeValidationSignature(payload);
+    state.trade.validationError = null;
+    return state.trade.validation;
+  } catch (err) {
+    state.trade.validation = null;
+    state.trade.validationSignature = null;
+    state.trade.validationError = err.message || 'No se pudo validar el traspaso.';
+    return null;
+  } finally {
+    state.trade.validationLoading = false;
+    renderTradeValidation();
+    renderTradeTeams();
+  }
+}
+
+function scheduleTradeValidation() {
+  const modal = document.getElementById('tradeModal');
+  if (!modal || modal.classList.contains('section-hidden')) return;
+  if (tradeValidationTimer) window.clearTimeout(tradeValidationTimer);
+  renderTradeTeams();
+  tradeValidationTimer = window.setTimeout(() => {
+    void validateTradeModal({ silent: true });
+  }, 300);
+}
+
+function pruneTradeSelections() {
+  const teams = new Set(state.trade.selectedTeams || []);
+  Object.entries(state.trade.selections || {}).forEach(([key, selection]) => {
+    const meta = tradeAssetMeta(key);
+    if (!meta || !teams.has(selection.fromTeam) || !teams.has(selection.toTeam) || selection.fromTeam === selection.toTeam) {
+      delete state.trade.selections[key];
+    }
   });
 }
 
-function renderTradePicks(side) {
-  const isA = side === 'A';
-  const teamCode = isA ? state.trade.teamA : state.trade.teamB;
-  const list = document.getElementById(isA ? 'tradePicksA' : 'tradePicksB');
-  const selected = isA ? state.trade.selectedPicksA : state.trade.selectedPicksB;
-
-  if (!teamCode) {
-    list.innerHTML = '<div>Select a team</div>';
-    return;
-  }
-
-  const picks = state.trade.picksByTeam[teamCode] || [];
-  if (picks.length === 0) {
-    list.innerHTML = '<div>No eligible next-year 1st-round picks.</div>';
-    return;
-  }
-
-  list.innerHTML = '';
-  picks.forEach((pick) => {
-    const ownerCode = String(pick.draft_pick_type || '').trim().toLowerCase() === 'acquired'
-      ? (pick.original_owner || 'Other')
-      : teamCode;
-    const row = document.createElement('div');
-    row.className = 'trade-player-row trade-pick-row';
-    row.innerHTML = `
-      <input type="checkbox" data-pick-id="${pick.id}" ${selected.has(pick.id) ? 'checked' : ''} aria-label="Include pick in trade">
-      <span class="trade-player-name">${escapeHtml(String(pick.label || '1st pick'))}</span>
-      <span>${escapeHtml(String(pick.year || ''))}</span>
-      <span>${escapeHtml(String(ownerCode || ''))}</span>
-    `;
-    const cb = row.querySelector('[data-pick-id]');
-    cb.addEventListener('change', () => {
-      if (cb.checked) selected.add(pick.id);
-      else selected.delete(pick.id);
-    });
-    list.appendChild(row);
-  });
+function renderTradeSeasonControl() {
+  const select = document.getElementById('tradeSeasonSelect');
+  if (select) select.innerHTML = tradeSeasonOptionsHtml();
 }
 
-function renderTradeRights(side) {
-  const isA = side === 'A';
-  const teamCode = isA ? state.trade.teamA : state.trade.teamB;
-  const list = document.getElementById(isA ? 'tradeRightsA' : 'tradeRightsB');
-  const selected = isA ? state.trade.selectedRightsA : state.trade.selectedRightsB;
-
-  if (!teamCode) {
-    list.innerHTML = '<div>Select a team</div>';
-    return;
-  }
-
-  const rights = state.trade.rightsByTeam[teamCode] || [];
-  if (rights.length === 0) {
-    list.innerHTML = '<div>No player rights.</div>';
-    return;
-  }
-
-  list.innerHTML = '';
-  rights.forEach((right) => {
-    const row = document.createElement('div');
-    row.className = 'trade-player-row trade-right-row';
-    row.innerHTML = `
-      <input type="checkbox" data-right-id="${right.id}" ${selected.has(right.id) ? 'checked' : ''} aria-label="Include ${escapeHtml(right.label || 'player right')} rights in trade">
-      <span class="trade-player-name">${escapeHtml(String(right.label || 'Player right'))}</span>
-      <span>${escapeHtml(String(right.detail || ''))}</span>
-    `;
-    const cb = row.querySelector('[data-right-id]');
-    cb.addEventListener('change', () => {
-      if (cb.checked) selected.add(right.id);
-      else selected.delete(right.id);
-    });
-    list.appendChild(row);
-  });
+function renderTradeTeams() {
+  renderTradeSeasonControl();
+  const grid = document.getElementById('tradeTeamsGrid');
+  const status = document.getElementById('tradeOfficialStatus');
+  const addBtn = document.getElementById('addTradeTeamBtn');
+  if (!grid) return;
+  pruneTradeSelections();
+  const localFlows = tradeLocalFlows();
+  const payload = buildTradeProcessPayload();
+  const signature = tradeValidationSignature(payload);
+  const serverFlows = state.trade.validationSignature === signature ? state.trade.validation?.flows : null;
+  const flows = serverFlows || localFlows;
+  const codes = state.trade.selectedTeams || [];
+  if (status) status.textContent = `${seasonLabel(tradeSeasonStart())} · ${codes.length} equipos`;
+  if (addBtn) addBtn.disabled = codes.length >= TRADE_MACHINE_MAX_TEAMS;
+  grid.innerHTML = codes.map((code, index) => renderTradeTeamCard(code, index, flows?.[code] || localFlows[code] || tradeLocalFlowSkeleton(code))).join('');
 }
 
-async function refreshTradeModalPlayers() {
-  await Promise.all([
-    loadTradeTeamPlayers(state.trade.teamA),
-    loadTradeTeamPlayers(state.trade.teamB),
-  ]);
-  renderTradePlayers('A');
-  renderTradePlayers('B');
-  renderTradePicks('A');
-  renderTradePicks('B');
-  renderTradeRights('A');
-  renderTradeRights('B');
+async function updateOfficialTradeTeam(index, code) {
+  const nextCode = String(code || '').trim().toUpperCase();
+  if (!tradeValidTeamCodes().has(nextCode)) return;
+  const selected = [...state.trade.selectedTeams];
+  if (selected.some((item, idx) => idx !== index && item === nextCode)) return;
+  const oldCode = selected[index];
+  selected[index] = nextCode;
+  state.trade.selectedTeams = selected;
+  Object.entries(state.trade.selections).forEach(([key, selection]) => {
+    if (selection.fromTeam === oldCode || selection.toTeam === oldCode) delete state.trade.selections[key];
+  });
+  renderTradeTeams();
+  await ensureTradeTeamData([nextCode]);
+  scheduleTradeValidation();
+}
+
+async function addOfficialTradeTeam() {
+  if (state.trade.selectedTeams.length >= TRADE_MACHINE_MAX_TEAMS) return;
+  const next = (state.teams || []).find((team) => !state.trade.selectedTeams.includes(team.code));
+  if (!next) return;
+  state.trade.selectedTeams.push(next.code);
+  renderTradeTeams();
+  await ensureTradeTeamData([next.code]);
+  scheduleTradeValidation();
+}
+
+function removeOfficialTradeTeam(index) {
+  if (state.trade.selectedTeams.length <= TRADE_MACHINE_MIN_TEAMS) return;
+  const removed = state.trade.selectedTeams[index];
+  state.trade.selectedTeams.splice(index, 1);
+  Object.entries(state.trade.selections).forEach(([key, selection]) => {
+    if (selection.fromTeam === removed || selection.toTeam === removed) delete state.trade.selections[key];
+  });
+  scheduleTradeValidation();
 }
 
 function closeTradeModal() {
   document.getElementById('tradeModal').classList.add('section-hidden');
+  if (tradeValidationTimer) {
+    window.clearTimeout(tradeValidationTimer);
+    tradeValidationTimer = null;
+  }
 }
 
 async function openTradeModal(options = {}) {
   if (!state.teams.length) return;
-
-  const allCodes = state.teams.map((t) => t.code);
-  const fallbackA = state.teamCode || allCodes[0] || null;
-  if (!state.trade.teamA || !allCodes.includes(state.trade.teamA)) state.trade.teamA = fallbackA;
-  if (!state.trade.teamB || !allCodes.includes(state.trade.teamB) || state.trade.teamB === state.trade.teamA) {
-    state.trade.teamB = allCodes.find((c) => c !== state.trade.teamA) || null;
-  }
-  state.trade.selectedA.clear();
-  state.trade.selectedB.clear();
-  state.trade.selectedPicksA.clear();
-  state.trade.selectedPicksB.clear();
-  state.trade.selectedRightsA.clear();
-  state.trade.selectedRightsB.clear();
-  state.trade.noCountA.clear();
-  state.trade.noCountB.clear();
+  const seedCodes = [options.fromTeam || state.teamCode, ...(state.trade.selectedTeams || [])].filter(Boolean);
+  state.trade.selectedTeams = defaultTradeTeams(seedCodes);
+  state.trade.teamA = state.trade.selectedTeams[0] || null;
+  state.trade.teamB = state.trade.selectedTeams[1] || null;
+  state.trade.selections = {};
+  state.trade.seasonStart = Number(options.season || state.trade.seasonStart || currentSeasonStart());
+  resetTradeValidation();
+  const tradeBucketSelect = document.getElementById('tradeBucketSelect');
+  if (tradeBucketSelect) tradeBucketSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
+  const forceTradeCheckbox = document.getElementById('forceTradeCheckbox');
+  if (forceTradeCheckbox) forceTradeCheckbox.checked = false;
+  document.getElementById('tradeModal').classList.remove('section-hidden');
+  renderTradeTeams();
+  await ensureTradeTeamData(state.trade.selectedTeams);
+  const fromTeam = state.trade.selectedTeams[0];
   const preselectedA = Array.isArray(options.preselectedA) ? options.preselectedA : [];
   preselectedA.forEach((id) => {
     const parsed = Number(id);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      state.trade.selectedA.add(parsed);
+    if (Number.isFinite(parsed) && parsed > 0 && fromTeam) {
+      const key = tradeAssetKey('player', fromTeam, parsed);
+      state.trade.selections[key] = {
+        key,
+        type: 'player',
+        id: parsed,
+        fromTeam,
+        toTeam: tradeDefaultRecipient(fromTeam),
+        countsMove: true,
+      };
     }
   });
+  scheduleTradeValidation();
+}
 
-  const teamASelect = document.getElementById('tradeTeamA');
-  const teamBSelect = document.getElementById('tradeTeamB');
-  const optionsHtml = state.teams.map((t) => `<option value="${t.code}">${t.code} - ${t.name}</option>`).join('');
-  teamASelect.innerHTML = optionsHtml;
-  teamBSelect.innerHTML = optionsHtml;
-  teamASelect.value = state.trade.teamA || '';
-  teamBSelect.value = state.trade.teamB || '';
-  const tradeBucketSelect = document.getElementById('tradeBucketSelect');
-  if (tradeBucketSelect) tradeBucketSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
-
-  await refreshTradeModalPlayers();
-  document.getElementById('tradeModal').classList.remove('section-hidden');
+function selectedTradeCounts() {
+  return Object.values(state.trade.selections || {}).reduce((counts, selection) => {
+    if (selection.type === 'player') counts.players += 1;
+    else if (selection.type === 'pick') counts.picks += 1;
+    else if (selection.type === 'right') counts.rights += 1;
+    return counts;
+  }, { players: 0, picks: 0, rights: 0 });
 }
 
 async function confirmTrade() {
-  const teamA = state.trade.teamA;
-  const teamB = state.trade.teamB;
-  if (!teamA || !teamB) {
-    alert('Select two teams.');
+  const payload = buildTradeProcessPayload();
+  if ((payload.teams || []).length < TRADE_MACHINE_MIN_TEAMS) {
+    alert('Selecciona al menos dos equipos.');
     return;
   }
-  if (teamA === teamB) {
-    alert('Teams must be different.');
+  if (!tradePayloadHasMinimumAssets(payload)) {
+    alert('Selecciona al menos un activo.');
+    return;
+  }
+  const validation = await validateTradeModal({ silent: false });
+  const illegalIssues = (validation?.issues || []).filter((issue) => issue.severity === 'illegal');
+  if (illegalIssues.length && !payload.force_trade) {
+    alert('Traspaso no válido. Revisa la validación o marca Forzar traspaso para procesarlo igualmente.');
     return;
   }
 
-  const fromA = Array.from(state.trade.selectedA);
-  const fromB = Array.from(state.trade.selectedB);
-  const pickIdsA = Array.from(state.trade.selectedPicksA);
-  const pickIdsB = Array.from(state.trade.selectedPicksB);
-  const rightIdsA = Array.from(state.trade.selectedRightsA);
-  const rightIdsB = Array.from(state.trade.selectedRightsB);
-  if ((fromA.length + pickIdsA.length + rightIdsA.length) === 0 || (fromB.length + pickIdsB.length + rightIdsB.length) === 0) {
-    alert('Select at least one outgoing asset from each team.');
-    return;
-  }
-  const tradeBucket = normalizeMoveBucket(document.getElementById('tradeBucketSelect')?.value || state.settings.trade_move_phase);
-
+  const counts = selectedTradeCounts();
+  const forceMessage = payload.force_trade && illegalIssues.length
+    ? `\n\nFORZAR TRASPASO activo: se procesará aunque haya ${illegalIssues.length} error(es) de reglas.`
+    : '';
   const decision = await confirmWithDiscordNotification({
     title: 'Confirmar traspaso',
-    message: `${teamA}: ${fromA.length} jugador(es), ${pickIdsA.length} ronda(s), ${rightIdsA.length} derecho(s)\n${teamB}: ${fromB.length} jugador(es), ${pickIdsB.length} ronda(s), ${rightIdsB.length} derecho(s)\nCuenta como: ${moveBucketLabel(tradeBucket)}`,
+    message: `${payload.teams.join(' / ')}\n${counts.players} jugador(es), ${counts.picks} ronda(s), ${counts.rights} derecho(s)\nCuenta como: ${moveBucketLabel(payload.trade_bucket)}${forceMessage}`,
     confirmLabel: 'Confirmar traspaso',
+    danger: Boolean(payload.force_trade && illegalIssues.length),
     defaultNotify: true,
   });
   if (!decision.confirmed) return;
@@ -2526,25 +3241,14 @@ async function confirmTrade() {
     const result = await api('/api/trades/process', {
       method: 'POST',
       body: JSON.stringify({
-        team_a: teamA,
-        team_b: teamB,
-        players_a: fromA,
-        players_b: fromB,
-        pick_ids_a: pickIdsA,
-        pick_ids_b: pickIdsB,
-        right_ids_a: rightIdsA,
-        right_ids_b: rightIdsB,
-        no_count_players_a: Array.from(state.trade.noCountA),
-        no_count_players_b: Array.from(state.trade.noCountB),
-        trade_bucket: tradeBucket,
+        ...payload,
         notify_discord: decision.notifyDiscord,
         generate_discord_image: decision.generateDiscordImage,
         discord_custom_image: decision.customDiscordImage,
       }),
     });
-    if (!result.ok) {
-      throw new Error('Trade validation failed.');
-    }
+    if (!result.ok) throw new Error('Trade validation failed.');
+    state.trade.teamDataByCode = {};
     state.trade.playersByTeam = {};
     state.trade.picksByTeam = {};
     state.trade.rightsByTeam = {};
@@ -2563,7 +3267,7 @@ async function confirmTrade() {
           .filter((issue) => issue.severity === 'illegal')
           .map((issue) => `${issue.teamCode ? `${issue.teamCode}: ` : ''}${issue.message}`);
         if (data.error === 'trade_invalid' && issues.length) {
-          message = `Traspaso no válido:\n${issues.slice(0, 6).join('\n')}`;
+          message = `Traspaso no válido:\n${issues.slice(0, 8).join('\n')}`;
         }
       } catch {
         // Fall through to the raw API error.
@@ -2577,54 +3281,96 @@ async function confirmTrade() {
 
 function setupTradeModal() {
   const modal = document.getElementById('tradeModal');
-  const openBtn = document.getElementById('processTradeBtn');
+  const openButtons = [document.getElementById('openOfficialTradeToolBtn')].filter(Boolean);
   const closeBtn = document.getElementById('closeTradeModalBtn');
   const confirmBtn = document.getElementById('confirmTradeBtn');
-  const teamASelect = document.getElementById('tradeTeamA');
-  const teamBSelect = document.getElementById('tradeTeamB');
+  const validateBtn = document.getElementById('validateTradeBtn');
+  const addBtn = document.getElementById('addTradeTeamBtn');
+  const seasonSelect = document.getElementById('tradeSeasonSelect');
+  const grid = document.getElementById('tradeTeamsGrid');
+  const tradeBucketSelect = document.getElementById('tradeBucketSelect');
+  const forceTradeCheckbox = document.getElementById('forceTradeCheckbox');
 
-  openBtn.addEventListener('click', () => { void openTradeModal(); });
+  openButtons.forEach((openBtn) => openBtn.addEventListener('click', () => { void openTradeModal(); }));
   closeBtn.addEventListener('click', closeTradeModal);
+  validateBtn?.addEventListener('click', () => { void validateTradeModal({ silent: false }); });
   confirmBtn.addEventListener('click', () => {
-    void confirmTrade().catch((err) => {
-      alert(`Trade failed: ${err.message}`);
-    });
+    void confirmTrade().catch((err) => alert(`Trade failed: ${err.message}`));
   });
+  addBtn?.addEventListener('click', () => { void addOfficialTradeTeam(); });
+  seasonSelect?.addEventListener('change', () => {
+    state.trade.seasonStart = Number(seasonSelect.value || currentSeasonStart());
+    scheduleTradeValidation();
+  });
+  tradeBucketSelect?.addEventListener('change', scheduleTradeValidation);
+  forceTradeCheckbox?.addEventListener('change', renderTradeValidation);
 
-  teamASelect.addEventListener('change', async () => {
-    const next = teamASelect.value;
-    if (next === state.trade.teamB) {
-      alert('Teams must be different.');
-      teamASelect.value = state.trade.teamA || '';
+  grid?.addEventListener('change', async (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.matches('[data-official-trade-team-select]')) {
+      await updateOfficialTradeTeam(Number(target.dataset.officialTradeTeamSelect), target.value);
       return;
     }
-    state.trade.teamA = next;
-    state.trade.selectedA.clear();
-    state.trade.selectedPicksA.clear();
-    state.trade.selectedRightsA.clear();
-    state.trade.noCountA.clear();
-    await loadTradeTeamPlayers(next);
-    renderTradePlayers('A');
-    renderTradePicks('A');
-    renderTradeRights('A');
-  });
-
-  teamBSelect.addEventListener('change', async () => {
-    const next = teamBSelect.value;
-    if (next === state.trade.teamA) {
-      alert('Teams must be different.');
-      teamBSelect.value = state.trade.teamB || '';
+    if (target.matches('[data-official-trade-asset-key]')) {
+      const key = target.dataset.officialTradeAssetKey;
+      if (!key) return;
+      const meta = tradeAssetMeta(key);
+      if (!meta) return;
+      if (target.checked) {
+        state.trade.selections[key] = {
+          key,
+          type: meta.type,
+          id: meta.id,
+          fromTeam: meta.fromTeam,
+          toTeam: tradeDefaultRecipient(meta.fromTeam),
+          pickAction: meta.type === 'pick' ? (meta.stepienRestricted ? TRADE_PICK_ACTION_SWAP : TRADE_PICK_ACTION_SEND) : undefined,
+          countsMove: true,
+        };
+      } else {
+        delete state.trade.selections[key];
+      }
+      scheduleTradeValidation();
       return;
     }
-    state.trade.teamB = next;
-    state.trade.selectedB.clear();
-    state.trade.selectedPicksB.clear();
-    state.trade.selectedRightsB.clear();
-    state.trade.noCountB.clear();
-    await loadTradeTeamPlayers(next);
-    renderTradePlayers('B');
-    renderTradePicks('B');
-    renderTradeRights('B');
+    if (target.matches('[data-official-trade-recipient]')) {
+      const key = target.dataset.officialTradeRecipient;
+      if (key && state.trade.selections[key]) {
+        state.trade.selections[key].toTeam = target.value;
+        scheduleTradeValidation();
+      }
+      return;
+    }
+    if (target.matches('[data-official-trade-pick-action]')) {
+      const key = target.dataset.officialTradePickAction;
+      if (key && state.trade.selections[key]) {
+        state.trade.selections[key].pickAction = tradePickAction(target.value);
+        scheduleTradeValidation();
+      }
+      return;
+    }
+    if (target.matches('[data-official-trade-no-count]')) {
+      const key = target.dataset.officialTradeNoCount;
+      if (key && state.trade.selections[key]) {
+        state.trade.selections[key].countsMove = !target.checked;
+        scheduleTradeValidation();
+      }
+    }
+  });
+
+  grid?.addEventListener('click', (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const removeTeam = target.closest('[data-official-trade-remove-team]');
+    if (removeTeam) {
+      removeOfficialTradeTeam(Number(removeTeam.dataset.officialTradeRemoveTeam));
+      return;
+    }
+    const removeAsset = target.closest('[data-official-trade-remove-asset]');
+    if (removeAsset) {
+      delete state.trade.selections[removeAsset.dataset.officialTradeRemoveAsset];
+      scheduleTradeValidation();
+    }
   });
 
   modal.addEventListener('click', (e) => {
@@ -2981,6 +3727,7 @@ function setViewMode(mode) {
   const showAdminLog = mode === 'admin-log';
   const showAdminUsers = mode === 'admin-users';
   const showGmOptionRequests = mode === 'gm-option-requests';
+  const showAdminTools = mode === 'admin-tools';
   const showLeagueSettings = mode === 'admin-settings';
 
   const toggleSection = (id, hidden) => {
@@ -3000,6 +3747,7 @@ function setViewMode(mode) {
   toggleSection('adminLogsSection', !showAdminLog);
   toggleSection('adminUsersSection', !showAdminUsers);
   toggleSection('gmOptionRequestsSection', !showGmOptionRequests);
+  toggleSection('adminToolsSection', !showAdminTools);
   toggleSection('rosterSection', !showTeam);
   toggleSection('deadContractsSection', !showTeam);
   toggleSection('exceptionsSection', !showTeam);
@@ -3015,7 +3763,6 @@ function setViewMode(mode) {
     'reloadBtn',
     'addEntryBtn',
     'saveTeamGmInlineBtn',
-    'processTradeBtn',
     'teamFirstApronCapInput',
     'teamSecondApronCapInput',
   ];
@@ -3033,6 +3780,7 @@ function setupAdminMenu() {
   const openLogBtn = document.getElementById('openAdminLogPageBtn');
   const openUsersBtn = document.getElementById('openAdminUsersPageBtn');
   const openGmRequestsBtn = document.getElementById('openGmOptionRequestsPageBtn');
+  const openToolsBtn = document.getElementById('openAdminToolsPageBtn');
   const openSettingsBtn = document.getElementById('openLeagueSettingsPageBtn');
   const gmRequestsBtn = document.getElementById('gmOptionRequestsBtn');
 
@@ -3065,6 +3813,12 @@ function setupAdminMenu() {
 
   openGmRequestsBtn?.addEventListener('click', openGmRequests);
   gmRequestsBtn?.addEventListener('click', openGmRequests);
+
+  openToolsBtn?.addEventListener('click', () => {
+    setViewMode('admin-tools');
+    setPageHeading('ANBA Admin Tools', '');
+    renderCapStatusPills({});
+  });
 
   openSettingsBtn.addEventListener('click', () => {
     setViewMode('admin-settings');
@@ -3319,6 +4073,7 @@ function setupAdminMobileNav() {
   const logBtn = document.getElementById('adminMobileLogBtn');
   const usersBtn = document.getElementById('adminMobileUsersBtn');
   const gmRequestsBtn = document.getElementById('adminMobileGmOptionRequestsBtn');
+  const toolsBtn = document.getElementById('adminMobileToolsBtn');
   const settingsBtn = document.getElementById('adminMobileSettingsBtn');
   const logoutBtn = document.getElementById('adminMobileLogoutBtn');
   const infoBtn = document.getElementById('mobileInfoBtn');
@@ -3387,6 +4142,14 @@ function setupAdminMobileNav() {
       setPageHeading('GM Requests', '');
       renderCapStatusPills({});
       await loadGmOptionRequests();
+    });
+  }
+  if (toolsBtn) {
+    toolsBtn.addEventListener('click', () => {
+      closeAdminMobileSidebar();
+      setViewMode('admin-tools');
+      setPageHeading('ANBA Admin Tools', '');
+      renderCapStatusPills({});
     });
   }
   if (settingsBtn) {
@@ -4985,6 +5748,8 @@ async function refreshSummary() {
   const data = await api(`/api/teams/${state.teamCode}`);
   state.teamData.team = data.team;
   state.teamData.summary = data.summary;
+  state.teamData.season_summaries = data.season_summaries || {};
+  state.teamData.luxury_history = data.luxury_history || state.teamData.luxury_history || [];
   renderCards();
 }
 
@@ -6192,7 +6957,11 @@ function renderAssets() {
         </label>
         <label class="pick-checkbox-field">
           <input data-new-field="draft_pick_restricted" type="checkbox">
-          <span>Restricted?</span>
+          <span>Restricted by protection?</span>
+        </label>
+        <label class="pick-checkbox-field">
+          <input data-new-field="draft_pick_stepien_restricted" type="checkbox">
+          <span>Stepien restricted?</span>
         </label>
         <label class="pick-checkbox-field">
           <input data-new-field="draft_pick_protected" type="checkbox">
@@ -6247,6 +7016,7 @@ function renderAssets() {
         draft_pick_sold_to: readSoldToTeamSelects(card),
         draft_pick_conditional_teams: readConditionalTeamSelects(card),
         draft_pick_restricted: Boolean(card.querySelector('[data-new-field="draft_pick_restricted"]')?.checked),
+        draft_pick_stepien_restricted: Boolean(card.querySelector('[data-new-field="draft_pick_stepien_restricted"]')?.checked),
         draft_pick_protected: Boolean(card.querySelector('[data-new-field="draft_pick_protected"]')?.checked),
       };
       const hasContent = (
@@ -6258,6 +7028,7 @@ function renderAssets() {
         || payload.draft_pick_type !== 'own'
         || payload.draft_round !== '1st'
         || payload.draft_pick_restricted
+        || payload.draft_pick_stepien_restricted
         || payload.draft_pick_protected
       );
       if (!hasContent) {
@@ -6325,12 +7096,14 @@ function renderAssets() {
           ? (pick.original_owner || '')
           : state.teamCode;
         const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
+        const isStepienRestricted = Number(pick.draft_pick_stepien_restricted || 0) !== 0;
         const ownerTheme = TEAM_THEMES[ownerCode] || { primary: '#0f766e', secondary: '#99f6e4' };
         const ownerPrimaryRgb = hexToRgb(ownerTheme.primary);
         const ownerSecondaryRgb = hexToRgb(ownerTheme.secondary);
         const card = document.createElement('article');
         card.className = 'draft-pick-card admin-pick-card';
         if (isRestricted) card.classList.add('draft-pick-card--restricted');
+        if (isStepienRestricted) card.classList.add('draft-pick-card--stepien');
         if (pickType === 'sold') card.classList.add('draft-pick-card--sold');
         if (pickType === 'conditional') card.classList.add('draft-pick-card--conditional');
         card.style.setProperty('--pick-primary-rgb', `${ownerPrimaryRgb.r}, ${ownerPrimaryRgb.g}, ${ownerPrimaryRgb.b}`);
@@ -6379,7 +7152,11 @@ function renderAssets() {
             </label>
             <label class="pick-checkbox-field">
               <input data-field="draft_pick_restricted" type="checkbox" ${Number(pick.draft_pick_restricted || 0) ? 'checked' : ''}>
-              <span>Restricted?</span>
+              <span>Restricted by protection?</span>
+            </label>
+            <label class="pick-checkbox-field">
+              <input data-field="draft_pick_stepien_restricted" type="checkbox" ${Number(pick.draft_pick_stepien_restricted || 0) ? 'checked' : ''}>
+              <span>Stepien restricted?</span>
             </label>
             <label class="pick-checkbox-field">
               <input data-field="draft_pick_protected" type="checkbox" ${Number(pick.draft_pick_protected || 0) ? 'checked' : ''}>
@@ -6417,6 +7194,7 @@ function renderAssets() {
         const ownerSelect = card.querySelector('[data-field="original_owner"]');
         const detailInput = card.querySelector('[data-field="detail"]');
         const restrictedInput = card.querySelector('[data-field="draft_pick_restricted"]');
+        const stepienRestrictedInput = card.querySelector('[data-field="draft_pick_stepien_restricted"]');
         const protectedInput = card.querySelector('[data-field="draft_pick_protected"]');
         const ownerWrap = card.querySelector('[data-owner-wrap]');
         const soldToWrap = card.querySelector('[data-sold-to-wrap]');
@@ -6459,6 +7237,8 @@ function renderAssets() {
             pick[field] = next ? 1 : 0;
             if (field === 'draft_pick_restricted') {
               card.classList.toggle('draft-pick-card--restricted', next);
+            } else if (field === 'draft_pick_stepien_restricted') {
+              card.classList.toggle('draft-pick-card--stepien', next);
             }
           } catch (err) {
             input.checked = previous;
@@ -6517,6 +7297,9 @@ function renderAssets() {
         });
         restrictedInput.addEventListener('change', () => {
           void persistDraftFlag(restrictedInput, 'draft_pick_restricted');
+        });
+        stepienRestrictedInput.addEventListener('change', () => {
+          void persistDraftFlag(stepienRestrictedInput, 'draft_pick_stepien_restricted');
         });
         protectedInput.addEventListener('change', () => {
           void persistDraftFlag(protectedInput, 'draft_pick_protected');
@@ -6782,6 +7565,34 @@ function renderDeadContracts() {
 
     tbody.appendChild(frag);
   });
+
+  const openRosterSpotHolds = openRosterSpotDeadContractRow(ALL_SEASONS);
+  if (openRosterSpotHolds) {
+    const tr = document.createElement('tr');
+    tr.className = 'dead-contract-system-row';
+    tr.innerHTML = `
+      <td>
+        <div class="player-cell dead-contract-meta">
+          <span class="player-name">Open Roster Spot Cap Hold</span>
+          <span class="player-tags">
+            <span class="dead-system-pill" title="Cap hold calculado automáticamente">Sistema</span>
+          </span>
+        </div>
+      </td>
+      <td><span class="dead-type-pill dead-type-pill--normal">Normal</span></td>
+      <td><span class="dead-system-muted">-</span></td>
+      <td><span class="dead-system-muted">No APRON</span></td>
+      ${ALL_SEASONS.map((season) => {
+        const hold = openRosterSpotHolds.get(season);
+        if (!hold) return '<td><span class="dead-system-muted">-</span></td>';
+        const title = `${hold.count} hueco(s) de roster x mínimo rookie (${formatDots(hold.minimumSalary)}). Cuenta de roster para el mínimo: ${hold.rosterCount}/12.`;
+        return `<td><span class="dead-system-amount" title="${escapeHtml(title)}">${formatDots(hold.amount)}</span></td>`;
+      }).join('')}
+      <td><span class="dead-system-muted">Calculado</span></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
   if (state.ui.addingDeadContract) {
     const tr = document.createElement('tr');
     tr.className = 'table-add-editor-row';
@@ -8419,9 +9230,6 @@ async function init() {
   });
   document.getElementById('selectedDuplicateBtn').addEventListener('click', async () => {
     await duplicateSelectedPlayersAction();
-  });
-  document.getElementById('selectedTradeBtn').addEventListener('click', async () => {
-    await tradeSelectedPlayersAction();
   });
   document.getElementById('selectedCutBtn').addEventListener('click', async () => {
     await cutSelectedPlayersAction();

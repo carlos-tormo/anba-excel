@@ -1327,7 +1327,7 @@ function apronYosAdjustmentValue(player, season, salary = salaryNumericValue(pla
 }
 
 function capTotalTooltipText() {
-  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato y cap holds activos. Excluye: cap holds renunciados, contratos Two-Way y contratos Exhibit 10.';
+  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
 }
 
 function apronTooltipText() {
@@ -1521,6 +1521,39 @@ function summaryForBalanceSeason(data, season = displayBalanceSeason()) {
     room_to_second_apron: 0,
     missing_server_summary: true,
   };
+}
+
+function openRosterSpotHoldForSeason(season) {
+  const summary = serverSeasonSummary(state.teamData, season);
+  const amount = Number(summary?.open_roster_spot_cap_hold || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return {
+    amount,
+    count: Number(summary?.open_roster_spot_count || 0),
+    rosterCount: Number(summary?.open_roster_spot_roster_count || 0),
+    minimumSalary: Number(summary?.open_roster_spot_minimum_salary || 0),
+  };
+}
+
+function openRosterSpotDeadContractRow(seasons) {
+  const row = {
+    id: 'system-open-roster-spot-cap-hold',
+    label: 'Open Roster Spot Cap Hold',
+    dead_type: 'normal',
+    is_system_cap_hold: true,
+    contract_notes: true,
+  };
+  let hasAmount = false;
+  seasons.forEach((season) => {
+    const hold = openRosterSpotHoldForSeason(season);
+    if (!hold) return;
+    row[`salary_${season}_num`] = hold.amount;
+    row[`salary_${season}_text`] = String(Math.round(hold.amount));
+    row[`salary_${season}_note`] = true;
+    row[`salary_${season}_note_text`] = `${hold.count} hueco(s) de roster x mínimo rookie (${formatDots(hold.minimumSalary)}). Cuenta de roster para el mínimo: ${hold.rosterCount}/12.`;
+    hasAmount = true;
+  });
+  return hasAmount ? row : null;
 }
 
 function capForSeason(season) {
@@ -1856,6 +1889,10 @@ function draftPickIsRestricted(asset) {
   return boolValue(asset?.draft_pick_restricted);
 }
 
+function draftPickIsStepienRestricted(asset) {
+  return boolValue(asset?.draft_pick_stepien_restricted);
+}
+
 function draftPickIsProtected(asset) {
   return boolValue(asset?.draft_pick_protected);
 }
@@ -1878,12 +1915,15 @@ function tradeMachinePickAction(value) {
   return value === TRADE_PICK_ACTION_SWAP ? TRADE_PICK_ACTION_SWAP : TRADE_PICK_ACTION_SEND;
 }
 
-function tradeMachinePickActionOptions(selectedAction) {
+function tradeMachinePickActionOptions(selectedAction, stepienOnly = false) {
   const selected = tradeMachinePickAction(selectedAction);
-  return [
+  const actions = stepienOnly ? [
+    [TRADE_PICK_ACTION_SWAP, 'Vender swap'],
+  ] : [
     [TRADE_PICK_ACTION_SEND, 'Enviar ronda'],
     [TRADE_PICK_ACTION_SWAP, 'Vender swap'],
-  ].map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+  ];
+  return actions.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
 }
 
 function tradeMachineAssetForSelection(meta, selection) {
@@ -1908,6 +1948,7 @@ function tradeMachinePickBadges(asset) {
   const badges = [];
   const type = draftPickType(asset);
   if (draftPickIsRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--danger">Restringida</span>');
+  if (draftPickIsStepienRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--warning">Stepien</span>');
   if (draftPickIsProtected(asset)) badges.push('<span class="trade-machine-tag">Protegida</span>');
   if (type === 'conditional') badges.push('<span class="trade-machine-tag">Condicional</span>');
   if (type === 'acquired') badges.push('<span class="trade-machine-tag">Adquirida</span>');
@@ -1967,6 +2008,7 @@ function tradeMachineAssetMeta(key) {
       capSalary: 0,
       apronSalary: 0,
       restricted: draftPickIsRestricted(pick),
+      stepienRestricted: draftPickIsStepienRestricted(pick),
       protected: draftPickIsProtected(pick),
       conditional: draftPickType(pick) === 'conditional',
       round: draftPickRound(pick),
@@ -2210,7 +2252,7 @@ function tradeMachineAssetDetailHtml(detail, mobileDetail) {
   `;
 }
 
-function tradeMachineAssetRowHtml({ key, type, label, detail, mobileDetail, salary, badges = '', disabled = false }) {
+function tradeMachineAssetRowHtml({ key, type, label, detail, mobileDetail, salary, badges = '', disabled = false, stepienRestricted = false }) {
   const selected = tradeMachineSelectedAsset(key);
   const fromTeam = key.split(':')[1];
   const selectedTo = selected?.toTeam || tradeMachineDefaultRecipient(fromTeam);
@@ -2222,7 +2264,7 @@ function tradeMachineAssetRowHtml({ key, type, label, detail, mobileDetail, sala
   const pickActionHtml = hasPickAction
     ? `
       <select class="trade-machine-pick-action-select" data-trade-pick-action="${key}" aria-label="Acción para ${escapeHtml(label)}">
-        ${tradeMachinePickActionOptions(selectedPickAction)}
+        ${tradeMachinePickActionOptions(selectedPickAction, stepienRestricted)}
       </select>
     `
     : '';
@@ -2294,6 +2336,7 @@ function tradeMachinePickRowsHtml(data, code) {
       detail,
       badges: tradeMachinePickBadges(pick),
       disabled: draftPickIsRestricted(pick),
+      stepienRestricted: draftPickIsStepienRestricted(pick),
       salary: 0,
     });
   }).join('');
@@ -2791,7 +2834,9 @@ function setupTradeMachineControls() {
             id: meta.id,
             fromTeam: meta.fromTeam,
             toTeam: tradeMachineDefaultRecipient(meta.fromTeam),
-            pickAction: meta.type === 'pick' ? TRADE_PICK_ACTION_SEND : undefined,
+            pickAction: meta.type === 'pick'
+              ? (meta.stepienRestricted ? TRADE_PICK_ACTION_SWAP : TRADE_PICK_ACTION_SEND)
+              : undefined,
           };
         } else {
           delete state.tradeMachine.selections[key];
@@ -2867,8 +2912,7 @@ function sortValue(row, key) {
   const val = row?.[key];
   if (val === null || val === undefined || val === '') return null;
   if (key === 'position') {
-    if (isTwoWayPlayer(row)) return POSITION_ORDER.TW;
-    return POSITION_ORDER[String(val).toUpperCase()] ?? 999;
+    return POSITION_ORDER[rosterPositionKey(row)] ?? 999;
   }
   if (key === 'years_left') return birdYearsSortValue(val);
   if (typeof val === 'number') return val;
@@ -2876,6 +2920,11 @@ function sortValue(row, key) {
   if (Number.isFinite(num) && key.includes('salary_')) return num;
   if (Number.isFinite(num) && (key === 'year' || key === 'rating' || key === 'amount_num')) return num;
   return String(val).toLowerCase();
+}
+
+function playerSalarySortValue(row) {
+  const value = salaryDisplayNumericValue(row, selectedSeasonStart());
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
 function sortedRows(rows, sortCfg) {
@@ -2888,6 +2937,14 @@ function sortedRows(rows, sortCfg) {
     if (vb === null) return -1;
     if (va < vb) return -1 * dir;
     if (va > vb) return 1 * dir;
+    if (sortCfg.key === 'position') {
+      const salaryDiff = playerSalarySortValue(b) - playerSalarySortValue(a);
+      if (salaryDiff !== 0) return salaryDiff;
+      const nameA = String(a?.name || '').toLowerCase();
+      const nameB = String(b?.name || '').toLowerCase();
+      if (nameA < nameB) return -1;
+      if (nameA > nameB) return 1;
+    }
     return 0;
   });
 }
@@ -5233,6 +5290,7 @@ function renderAssets() {
         const pickType = normalizedType(pick);
         const pickRound = normalizedRound(pick);
         const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
+        const isStepienRestricted = Number(pick.draft_pick_stepien_restricted || 0) !== 0;
         const isProtected = Number(pick.draft_pick_protected || 0) !== 0;
         const sourceTeams = conditionalTeams(pick);
         const soldToTeams = parseDraftConditionalTeams(pick.draft_pick_sold_to);
@@ -5252,6 +5310,7 @@ function renderAssets() {
               : 'Own pick';
         const badgesHtml = [
           isRestricted ? '<span class="pick-restricted-tag">Restricted</span>' : '',
+          isStepienRestricted ? '<span class="pick-stepien-tag">Stepien</span>' : '',
           isProtected ? '<span class="pick-protected-tag">Protected</span>' : '',
           pickType === 'conditional' ? '<span class="pick-conditional-tag">Conditional</span>' : '',
         ].filter(Boolean).join('');
@@ -5265,6 +5324,7 @@ function renderAssets() {
         const card = document.createElement('article');
         card.className = 'draft-pick-card';
         if (isRestricted) card.classList.add('draft-pick-card--restricted');
+        if (isStepienRestricted) card.classList.add('draft-pick-card--stepien');
         if (isProtected) card.classList.add('draft-pick-card--protected');
         if (pickType === 'sold') card.classList.add('draft-pick-card--sold');
         if (pickType === 'conditional') card.classList.add('draft-pick-card--conditional');
@@ -5326,10 +5386,16 @@ function renderDeadContracts() {
     (state.teamData.dead_contracts || []).filter((d) => seasons.some((season) => hasSeasonCellValue(d, season))),
     state.sort.dead_contracts,
   );
+  const openRosterHoldRow = openRosterSpotDeadContractRow(seasons);
+  if (openRosterHoldRow) rows.push(openRosterHoldRow);
   rows.forEach((d) => {
     const tr = document.createElement('tr');
+    if (d.is_system_cap_hold) tr.classList.add('dead-contract-system-row');
     const typePill = deadTypePillHtml(d.dead_type);
     const exclusionPills = deadExclusionPillsHtml(d);
+    const systemPill = d.is_system_cap_hold
+      ? '<span class="dead-system-pill" title="Cap hold calculado automáticamente">Sistema</span>'
+      : '';
     tr.innerHTML = `
       <td colspan="3" class="dead-contract-meta-cell">
         <div class="player-cell dead-contract-meta">
@@ -5337,6 +5403,7 @@ function renderDeadContracts() {
           <span class="player-tags">
             ${typePill}
             ${exclusionPills}
+            ${systemPill}
           </span>
         </div>
       </td>

@@ -8,6 +8,7 @@ ROSTER_STANDARD_MAX_DEFAULT = 15
 ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT = 18
 ROSTER_TWO_WAY_MIN_DEFAULT = 0
 ROSTER_TWO_WAY_MAX_DEFAULT = 3
+OPEN_ROSTER_SPOT_MINIMUM = 12
 CAP_FORECAST_MIN_YEAR = 2025
 CAP_FORECAST_MAX_YEAR = 2035
 CAP_FORECAST_WINDOW = 6
@@ -322,6 +323,14 @@ def is_restricted_rights_player(row: Dict[str, Any]) -> bool:
     return rights == "R" or rights.startswith("R(")
 
 
+def has_standard_cap_hold_marker(row: Dict[str, Any], season: int) -> bool:
+    if is_two_way_player(row) or is_exhibit10_player(row):
+        return False
+    text_code = season_salary_text_code(row, season)
+    option_code = season_option_code(row, season)
+    return text_code in {"NB", "EB", "FB", "QO"} or option_code in {"NB", "EB", "FB", "QO"}
+
+
 def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], salary_cap: float) -> float:
     if not parse_bool(settings.get("free_agency_mode")):
         return 0.0
@@ -362,6 +371,33 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
             return 0.0
         return float(round(previous_salary * (1.9 if previous_salary < average_salary else 1.5)))
     return 0.0
+
+
+def open_roster_spot_cap_hold(players: List[Dict[str, Any]], season: int, settings: Dict[str, str], salary_cap: float) -> Dict[str, float]:
+    if not parse_bool(settings.get("free_agency_mode")):
+        return {"roster_count": 0.0, "open_spots": 0.0, "minimum_salary": 0.0, "amount": 0.0}
+    current_year = parse_int(settings.get("current_year")) or 2025
+    if int(season) != int(current_year) + 1:
+        return {"roster_count": 0.0, "open_spots": 0.0, "minimum_salary": 0.0, "amount": 0.0}
+
+    roster_count = 0
+    for player in players:
+        if is_two_way_player(player) or is_exhibit10_player(player):
+            continue
+        if cap_hold_amount(player, season, settings, salary_cap) > 0 or has_standard_cap_hold_marker(player, season):
+            roster_count += 1
+            continue
+        if row_salary_num(player, season) > 0:
+            roster_count += 1
+
+    open_spots = max(0, OPEN_ROSTER_SPOT_MINIMUM - roster_count)
+    minimum_salary = minimum_salary_for_season(salary_cap, 0, 1)
+    return {
+        "roster_count": float(roster_count),
+        "open_spots": float(open_spots),
+        "minimum_salary": float(minimum_salary),
+        "amount": float(open_spots * minimum_salary),
+    }
 
 
 def format_trade_money(value: Any) -> str:

@@ -4,6 +4,7 @@ from app.domain_rules import (
     ROSTER_STANDARD_MAX_DEFAULT,
     cap_hold_amount,
     minimum_salary_for_season,
+    open_roster_spot_cap_hold,
     parse_amount_like,
     parse_float,
     public_settings_payload,
@@ -45,6 +46,23 @@ class DomainRulesTests(unittest.TestCase):
         self.assertEqual(
             minimum_salary_for_season(154_647_000, 1, 1),
             cap_hold_amount(row, 2026, settings, 154_647_000),
+        )
+
+    def test_open_roster_spot_hold_uses_rookie_minimum_and_excludes_two_ways(self) -> None:
+        settings = {"free_agency_mode": "1", "current_year": "2025"}
+        players = [
+            {"salary_2026_num": 10_000_000, "bird_rights": "Reg"},
+            {"salary_2025_num": 636_435, "salary_2026_text": "QO", "bird_rights": "TW", "is_two_way": 1},
+            {"salary_2026_num": 2_000_000, "bird_rights": "E10"},
+        ]
+
+        result = open_roster_spot_cap_hold(players, 2026, settings, 154_647_000)
+
+        self.assertEqual(1, result["roster_count"])
+        self.assertEqual(11, result["open_spots"])
+        self.assertEqual(
+            11 * minimum_salary_for_season(154_647_000, 0, 1),
+            result["amount"],
         )
 
 

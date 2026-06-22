@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260620a">
+  <link rel="stylesheet" href="/styles.css?v=20260622a">
 </head>
 <body class="app-layout">
   <header>
@@ -35,9 +35,9 @@
           <button id="openAdminLogPageBtn" type="button">Admin Log</button>
           <button id="openAdminUsersPageBtn" type="button">Users</button>
           <button id="openGmOptionRequestsPageBtn" type="button">GM Requests</button>
+          <button id="openAdminToolsPageBtn" type="button">Admin Tools</button>
           <button id="openLeagueSettingsPageBtn" type="button">League Settings</button>
         </div>
-        <button id="processTradeBtn" class="sidebar-nav-item" type="button">Process Trade</button>
       </div>
       <button id="logoutBtn" class="danger sidebar-nav-item" type="button">Logout</button>
 
@@ -64,6 +64,7 @@
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡">Admin Log</button>
         <button id="adminMobileUsersBtn" type="button" class="mobile-nav-btn" data-icon="☉">Users</button>
         <button id="adminMobileGmOptionRequestsBtn" type="button" class="mobile-nav-btn" data-icon="!">GM Requests <span id="mobileGmOptionRequestsBadge" class="nav-badge" hidden>0</span></button>
+        <button id="adminMobileToolsBtn" type="button" class="mobile-nav-btn" data-icon="⇄">Admin Tools</button>
         <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙">League Settings</button>
         <a href="/" class="mobile-nav-link" data-icon="↗">Guest View</a>
         <button id="adminMobileLogoutBtn" type="button" class="danger mobile-nav-btn" data-icon="↗">Logout</button>
@@ -191,6 +192,24 @@
       </div>
     </section>
 
+    <section id="adminToolsSection" class="section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Admin Tools</h2>
+          <div class="section-subtitle">Herramientas oficiales de administración con validación server-side.</div>
+        </div>
+      </div>
+      <div class="admin-tools-grid">
+        <article class="admin-tool-card">
+          <div>
+            <h3>Traspasos oficiales</h3>
+            <p>Procesa traspasos desde el panel de administración usando las mismas comprobaciones de la máquina de traspasos.</p>
+          </div>
+          <button id="openOfficialTradeToolBtn" type="button">Abrir herramienta de traspasos</button>
+        </article>
+      </div>
+    </section>
+
     <section id="trackerSection">
       <h2>Tracker</h2>
       <nav id="trackerTabs" class="team-tabs tracker-tabs" role="tablist" aria-label="Tracker sections">
@@ -208,7 +227,7 @@
           <thead>
             <tr>
               <th data-sort="team_code">Team</th>
-              <th data-sort="cap_total" title="CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato y cap holds activos. Excluye: cap holds renunciados, contratos Two-Way y contratos Exhibit 10.">CAP total</th>
+              <th data-sort="cap_total" title="CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.">CAP total</th>
               <th data-sort="gasto_total">GASTO total</th>
               <th data-sort="espacio_cap">Espacio CAP</th>
               <th data-sort="espacio_luxury">Espacio Luxury</th>
@@ -522,7 +541,6 @@
         <span id="selectedPlayersCount" class="selected-actions-label">0 selected</span>
         <button id="selectedDeleteBtn" type="button" class="danger">Delete</button>
         <button id="selectedDuplicateBtn" type="button">Duplicate</button>
-        <button id="selectedTradeBtn" type="button">Trade</button>
         <button id="selectedCutBtn" type="button" class="danger">Cut</button>
       </div>
       <div class="table-wrap">
@@ -890,52 +908,48 @@
   <div id="tradeModal" class="modal-backdrop section-hidden" role="dialog" aria-label="Process trade">
     <div class="modal-card trade-modal">
       <div class="modal-header">
-        <h2>Process Trade</h2>
-        <button id="closeTradeModalBtn" type="button" class="danger">Close</button>
+        <h2>Procesar traspaso</h2>
+        <button id="closeTradeModalBtn" type="button" class="danger">Cerrar</button>
       </div>
-      <div class="trade-grid">
-        <div class="trade-team-col">
-          <label for="tradeTeamA">Team A</label>
-          <select id="tradeTeamA"></select>
-          <div class="trade-subsection">
-            <div class="trade-subsection-title">Players</div>
-            <div id="tradePlayersA" class="trade-players-list"></div>
-          </div>
-          <div class="trade-subsection">
-            <div class="trade-subsection-title">Next 1st-round picks</div>
-            <div id="tradePicksA" class="trade-players-list"></div>
-          </div>
-          <div class="trade-subsection">
-            <div class="trade-subsection-title">Player rights</div>
-            <div id="tradeRightsA" class="trade-players-list"></div>
-          </div>
+      <div class="trade-machine-head trade-official-head">
+        <div>
+          <strong id="tradeOfficialStatus">2 equipos</strong>
+          <span>Herramienta oficial de admin</span>
         </div>
-        <div class="trade-team-col">
-          <label for="tradeTeamB">Team B</label>
-          <select id="tradeTeamB"></select>
-          <div class="trade-subsection">
-            <div class="trade-subsection-title">Players</div>
-            <div id="tradePlayersB" class="trade-players-list"></div>
-          </div>
-          <div class="trade-subsection">
-            <div class="trade-subsection-title">Next 1st-round picks</div>
-            <div id="tradePicksB" class="trade-players-list"></div>
-          </div>
-          <div class="trade-subsection">
-            <div class="trade-subsection-title">Player rights</div>
-            <div id="tradeRightsB" class="trade-players-list"></div>
-          </div>
+        <div class="trade-machine-actions">
+          <label class="season-view-control" for="tradeSeasonSelect">
+            <span>Temporada</span>
+            <select id="tradeSeasonSelect"></select>
+          </label>
+          <button id="addTradeTeamBtn" type="button">Añadir equipo</button>
         </div>
       </div>
+      <div id="tradeTeamsGrid" class="trade-machine-grid trade-official-grid"></div>
       <div class="trade-toolbar">
-        <label for="tradeBucketSelect">Counts toward</label>
+        <label for="tradeBucketSelect">Cuenta como</label>
         <select id="tradeBucketSelect">
           <option value="pre30">Movimientos restantes (pre-30)</option>
           <option value="post30">Movimientos restantes (post-30)</option>
         </select>
+        <button id="validateTradeBtn" type="button">Validar traspaso</button>
+        <label class="trade-force-toggle" for="forceTradeCheckbox">
+          <input id="forceTradeCheckbox" type="checkbox">
+          <span>Forzar traspaso</span>
+        </label>
+      </div>
+      <div id="tradeValidationPanel" class="trade-validation-panel trade-validation-panel--pending">
+        <div class="trade-validation-head">
+          <div>
+            <strong>Validación</strong>
+            <span id="tradeValidationStatus">Pendiente</span>
+          </div>
+          <small id="tradeValidationSeason"></small>
+        </div>
+        <div id="tradeValidationChecklist" class="trade-validation-checklist"></div>
+        <div id="tradeValidationIssues" class="trade-validation-issues"></div>
       </div>
       <div class="trade-actions">
-        <button id="confirmTradeBtn" type="button">Confirm Trade</button>
+        <button id="confirmTradeBtn" type="button">Confirmar traspaso</button>
       </div>
     </div>
   </div>
@@ -1022,6 +1036,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260620a" defer></script>
+  <script src="/admin.js?v=20260622a" defer></script>
 </body>
 </html>

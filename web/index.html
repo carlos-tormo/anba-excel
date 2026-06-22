@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260620a">
+  <link rel="stylesheet" href="/styles.css?v=20260622a">
 </head>
 <body class="app-layout">
   <header>
@@ -149,7 +149,7 @@
           <thead>
             <tr>
               <th data-sort="team_code">Team</th>
-              <th data-sort="cap_total" title="CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato y cap holds activos. Excluye: cap holds renunciados, contratos Two-Way y contratos Exhibit 10.">CAP total</th>
+              <th data-sort="cap_total" title="CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.">CAP total</th>
               <th data-sort="gasto_total">GASTO total</th>
               <th data-sort="espacio_cap">Espacio CAP</th>
               <th data-sort="espacio_luxury">Espacio Luxury</th>
@@ -481,6 +481,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260620a" defer></script>
+  <script src="/guest.js?v=20260622a" defer></script>
 </body>
 </html>

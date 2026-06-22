@@ -578,7 +578,6 @@ h1 {
 	  #freeAgentsHomeBtn::before { content: "○"; }
 	  #tradeMachineHomeBtn::before { content: "⇄"; }
 	  #adminMenuBtn::before { content: "⚙"; }
-	  #processTradeBtn::before { content: "⇄"; }
   #adminLink::before,
   a[href="/admin"].ghost-link::before { content: "⚙"; }
   #loginLink::before { content: "→"; }
@@ -887,6 +886,38 @@ h1 {
   margin: 0;
   color: #102a43;
 }
+.trade-modal {
+  width: min(1480px, 98vw);
+}
+.trade-official-head {
+  margin-bottom: 12px;
+}
+.trade-official-head > div:first-child {
+  display: grid;
+  gap: 2px;
+  color: #334155;
+  font-weight: 800;
+}
+.trade-official-head > div:first-child span {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+.trade-official-grid {
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+}
+.trade-no-count-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.trade-no-count-toggle input {
+  width: 16px;
+  height: 16px;
+}
 .notification-confirm-modal {
   width: min(460px, 94vw);
   display: grid;
@@ -1068,7 +1099,40 @@ h1 {
   font-weight: 700;
 }
 .trade-pick-row {
-  grid-template-columns: auto minmax(0, 1.3fr) auto auto;
+  grid-template-columns: auto minmax(0, 1.2fr) auto auto minmax(0, auto) minmax(128px, auto);
+}
+.trade-pick-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.trade-pick-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.66rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.trade-pick-badge--danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+.trade-pick-badge--warning {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+}
+.trade-pick-row select {
+  min-width: 128px;
 }
 .trade-right-row {
   grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.4fr);
@@ -1083,11 +1147,139 @@ h1 {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 12px;
+  flex-wrap: wrap;
+}
+.trade-force-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #fecaca;
+  background: #fff1f2;
+  color: #991b1b;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 800;
+}
+.trade-validation-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #f8fafc;
+  margin-top: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+.trade-validation-panel--legal {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.trade-validation-panel--review,
+.trade-validation-panel--warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.trade-validation-panel--illegal,
+.trade-validation-panel--error {
+  border-color: #fecaca;
+  background: #fff1f2;
+}
+.trade-validation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.trade-validation-head div {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.trade-validation-head span,
+.trade-validation-head small {
+  color: #64748b;
+  font-weight: 800;
+}
+.trade-validation-checklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.trade-validation-check {
+  border: 1px solid #dbe5f0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 10px;
+}
+.trade-validation-check--pass {
+  border-color: #86efac;
+}
+.trade-validation-check--fail {
+  border-color: #fecaca;
+}
+.trade-validation-check--warning {
+  border-color: #fde68a;
+}
+.trade-validation-check-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  color: #334155;
+}
+.trade-validation-check-head span {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+.trade-validation-check p {
+  margin: 6px 0 0;
+  color: #475569;
+  font-size: 0.85rem;
+}
+.trade-validation-issues {
+  color: #475569;
+}
+.trade-validation-issues ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+.trade-validation-issue--illegal {
+  color: #991b1b;
+}
+.trade-validation-issue--warning {
+  color: #92400e;
+}
+.trade-validation-empty,
+.trade-validation-error {
+  color: #64748b;
+  font-weight: 700;
 }
 .trade-actions {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+}
+.admin-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+.admin-tool-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+  padding: 18px;
+  display: grid;
+  gap: 16px;
+  align-content: space-between;
+}
+.admin-tool-card h3 {
+  margin: 0 0 6px;
+}
+.admin-tool-card p {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.45;
 }
 .trade-machine-section {
   display: grid;
@@ -1590,6 +1782,11 @@ h1 {
   border-color: #fecaca;
   background: #fef2f2;
   color: #b91c1c;
+}
+.trade-machine-tag--warning {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
 }
 .trade-machine-empty {
   padding: 10px;
@@ -2306,6 +2503,19 @@ h1 {
 .draft-pick-card--restricted .pick-card-subtitle {
   color: #64748b;
 }
+.draft-pick-card--stepien:not(.draft-pick-card--restricted) {
+  border-color: rgba(217, 119, 6, 0.58);
+  background:
+    radial-gradient(140px 84px at 12% 50%, rgba(254, 215, 170, 0.5), transparent 72%),
+    linear-gradient(180deg, #fff7ed, #f8fafc);
+  box-shadow:
+    inset 7px 0 0 rgba(217, 119, 6, 0.72),
+    0 0 0 1px rgba(217, 119, 6, 0.16),
+    0 8px 16px rgba(100, 116, 139, 0.12);
+}
+.draft-pick-card--stepien:not(.draft-pick-card--restricted) .pick-card-title {
+  color: #9a3412;
+}
 .pick-card-logo-wrap {
   width: 58px;
   height: 58px;
@@ -2383,6 +2593,20 @@ h1 {
   border: 1px solid rgba(185, 28, 28, 0.42);
   background: #fee2e2;
   color: #991b1b;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.pick-stepien-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(217, 119, 6, 0.42);
+  background: #fff7ed;
+  color: #9a3412;
   font-size: 0.68rem;
   line-height: 1.2;
   font-weight: 800;
@@ -6548,6 +6772,40 @@ td.salary-option--nb .salary-pct {
   border-color: #fdba74;
   background: #ffedd5;
   color: #9a3412;
+}
+.dead-system-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1.25;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.dead-contract-system-row td {
+  background: #f8fafc;
+}
+.dead-contract-system-row .player-name {
+  color: #334155;
+}
+.dead-system-amount {
+  display: inline-flex;
+  justify-content: flex-end;
+  min-width: 110px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 900;
+}
+.dead-system-muted {
+  color: #94a3b8;
+  font-weight: 800;
 }
 .type-pill--mid,
 .type-pill--tmid,

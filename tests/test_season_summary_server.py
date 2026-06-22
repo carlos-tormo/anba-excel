@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from app.server import LeagueDB
+from app.domain_rules import minimum_salary_for_season
 from app.xlsx_import import create_schema, now_iso
 
 
@@ -63,8 +64,12 @@ class SeasonSummaryServerTests(unittest.TestCase):
         team = self.db.get_team("ATL")
         self.assertIsNotNone(team)
         summary_2026 = team["season_summaries"]["2026"]
+        rookie_minimum = minimum_salary_for_season(154_647_000, 0, 1)
+        open_roster_hold = 11 * rookie_minimum
 
-        self.assertEqual(12_000_000, round(float(summary_2026["cap_figure"])))
+        self.assertEqual(11, int(summary_2026["open_roster_spot_count"]))
+        self.assertEqual(open_roster_hold, float(summary_2026["open_roster_spot_cap_hold"]))
+        self.assertEqual(12_000_000 + open_roster_hold, round(float(summary_2026["cap_figure"])))
         self.assertEqual(0, round(float(summary_2026["apron_account"])))
         self.assertEqual(
             float(summary_2026["room_to_cap"]),

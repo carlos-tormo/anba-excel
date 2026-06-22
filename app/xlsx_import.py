@@ -215,6 +215,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             original_owner TEXT,
             exception_type TEXT,
             draft_pick_restricted INTEGER NOT NULL DEFAULT 0,
+            draft_pick_stepien_restricted INTEGER NOT NULL DEFAULT 0,
             draft_pick_protected INTEGER NOT NULL DEFAULT 0,
             draft_pick_sold_to TEXT,
             draft_pick_conditional_teams TEXT,

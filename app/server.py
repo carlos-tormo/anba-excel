@@ -24,6 +24,7 @@ try:
         CAP_FORECAST_MAX_YEAR,
         CAP_FORECAST_MIN_YEAR,
         CAP_FORECAST_WINDOW,
+        OPEN_ROSTER_SPOT_MINIMUM,
         ROSTER_STANDARD_MAX_DEFAULT,
         ROSTER_STANDARD_MIN_DEFAULT,
         ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT,
@@ -47,10 +48,12 @@ try:
         is_two_way_player,
         luxury_tax_amount,
         minimum_salary_2_yos_for_cap,
+        minimum_salary_for_season,
         normalize_bird_years,
         normalize_experience_years,
         normalize_move_phase,
         normalize_trade_bucket,
+        open_roster_spot_cap_hold,
         parse_amount_like,
         parse_bool,
         parse_float,
@@ -66,6 +69,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         CAP_FORECAST_MAX_YEAR,
         CAP_FORECAST_MIN_YEAR,
         CAP_FORECAST_WINDOW,
+        OPEN_ROSTER_SPOT_MINIMUM,
         ROSTER_STANDARD_MAX_DEFAULT,
         ROSTER_STANDARD_MIN_DEFAULT,
         ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT,
@@ -89,10 +93,12 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         is_two_way_player,
         luxury_tax_amount,
         minimum_salary_2_yos_for_cap,
+        minimum_salary_for_season,
         normalize_bird_years,
         normalize_experience_years,
         normalize_move_phase,
         normalize_trade_bucket,
+        open_roster_spot_cap_hold,
         parse_amount_like,
         parse_bool,
         parse_float,
@@ -1255,6 +1261,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE assets ADD COLUMN exception_type TEXT")
             if "draft_pick_restricted" not in asset_cols:
                 conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_restricted INTEGER NOT NULL DEFAULT 0")
+            if "draft_pick_stepien_restricted" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_stepien_restricted INTEGER NOT NULL DEFAULT 0")
             if "draft_pick_protected" not in asset_cols:
                 conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_protected INTEGER NOT NULL DEFAULT 0")
             if "draft_pick_sold_to" not in asset_cols:
@@ -5262,9 +5270,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if normalize_dead_type(d.get("dead_type")) == "two_way"
             and not dead_contract_excluded_from_gasto(d)
         )
+        open_roster_hold = open_roster_spot_cap_hold(players, current_year, settings, salary_cap)
+        open_roster_hold_amount = float(open_roster_hold.get("amount") or 0.0)
         exceptions = sum((a.get("amount_num") or 0.0) for a in assets if a.get("asset_type") == "exception")
 
-        cap_figure = cap_figure_players + dead_cap_normal
+        cap_figure = cap_figure_players + dead_cap_normal + open_roster_hold_amount
         apron_figure = apron_figure_players + dead_cap_normal
         payroll = player_payroll + dead_gasto_normal + dead_gasto_two_way
 
@@ -5291,6 +5301,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "dead_cap_two_way": dead_gasto_two_way,
             "dead_gasto_normal": dead_gasto_normal,
             "dead_gasto_two_way": dead_gasto_two_way,
+            "open_roster_spot_cap_hold": open_roster_hold_amount,
+            "open_roster_spot_count": int(open_roster_hold.get("open_spots") or 0),
+            "open_roster_spot_roster_count": int(open_roster_hold.get("roster_count") or 0),
+            "open_roster_spot_minimum_salary": float(open_roster_hold.get("minimum_salary") or 0.0),
             "exceptions_total": exceptions,
             "cap_figure": cap_figure,
             "apron_account": apron_figure,
@@ -6147,6 +6161,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             draft_pick_conditional_teams = serialize_team_codes(payload.get("draft_pick_conditional_teams")) if asset_type == "draft_pick" else None
             exception_type = normalize_exception_type(payload.get("exception_type")) if asset_type == "exception" else None
             draft_pick_restricted = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_restricted")) else 0
+            draft_pick_stepien_restricted = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_stepien_restricted")) else 0
             draft_pick_protected = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_protected")) else 0
             if asset_type == "draft_pick" and draft_pick_type != "acquired":
                 original_owner = None
@@ -6159,10 +6174,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 INSERT INTO assets (
                     team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
                     draft_pick_type, draft_round, original_owner, exception_type,
-                    draft_pick_restricted, draft_pick_protected, draft_pick_sold_to,
+                    draft_pick_restricted, draft_pick_stepien_restricted, draft_pick_protected, draft_pick_sold_to,
                     draft_pick_conditional_teams, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -6178,6 +6193,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     original_owner,
                     exception_type,
                     draft_pick_restricted,
+                    draft_pick_stepien_restricted,
                     draft_pick_protected,
                     draft_pick_sold_to,
                     draft_pick_conditional_teams,
@@ -6192,6 +6208,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         fields = [
             "asset_type", "year", "label", "detail", "amount_text", "draft_pick_type",
             "draft_round", "original_owner", "exception_type", "draft_pick_restricted",
+            "draft_pick_stepien_restricted",
             "draft_pick_protected", "draft_pick_sold_to", "draft_pick_conditional_teams",
         ]
         assigns = []
@@ -6216,7 +6233,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 elif f == "exception_type":
                     assigns.append("exception_type = ?")
                     vals.append(normalize_exception_type(payload[f]))
-                elif f in {"draft_pick_restricted", "draft_pick_protected"}:
+                elif f in {"draft_pick_restricted", "draft_pick_stepien_restricted", "draft_pick_protected"}:
                     assigns.append(f"{f} = ?")
                     vals.append(1 if parse_bool(payload[f]) else 0)
                 else:
@@ -6547,16 +6564,22 @@ class LeagueDB(DatabaseMaintenanceMixin):
         team_data: Dict[str, Any],
         season: int,
         salary_cap: float,
+        settings: Dict[str, str],
     ) -> Dict[str, float]:
         players = team_data.get("players") or []
         dead_contracts = team_data.get("dead_contracts") or []
 
         def player_cap_value(player: Dict[str, Any]) -> float:
+            hold = cap_hold_amount(player, season, settings, salary_cap)
+            if hold > 0:
+                return hold
             if is_two_way_player(player) or is_exhibit10_player(player):
                 return 0.0
             return row_salary_num(player, season)
 
         def player_apron_value(player: Dict[str, Any]) -> float:
+            if cap_hold_amount(player, season, settings, salary_cap) > 0:
+                return 0.0
             if is_two_way_player(player) or is_exhibit10_player(player):
                 return 0.0
             return row_salary_num(player, season) + apron_yos_adjustment(player, season, salary_cap)
@@ -6567,9 +6590,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if normalize_dead_type(d.get("dead_type")) == "normal"
             and not dead_contract_excluded_from_cap(d)
         )
+        open_roster_hold = open_roster_spot_cap_hold(players, season, settings, salary_cap)
         return {
-            "cap_total": sum(player_cap_value(p) for p in players) + dead_cap_normal,
+            "cap_total": sum(player_cap_value(p) for p in players) + dead_cap_normal + float(open_roster_hold.get("amount") or 0.0),
             "apron_account": sum(player_apron_value(p) for p in players) + dead_cap_normal,
+            "open_roster_spot_cap_hold": float(open_roster_hold.get("amount") or 0.0),
+            "open_roster_spot_count": float(open_roster_hold.get("open_spots") or 0.0),
+            "open_roster_spot_roster_count": float(open_roster_hold.get("roster_count") or 0.0),
+            "open_roster_spot_minimum_salary": float(open_roster_hold.get("minimum_salary") or 0.0),
         }
 
     def _trade_machine_flow_skeleton(
@@ -6578,8 +6606,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
         team_data: Dict[str, Any],
         season: int,
         thresholds: Dict[str, float],
+        settings: Dict[str, str],
     ) -> Dict[str, Any]:
-        balances = self._trade_machine_team_balances(team_data, season, thresholds["salaryCap"])
+        balances = self._trade_machine_team_balances(team_data, season, thresholds["salaryCap"], settings)
         players = team_data.get("players") or []
         standard_count = sum(1 for p in players if not is_two_way_player(p))
         two_way_count = len(players) - standard_count
@@ -6603,6 +6632,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "beforeRosterTwoWay": two_way_count,
             "postRosterStandard": standard_count,
             "postRosterTwoWay": two_way_count,
+            "beforeOpenRosterSpotCapHold": float(balances.get("open_roster_spot_cap_hold") or 0.0),
+            "postOpenRosterSpotCapHold": float(balances.get("open_roster_spot_cap_hold") or 0.0),
+            "beforeOpenRosterSpotCount": int(balances.get("open_roster_spot_count") or 0),
+            "postOpenRosterSpotCount": int(balances.get("open_roster_spot_count") or 0),
+            "beforeOpenRosterSpotRosterCount": int(balances.get("open_roster_spot_roster_count") or 0),
+            "postOpenRosterSpotRosterCount": int(balances.get("open_roster_spot_roster_count") or 0),
+            "openRosterSpotMinimumSalary": float(balances.get("open_roster_spot_minimum_salary") or 0.0),
             "beforeBalances": self._trade_machine_balance_snapshot(thresholds, before_cap, before_apron),
             "afterBalances": self._trade_machine_balance_snapshot(thresholds, before_cap, before_apron),
         }
@@ -6635,16 +6671,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
         asset_id: int,
         season: int,
         thresholds: Dict[str, float],
+        settings: Dict[str, str],
     ) -> Optional[Dict[str, Any]]:
         if asset_type == "player":
             player = next((p for p in team_data.get("players") or [] if parse_int(p.get("id")) == asset_id), None)
             if not player:
                 return None
+            hold = cap_hold_amount(player, season, settings, thresholds["salaryCap"])
             salary = 0.0 if is_exhibit10_player(player) else row_salary_num(player, season)
-            cap_salary = 0.0 if is_two_way_player(player) or is_exhibit10_player(player) else row_salary_num(player, season)
+            cap_salary = (
+                hold
+                if hold > 0
+                else 0.0
+                if is_two_way_player(player) or is_exhibit10_player(player)
+                else row_salary_num(player, season)
+            )
             apron_salary = (
                 0.0
-                if is_two_way_player(player) or is_exhibit10_player(player)
+                if hold > 0 or is_two_way_player(player) or is_exhibit10_player(player)
                 else row_salary_num(player, season) + apron_yos_adjustment(player, season, thresholds["salaryCap"])
             )
             minimum_cutoff = minimum_salary_2_yos_for_cap(thresholds["salaryCap"])
@@ -6662,6 +6706,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "ratingText": str(player.get("rating") or "").strip(),
                 "isMinimumContract": salary > 0 and salary <= minimum_cutoff,
                 "isTwoWay": is_two_way_player(player),
+                "isExhibit10": is_exhibit10_player(player),
                 "restricted": False,
                 "protected": False,
                 "conditional": False,
@@ -6687,6 +6732,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "capSalary": 0.0,
                 "apronSalary": 0.0,
                 "restricted": parse_bool(pick.get("draft_pick_restricted")),
+                "stepienRestricted": parse_bool(pick.get("draft_pick_stepien_restricted")),
                 "protected": parse_bool(pick.get("draft_pick_protected")),
                 "conditional": normalize_pick_type(pick.get("draft_pick_type")) == "conditional",
                 "sold": normalize_pick_type(pick.get("draft_pick_type")) == "sold",
@@ -6720,6 +6766,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def _trade_machine_pick_action(self, value: Any) -> str:
         return TRADE_PICK_ACTION_SWAP if str(value or "").strip() == TRADE_PICK_ACTION_SWAP else TRADE_PICK_ACTION_SEND
+
+    def _trade_process_pick_actions(self, value: Any) -> Dict[int, str]:
+        actions: Dict[int, str] = {}
+        if isinstance(value, dict):
+            items = value.items()
+        elif isinstance(value, list):
+            items = []
+            for item in value:
+                if isinstance(item, dict):
+                    items.append((item.get("id") or item.get("asset_id"), item.get("action") or item.get("pick_action") or item.get("pickAction")))
+        else:
+            items = []
+        for raw_id, raw_action in items:
+            pick_id = parse_int(raw_id)
+            if pick_id is None:
+                continue
+            actions[pick_id] = self._trade_machine_pick_action(raw_action)
+        return actions
 
     def _trade_machine_asset_for_selection(self, meta: Dict[str, Any], selection: Dict[str, Any]) -> Dict[str, Any]:
         if meta.get("type") != "pick":
@@ -7027,7 +7091,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             team_data_by_code[code] = data
 
         flows = {
-            code: self._trade_machine_flow_skeleton(code, data, season, thresholds)
+            code: self._trade_machine_flow_skeleton(code, data, season, thresholds, settings)
             for code, data in team_data_by_code.items()
         }
         selected_count = 0
@@ -7048,7 +7112,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if asset_id is None:
                 issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": "Un activo seleccionado tiene un identificador inválido."})
                 continue
-            meta = self._trade_machine_asset_meta(team_data_by_code[from_team], from_team, str(asset_type), asset_id, season, thresholds)
+            meta = self._trade_machine_asset_meta(team_data_by_code[from_team], from_team, str(asset_type), asset_id, season, thresholds, settings)
             if not meta:
                 issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": "Un activo seleccionado ya no está disponible."})
                 continue
@@ -7065,12 +7129,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if meta.get("sold"):
                 issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": f"{meta.get('label')} ya está vendida y no se puede mover."})
             if meta.get("restricted"):
-                issues.append({"severity": "illegal", "rule": "restricted_pick", "teamCode": from_team, "message": f"{meta.get('label')} está restringida y no se puede mover."})
+                issues.append({"severity": "illegal", "rule": "restricted_pick", "teamCode": from_team, "message": f"{meta.get('label')} está restringida por protecciones previas y no se puede mover ni vender como swap."})
+            if meta.get("stepienRestricted") and selected.get("pickAction") != TRADE_PICK_ACTION_SWAP:
+                issues.append({"severity": "illegal", "rule": "restricted_pick", "teamCode": from_team, "message": f"{meta.get('label')} está restringida por Stepien y solo puede venderse como derecho de swap."})
             if meta.get("conditional") or meta.get("protected"):
                 issues.append({"severity": "warning", "rule": "manual_review", "teamCode": from_team, "message": f"{meta.get('label')} necesita revisión manual por condiciones/protecciones."})
             if meta.get("type") == "pick" and selected.get("pickAction") == TRADE_PICK_ACTION_SWAP:
                 issues.append({"severity": "warning", "rule": "manual_review", "teamCode": from_team, "message": f"{meta.get('label')}: derecho de swap seleccionado; revisa protecciones, prioridad y equipo que acabaría eligiendo."})
-            elif meta.get("type") == "pick" and meta.get("round") == "1st":
+            elif meta.get("type") == "pick" and meta.get("round") == "1st" and not meta.get("stepienRestricted"):
                 issues.append({"severity": "warning", "rule": "manual_review", "teamCode": from_team, "message": f"{meta.get('label')} necesita revisión de la regla Stepien."})
             if selected.get("type") == "player":
                 any_player_selected = True
@@ -7091,12 +7157,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 if selected.get("isTwoWay"):
                     from_flow["postRosterTwoWay"] -= 1
                     to_flow["postRosterTwoWay"] += 1
-                else:
+                elif not selected.get("isExhibit10"):
                     from_flow["postRosterStandard"] -= 1
                     to_flow["postRosterStandard"] += 1
+                    from_flow["postOpenRosterSpotRosterCount"] -= 1
+                    to_flow["postOpenRosterSpotRosterCount"] += 1
 
         for flow in flows.values():
-            flow["postCap"] = flow["beforeCap"] + flow["incomingCapSalary"] - flow["outgoingCapSalary"]
+            post_open_roster_count = int(flow.get("postOpenRosterSpotRosterCount") or 0)
+            post_open_spots = max(0, OPEN_ROSTER_SPOT_MINIMUM - post_open_roster_count)
+            post_open_hold = float(post_open_spots) * float(flow.get("openRosterSpotMinimumSalary") or 0.0)
+            flow["postOpenRosterSpotCount"] = post_open_spots
+            flow["postOpenRosterSpotCapHold"] = post_open_hold
+            open_hold_delta = post_open_hold - float(flow.get("beforeOpenRosterSpotCapHold") or 0.0)
+            flow["postCap"] = flow["beforeCap"] + flow["incomingCapSalary"] - flow["outgoingCapSalary"] + open_hold_delta
             flow["postApronAccount"] = flow["beforeApronAccount"] + flow["incomingApronSalary"] - flow["outgoingApronSalary"]
             flow["afterBalances"] = self._trade_machine_balance_snapshot(thresholds, flow["postCap"], flow["postApronAccount"])
 
@@ -7213,19 +7287,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
         }
 
     def trade_validation_from_process_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(payload.get("selections"), (list, dict)) or isinstance(payload.get("teams"), list):
+            return self.validate_trade_machine(payload)
+
         team_a = normalize_team_code(payload.get("team_a")) or ""
         team_b = normalize_team_code(payload.get("team_b")) or ""
         no_count_a = set(self._clean_trade_ids(payload.get("no_count_players_a") or []))
         no_count_b = set(self._clean_trade_ids(payload.get("no_count_players_b") or []))
+        pick_actions_a = self._trade_process_pick_actions(payload.get("pick_actions_a"))
+        pick_actions_b = self._trade_process_pick_actions(payload.get("pick_actions_b"))
         selections: List[Dict[str, Any]] = []
         for player_id in self._clean_trade_ids(payload.get("players_a") or []):
             selections.append({"type": "player", "id": player_id, "from_team": team_a, "to_team": team_b, "no_count": player_id in no_count_a})
         for player_id in self._clean_trade_ids(payload.get("players_b") or []):
             selections.append({"type": "player", "id": player_id, "from_team": team_b, "to_team": team_a, "no_count": player_id in no_count_b})
         for pick_id in self._clean_trade_ids(payload.get("pick_ids_a") or []):
-            selections.append({"type": "pick", "id": pick_id, "from_team": team_a, "to_team": team_b})
+            selections.append({"type": "pick", "id": pick_id, "from_team": team_a, "to_team": team_b, "pick_action": pick_actions_a.get(pick_id)})
         for pick_id in self._clean_trade_ids(payload.get("pick_ids_b") or []):
-            selections.append({"type": "pick", "id": pick_id, "from_team": team_b, "to_team": team_a})
+            selections.append({"type": "pick", "id": pick_id, "from_team": team_b, "to_team": team_a, "pick_action": pick_actions_b.get(pick_id)})
         for right_id in self._clean_trade_ids(payload.get("right_ids_a") or []):
             selections.append({"type": "right", "id": right_id, "from_team": team_a, "to_team": team_b})
         for right_id in self._clean_trade_ids(payload.get("right_ids_b") or []):
@@ -7237,6 +7316,313 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "season": season,
             "selections": selections,
         })
+
+    def process_trade_from_payload(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        normalized = self._trade_machine_normalized_request(payload)
+        teams = normalized.get("teams") or []
+        selections = normalized.get("selections") or []
+        if len(teams) < 2 or not selections:
+            return None
+
+        with self.connect() as conn:
+            team_rows: Dict[str, sqlite3.Row] = {}
+            for code in teams:
+                row = conn.execute("SELECT id, code FROM teams WHERE code = ?", (code,)).fetchone()
+                if not row:
+                    return None
+                team_rows[code] = row
+
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            season_year = parse_int(payload.get("season")) or current_year
+            bucket = normalize_trade_bucket(payload.get("trade_bucket") or settings.get("trade_move_phase"))
+            timestamp = now_iso()
+            source_ref = f"{'-'.join(teams)}-{timestamp}"
+            summaries: Dict[str, Dict[str, Any]] = {
+                code: {
+                    "code": code,
+                    "move_count": 0,
+                    "sent": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": []},
+                    "received": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": []},
+                }
+                for code in teams
+            }
+
+            def add_move_count(code: str, selection: Dict[str, Any]) -> None:
+                if selection.get("countsMove", True):
+                    summaries[code]["move_count"] += 1
+
+            def pick_label(pick_row: Dict[str, Any], source_code: str, prefix: str = "") -> str:
+                year = parse_int(pick_row.get("year"))
+                year_label = str(year) if year is not None else "Sin año"
+                round_label = normalize_pick_round(pick_row.get("draft_round")).upper()
+                owner = self._pick_actual_owner(pick_row, source_code)
+                return f"{prefix}{year_label} {round_label} ({owner})".strip()
+
+            def move_pick(source_team: sqlite3.Row, target_team: sqlite3.Row, pick_row: Dict[str, Any]) -> None:
+                actual_owner = self._pick_actual_owner(pick_row, str(source_team["code"]))
+                source_pick_type = normalize_pick_type(pick_row.get("draft_pick_type"))
+                pick_round = normalize_pick_round(pick_row.get("draft_round"))
+                pick_year = parse_int(pick_row.get("year"))
+                if source_pick_type == "conditional":
+                    target_pick_type = "conditional"
+                    target_original_owner = None
+                    target_conditional_teams = pick_row.get("draft_pick_conditional_teams")
+                else:
+                    target_pick_type = "own" if actual_owner == str(target_team["code"]) else "acquired"
+                    target_original_owner = None if target_pick_type == "own" else actual_owner
+                    target_conditional_teams = None
+
+                recipient_rows_cur = conn.execute(
+                    """
+                    SELECT id, draft_pick_type, original_owner, year, draft_round, draft_pick_conditional_teams
+                    FROM assets
+                    WHERE team_id = ? AND asset_type = 'draft_pick' AND CAST(COALESCE(year, '') AS INTEGER) = ?
+                    """,
+                    (target_team["id"], pick_year),
+                )
+                recipient_rows = [row_to_dict(recipient_rows_cur, row) for row in recipient_rows_cur.fetchall()]
+                recipient_match = None
+                for candidate in recipient_rows:
+                    candidate_actual_owner = self._pick_actual_owner(candidate, str(target_team["code"]))
+                    if candidate_actual_owner == actual_owner and normalize_pick_round(candidate.get("draft_round")) == pick_round:
+                        recipient_match = candidate
+                        break
+
+                sold_label = pick_row.get("label") or f"{pick_round.upper()} pick"
+                sold_detail = pick_row.get("detail")
+                conn.execute(
+                    """
+                    UPDATE assets
+                    SET draft_pick_type = 'sold', original_owner = ?, draft_pick_sold_to = ?,
+                        draft_pick_conditional_teams = NULL, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (actual_owner, str(target_team["code"]), timestamp, pick_row["id"]),
+                )
+
+                if recipient_match:
+                    conn.execute(
+                        """
+                        UPDATE assets
+                        SET draft_pick_type = ?, original_owner = ?, draft_pick_sold_to = NULL,
+                            draft_pick_conditional_teams = ?, label = ?, detail = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            target_pick_type,
+                            target_original_owner,
+                            target_conditional_teams,
+                            sold_label,
+                            sold_detail,
+                            timestamp,
+                            recipient_match["id"],
+                        ),
+                    )
+                    return
+
+                mx = conn.execute(
+                    "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                    (target_team["id"],),
+                ).fetchone()["mx"]
+                conn.execute(
+                    """
+                    INSERT INTO assets (
+                        team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
+                        draft_pick_type, draft_round, original_owner, exception_type,
+                        draft_pick_restricted, draft_pick_stepien_restricted, draft_pick_protected,
+                        draft_pick_sold_to, draft_pick_conditional_teams, created_at, updated_at
+                    ) VALUES (?, ?, 'draft_pick', ?, ?, ?, NULL, NULL, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?)
+                    """,
+                    (
+                        target_team["id"],
+                        int(mx) + 1,
+                        pick_row.get("year"),
+                        sold_label,
+                        sold_detail,
+                        target_pick_type,
+                        pick_round,
+                        target_original_owner,
+                        1 if parse_bool(pick_row.get("draft_pick_restricted")) else 0,
+                        1 if parse_bool(pick_row.get("draft_pick_stepien_restricted")) else 0,
+                        1 if parse_bool(pick_row.get("draft_pick_protected")) else 0,
+                        target_conditional_teams,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+
+            for selection in selections:
+                from_team = normalize_team_code(selection.get("fromTeam")) or ""
+                to_team = normalize_team_code(selection.get("toTeam")) or ""
+                asset_type = str(selection.get("type") or "").strip().lower()
+                asset_id = parse_int(selection.get("id"))
+                if not from_team or not to_team or from_team == to_team or from_team not in team_rows or to_team not in team_rows or asset_id is None:
+                    return None
+                source_team = team_rows[from_team]
+                target_team = team_rows[to_team]
+
+                if asset_type == "player":
+                    row = conn.execute(
+                        """
+                        SELECT p.id, p.profile_id, p.team_id, COALESCE(pp.name, p.name) AS name
+                        FROM players p
+                        LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                        WHERE p.id = ?
+                        """,
+                        (asset_id,),
+                    ).fetchone()
+                    if not row or int(row["team_id"]) != int(source_team["id"]):
+                        return None
+                    mx = conn.execute(
+                        "SELECT COALESCE(MAX(row_order), 3) AS mx FROM players WHERE team_id = ?",
+                        (target_team["id"],),
+                    ).fetchone()["mx"]
+                    conn.execute(
+                        "UPDATE players SET team_id = ?, row_order = ?, updated_at = ? WHERE id = ?",
+                        (target_team["id"], int(mx) + 1, timestamp, asset_id),
+                    )
+                    player_name = str(row["name"] or "Jugador")
+                    summaries[from_team]["sent"]["players"].append(player_name)
+                    summaries[to_team]["received"]["players"].append(player_name)
+                    add_move_count(from_team, selection)
+                    self._record_player_transaction(
+                        conn,
+                        row["profile_id"],
+                        "trade",
+                        f"Traspasado de {from_team} a {to_team}",
+                        player_id=row["id"],
+                        team_code=to_team,
+                        from_team_code=from_team,
+                        to_team_code=to_team,
+                        details={"player_name": player_name},
+                        created_at=timestamp,
+                    )
+                    continue
+
+                if asset_type == "pick":
+                    row = conn.execute(
+                        """
+                        SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner,
+                               draft_pick_sold_to, draft_pick_conditional_teams, detail, row_order,
+                               draft_pick_restricted, draft_pick_stepien_restricted, draft_pick_protected
+                        FROM assets
+                        WHERE id = ? AND asset_type = 'draft_pick'
+                        """,
+                        (asset_id,),
+                    ).fetchone()
+                    if not row or int(row["team_id"]) != int(source_team["id"]):
+                        return None
+                    pick_row = dict(row)
+                    if normalize_pick_type(pick_row.get("draft_pick_type")) == "sold":
+                        return None
+                    pick_action = self._trade_machine_pick_action(selection.get("pickAction") or selection.get("pick_action"))
+                    if pick_action == TRADE_PICK_ACTION_SWAP:
+                        label = pick_label(pick_row, from_team, "Swap ")
+                        summaries[from_team]["sent"]["swap_count"] += 1
+                        summaries[from_team]["sent"]["swaps"].append(label)
+                        summaries[to_team]["received"]["swap_count"] += 1
+                        summaries[to_team]["received"]["swaps"].append(label)
+                    else:
+                        label = pick_label(pick_row, from_team)
+                        move_pick(source_team, target_team, pick_row)
+                        summaries[from_team]["sent"]["pick_count"] += 1
+                        summaries[from_team]["sent"]["picks"].append(label)
+                        summaries[to_team]["received"]["pick_count"] += 1
+                        summaries[to_team]["received"]["picks"].append(label)
+                    add_move_count(from_team, selection)
+                    continue
+
+                if asset_type == "right":
+                    row = conn.execute(
+                        """
+                        SELECT id, team_id, label, detail, row_order
+                        FROM assets
+                        WHERE id = ? AND asset_type = 'player_right'
+                        """,
+                        (asset_id,),
+                    ).fetchone()
+                    if not row or int(row["team_id"]) != int(source_team["id"]):
+                        return None
+                    mx = conn.execute(
+                        "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                        (target_team["id"],),
+                    ).fetchone()["mx"]
+                    conn.execute(
+                        "UPDATE assets SET team_id = ?, row_order = ?, updated_at = ? WHERE id = ?",
+                        (target_team["id"], int(mx) + 1, timestamp, asset_id),
+                    )
+                    label = str(row["label"] or "Derecho de jugador")
+                    summaries[from_team]["sent"]["right_count"] += 1
+                    summaries[from_team]["sent"]["rights"].append(label)
+                    summaries[to_team]["received"]["right_count"] += 1
+                    summaries[to_team]["received"]["rights"].append(label)
+                    add_move_count(from_team, selection)
+                    continue
+
+                return None
+
+            for code, summary in summaries.items():
+                move_count = int(summary.get("move_count") or 0)
+                if not move_count:
+                    continue
+                sent = summary.get("sent") or {}
+                opponents = sorted(
+                    {
+                        normalize_team_code(selection.get("toTeam"))
+                        for selection in selections
+                        if normalize_team_code(selection.get("fromTeam")) == code and normalize_team_code(selection.get("toTeam"))
+                    }
+                )
+                self._upsert_team_move_log(
+                    conn,
+                    team_id=int(team_rows[code]["id"]),
+                    season_year=season_year,
+                    bucket=bucket,
+                    delta=move_count,
+                    source_type="trade",
+                    source_ref=source_ref,
+                    note=f"Trade vs {'/'.join(opponents)}" if opponents else "Trade",
+                    details={
+                        "opponents": opponents,
+                        "players": sent.get("players") or [],
+                        "pick_count": sent.get("pick_count") or 0,
+                        "pick_refs": sent.get("picks") or [],
+                        "swap_count": sent.get("swap_count") or 0,
+                        "swap_refs": sent.get("swaps") or [],
+                        "rights": sent.get("rights") or [],
+                    },
+                )
+
+            conn.commit()
+
+        team_results = [summaries[code] for code in teams]
+        result: Dict[str, Any] = {
+            "ok": True,
+            "trade_bucket": bucket,
+            "season": season_year,
+            "teams": team_results,
+            "team_codes": teams,
+        }
+        if len(teams) >= 2:
+            team_a = teams[0]
+            team_b = teams[1]
+            result.update(
+                {
+                    "team_a": {"code": team_a, "move_count": summaries[team_a]["move_count"]},
+                    "team_b": {"code": team_b, "move_count": summaries[team_b]["move_count"]},
+                    "players_a": summaries[team_a]["sent"]["players"],
+                    "players_b": summaries[team_b]["sent"]["players"],
+                    "pick_count_a": summaries[team_a]["sent"]["pick_count"],
+                    "pick_count_b": summaries[team_b]["sent"]["pick_count"],
+                    "swap_count_a": summaries[team_a]["sent"]["swap_count"],
+                    "swap_count_b": summaries[team_b]["sent"]["swap_count"],
+                    "right_count_a": summaries[team_a]["sent"]["right_count"],
+                    "right_count_b": summaries[team_b]["sent"]["right_count"],
+                }
+            )
+        return result
 
     def process_trade(
         self,
@@ -7250,6 +7636,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         right_ids_b: Optional[List[int]] = None,
         no_count_players_a: Optional[List[int]] = None,
         no_count_players_b: Optional[List[int]] = None,
+        pick_actions_a: Optional[Any] = None,
+        pick_actions_b: Optional[Any] = None,
         trade_bucket: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         def clean_ids(values: Any) -> List[int]:
@@ -7267,15 +7655,21 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         ids_a = clean_ids(players_a)
         ids_b = clean_ids(players_b)
-        pick_a = clean_ids(pick_ids_a or [])
-        pick_b = clean_ids(pick_ids_b or [])
+        pick_a_all = clean_ids(pick_ids_a or [])
+        pick_b_all = clean_ids(pick_ids_b or [])
+        pick_action_map_a = self._trade_process_pick_actions(pick_actions_a)
+        pick_action_map_b = self._trade_process_pick_actions(pick_actions_b)
+        pick_swap_a = {pick_id for pick_id in pick_a_all if pick_action_map_a.get(pick_id) == TRADE_PICK_ACTION_SWAP}
+        pick_swap_b = {pick_id for pick_id in pick_b_all if pick_action_map_b.get(pick_id) == TRADE_PICK_ACTION_SWAP}
+        pick_a = [pick_id for pick_id in pick_a_all if pick_id not in pick_swap_a]
+        pick_b = [pick_id for pick_id in pick_b_all if pick_id not in pick_swap_b]
         right_a = clean_ids(right_ids_a or [])
         right_b = clean_ids(right_ids_b or [])
         no_count_a = set(clean_ids(no_count_players_a or []))
         no_count_b = set(clean_ids(no_count_players_b or []))
-        if not ids_a and not pick_a and not right_a:
+        if not ids_a and not pick_a_all and not right_a:
             return None
-        if not ids_b and not pick_b and not right_b:
+        if not ids_b and not pick_b_all and not right_b:
             return None
 
         with self.connect() as conn:
@@ -7319,7 +7713,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 players_b_rows.append(dict(row))
 
             picks_a_rows: List[Dict[str, Any]] = []
-            for asset_id in pick_a:
+            pick_swaps_a_rows: List[Dict[str, Any]] = []
+            for asset_id in pick_a_all:
                 row = conn.execute(
                     """
                     SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner,
@@ -7337,10 +7732,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     return None
                 if parse_int(row["year"]) != next_pick_year:
                     return None
-                picks_a_rows.append(dict(row))
+                if asset_id in pick_swap_a:
+                    pick_swaps_a_rows.append(dict(row))
+                else:
+                    picks_a_rows.append(dict(row))
 
             picks_b_rows: List[Dict[str, Any]] = []
-            for asset_id in pick_b:
+            pick_swaps_b_rows: List[Dict[str, Any]] = []
+            for asset_id in pick_b_all:
                 row = conn.execute(
                     """
                     SELECT id, team_id, year, label, draft_pick_type, draft_round, original_owner,
@@ -7358,7 +7757,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     return None
                 if parse_int(row["year"]) != next_pick_year:
                     return None
-                picks_b_rows.append(dict(row))
+                if asset_id in pick_swap_b:
+                    pick_swaps_b_rows.append(dict(row))
+                else:
+                    picks_b_rows.append(dict(row))
 
             rights_a_rows: List[Dict[str, Any]] = []
             for asset_id in right_a:
@@ -7547,8 +7949,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
             bucket = normalize_trade_bucket(trade_bucket or settings.get("trade_move_phase"))
-            move_count_a = len([row for row in players_a_rows if int(row["id"]) not in no_count_a]) + len(picks_a_rows) + len(rights_a_rows)
-            move_count_b = len([row for row in players_b_rows if int(row["id"]) not in no_count_b]) + len(picks_b_rows) + len(rights_b_rows)
+            move_count_a = len([row for row in players_a_rows if int(row["id"]) not in no_count_a]) + len(picks_a_rows) + len(pick_swaps_a_rows) + len(rights_a_rows)
+            move_count_b = len([row for row in players_b_rows if int(row["id"]) not in no_count_b]) + len(picks_b_rows) + len(pick_swaps_b_rows) + len(rights_b_rows)
 
             if move_count_a:
                 self._upsert_team_move_log(
@@ -7566,6 +7968,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "players_excluded": [row["name"] for row in players_a_rows if int(row["id"]) in no_count_a],
                         "pick_count": len(picks_a_rows),
                         "pick_refs": [f"{next_pick_year} 1st ({self._pick_actual_owner(row, str(team_a['code']))})" for row in picks_a_rows],
+                        "swap_count": len(pick_swaps_a_rows),
+                        "swap_refs": [f"Swap {next_pick_year} 1st ({self._pick_actual_owner(row, str(team_a['code']))})" for row in pick_swaps_a_rows],
                         "rights": [row.get("label") for row in rights_a_rows],
                     },
                 )
@@ -7585,6 +7989,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "players_excluded": [row["name"] for row in players_b_rows if int(row["id"]) in no_count_b],
                         "pick_count": len(picks_b_rows),
                         "pick_refs": [f"{next_pick_year} 1st ({self._pick_actual_owner(row, str(team_b['code']))})" for row in picks_b_rows],
+                        "swap_count": len(pick_swaps_b_rows),
+                        "swap_refs": [f"Swap {next_pick_year} 1st ({self._pick_actual_owner(row, str(team_b['code']))})" for row in pick_swaps_b_rows],
                         "rights": [row.get("label") for row in rights_b_rows],
                     },
                 )
@@ -7599,6 +8005,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "players_b": [row["name"] for row in players_b_rows],
                 "pick_count_a": len(picks_a_rows),
                 "pick_count_b": len(picks_b_rows),
+                "swap_count_a": len(pick_swaps_a_rows),
+                "swap_count_b": len(pick_swaps_b_rows),
                 "right_count_a": len(rights_a_rows),
                 "right_count_b": len(rights_b_rows),
             }
@@ -9182,12 +9590,15 @@ QUALITY REQUIREMENTS
             custom_image=custom_image,
         )
 
-    def _trade_asset_summary(self, players: List[Any], pick_count: Any, right_count: Any) -> str:
+    def _trade_asset_summary(self, players: List[Any], pick_count: Any, right_count: Any, swap_count: Any = 0) -> str:
         items = [str(name) for name in players or [] if str(name or "").strip()]
         picks = parse_int(str(pick_count))
         rights = parse_int(str(right_count))
+        swaps = parse_int(str(swap_count))
         if picks and picks > 0:
             items.append(f"{picks} ronda(s) del draft")
+        if swaps and swaps > 0:
+            items.append(f"{swaps} derecho(s) de swap")
         if rights and rights > 0:
             items.append(f"{rights} derecho(s) de jugador")
         if not items:
@@ -9201,14 +9612,54 @@ QUALITY REQUIREMENTS
         generate_image: bool = True,
         custom_image: Optional[Dict[str, Any]] = None,
     ) -> None:
+        team_entries = [entry for entry in result.get("teams") or [] if isinstance(entry, dict)]
+        if team_entries:
+            team_codes = [str(entry.get("code") or "").upper() for entry in team_entries if str(entry.get("code") or "").strip()]
+            bucket = normalize_trade_bucket(result.get("trade_bucket"))
+            bucket_label = "movimientos pre-30" if bucket == "pre30" else "movimientos post-30"
+            headline = f"{' / '.join(team_codes)} cierran un traspaso"
+            description = f"El movimiento queda registrado en la cuenta de {bucket_label}."
+            fields = []
+            player_names: List[str] = []
+            context_parts: List[str] = []
+            for entry in team_entries:
+                code = str(entry.get("code") or "").upper()
+                received = entry.get("received") or {}
+                sent = entry.get("sent") or {}
+                receives_text = self._trade_asset_summary(
+                    received.get("players") or [],
+                    received.get("pick_count"),
+                    received.get("right_count"),
+                    received.get("swap_count"),
+                )
+                fields.append({"name": f"{code} recibe", "value": receives_text, "inline": False})
+                player_names.extend(str(name) for name in (sent.get("players") or []) if str(name or "").strip())
+                context_parts.append(f"{code} receives: {receives_text}.")
+            self._notify_discord(
+                headline,
+                description,
+                fields=fields[:10],
+                color=0x0F766E,
+                image_prompt=self._news_image_prompt(
+                    headline,
+                    description,
+                    teams=team_codes,
+                    players=player_names[:6],
+                    context=" ".join(context_parts),
+                ),
+                generate_image=generate_image,
+                custom_image=custom_image,
+            )
+            return
+
         team_a = str(result.get("team_a", {}).get("code") or "").upper()
         team_b = str(result.get("team_b", {}).get("code") or "").upper()
         bucket = normalize_trade_bucket(result.get("trade_bucket"))
         bucket_label = "movimientos pre-30" if bucket == "pre30" else "movimientos post-30"
         headline = f"{team_a} y {team_b} cierran un traspaso"
         description = f"El movimiento queda registrado en la cuenta de {bucket_label}."
-        team_a_receives = self._trade_asset_summary(result.get("players_b") or [], result.get("pick_count_b"), result.get("right_count_b"))
-        team_b_receives = self._trade_asset_summary(result.get("players_a") or [], result.get("pick_count_a"), result.get("right_count_a"))
+        team_a_receives = self._trade_asset_summary(result.get("players_b") or [], result.get("pick_count_b"), result.get("right_count_b"), result.get("swap_count_b"))
+        team_b_receives = self._trade_asset_summary(result.get("players_a") or [], result.get("pick_count_a"), result.get("right_count_a"), result.get("swap_count_a"))
         player_names = [
             str(name)
             for name in list(result.get("players_a") or []) + list(result.get("players_b") or [])
@@ -9743,6 +10194,39 @@ QUALITY REQUIREMENTS
             self._json(200, result)
             return
 
+        if parsed.path == "/api/trades/process/validate":
+            if not self._require_admin():
+                return
+            if not self._require_csrf():
+                return
+            if isinstance(payload.get("selections"), (list, dict)) or isinstance(payload.get("teams"), list):
+                normalized = self.db._trade_machine_normalized_request(payload)
+                for code in normalized.get("teams") or []:
+                    if not self._require_team_write_access(code):
+                        return
+                validation = self.db.validate_trade_machine(
+                    {
+                        **payload,
+                        "teams": normalized.get("teams") or [],
+                        "selections": normalized.get("selections") or [],
+                    }
+                )
+                self._json(200, {"ok": True, "validation": validation})
+                return
+            team_a = normalize_team_code(payload.get("team_a")) or ""
+            team_b = normalize_team_code(payload.get("team_b")) or ""
+            if not self._require_team_write_access(team_a):
+                return
+            if not self._require_team_write_access(team_b):
+                return
+            validation = self.db.trade_validation_from_process_payload({
+                **payload,
+                "team_a": team_a,
+                "team_b": team_b,
+            })
+            self._json(200, {"ok": True, "validation": validation})
+            return
+
         if parsed.path == "/api/gm/option-requests":
             if not self._require_authenticated():
                 return
@@ -10225,17 +10709,94 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/trades/process":
+            if not self._require_csrf():
+                return
+            if isinstance(payload.get("selections"), (list, dict)) or isinstance(payload.get("teams"), list):
+                if not self._require_admin():
+                    return
+                normalized = self.db._trade_machine_normalized_request(payload)
+                teams = normalized.get("teams") or []
+                for code in teams:
+                    if not self._require_team_write_access(code):
+                        return
+                force_trade = parse_bool(payload.get("force_trade"))
+                validation = self.db.validate_trade_machine(
+                    {
+                        **payload,
+                        "teams": teams,
+                        "selections": normalized.get("selections") or [],
+                    }
+                )
+                illegal_validation_issues = [
+                    issue for issue in (validation.get("issues") or [])
+                    if issue.get("severity") == "illegal"
+                ]
+                if illegal_validation_issues and not force_trade:
+                    self._json(422, {"ok": False, "error": "trade_invalid", "validation": validation})
+                    return
+                trade_player_ids = [
+                    selection.get("id")
+                    for selection in normalized.get("selections") or []
+                    if selection.get("type") == "player"
+                ]
+                trade_asset_ids = [
+                    selection.get("id")
+                    for selection in normalized.get("selections") or []
+                    if selection.get("type") in {"pick", "right"}
+                ]
+                trade_before = self.db.audit_trade_snapshot(teams, trade_player_ids, trade_asset_ids)
+                result = self.db.process_trade_from_payload(
+                    {
+                        **payload,
+                        "teams": teams,
+                        "selections": normalized.get("selections") or [],
+                    }
+                )
+                if result:
+                    trade_after = self.db.audit_trade_snapshot(teams, trade_player_ids, trade_asset_ids)
+                    self._log_admin_action(
+                        "trade",
+                        "trade",
+                        None,
+                        None,
+                        {
+                            "teams": teams,
+                            "season": result.get("season"),
+                            "selection_count": len(normalized.get("selections") or []),
+                            "trade_bucket": result.get("trade_bucket"),
+                            "force_trade": bool(force_trade),
+                            "team_results": result.get("teams") or [],
+                            "validation_issues": validation.get("issues") or [],
+                            "forced_validation_issues": illegal_validation_issues if force_trade else [],
+                        },
+                        before=trade_before,
+                        after=trade_after,
+                        team_codes=teams,
+                    )
+                    if self._discord_notify_requested(payload):
+                        self._notify_trade_processed(
+                            result,
+                            generate_image=self._discord_image_requested(payload),
+                            custom_image=payload.get("discord_custom_image"),
+                        )
+                self._json(200 if result else 404, result or {"ok": False})
+                return
             team_a = normalize_team_code(payload.get("team_a")) or ""
             team_b = normalize_team_code(payload.get("team_b")) or ""
             players_a = payload.get("players_a")
             players_b = payload.get("players_b")
             pick_ids_a = payload.get("pick_ids_a")
             pick_ids_b = payload.get("pick_ids_b")
+            pick_actions_a = payload.get("pick_actions_a")
+            pick_actions_b = payload.get("pick_actions_b")
             right_ids_a = payload.get("right_ids_a")
             right_ids_b = payload.get("right_ids_b")
             no_count_players_a = payload.get("no_count_players_a")
             no_count_players_b = payload.get("no_count_players_b")
             trade_bucket = payload.get("trade_bucket")
+            force_trade = parse_bool(payload.get("force_trade"))
+            if force_trade and not self._require_admin():
+                return
             if not self._require_team_write_access(team_a):
                 return
             if not self._require_team_write_access(team_b):
@@ -10245,7 +10806,11 @@ QUALITY REQUIREMENTS
                 "team_a": team_a,
                 "team_b": team_b,
             })
-            if any(issue.get("severity") == "illegal" for issue in validation.get("issues") or []):
+            illegal_validation_issues = [
+                issue for issue in (validation.get("issues") or [])
+                if issue.get("severity") == "illegal"
+            ]
+            if illegal_validation_issues and not force_trade:
                 self._json(422, {"ok": False, "error": "trade_invalid", "validation": validation})
                 return
             trade_player_ids: List[Any] = []
@@ -10268,6 +10833,8 @@ QUALITY REQUIREMENTS
                 right_ids_b=right_ids_b,
                 no_count_players_a=no_count_players_a,
                 no_count_players_b=no_count_players_b,
+                pick_actions_a=pick_actions_a,
+                pick_actions_b=pick_actions_b,
                 trade_bucket=trade_bucket,
             )
             if result:
@@ -10288,14 +10855,18 @@ QUALITY REQUIREMENTS
                         "players_b": players_b or [],
                         "pick_ids_a": pick_ids_a or [],
                         "pick_ids_b": pick_ids_b or [],
+                        "pick_actions_a": pick_actions_a or {},
+                        "pick_actions_b": pick_actions_b or {},
                         "right_ids_a": right_ids_a or [],
                         "right_ids_b": right_ids_b or [],
                         "no_count_players_a": no_count_players_a or [],
                         "no_count_players_b": no_count_players_b or [],
                         "trade_bucket": result.get("trade_bucket"),
+                        "force_trade": bool(force_trade),
                         "move_count_a": result.get("team_a", {}).get("move_count"),
                         "move_count_b": result.get("team_b", {}).get("move_count"),
                         "validation_issues": validation.get("issues") or [],
+                        "forced_validation_issues": illegal_validation_issues if force_trade else [],
                     },
                     before=trade_before,
                     after=trade_after,
