@@ -776,6 +776,10 @@ h1 {
   justify-content: flex-end;
   margin: 0 0 10px;
 }
+.tracker-toolbar {
+  justify-content: flex-end;
+  margin: 0 0 10px;
+}
 .team-admin-controls-section {
   padding-top: 0;
 }
@@ -6291,6 +6295,37 @@ td.salary-option--nb .salary-pct {
 }
 .tracker-roster-count-chip--over strong {
   color: #b91c1c;
+}
+.tracker-hard-cap-badge {
+  display: inline-flex;
+  min-width: 92px;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 900;
+  line-height: 1.1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.tracker-hard-cap-badge--first {
+  border-color: #fbbf24;
+  background: #fffbeb;
+  color: #92400e;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.18);
+}
+.tracker-hard-cap-badge--second {
+  border-color: #f87171;
+  background: #fef2f2;
+  color: #991b1b;
+  box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.2);
+}
+.tracker-hard-cap-badge--none {
+  opacity: 0.72;
 }
 .tracker-space-value {
   font-weight: 900;

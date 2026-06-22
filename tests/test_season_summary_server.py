@@ -92,9 +92,11 @@ class SeasonSummaryServerTests(unittest.TestCase):
 
         team = self.db.get_team("ATL")
         self.assertIsNotNone(team)
-        tracker_row = next(row for row in self.db.list_tracker() if row["team_code"] == "ATL")
+        tracker = self.db.list_tracker()
+        tracker_row = next(row for row in tracker["rows"] if row["team_code"] == "ATL")
         summary = team["summary"]
 
+        self.assertEqual(2025, tracker["season_year"])
         self.assertEqual(round(float(summary["cap_figure"])), round(float(tracker_row["cap_total"])))
         self.assertEqual(round(float(summary["payroll"])), round(float(tracker_row["gasto_total"])))
         self.assertEqual(round(float(summary["room_to_cap"])), round(float(tracker_row["espacio_cap"])))
@@ -102,6 +104,7 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(round(float(summary["room_to_first_apron"])), round(float(tracker_row["espacio_1er_apron"])))
         self.assertEqual(round(float(summary["room_to_second_apron"])), round(float(tracker_row["espacio_2do_apron"])))
         self.assertEqual(round(float(summary["luxury_tax"])), round(float(tracker_row["luxury_tax"])))
+        self.assertIn("apron_hard_cap", tracker_row)
 
     def test_tracker_uses_free_agency_default_season(self) -> None:
         self.db.update_setting("current_year", "2025")
@@ -124,9 +127,11 @@ class SeasonSummaryServerTests(unittest.TestCase):
 
         team = self.db.get_team("ATL")
         self.assertIsNotNone(team)
-        tracker_row = next(row for row in self.db.list_tracker() if row["team_code"] == "ATL")
+        tracker = self.db.list_tracker()
+        tracker_row = next(row for row in tracker["rows"] if row["team_code"] == "ATL")
         summary = team["season_summaries"]["2026"]
 
+        self.assertEqual(2026, tracker["season_year"])
         self.assertEqual(round(float(summary["cap_figure"])), round(float(tracker_row["cap_total"])))
         self.assertEqual(round(float(summary["payroll"])), round(float(tracker_row["gasto_total"])))
         self.assertEqual(round(float(summary["room_to_cap"])), round(float(tracker_row["espacio_cap"])))
@@ -134,6 +139,29 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(round(float(summary["room_to_first_apron"])), round(float(tracker_row["espacio_1er_apron"])))
         self.assertEqual(round(float(summary["room_to_second_apron"])), round(float(tracker_row["espacio_2do_apron"])))
         self.assertEqual(round(float(summary["luxury_tax"])), round(float(tracker_row["luxury_tax"])))
+
+    def test_tracker_can_select_future_season_and_hard_cap(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.assertTrue(self.db.update_team_apron_hard_cap("ATL", 2026, "second"))
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Future Salary Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2026_text": "30000000",
+            },
+        )
+
+        tracker = self.db.list_tracker(2026)
+        tracker_row = next(row for row in tracker["rows"] if row["team_code"] == "ATL")
+        team = self.db.get_team("ATL")
+        summary = team["season_summaries"]["2026"]
+
+        self.assertEqual(2026, tracker["season_year"])
+        self.assertEqual([2025, 2026, 2027, 2028, 2029, 2030], tracker["seasons"])
+        self.assertEqual("second", tracker_row["apron_hard_cap"])
+        self.assertEqual(round(float(summary["cap_figure"])), round(float(tracker_row["cap_total"])))
 
 
 if __name__ == "__main__":

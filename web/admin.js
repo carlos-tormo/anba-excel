@@ -8,6 +8,7 @@ const TRADE_MACHINE_MAX_TEAMS = 6;
 const state = {
   teams: [],
   trackerRows: [],
+  trackerSeasons: [],
   trackerEconomyRows: [],
   trackerEconomySeasons: [],
   economySettingsRows: [],
@@ -85,6 +86,7 @@ const state = {
     seasonViewStart: null,
     figuresSeasonStart: null,
     ownerOfficeSeason: null,
+    trackerSeason: null,
     trackerEconomySeason: null,
   },
   sort: {
@@ -591,6 +593,30 @@ function selectedFiguresSeasonStart() {
   return normalized;
 }
 
+function trackerSeasonOptions() {
+  const seasons = new Set(
+    (state.trackerSeasons || [])
+      .map((season) => Number(season))
+      .filter((season) => Number.isInteger(season) && availableSeasonViewStarts().includes(season))
+  );
+  availableSeasonViewStarts().forEach((season) => seasons.add(season));
+  return Array.from(seasons).sort((a, b) => a - b);
+}
+
+function normalizeTrackerSeason(value) {
+  const options = trackerSeasonOptions();
+  const requested = Number(value);
+  if (options.includes(requested)) return requested;
+  const defaultStart = defaultSeasonViewStart();
+  return options.includes(defaultStart) ? defaultStart : (options[0] || currentSeasonStart());
+}
+
+function selectedTrackerSeason() {
+  const normalized = normalizeTrackerSeason(state.ui.trackerSeason);
+  state.ui.trackerSeason = normalized;
+  return normalized;
+}
+
 function trackerEconomySeasonOptions() {
   const seasons = new Set(
     (state.trackerEconomySeasons || [])
@@ -670,6 +696,7 @@ function setSeasonViewStart(startYear) {
   renderCards();
   renderImportantFigures();
   renderAssets();
+  syncTeamApronHardCapControls();
 }
 
 function setupSeasonViewControl() {
@@ -1081,6 +1108,17 @@ function trackerRosterHeaderHtml(kind, label, arrow = '') {
     ? `Min: ${limits.twoWayMin} · Max: ${limits.twoWayMax}`
     : `Min: ${limits.standardMin} · Max: ${limits.standardMax}`;
   return `<span class="th-main">${label}${arrow}</span><span class="th-sub">${range}</span>`;
+}
+
+function trackerHardCapBadgeHtml(value) {
+  const hardCap = String(value || '').trim().toLowerCase();
+  if (hardCap === 'first') {
+    return '<span class="tracker-hard-cap-badge tracker-hard-cap-badge--first">1er apron</span>';
+  }
+  if (hardCap === 'second') {
+    return '<span class="tracker-hard-cap-badge tracker-hard-cap-badge--second">2do apron</span>';
+  }
+  return '<span class="tracker-hard-cap-badge tracker-hard-cap-badge--none">Sin hard cap</span>';
 }
 
 function trackerSpaceValueHtml(value) {
@@ -3727,6 +3765,15 @@ function setupTrackerTabs() {
   syncTrackerTabs();
 }
 
+function setupTrackerSeasonControl() {
+  const select = document.getElementById('trackerSeasonSelect');
+  if (!select) return;
+  select.addEventListener('change', async () => {
+    state.ui.trackerSeason = Number(select.value);
+    await loadTracker(state.ui.trackerSeason);
+  });
+}
+
 function setViewMode(mode) {
   state.ui.viewMode = mode;
   const showTeam = mode === 'team';
@@ -4200,12 +4247,14 @@ function setupAdminMobileNav() {
 function renderTracker() {
   const tbody = document.querySelector('#trackerTable tbody');
   tbody.innerHTML = '';
+  populateTrackerSeasonSelect();
 
   const rows = sortedRows(state.trackerRows, state.sort.tracker);
   rows.forEach((row) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><button type="button" class="tracker-team-btn" data-team-code="${row.team_code}">${row.team_code}</button></td>
+      <td>${trackerHardCapBadgeHtml(row.apron_hard_cap)}</td>
       <td><span class="cap-total-tooltip" title="${escapeHtml(capTotalTooltipText())}">${formatMoneyDots(row.cap_total)}</span></td>
       <td>${formatMoneyDots(row.gasto_total)}</td>
       <td>${trackerSpaceValueHtml(row.espacio_cap)}</td>
@@ -4224,6 +4273,16 @@ function renderTracker() {
     });
     tbody.appendChild(tr);
   });
+}
+
+function populateTrackerSeasonSelect() {
+  const select = document.getElementById('trackerSeasonSelect');
+  if (!select) return;
+  const selected = selectedTrackerSeason();
+  select.innerHTML = trackerSeasonOptions()
+    .map((season) => `<option value="${season}">${seasonLabel(season)}${season === currentSeasonStart() ? ' (current)' : ''}</option>`)
+    .join('');
+  select.value = String(selected);
 }
 
 function populateTrackerEconomySeasonSelect() {
@@ -7748,9 +7807,12 @@ async function loadTrackerEconomy(season = null) {
   updateSortIndicators('trackerEconomyTable', state.sort.trackerEconomy);
 }
 
-async function loadTracker() {
-  const res = await api('/api/tracker');
+async function loadTracker(season = null) {
+  const selected = normalizeTrackerSeason(season ?? state.ui.trackerSeason ?? defaultSeasonViewStart());
+  const res = await api(`/api/tracker?season=${encodeURIComponent(selected)}`);
   state.trackerRows = res.tracker || [];
+  state.trackerSeasons = res.seasons || [];
+  state.ui.trackerSeason = Number(res.season_year || selected);
   state.teamCode = null;
   state.teamData = null;
   state.selectedPlayerIds.clear();
@@ -7948,7 +8010,10 @@ function syncTeamApronHardCapControls() {
   const firstInput = document.getElementById('teamFirstApronCapInput');
   const secondInput = document.getElementById('teamSecondApronCapInput');
   if (!firstInput || !secondInput) return;
-  const hardCap = String(state.teamData?.team?.apron_hard_cap || '').trim().toLowerCase();
+  const seasonYear = selectedSeasonStart();
+  const seasonRow = (state.teamData?.apron_hard_caps || [])
+    .find((row) => Number(row?.season_year) === Number(seasonYear));
+  const hardCap = String(seasonRow?.hard_cap || '').trim().toLowerCase();
   firstInput.checked = hardCap === 'first';
   secondInput.checked = hardCap === 'second';
 }
@@ -7963,10 +8028,11 @@ async function saveTeamApronHardCap(nextHardCap) {
   const secondInput = document.getElementById('teamSecondApronCapInput');
   const inputs = [firstInput, secondInput].filter(Boolean);
   inputs.forEach((input) => { input.disabled = true; });
+  const seasonYear = selectedSeasonStart();
   try {
     await api(`/api/teams/${state.teamCode}`, {
       method: 'PATCH',
-      body: JSON.stringify({ apron_hard_cap: nextHardCap || '' }),
+      body: JSON.stringify({ season_year: seasonYear, apron_hard_cap: nextHardCap || '' }),
     });
     await loadTeam(state.teamCode);
   } catch (err) {
@@ -9182,6 +9248,7 @@ async function init() {
   setupSeasonViewControl();
   setupOwnerOfficeControls();
   setupTrackerTabs();
+  setupTrackerSeasonControl();
   setupTrackerEconomySeasonControl();
   setupTeamTabs();
   setupEconomySettingsControls();

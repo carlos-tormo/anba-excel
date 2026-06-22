@@ -223,6 +223,49 @@ class TradeValidationServerTests(unittest.TestCase):
             )
         )
 
+    def test_apron_hard_cap_is_scoped_by_season(self) -> None:
+        self.assertTrue(self.db.update_team_apron_hard_cap("ATL", 2025, "first"))
+
+        team = self.db.get_team("ATL")
+
+        self.assertEqual("first", team["season_summaries"]["2025"]["apron_hard_cap"])
+        self.assertEqual("", team["season_summaries"]["2026"]["apron_hard_cap"])
+        by_year = {int(row["season_year"]): row["hard_cap"] for row in team["apron_hard_caps"]}
+        self.assertEqual("first", by_year[2025])
+        self.assertEqual("", by_year[2026])
+
+    def test_trade_hard_cap_trigger_persists_to_matching_season(self) -> None:
+        outgoing_a = self.db.create_player(
+            "ATL",
+            {"name": "Outgoing One", "position": "SG", "salary_2026_text": "9000000"},
+        )
+        outgoing_b = self.db.create_player(
+            "ATL",
+            {"name": "Outgoing Two", "position": "PF", "salary_2026_text": "8000000"},
+        )
+        incoming = self.db.create_player(
+            "BOS",
+            {"name": "Incoming Lower", "position": "PG", "salary_2026_text": "11000000"},
+        )
+        validation = self.db.validate_trade_machine(
+            {
+                "teams": ["ATL", "BOS"],
+                "season": 2026,
+                "selections": [
+                    {"type": "player", "id": outgoing_a, "from_team": "ATL", "to_team": "BOS"},
+                    {"type": "player", "id": outgoing_b, "from_team": "ATL", "to_team": "BOS"},
+                    {"type": "player", "id": incoming, "from_team": "BOS", "to_team": "ATL"},
+                ],
+            }
+        )
+
+        applied = self.db.apply_trade_hard_cap_triggers(validation, 2026)
+        team = self.db.get_team("ATL")
+
+        self.assertEqual([{"team_code": "ATL", "season_year": 2026, "hard_cap": "second"}], applied)
+        self.assertEqual("", team["season_summaries"]["2025"]["apron_hard_cap"])
+        self.assertEqual("second", team["season_summaries"]["2026"]["apron_hard_cap"])
+
     def test_selection_process_moves_future_second_round_picks_and_player_rights(self) -> None:
         player_id = self.db.create_player(
             "ATL",

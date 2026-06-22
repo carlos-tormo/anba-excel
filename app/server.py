@@ -912,6 +912,18 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS team_apron_hard_caps (
+                    team_id INTEGER NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    hard_cap TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (team_id, season_year),
+                    FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS team_gm_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -1079,6 +1091,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_name ON free_agents(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_move_logs_team_season ON team_move_logs(team_id, season_year, bucket)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_luxury_history_team_year ON team_luxury_history(team_id, season_year)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_team_apron_hard_caps_team_year ON team_apron_hard_caps(team_id, season_year)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_team_start ON team_gm_history(team_id, start_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_order_year_round ON draft_order(draft_year, draft_round, pick_number)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_economy_season ON team_economy(season_year)")
@@ -1173,6 +1186,19 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE teams ADD COLUMN cash_sent REAL NOT NULL DEFAULT 0")
             if "apron_hard_cap" not in team_cols:
                 conn.execute("ALTER TABLE teams ADD COLUMN apron_hard_cap TEXT")
+            settings_rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
+            settings_map = {str(row["key"]): str(row["value"]) for row in settings_rows}
+            current_year = parse_int(settings_map.get("current_year")) or 2025
+            timestamp = now_iso()
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO team_apron_hard_caps (team_id, season_year, hard_cap, updated_at)
+                SELECT id, ?, apron_hard_cap, ?
+                FROM teams
+                WHERE COALESCE(apron_hard_cap, '') != ''
+                """,
+                (int(current_year), timestamp),
+            )
             option_cols = [f"option_{season}" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
             for col in option_cols:
                 if col not in cols:
@@ -2625,13 +2651,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
             dead_contracts = [row_to_dict(dead_cur, r) for r in dead_cur.fetchall()]
 
             settings = self.get_settings()
-            luxury_repeater = self._team_luxury_repeater_for_season(conn, int(team["id"]), parse_int(settings.get("current_year")) or 2025)
-            summary = self._calc_summary(team, players, assets, dead_contracts, settings, luxury_repeater=luxury_repeater)
+            current_year = parse_int(settings.get("current_year")) or 2025
+            luxury_repeater = self._team_luxury_repeater_for_season(conn, int(team["id"]), current_year)
+            current_hard_cap = self._team_apron_hard_cap_for_season(conn, int(team["id"]), current_year, team.get("apron_hard_cap"))
+            summary = self._calc_summary(
+                team,
+                players,
+                assets,
+                dead_contracts,
+                settings,
+                luxury_repeater=luxury_repeater,
+                apron_hard_cap=current_hard_cap,
+            )
             season_summaries = self._team_season_summaries(conn, team, players, assets, dead_contracts, settings)
             requested_move_year = parse_int(move_season_year) or int(summary["current_year"])
             move_summary = self._team_move_summary(conn, int(team["id"]), int(requested_move_year), settings)
             move_summaries = self._team_move_summaries(conn, int(team["id"]), settings, include_year=int(requested_move_year))
             luxury_history = self._team_luxury_history(conn, int(team["id"]), int(summary["current_year"]))
+            apron_hard_caps = self._team_apron_hard_caps(conn, int(team["id"]), int(summary["current_year"]), team.get("apron_hard_cap"))
             gm_cur = conn.execute(
                 """
                 SELECT
@@ -2662,6 +2699,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "move_summary": move_summary,
                 "move_summaries": move_summaries,
                 "luxury_history": luxury_history,
+                "apron_hard_caps": apron_hard_caps,
                 "gm_history": gm_history,
             }
 
@@ -3260,14 +3298,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
         return self.list_gm_history(code)
 
-    def list_tracker(self) -> List[Dict[str, Any]]:
+    def list_tracker(self, season_year: Optional[int] = None) -> Dict[str, Any]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
                 current_year = CAP_FORECAST_MIN_YEAR
-            tracker_year = current_year + 1 if parse_bool(settings.get("free_agency_mode")) else current_year
+            default_tracker_year = current_year + 1 if parse_bool(settings.get("free_agency_mode")) else current_year
+            requested_year = parse_int(season_year)
+            tracker_year = requested_year if requested_year is not None else default_tracker_year
             tracker_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, tracker_year))
             team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
             teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
@@ -3321,6 +3361,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     settings,
                     season_year=tracker_year,
                     luxury_repeater=self._team_luxury_repeater_for_season(conn, team_id, tracker_year),
+                    apron_hard_cap=self._team_apron_hard_cap_for_season(
+                        conn,
+                        team_id,
+                        tracker_year,
+                        team.get("apron_hard_cap") if tracker_year == current_year else None,
+                    ),
                 )
                 draft_counts = draft_counts_for_tracker(assets)
                 rows.append(
@@ -3338,9 +3384,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "roster_two_way_count": int(summary["roster_two_way_count"]),
                         "draft_first_count": int(draft_counts["draft_first_count"]),
                         "draft_second_count": int(draft_counts["draft_second_count"]),
+                        "apron_hard_cap": summary["apron_hard_cap"],
                     }
                 )
-            return rows
+            return {
+                "rows": rows,
+                "season_year": tracker_year,
+                "seasons": [current_year + idx for idx in range(6)],
+            }
 
     def list_team_economy(self, season_year: Optional[int] = None) -> Dict[str, Any]:
         with self.connect() as conn:
@@ -5242,6 +5293,67 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return True
 
+    def _team_apron_hard_cap_for_season(self, conn: sqlite3.Connection, team_id: int, season_year: int, fallback: Any = None) -> str:
+        row = conn.execute(
+            """
+            SELECT hard_cap
+            FROM team_apron_hard_caps
+            WHERE team_id = ? AND season_year = ?
+            """,
+            (int(team_id), int(season_year)),
+        ).fetchone()
+        if row:
+            return normalize_apron_hard_cap(row["hard_cap"]) or ""
+        return normalize_apron_hard_cap(fallback) or ""
+
+    def _team_apron_hard_caps(self, conn: sqlite3.Connection, team_id: int, current_year: int, fallback: Any = None) -> List[Dict[str, Any]]:
+        years = [current_year + idx for idx in range(6)]
+        placeholders = ",".join("?" for _ in years)
+        rows = conn.execute(
+            f"""
+            SELECT season_year, hard_cap
+            FROM team_apron_hard_caps
+            WHERE team_id = ? AND season_year IN ({placeholders})
+            """,
+            (int(team_id), *years),
+        ).fetchall()
+        by_year = {int(row["season_year"]): normalize_apron_hard_cap(row["hard_cap"]) or "" for row in rows}
+        return [
+            {
+                "season_year": year,
+                "hard_cap": by_year.get(year, (normalize_apron_hard_cap(fallback) or "") if year == current_year else ""),
+            }
+            for year in years
+        ]
+
+    def update_team_apron_hard_cap(self, code: str, season_year: int, hard_cap: Any) -> bool:
+        normalized = normalize_apron_hard_cap(hard_cap)
+        with self.connect() as conn:
+            row = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+            if not row:
+                return False
+            timestamp = now_iso()
+            conn.execute(
+                """
+                INSERT INTO team_apron_hard_caps (team_id, season_year, hard_cap, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(team_id, season_year) DO UPDATE SET
+                    hard_cap = excluded.hard_cap,
+                    updated_at = excluded.updated_at
+                """,
+                (int(row["id"]), int(season_year), normalized, timestamp),
+            )
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(item["key"]): str(item["value"]) for item in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            if int(season_year) == int(current_year):
+                conn.execute(
+                    "UPDATE teams SET apron_hard_cap = ?, updated_at = ? WHERE id = ?",
+                    (normalized, timestamp, int(row["id"])),
+                )
+            conn.commit()
+            return True
+
     def _calc_summary(
         self,
         team: Dict[str, Any],
@@ -5251,6 +5363,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         settings: Dict[str, str],
         season_year: Optional[int] = None,
         luxury_repeater: bool = False,
+        apron_hard_cap: Any = None,
     ) -> Dict[str, float]:
         current_year = parse_int(season_year) or parse_int(settings.get("current_year")) or 2025
         if current_year < 2025 or current_year > 2030:
@@ -5369,7 +5482,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "trade_move_limit_post30": max(0, parse_int(settings.get("trade_move_limit_post30")) or 0),
             "roster_standard_count": roster_standard_count,
             "roster_two_way_count": roster_two_way_count,
-            "apron_hard_cap": normalize_apron_hard_cap(team.get("apron_hard_cap")) or "",
+            "apron_hard_cap": normalize_apron_hard_cap(apron_hard_cap) or "",
         }
 
     def _team_season_summaries(
@@ -5387,6 +5500,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         summaries: Dict[str, Dict[str, Any]] = {}
         for season_year in range(start_year, CAP_FORECAST_MAX_YEAR + 1):
             repeater = self._team_luxury_repeater_for_season(conn, int(team_id), season_year) if team_id is not None else False
+            fallback_hard_cap = team.get("apron_hard_cap") if season_year == current_year else None
+            hard_cap = self._team_apron_hard_cap_for_season(conn, int(team_id), season_year, fallback_hard_cap) if team_id is not None else ""
             summary = self._calc_summary(
                 team,
                 players,
@@ -5395,9 +5510,45 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 settings,
                 season_year=season_year,
                 luxury_repeater=repeater,
+                apron_hard_cap=hard_cap,
             )
             summaries[str(season_year)] = summary
         return summaries
+
+    def _hard_cap_from_trade_issue(self, issue: Dict[str, Any]) -> str:
+        raw = normalize_apron_hard_cap(issue.get("hardCap") or issue.get("hard_cap"))
+        if raw:
+            return raw
+        message = str(issue.get("message") or "").lower()
+        if "1er apron" in message or "1st apron" in message or "first apron" in message:
+            return "first"
+        if "2do apron" in message or "2nd apron" in message or "second apron" in message:
+            return "second"
+        return ""
+
+    def apply_trade_hard_cap_triggers(self, validation: Dict[str, Any], season_year: int) -> List[Dict[str, Any]]:
+        applied: List[Dict[str, Any]] = []
+        parsed_season = parse_int(season_year)
+        if parsed_season is None:
+            return applied
+        for issue in validation.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            if issue.get("rule") != "hard_cap_trigger":
+                continue
+            team_code = normalize_team_code(issue.get("teamCode"))
+            hard_cap = self._hard_cap_from_trade_issue(issue)
+            if not team_code or hard_cap not in {"first", "second"}:
+                continue
+            if self.update_team_apron_hard_cap(team_code, int(parsed_season), hard_cap):
+                applied.append(
+                    {
+                        "team_code": team_code,
+                        "season_year": int(parsed_season),
+                        "hard_cap": hard_cap,
+                    }
+                )
+        return applied
 
     def update_player(self, player_id: int, payload: Dict[str, Any]) -> bool:
         fields = [
@@ -7312,7 +7463,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     if current_rank < trigger_rank:
                         apron_label = "1er apron" if trigger == "first" else "2do apron"
                         reason = "usar la TPE expandida" if trigger == "first" else "agregar salarios de varios jugadores"
-                        issues.append({"severity": "warning", "rule": "hard_cap_trigger", "teamCode": code, "message": f"El traspaso dejaría al equipo hard-capped en el {apron_label} por {reason}."})
+                        issues.append({
+                            "severity": "warning",
+                            "rule": "hard_cap_trigger",
+                            "teamCode": code,
+                            "hardCap": trigger,
+                            "message": f"El traspaso dejaría al equipo hard-capped en el {apron_label} por {reason}.",
+                        })
             else:
                 issues.append({"severity": "illegal", "rule": "salary", "teamCode": code, "message": profile.get("message")})
 
@@ -10079,7 +10236,21 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/tracker":
-            self._json(200, {"tracker": self.db.list_tracker()})
+            qs = parse_qs(parsed.query)
+            raw_season = (qs.get("season") or [""])[0].strip()
+            season_year = parse_int(raw_season) if raw_season else None
+            if raw_season and season_year is None:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            tracker = self.db.list_tracker(season_year)
+            self._json(
+                200,
+                {
+                    "tracker": tracker.get("rows") or [],
+                    "season_year": tracker.get("season_year"),
+                    "seasons": tracker.get("seasons") or [],
+                },
+            )
             return
 
         if parsed.path == "/api/tracker/economy":
@@ -10854,6 +11025,10 @@ QUALITY REQUIREMENTS
                     }
                 )
                 if result:
+                    season_year = parse_int(result.get("season")) or parse_int(payload.get("season")) or parse_int(self.db.get_settings().get("current_year")) or 2025
+                    applied_hard_caps = self.db.apply_trade_hard_cap_triggers(validation, season_year)
+                    if applied_hard_caps:
+                        result["applied_hard_caps"] = applied_hard_caps
                     trade_after = self.db.audit_trade_snapshot(teams, trade_player_ids, trade_asset_ids)
                     self._log_admin_action(
                         "trade",
@@ -10869,6 +11044,7 @@ QUALITY REQUIREMENTS
                             "team_results": result.get("teams") or [],
                             "validation_issues": validation.get("issues") or [],
                             "forced_validation_issues": illegal_validation_issues if force_trade else [],
+                            "applied_hard_caps": applied_hard_caps,
                         },
                         before=trade_before,
                         after=trade_after,
@@ -10939,6 +11115,10 @@ QUALITY REQUIREMENTS
                 trade_bucket=trade_bucket,
             )
             if result:
+                season_year = parse_int(result.get("season")) or parse_int(payload.get("season")) or parse_int(self.db.get_settings().get("current_year")) or 2025
+                applied_hard_caps = self.db.apply_trade_hard_cap_triggers(validation, season_year)
+                if applied_hard_caps:
+                    result["applied_hard_caps"] = applied_hard_caps
                 trade_after = self.db.audit_trade_snapshot([team_a, team_b], trade_player_ids, trade_asset_ids)
                 self._log_admin_action(
                     "trade",
@@ -10968,6 +11148,7 @@ QUALITY REQUIREMENTS
                         "move_count_b": result.get("team_b", {}).get("move_count"),
                         "validation_issues": validation.get("issues") or [],
                         "forced_validation_issues": illegal_validation_issues if force_trade else [],
+                        "applied_hard_caps": applied_hard_caps,
                     },
                     before=trade_before,
                     after=trade_after,
@@ -11739,6 +11920,9 @@ QUALITY REQUIREMENTS
             if not self._require_team_write_access(code):
                 return
             update_payload: Dict[str, Any] = {}
+            apron_hard_cap_requested = "apron_hard_cap" in payload
+            normalized_hard_cap: Optional[str] = None
+            apron_hard_cap_season = parse_int(payload.get("season_year"))
             if "gm" in payload:
                 gm_raw = payload.get("gm")
                 update_payload["gm"] = None if gm_raw is None else str(gm_raw).strip() or None
@@ -11760,13 +11944,26 @@ QUALITY REQUIREMENTS
                 if raw_hard_cap and normalized_hard_cap is None:
                     self._json(400, {"error": "invalid_apron_hard_cap"})
                     return
-                update_payload["apron_hard_cap"] = normalized_hard_cap
-            if not update_payload:
+                if apron_hard_cap_season is None:
+                    settings = self.db.get_settings()
+                    apron_hard_cap_season = parse_int(settings.get("current_year")) or 2025
+                if apron_hard_cap_season < CAP_FORECAST_MIN_YEAR or apron_hard_cap_season > CAP_FORECAST_MAX_YEAR:
+                    self._json(400, {"error": "invalid_season_year"})
+                    return
+            if not update_payload and not apron_hard_cap_requested:
                 self._json(400, {"error": "team_update_required"})
                 return
-            ok = self.db.update_team_fields(code, update_payload)
+            ok = True
+            if update_payload:
+                ok = self.db.update_team_fields(code, update_payload)
+            if ok and apron_hard_cap_requested:
+                ok = self.db.update_team_apron_hard_cap(code, int(apron_hard_cap_season or 2025), normalized_hard_cap)
             if ok:
-                self._log_admin_action("update", "team", code.upper(), code.upper(), update_payload)
+                details = dict(update_payload)
+                if apron_hard_cap_requested:
+                    details["apron_hard_cap"] = normalized_hard_cap
+                    details["season_year"] = int(apron_hard_cap_season or 2025)
+                self._log_admin_action("update", "team", code.upper(), code.upper(), details)
             self._json(200 if ok else 404, {"ok": ok})
             return
 
