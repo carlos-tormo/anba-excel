@@ -2378,10 +2378,15 @@ function tradeSeasonOptionsHtml() {
 
 async function ensureTradeTeamData(codes) {
   const unique = tradeUniqueCodes(codes);
-  const missing = unique.filter((code) => !state.trade.teamDataByCode[code]);
+  const season = tradeSeasonStart();
+  const missing = unique.filter((code) => {
+    const cached = state.trade.teamDataByCode[code];
+    return !cached || Number(cached._tradeSeasonStart) !== season;
+  });
   if (!missing.length) return;
-  const loaded = await Promise.all(missing.map(async (code) => [code, await api(`/api/teams/${code}`)]));
+  const loaded = await Promise.all(missing.map(async (code) => [code, await api(`/api/teams/${encodeURIComponent(code)}?season=${encodeURIComponent(season)}`)]));
   loaded.forEach(([code, data]) => {
+    data._tradeSeasonStart = season;
     state.trade.teamDataByCode[code] = data;
     state.trade.playersByTeam[code] = data.players || [];
     state.trade.picksByTeam[code] = (data.assets || []).filter((asset) => asset.asset_type === 'draft_pick');
@@ -3300,7 +3305,13 @@ function setupTradeModal() {
   addBtn?.addEventListener('click', () => { void addOfficialTradeTeam(); });
   seasonSelect?.addEventListener('change', () => {
     state.trade.seasonStart = Number(seasonSelect.value || currentSeasonStart());
-    scheduleTradeValidation();
+    state.trade.teamDataByCode = {};
+    state.trade.playersByTeam = {};
+    state.trade.picksByTeam = {};
+    state.trade.rightsByTeam = {};
+    resetTradeValidation();
+    renderTradeTeams();
+    void ensureTradeTeamData(state.trade.selectedTeams).then(() => scheduleTradeValidation());
   });
   tradeBucketSelect?.addEventListener('change', scheduleTradeValidation);
   forceTradeCheckbox?.addEventListener('change', renderTradeValidation);
@@ -3862,7 +3873,8 @@ function openAdminMobileInfo() {
   const list = document.getElementById('adminMobileInfoList');
   if (!list || !state.teamData?.summary) return;
   const s = summaryForBalanceSeason(state.teamData);
-  const m = state.teamData.move_summary || {};
+  const selectedSeason = selectedSeasonStart();
+  const m = moveSummaryForSeason(state.teamData, selectedSeason);
   list.innerHTML = `
     <div class="mobile-info-summary cards team-summary-grid">
       ${buildBalancePanelHtml(s)}
@@ -3951,6 +3963,16 @@ function availableMoves(moveSummary, bucket, limit) {
   const used = Number(m[`used_${bucket}`]);
   if (Number.isFinite(used)) return availableAmount(used, limit);
   return Math.max(0, Math.min(Number(limit || 0), Number(m[`remaining_${bucket}`] || 0)));
+}
+
+function moveSummaryForSeason(data = state.teamData, season = selectedSeasonStart()) {
+  const selected = Number(season || selectedSeasonStart());
+  const summaries = data?.move_summaries || {};
+  const keyed = summaries[String(selected)];
+  if (keyed) return keyed;
+  const current = data?.move_summary || {};
+  if (Number(current.season_year) === selected) return current;
+  return current;
 }
 
 function buildUsageGaugeCard({ label, available, limit, valueText, limitText, unitText = 'Available', tone = 'cash', detailHtml = '', controlHtml = '' }) {
@@ -4809,7 +4831,8 @@ function renderCards() {
   const wrap = document.getElementById('teamMeta');
   const t = state.teamData.team;
   const s = summaryForBalanceSeason(state.teamData);
-  const m = state.teamData.move_summary || {};
+  const selectedSeason = selectedSeasonStart();
+  const m = moveSummaryForSeason(state.teamData, selectedSeason);
   setPageHeading(t.name || 'Team', t.gm || '');
   renderCapStatusPills(s);
   wrap.innerHTML = `
@@ -4862,12 +4885,12 @@ function renderCards() {
     });
   }
   document.getElementById('moveLogPre30Btn')?.addEventListener('click', () => {
-    const rows = (state.teamData.move_summary?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === 'pre30');
-    openMoveLogModal(`${t.code} · ${moveBucketLabel('pre30')}`, rows);
+    const rows = (moveSummaryForSeason(state.teamData, selectedSeason)?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === 'pre30');
+    openMoveLogModal(`${t.code} · ${seasonLabel(selectedSeason)} · ${moveBucketLabel('pre30')}`, rows);
   });
   document.getElementById('moveLogPost30Btn')?.addEventListener('click', () => {
-    const rows = (state.teamData.move_summary?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === 'post30');
-    openMoveLogModal(`${t.code} · ${moveBucketLabel('post30')}`, rows);
+    const rows = (moveSummaryForSeason(state.teamData, selectedSeason)?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === 'post30');
+    openMoveLogModal(`${t.code} · ${seasonLabel(selectedSeason)} · ${moveBucketLabel('post30')}`, rows);
   });
 }
 
@@ -7673,7 +7696,7 @@ function renderDeadContracts() {
 }
 
 async function loadTeam(code) {
-  const data = await api(`/api/teams/${code}`);
+  const data = await api(`/api/teams/${encodeURIComponent(code)}?season=${encodeURIComponent(selectedSeasonStart())}`);
   state.teamCode = code;
   state.teamData = data;
   state.selectedPlayerIds.clear();
@@ -8059,7 +8082,7 @@ async function saveCurrentTeamMoves(pre30InputEl, post30InputEl, buttonEl) {
   const oldText = buttonEl.textContent;
   buttonEl.textContent = 'Saving...';
   try {
-    const seasonYear = Number(state.teamData.summary.current_year || state.settings.current_year || 2025);
+    const seasonYear = selectedSeasonStart();
     await api(`/api/teams/${state.teamCode}/move-adjustment`, {
       method: 'POST',
       body: JSON.stringify({

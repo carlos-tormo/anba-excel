@@ -3532,6 +3532,16 @@ function availableMoves(moveSummary, bucket, limit) {
   return Math.max(0, Math.min(Number(limit || 0), Number(m[`remaining_${bucket}`] || 0)));
 }
 
+function moveSummaryForSeason(data = state.teamData, season = selectedSeasonStart()) {
+  const selected = Number(season || selectedSeasonStart());
+  const summaries = data?.move_summaries || {};
+  const keyed = summaries[String(selected)];
+  if (keyed) return keyed;
+  const current = data?.move_summary || {};
+  if (Number(current.season_year) === selected) return current;
+  return current;
+}
+
 function buildUsageGaugeCard({ label, available, limit, valueText, limitText, unitText = 'Available', tone = 'cash', detailHtml = '' }) {
   const pct = usagePercent(available, limit);
   const displayPct = Math.round(pct.raw);
@@ -3625,7 +3635,7 @@ function buildMoveGaugePanel(moveSummary) {
 
 function buildSummaryCardsHtml(summary) {
   const s = summary || {};
-  const m = state.teamData?.move_summary || {};
+  const m = moveSummaryForSeason(state.teamData, selectedSeasonStart());
   return `
     ${buildBalancePanelHtml(s)}
     <article class="card card-summary card-summary-split team-operations-card">
@@ -3655,8 +3665,9 @@ function openMobileInfo() {
       e.preventDefault();
       e.stopPropagation();
       const bucket = normalizeMoveBucket(btn.dataset.moveLogBucket);
-      const rows = (state.teamData?.move_summary?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === bucket);
-      openMoveLog(`${state.teamCode || ''} · ${moveBucketLabel(bucket)}`, rows);
+      const selectedSeason = selectedSeasonStart();
+      const rows = (moveSummaryForSeason(state.teamData, selectedSeason)?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === bucket);
+      openMoveLog(`${state.teamCode || ''} · ${seasonLabel(selectedSeason)} · ${moveBucketLabel(bucket)}`, rows);
     });
   });
   state.ui.mobileInfoOpen = true;
@@ -4499,8 +4510,9 @@ function renderCards() {
       e.preventDefault();
       e.stopPropagation();
       const bucket = normalizeMoveBucket(btn.dataset.moveLogBucket);
-      const rows = (state.teamData?.move_summary?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === bucket);
-      openMoveLog(`${t.code} · ${moveBucketLabel(bucket)}`, rows);
+      const selectedSeason = selectedSeasonStart();
+      const rows = (moveSummaryForSeason(state.teamData, selectedSeason)?.log || []).filter((item) => normalizeMoveBucket(item.bucket) === bucket);
+      openMoveLog(`${t.code} · ${seasonLabel(selectedSeason)} · ${moveBucketLabel(bucket)}`, rows);
     });
   });
 }
@@ -5478,7 +5490,7 @@ function renderPlayerRights() {
 }
 
 async function loadTeam(code) {
-  const data = await api(`/api/teams/${code}`);
+  const data = await api(`/api/teams/${encodeURIComponent(code)}?season=${encodeURIComponent(selectedSeasonStart())}`);
   state.teamCode = code;
   state.teamData = data;
   state.ui.ownerOfficeSeason = null;

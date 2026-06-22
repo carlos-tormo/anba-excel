@@ -187,6 +187,42 @@ class TradeValidationServerTests(unittest.TestCase):
             any(issue["severity"] == "illegal" and issue["rule"] == "restricted_pick" for issue in swap_result["issues"])
         )
 
+    def test_aggregation_triggers_second_apron_hard_cap_even_when_salary_decreases(self) -> None:
+        outgoing_a = self.db.create_player(
+            "ATL",
+            {"name": "Outgoing One", "position": "SG", "salary_2026_text": "9000000"},
+        )
+        outgoing_b = self.db.create_player(
+            "ATL",
+            {"name": "Outgoing Two", "position": "PF", "salary_2026_text": "8000000"},
+        )
+        incoming = self.db.create_player(
+            "BOS",
+            {"name": "Incoming Lower", "position": "PG", "salary_2026_text": "11000000"},
+        )
+
+        result = self.db.validate_trade_machine(
+            {
+                "teams": ["ATL", "BOS"],
+                "season": 2026,
+                "selections": [
+                    {"type": "player", "id": outgoing_a, "from_team": "ATL", "to_team": "BOS"},
+                    {"type": "player", "id": outgoing_b, "from_team": "ATL", "to_team": "BOS"},
+                    {"type": "player", "id": incoming, "from_team": "BOS", "to_team": "ATL"},
+                ],
+            }
+        )
+
+        self.assertTrue(
+            any(
+                issue["severity"] == "warning"
+                and issue["rule"] == "hard_cap_trigger"
+                and issue["teamCode"] == "ATL"
+                and "2do apron" in issue["message"]
+                for issue in result["issues"]
+            )
+        )
+
     def test_selection_process_moves_future_second_round_picks_and_player_rights(self) -> None:
         player_id = self.db.create_player(
             "ATL",
@@ -267,6 +303,69 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual("acquired", acquired_pick["draft_pick_type"])
         self.assertEqual("2nd", acquired_pick["draft_round"])
         self.assertEqual("BOS", acquired_pick["original_owner"])
+
+    def test_move_summaries_reset_by_season(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            conn.execute(
+                """
+                INSERT INTO team_move_logs (
+                    team_id, season_year, bucket, delta, source_type, source_ref, note, detail_json, created_at
+                ) VALUES (?, 2025, 'pre30', 5, 'trade', 'test', 'Current season trade', '{}', ?)
+                """,
+                (team_id, now_iso()),
+            )
+            conn.commit()
+
+        current_team = self.db.get_team("ATL", move_season_year=2025)
+        future_team = self.db.get_team("ATL", move_season_year=2026)
+
+        self.assertEqual(15, current_team["move_summary"]["remaining_pre30"])
+        self.assertEqual(20, future_team["move_summary"]["remaining_pre30"])
+        self.assertEqual(4, future_team["move_summary"]["remaining_post30"])
+
+    def test_post30_trade_spends_pre30_before_post30(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            conn.execute(
+                """
+                INSERT INTO team_move_logs (
+                    team_id, season_year, bucket, delta, source_type, source_ref, note, detail_json, created_at
+                ) VALUES (?, 2026, 'pre30', 19, 'trade', 'seed', 'Seed usage', '{}', ?)
+                """,
+                (team_id, now_iso()),
+            )
+            conn.commit()
+        right_ids = [
+            self.db.create_asset("ATL", {"asset_type": "player_right", "label": f"Rights {idx}"})
+            for idx in range(3)
+        ]
+
+        result = self.db.process_trade_from_payload(
+            {
+                "teams": ["ATL", "BOS"],
+                "season": 2026,
+                "trade_bucket": "post30",
+                "selections": [
+                    {"type": "right", "id": right_id, "from_team": "ATL", "to_team": "BOS"}
+                    for right_id in right_ids
+                ],
+            }
+        )
+
+        self.assertIsNotNone(result)
+        team = self.db.get_team("ATL", move_season_year=2026)
+        self.assertEqual(20, team["move_summary"]["used_pre30"])
+        self.assertEqual(2, team["move_summary"]["used_post30"])
+        allocated = [
+            (row["bucket"], row["delta"])
+            for row in team["move_summary"]["log"]
+            if row["source_type"] == "trade" and row["source_ref"] != "seed"
+        ]
+        self.assertIn(("pre30", 1), allocated)
+        self.assertIn(("post30", 2), allocated)
 
 
 if __name__ == "__main__":

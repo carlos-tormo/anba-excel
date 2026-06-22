@@ -1877,6 +1877,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         used_pre30 = sum(int(row.get("delta") or 0) for row in rows if normalize_trade_bucket(row.get("bucket")) == "pre30")
         used_post30 = sum(int(row.get("delta") or 0) for row in rows if normalize_trade_bucket(row.get("bucket")) == "post30")
         return {
+            "season_year": int(season_year),
             "phase": phase,
             "limit_pre30": limit_pre30,
             "limit_post30": limit_post30,
@@ -1885,6 +1886,44 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "remaining_pre30": limit_pre30 - used_pre30,
             "remaining_post30": limit_post30 - used_post30,
             "log": rows,
+        }
+
+    def _team_move_summaries(
+        self,
+        conn: sqlite3.Connection,
+        team_id: int,
+        settings: Dict[str, str],
+        include_year: Optional[int] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        current_year = parse_int(settings.get("current_year")) or 2025
+        years = {current_year + idx for idx in range(6)}
+        if include_year is not None:
+            years.add(int(include_year))
+        return {
+            str(year): self._team_move_summary(conn, team_id, int(year), settings)
+            for year in sorted(years)
+        }
+
+    def _trade_move_availability_for_bucket(self, move_summary: Dict[str, Any], bucket: str) -> Dict[str, Any]:
+        bucket_key = normalize_trade_bucket(bucket)
+        pre_remaining = parse_int(move_summary.get("remaining_pre30"))
+        post_remaining = parse_int(move_summary.get("remaining_post30"))
+        pre_available = max(0, pre_remaining or 0)
+        post_available = max(0, post_remaining or 0)
+        if bucket_key == "post30":
+            return {
+                "bucket": bucket_key,
+                "remaining": pre_available + post_available,
+                "pre_remaining": pre_available,
+                "post_remaining": post_available,
+                "label": "pre-30/post-30",
+            }
+        return {
+            "bucket": bucket_key,
+            "remaining": pre_available,
+            "pre_remaining": pre_available,
+            "post_remaining": post_available,
+            "label": "pre-30",
         }
 
     def update_setting(self, key: str, value: str) -> None:
@@ -2562,7 +2601,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 if decision_player_id == player_id:
                     player["option_decisions"][option_field] = decision
 
-    def get_team(self, code: str) -> Optional[Dict[str, Any]]:
+    def get_team(self, code: str, move_season_year: Optional[int] = None) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             team_cur = conn.execute("SELECT * FROM teams WHERE code = ?", (code.upper(),))
             row = team_cur.fetchone()
@@ -2589,7 +2628,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
             luxury_repeater = self._team_luxury_repeater_for_season(conn, int(team["id"]), parse_int(settings.get("current_year")) or 2025)
             summary = self._calc_summary(team, players, assets, dead_contracts, settings, luxury_repeater=luxury_repeater)
             season_summaries = self._team_season_summaries(conn, team, players, assets, dead_contracts, settings)
-            move_summary = self._team_move_summary(conn, int(team["id"]), int(summary["current_year"]), settings)
+            requested_move_year = parse_int(move_season_year) or int(summary["current_year"])
+            move_summary = self._team_move_summary(conn, int(team["id"]), int(requested_move_year), settings)
+            move_summaries = self._team_move_summaries(conn, int(team["id"]), settings, include_year=int(requested_move_year))
             luxury_history = self._team_luxury_history(conn, int(team["id"]), int(summary["current_year"]))
             gm_cur = conn.execute(
                 """
@@ -2619,6 +2660,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "summary": summary,
                 "season_summaries": season_summaries,
                 "move_summary": move_summary,
+                "move_summaries": move_summaries,
                 "luxury_history": luxury_history,
                 "gm_history": gm_history,
             }
@@ -6441,6 +6483,54 @@ class LeagueDB(DatabaseMaintenanceMixin):
             ),
         )
 
+    def _insert_trade_move_logs(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        team_id: int,
+        season_year: int,
+        requested_bucket: str,
+        move_count: int,
+        source_ref: Optional[str],
+        note: Optional[str],
+        details: Optional[Dict[str, Any]],
+        settings: Dict[str, str],
+    ) -> None:
+        remaining = max(0, int(move_count or 0))
+        if not remaining:
+            return
+        bucket_key = normalize_trade_bucket(requested_bucket)
+        allocations: List[tuple[str, int]] = []
+        if bucket_key == "post30":
+            move_summary = self._team_move_summary(conn, int(team_id), int(season_year), settings)
+            pre_remaining = max(0, parse_int(move_summary.get("remaining_pre30")) or 0)
+            pre_delta = min(remaining, pre_remaining)
+            if pre_delta:
+                allocations.append(("pre30", pre_delta))
+                remaining -= pre_delta
+            if remaining:
+                allocations.append(("post30", remaining))
+        else:
+            allocations.append(("pre30", remaining))
+
+        for allocated_bucket, delta in allocations:
+            allocated_details = {
+                **(details or {}),
+                "requested_bucket": bucket_key,
+                "allocated_bucket": allocated_bucket,
+            }
+            self._upsert_team_move_log(
+                conn,
+                team_id=int(team_id),
+                season_year=int(season_year),
+                bucket=allocated_bucket,
+                delta=int(delta),
+                source_type="trade",
+                source_ref=source_ref,
+                note=note,
+                details=allocated_details,
+            )
+
     def adjust_team_move_remaining(
         self,
         team_code: str,
@@ -6886,6 +6976,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         incoming_players = len([a for a in flow.get("incomingAssets") or [] if a.get("type") == "player"])
         first_limited = self._trade_machine_first_apron_limited(flow, thresholds)
         second_limited = self._trade_machine_second_apron_limited(flow, thresholds)
+        aggregation_hard_cap_trigger = "second" if outgoing_players > 1 and incoming_players > 0 else ""
         standard_limit = outgoing + TRADE_MATCH_CUSHION if outgoing_players > 0 and incoming_players > 0 else 0.0
         if incoming <= 0 or incoming <= outgoing:
             return {
@@ -6893,6 +6984,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "tpe": "none",
                 "label": "Sin TPE",
                 "limit": outgoing,
+                "hardCapTrigger": aggregation_hard_cap_trigger,
                 "message": "No recibe salario de jugadores."
                 if incoming <= 0
                 else f"Recibe {format_trade_money(incoming)} y envía {format_trade_money(outgoing)}; no necesita recibir más salario del que envía.",
@@ -6912,7 +7004,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "tpe": "aggregated" if outgoing_players > 1 else "standard",
                 "label": label,
                 "limit": standard_limit,
-                "hardCapTrigger": "second" if outgoing_players > 1 else "",
+                "hardCapTrigger": aggregation_hard_cap_trigger,
                 "message": (
                     f"Necesita enviar al menos un jugador para usar {label}."
                     if outgoing_players <= 0
@@ -6945,7 +7037,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "tpe": "aggregated" if outgoing_players > 1 else "standard",
                 "label": label,
                 "limit": standard_limit,
-                "hardCapTrigger": "second" if outgoing_players > 1 else "",
+                "hardCapTrigger": aggregation_hard_cap_trigger,
                 "message": f"{label}: puede recibir hasta {format_trade_money(standard_limit)} (100% del salario enviado + $250k).",
             }
         if expanded_legal:
@@ -7084,7 +7176,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         team_data_by_code: Dict[str, Dict[str, Any]] = {}
         for code in teams:
-            data = self.get_team(code)
+            data = self.get_team(code, move_season_year=season)
             if not data:
                 issues.append({"severity": "illegal", "rule": "setup", "teamCode": code, "message": "Equipo no encontrado."})
                 continue
@@ -7224,15 +7316,18 @@ class LeagueDB(DatabaseMaintenanceMixin):
             else:
                 issues.append({"severity": "illegal", "rule": "salary", "teamCode": code, "message": profile.get("message")})
 
-            bucket = normalize_trade_bucket(settings.get("trade_move_phase"))
+            bucket = normalize_trade_bucket(payload.get("trade_bucket") or settings.get("trade_move_phase"))
             move_summary = data.get("move_summary") or {}
-            remaining = parse_int(move_summary.get(f"remaining_{bucket}"))
+            availability = self._trade_move_availability_for_bucket(move_summary, bucket)
+            remaining = parse_int(availability.get("remaining"))
             outgoing_count = len([a for a in flow.get("outgoingAssets") or [] if a.get("countsMove", True)])
             if outgoing_count:
                 if remaining is None:
-                    issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Envía {outgoing_count} activo(s); no se pudo leer el saldo de movimientos {'post-30' if bucket == 'post30' else 'pre-30'}."})
+                    issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Envía {outgoing_count} activo(s); no se pudo leer el saldo de movimientos {availability.get('label') or bucket}."})
                 elif outgoing_count > remaining:
-                    issues.append({"severity": "illegal", "rule": "moves", "teamCode": code, "message": f"Necesita {outgoing_count} movimiento(s) y solo tiene {remaining} disponible(s) en {'post-30' if bucket == 'post30' else 'pre-30'}."})
+                    issues.append({"severity": "illegal", "rule": "moves", "teamCode": code, "message": f"Necesita {outgoing_count} movimiento(s) y solo tiene {remaining} disponible(s) en {availability.get('label') or bucket}."})
+                elif bucket == "post30" and availability.get("pre_remaining"):
+                    issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Cuenta como post-30, pero primero consumirá {min(outgoing_count, int(availability.get('pre_remaining') or 0))} movimiento(s) pre-30 disponible(s)."})
 
             if self._trade_machine_second_apron_limited(flow, thresholds):
                 outgoing_players = [a for a in flow.get("outgoingAssets") or [] if a.get("type") == "player"]
@@ -7575,13 +7670,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         if normalize_team_code(selection.get("fromTeam")) == code and normalize_team_code(selection.get("toTeam"))
                     }
                 )
-                self._upsert_team_move_log(
+                self._insert_trade_move_logs(
                     conn,
                     team_id=int(team_rows[code]["id"]),
                     season_year=season_year,
-                    bucket=bucket,
-                    delta=move_count,
-                    source_type="trade",
+                    requested_bucket=bucket,
+                    move_count=move_count,
                     source_ref=source_ref,
                     note=f"Trade vs {'/'.join(opponents)}" if opponents else "Trade",
                     details={
@@ -7593,6 +7687,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "swap_refs": sent.get("swaps") or [],
                         "rights": sent.get("rights") or [],
                     },
+                    settings=settings,
                 )
 
             conn.commit()
@@ -7953,13 +8048,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             move_count_b = len([row for row in players_b_rows if int(row["id"]) not in no_count_b]) + len(picks_b_rows) + len(pick_swaps_b_rows) + len(rights_b_rows)
 
             if move_count_a:
-                self._upsert_team_move_log(
+                self._insert_trade_move_logs(
                     conn,
                     team_id=int(team_a["id"]),
                     season_year=current_year,
-                    bucket=bucket,
-                    delta=move_count_a,
-                    source_type="trade",
+                    requested_bucket=bucket,
+                    move_count=move_count_a,
                     source_ref=f"{team_a['code']}-{team_b['code']}-{timestamp}",
                     note=f"Trade vs {team_b['code']}",
                     details={
@@ -7972,15 +8066,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "swap_refs": [f"Swap {next_pick_year} 1st ({self._pick_actual_owner(row, str(team_a['code']))})" for row in pick_swaps_a_rows],
                         "rights": [row.get("label") for row in rights_a_rows],
                     },
+                    settings=settings,
                 )
             if move_count_b:
-                self._upsert_team_move_log(
+                self._insert_trade_move_logs(
                     conn,
                     team_id=int(team_b["id"]),
                     season_year=current_year,
-                    bucket=bucket,
-                    delta=move_count_b,
-                    source_type="trade",
+                    requested_bucket=bucket,
+                    move_count=move_count_b,
                     source_ref=f"{team_b['code']}-{team_a['code']}-{timestamp}",
                     note=f"Trade vs {team_a['code']}",
                     details={
@@ -7993,6 +8087,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "swap_refs": [f"Swap {next_pick_year} 1st ({self._pick_actual_owner(row, str(team_b['code']))})" for row in pick_swaps_b_rows],
                         "rights": [row.get("label") for row in rights_b_rows],
                     },
+                    settings=settings,
                 )
 
             conn.commit()
@@ -10090,7 +10185,13 @@ QUALITY REQUIREMENTS
 
         if parsed.path.startswith("/api/teams/"):
             code = parsed.path.split("/")[-1]
-            data = self.db.get_team(code)
+            qs = parse_qs(parsed.query)
+            raw_season = (qs.get("season") or [""])[0].strip()
+            move_season_year = parse_int(raw_season) if raw_season else None
+            if raw_season and move_season_year is None:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            data = self.db.get_team(code, move_season_year=move_season_year)
             if not data:
                 self._json(404, {"error": "team_not_found"})
                 return
