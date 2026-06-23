@@ -782,6 +782,41 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS gm_draft_pick_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    draft_order_id INTEGER NOT NULL REFERENCES draft_order(id) ON DELETE CASCADE,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    requester_email TEXT,
+                    requester_name TEXT,
+                    option_value TEXT,
+                    custom_text TEXT,
+                    selection_text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    admin_email TEXT,
+                    admin_name TEXT,
+                    admin_decision_note TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    decided_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_gm_draft_pick_requests_status
+                ON gm_draft_pick_requests (status, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_gm_draft_pick_requests_pending_unique
+                ON gm_draft_pick_requests (draft_order_id)
+                WHERE status = 'pending'
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -2368,11 +2403,23 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def _gm_option_request_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
         item = row_to_dict(cursor, row)
+        item["request_type"] = "option"
         raw_field = str(item.get("option_field") or "")
         match = re.fullmatch(r"option_(20\d{2})", raw_field)
         season_year = parse_int(match.group(1)) if match else None
         item["season_year"] = season_year
         item["season_label"] = f"{season_year}-{(season_year + 1) % 100:02d}" if season_year else ""
+        return item
+
+    def _gm_draft_pick_request_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
+        item = row_to_dict(cursor, row)
+        item["request_type"] = "draft_pick"
+        item["player_name"] = str(item.get("selection_text") or "")
+        item["option_field"] = "draft_pick"
+        item["action"] = "selected"
+        draft_year = parse_int(item.get("draft_year"))
+        item["season_year"] = draft_year
+        item["season_label"] = f"Draft {draft_year}" if draft_year else "Draft"
         return item
 
     def get_gm_option_request(self, request_id: int) -> Optional[Dict[str, Any]]:
@@ -2420,7 +2467,62 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
                 params,
             )
-            return [self._gm_option_request_from_row(cur, row) for row in cur.fetchall()]
+            option_requests = [self._gm_option_request_from_row(cur, row) for row in cur.fetchall()]
+
+            draft_cur = conn.execute(
+                f"""
+                SELECT
+                    r.*,
+                    d.draft_year,
+                    d.draft_round,
+                    d.pick_number,
+                    d.owner_team_code,
+                    d.original_team_code,
+                    COALESCE(owner.name, d.owner_team_code) AS team_name,
+                    owner.code AS team_code,
+                    COALESCE(original.name, d.original_team_code) AS original_team_name
+                FROM gm_draft_pick_requests r
+                JOIN draft_order d ON d.id = r.draft_order_id
+                JOIN teams owner ON owner.id = r.team_id
+                LEFT JOIN teams original ON original.code = d.original_team_code
+                {where}
+                ORDER BY
+                    CASE r.status WHEN 'pending' THEN 0 ELSE 1 END,
+                    r.created_at DESC,
+                    r.id DESC
+                """,
+                params,
+            )
+            draft_requests = [self._gm_draft_pick_request_from_row(draft_cur, row) for row in draft_cur.fetchall()]
+            requests = [*option_requests, *draft_requests]
+            requests.sort(key=lambda item: (str(item.get("created_at") or ""), int(item.get("id") or 0)), reverse=True)
+            requests.sort(key=lambda item: 0 if str(item.get("status") or "") == "pending" else 1)
+            return requests
+
+    def get_gm_draft_pick_request(self, request_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    r.*,
+                    d.draft_year,
+                    d.draft_round,
+                    d.pick_number,
+                    d.owner_team_code,
+                    d.original_team_code,
+                    COALESCE(owner.name, d.owner_team_code) AS team_name,
+                    owner.code AS team_code,
+                    COALESCE(original.name, d.original_team_code) AS original_team_name
+                FROM gm_draft_pick_requests r
+                JOIN draft_order d ON d.id = r.draft_order_id
+                JOIN teams owner ON owner.id = r.team_id
+                LEFT JOIN teams original ON original.code = d.original_team_code
+                WHERE r.id = ?
+                """,
+                (int(request_id),),
+            )
+            row = cur.fetchone()
+            return self._gm_draft_pick_request_from_row(cur, row) if row else None
 
     def create_gm_option_request(
         self,
@@ -2530,6 +2632,170 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
 
         return self.get_gm_option_request(request_id) if request_id is not None else None
+
+    def create_gm_draft_pick_request(
+        self,
+        draft_order_id: int,
+        payload: Dict[str, Any],
+        requester: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        option_value = str(payload.get("option_value") or "").strip()
+        custom_text = str(payload.get("custom_text") or "").strip()
+        if not option_value:
+            raise ValueError("selection_required")
+        if option_value == "__other__" and not custom_text:
+            raise ValueError("selection_required")
+        selection_text = custom_text if option_value == "__other__" else option_value
+        selection_text = selection_text.strip()
+        if not selection_text:
+            raise ValueError("selection_required")
+        if len(selection_text) > 140:
+            raise ValueError("selection_too_long")
+
+        timestamp = now_iso()
+        request_id: Optional[int] = None
+        with self.connect() as conn:
+            pick = conn.execute(
+                """
+                SELECT
+                    d.*,
+                    t.id AS owner_team_id,
+                    t.code AS owner_team_code
+                FROM draft_order d
+                JOIN teams t ON t.code = d.owner_team_code
+                WHERE d.id = ?
+                """,
+                (int(draft_order_id),),
+            ).fetchone()
+            if not pick:
+                return None
+            state_row = self._draft_live_state_row(conn, int(pick["draft_year"]))
+            if not parse_bool((state_row or {}).get("enabled")):
+                raise ValueError("draft_mode_inactive")
+            current_pick_id = parse_int((state_row or {}).get("current_draft_order_id"))
+            if current_pick_id != int(draft_order_id):
+                raise ValueError("not_current_pick")
+            existing_selection = conn.execute(
+                """
+                SELECT draft_order_id
+                FROM draft_live_selections
+                WHERE draft_order_id = ?
+                    AND COALESCE(selection_text, '') != ''
+                """,
+                (int(draft_order_id),),
+            ).fetchone()
+            if existing_selection:
+                raise ValueError("pick_already_selected")
+
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM gm_draft_pick_requests
+                WHERE draft_order_id = ? AND status = 'pending'
+                """,
+                (int(draft_order_id),),
+            ).fetchone()
+            requester_user_id = parse_int(str(requester.get("user_id") or "")) if requester else None
+            if existing:
+                request_id = int(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE gm_draft_pick_requests
+                    SET
+                        requester_user_id = ?,
+                        requester_email = ?,
+                        requester_name = ?,
+                        option_value = ?,
+                        custom_text = ?,
+                        selection_text = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        requester_user_id,
+                        str(requester.get("email") or "").strip() if requester else None,
+                        str(requester.get("name") or "").strip() if requester else None,
+                        option_value,
+                        custom_text or None,
+                        selection_text,
+                        timestamp,
+                        request_id,
+                    ),
+                )
+            else:
+                req_cur = conn.execute(
+                    """
+                    INSERT INTO gm_draft_pick_requests (
+                        draft_order_id,
+                        team_id,
+                        requester_user_id,
+                        requester_email,
+                        requester_name,
+                        option_value,
+                        custom_text,
+                        selection_text,
+                        status,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (
+                        int(draft_order_id),
+                        int(pick["owner_team_id"]),
+                        requester_user_id,
+                        str(requester.get("email") or "").strip() if requester else None,
+                        str(requester.get("name") or "").strip() if requester else None,
+                        option_value,
+                        custom_text or None,
+                        selection_text,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                request_id = int(req_cur.lastrowid)
+            conn.commit()
+
+        return self.get_gm_draft_pick_request(request_id) if request_id is not None else None
+
+    def mark_gm_draft_pick_request_decided(
+        self,
+        request_id: int,
+        status: str,
+        admin: Dict[str, Any],
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"approved", "rejected"}:
+            raise ValueError("invalid_status")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE gm_draft_pick_requests
+                SET
+                    status = ?,
+                    admin_email = ?,
+                    admin_name = ?,
+                    admin_decision_note = ?,
+                    updated_at = ?,
+                    decided_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (
+                    normalized_status,
+                    str(admin.get("email") or "").strip() if admin else None,
+                    str(admin.get("name") or "").strip() if admin else None,
+                    note,
+                    timestamp,
+                    timestamp,
+                    int(request_id),
+                ),
+            )
+            conn.commit()
+            if cur.rowcount < 1:
+                return None
+        return self.get_gm_draft_pick_request(request_id)
 
     def mark_gm_option_request_decided(
         self,
@@ -2824,11 +3090,21 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 s.selected_by_name,
                 s.selected_by_role,
                 s.selected_at,
-                s.updated_at AS selection_updated_at
+                s.updated_at AS selection_updated_at,
+                pr.id AS pending_request_id,
+                pr.selection_text AS pending_selection_text,
+                pr.option_value AS pending_option_value,
+                pr.custom_text AS pending_custom_text,
+                pr.requester_email AS pending_requester_email,
+                pr.requester_name AS pending_requester_name,
+                pr.created_at AS pending_request_created_at
             FROM draft_order d
             LEFT JOIN teams owner ON owner.code = d.owner_team_code
             LEFT JOIN teams original ON original.code = d.original_team_code
             LEFT JOIN draft_live_selections s ON s.draft_order_id = d.id
+            LEFT JOIN gm_draft_pick_requests pr
+                ON pr.draft_order_id = d.id
+                AND pr.status = 'pending'
             WHERE d.draft_year = ?
             ORDER BY
                 CASE d.draft_round WHEN '1st' THEN 1 WHEN '2nd' THEN 2 ELSE 3 END,
@@ -11175,6 +11451,49 @@ QUALITY REQUIREMENTS
             custom_image=custom_image,
         )
 
+    def _notify_draft_pick_selection(
+        self,
+        request: Dict[str, Any],
+        *,
+        generate_image: bool = True,
+        custom_image: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        team_code = str(request.get("team_code") or request.get("owner_team_code") or "").upper()
+        team_name = str(request.get("team_name") or team_code)
+        player_name = str(request.get("selection_text") or "Jugador")
+        draft_year = parse_int(request.get("draft_year")) or self.db.current_draft_year()
+        pick_number = parse_int(request.get("pick_number")) or 0
+        draft_round = str(request.get("draft_round") or "").strip()
+        round_label = "1ª ronda" if draft_round == "1st" else "2ª ronda" if draft_round == "2nd" else draft_round or "ronda"
+        headline = f"{team_code} elige a {player_name}"
+        description = f"Pick #{pick_number} de la {round_label} del Draft {draft_year}."
+        generic_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            team_name=team_name,
+            team_code=team_code,
+            player_name=player_name,
+            secondary_headline=description,
+            additional_details=f"Draft {draft_year}. Pick #{pick_number}. {round_label}.",
+            transaction_type="Draft Selection",
+        )
+        self._notify_discord(
+            headline,
+            description,
+            fields=[
+                {"name": "Equipo", "value": team_code, "inline": True},
+                {"name": "Jugador", "value": player_name, "inline": True},
+                {"name": "Pick", "value": f"#{pick_number}", "inline": True},
+                {"name": "Ronda", "value": round_label, "inline": True},
+            ],
+            color=0x0F766E,
+            image_prompt=generic_prompt,
+            generate_image=generate_image,
+            custom_image=custom_image,
+        )
+
     def _notify_contract_option_action(
         self,
         player: Dict[str, Any],
@@ -11787,6 +12106,25 @@ QUALITY REQUIREMENTS
                 return
             if not self._is_admin() and not self._can_manage_team(pick.get("owner_team_code")):
                 self._json(403, {"error": "team_access_required"})
+                return
+            if not self._is_admin():
+                try:
+                    request = self.db.create_gm_draft_pick_request(
+                        draft_order_id,
+                        payload,
+                        self._current_session() or {},
+                    )
+                except ValueError as err:
+                    message = str(err) or "invalid_draft_selection"
+                    status = 409 if message in {"not_current_pick", "draft_mode_inactive", "pick_already_selected"} else 400
+                    self._json(status, {"error": message})
+                    return
+                if not request:
+                    self._json(404, {"error": "draft_pick_not_found"})
+                    return
+                result = self.db.list_draft_live(parse_int(pick.get("draft_year")))
+                result["request"] = request
+                self._json(201, result)
                 return
             try:
                 result = self.db.submit_draft_live_pick(
@@ -12714,6 +13052,107 @@ QUALITY REQUIREMENTS
                 {"season_year": parsed_season, "row_count": len(rows)},
             )
             self._json(200, {"ok": True, **result})
+            return
+
+        if parsed.path.startswith("/api/admin/gm-draft-pick-requests/"):
+            try:
+                request_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_request_id"})
+                return
+            admin_decision = str(payload.get("decision") or "").strip().lower()
+            if admin_decision not in {"approved", "rejected"}:
+                self._json(400, {"error": "invalid_decision"})
+                return
+            request = self.db.get_gm_draft_pick_request(request_id)
+            if not request:
+                self._json(404, {"error": "request_not_found"})
+                return
+            if str(request.get("status") or "").lower() != "pending":
+                self._json(409, {"error": "request_already_decided", "request": request})
+                return
+            if not self._require_team_write_access(request.get("team_code")):
+                return
+
+            if admin_decision == "rejected":
+                updated = self.db.mark_gm_draft_pick_request_decided(
+                    request_id,
+                    "rejected",
+                    self._current_session() or {},
+                    str(payload.get("note") or "").strip() or None,
+                )
+                if not updated:
+                    self._json(409, {"error": "request_already_decided"})
+                    return
+                self._log_admin_action(
+                    "reject",
+                    "gm_draft_pick_request",
+                    str(request_id),
+                    request.get("team_code"),
+                    {
+                        "draft_order_id": request.get("draft_order_id"),
+                        "draft_year": request.get("draft_year"),
+                        "draft_round": request.get("draft_round"),
+                        "pick_number": request.get("pick_number"),
+                        "selection": request.get("selection_text"),
+                    },
+                    before={"request": request},
+                    after={"request": updated},
+                )
+                self._json(200, {"ok": True, "request": updated})
+                return
+
+            actor = {
+                "email": request.get("requester_email"),
+                "name": request.get("requester_name"),
+                "role": "gm",
+            }
+            try:
+                live = self.db.submit_draft_live_pick(
+                    int(request.get("draft_order_id")),
+                    {
+                        "option_value": request.get("option_value") or "__other__",
+                        "custom_text": request.get("custom_text") or request.get("selection_text") or "",
+                        "advance": True,
+                    },
+                    actor,
+                    is_admin=True,
+                )
+            except ValueError as err:
+                self._json(409, {"error": str(err) or "draft_selection_failed"})
+                return
+            updated = self.db.mark_gm_draft_pick_request_decided(
+                request_id,
+                "approved",
+                self._current_session() or {},
+                str(payload.get("note") or "").strip() or None,
+            )
+            if not updated:
+                self._json(409, {"error": "request_already_decided"})
+                return
+            self._log_admin_action(
+                "approve",
+                "gm_draft_pick_request",
+                str(request_id),
+                request.get("team_code"),
+                {
+                    "draft_order_id": request.get("draft_order_id"),
+                    "draft_year": request.get("draft_year"),
+                    "draft_round": request.get("draft_round"),
+                    "pick_number": request.get("pick_number"),
+                    "selection": request.get("selection_text"),
+                    "advanced_to": live.get("current_pick_id"),
+                },
+                before={"request": request},
+                after={"request": updated, "draft_live": live},
+            )
+            if self._discord_notify_requested(payload):
+                self._notify_draft_pick_selection(
+                    request,
+                    generate_image=self._discord_image_requested(payload),
+                    custom_image=payload.get("discord_custom_image"),
+                )
+            self._json(200, {"ok": True, "request": updated, "draft_live": live})
             return
 
         if parsed.path.startswith("/api/admin/gm-option-requests/"):

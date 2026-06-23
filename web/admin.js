@@ -3567,7 +3567,19 @@ async function loadAdminUsers() {
 }
 
 function optionRequestActionLabel(action) {
+  if (action === 'selected') return 'Elegir jugador';
   return action === 'accepted' ? 'Aceptar opción' : 'Rechazar opción';
+}
+
+function gmRequestTypeLabel(request) {
+  return request?.request_type === 'draft_pick' ? 'Draft' : 'Opción';
+}
+
+function gmDraftPickLabel(request) {
+  const pick = request?.pick_number ? `#${request.pick_number}` : '#';
+  const round = String(request?.draft_round || '').trim();
+  const year = request?.draft_year ? `Draft ${request.draft_year}` : 'Draft';
+  return `${pick} · ${round} · ${year}`;
 }
 
 function updateGmOptionRequestBadges() {
@@ -3592,22 +3604,32 @@ function renderGmOptionRequests() {
 
   requests.forEach((request) => {
     const requestId = Number(request.id);
+    const requestType = String(request.request_type || 'option');
+    const isDraftRequest = requestType === 'draft_pick';
     const created = request.created_at ? new Date(request.created_at).toLocaleString() : '';
     const submittedBy = request.requester_name || request.requester_email || 'GM';
-    const actionClass = request.action === 'accepted' ? 'gm-request-action--accept' : 'gm-request-action--reject';
+    const actionClass = request.action === 'accepted' || isDraftRequest ? 'gm-request-action--accept' : 'gm-request-action--reject';
+    const mainItem = isDraftRequest ? escapeHtml(request.selection_text || '') : escapeHtml(request.player_name || '');
+    const secondaryItem = isDraftRequest
+      ? `${escapeHtml(gmDraftPickLabel(request))}<div class="muted">Vía ${escapeHtml(request.original_team_code || '')}</div>`
+      : escapeHtml(request.season_label || '');
+    const typeCell = isDraftRequest
+      ? '<span class="contract-opt-pill">DRAFT</span>'
+      : `<span class="contract-opt-pill ${contractOptionClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span>`;
     const tr = document.createElement('tr');
     tr.dataset.gmOptionRequestId = String(requestId);
+    tr.dataset.gmRequestType = requestType;
     tr.innerHTML = `
       <td><strong>${escapeHtml(request.team_code || '')}</strong><div class="muted">${escapeHtml(request.team_name || '')}</div></td>
-      <td>${escapeHtml(request.player_name || '')}</td>
-      <td>${escapeHtml(request.season_label || '')}</td>
-      <td><span class="contract-opt-pill ${contractOptionClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span></td>
+      <td><strong>${mainItem}</strong></td>
+      <td>${secondaryItem}</td>
+      <td>${typeCell}</td>
       <td><span class="gm-request-action ${actionClass}">${escapeHtml(optionRequestActionLabel(request.action))}</span></td>
       <td><strong>${escapeHtml(submittedBy)}</strong><div class="muted">${escapeHtml(request.requester_email || '')}</div></td>
       <td>${escapeHtml(created)}</td>
       <td class="gm-request-actions">
-        <button type="button" data-gm-request-approve="${requestId}">Approve</button>
-        <button type="button" class="danger" data-gm-request-reject="${requestId}">Reject</button>
+        <button type="button" data-gm-request-approve="${requestId}" data-gm-request-type="${escapeHtml(requestType)}">Approve</button>
+        <button type="button" class="danger" data-gm-request-reject="${requestId}" data-gm-request-type="${escapeHtml(requestType)}">Reject</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -3615,12 +3637,12 @@ function renderGmOptionRequests() {
 
   tbody.querySelectorAll('[data-gm-request-approve]').forEach((button) => {
     button.addEventListener('click', async () => {
-      await decideGmOptionRequest(Number(button.dataset.gmRequestApprove), 'approved', button);
+      await decideGmOptionRequest(Number(button.dataset.gmRequestApprove), 'approved', button, button.dataset.gmRequestType || 'option');
     });
   });
   tbody.querySelectorAll('[data-gm-request-reject]').forEach((button) => {
     button.addEventListener('click', async () => {
-      await decideGmOptionRequest(Number(button.dataset.gmRequestReject), 'rejected', button);
+      await decideGmOptionRequest(Number(button.dataset.gmRequestReject), 'rejected', button, button.dataset.gmRequestType || 'option');
     });
   });
 }
@@ -3632,20 +3654,25 @@ async function loadGmOptionRequests() {
   renderGmOptionRequests();
 }
 
-async function decideGmOptionRequest(requestId, decision, button) {
+async function decideGmOptionRequest(requestId, decision, button, requestType = 'option') {
   if (!Number.isInteger(requestId) || requestId <= 0) return;
-  const request = (state.gmOptionRequests || []).find((item) => Number(item.id) === requestId) || null;
+  const normalizedType = String(requestType || 'option');
+  const request = (state.gmOptionRequests || []).find((item) => Number(item.id) === requestId && String(item.request_type || 'option') === normalizedType) || null;
   let payload = { decision };
   if (decision === 'approved' && request) {
+    const isDraftRequest = normalizedType === 'draft_pick';
+    const message = isDraftRequest
+      ? `${request.team_code} selecciona a ${request.selection_text} con el pick ${gmDraftPickLabel(request)}.\n\nAl aprobarla, la elección quedará registrada y el reloj avanzará al siguiente pick.`
+      : `${contractOptionActionMessage(
+          request.team_code,
+          request.player_name,
+          Number(request.season_year),
+          request.option_value,
+          request.action
+        )}\n\nAl aprobarla, la marca ${String(request.option_value || '').toUpperCase()} se retirará de la celda del contrato.`;
     const result = await confirmWithDiscordNotification({
       title: 'Aprobar solicitud del GM',
-      message: `${contractOptionActionMessage(
-        request.team_code,
-        request.player_name,
-        Number(request.season_year),
-        request.option_value,
-        request.action
-      )}\n\nAl aprobarla, la marca ${String(request.option_value || '').toUpperCase()} se retirará de la celda del contrato.`,
+      message,
       confirmLabel: 'Aprobar y aplicar',
       defaultNotify: true,
       defaultGenerateImage: true,
@@ -3666,11 +3693,17 @@ async function decideGmOptionRequest(requestId, decision, button) {
   const buttons = row ? Array.from(row.querySelectorAll('button')) : [];
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
-    await api(`/api/admin/gm-option-requests/${requestId}`, {
+    const endpoint = normalizedType === 'draft_pick'
+      ? `/api/admin/gm-draft-pick-requests/${requestId}`
+      : `/api/admin/gm-option-requests/${requestId}`;
+    await api(endpoint, {
       method: 'PATCH',
       body: JSON.stringify(payload),
     });
     await loadGmOptionRequests();
+    if (normalizedType === 'draft_pick' && state.ui.viewMode === 'draft-order') {
+      await loadDraftOrder();
+    }
   } catch (err) {
     alert(`GM request update failed: ${err.message || err}`);
     buttons.forEach((btn) => { btn.disabled = false; });
@@ -4986,6 +5019,8 @@ function draftLiveCurrentPickOptionsHtml(selectedId = '') {
 function draftLiveSelectionHtml(row) {
   const selection = String(row?.selection_text || '').trim();
   const skipped = Number(row?.skipped || 0) !== 0;
+  const pendingSelection = String(row?.pending_selection_text || '').trim();
+  if (!selection && pendingSelection) return '<span class="draft-live-pending draft-live-pending--request">Solicitud GM</span>';
   if (!selection) return '<span class="draft-live-pending">Pendiente</span>';
   const cls = skipped ? 'draft-live-selection draft-live-selection--skipped' : 'draft-live-selection';
   return `<span class="${cls}">${escapeHtml(selection)}</span>`;

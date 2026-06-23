@@ -4024,9 +4024,9 @@ function draftOrderViaHtml(code, name) {
   const label = String(name || team?.name || normalized || '').trim();
   return `
     <span class="draft-order-via" title="${escapeHtml(label || normalized)}">
-      <span>(Vía</span>
+      <span class="draft-order-via-label">Vía</span>
       ${draftOrderLogoHtml(normalized, 'draft-order-via-logo')}
-      <span>)</span>
+      <strong class="draft-order-via-code">${escapeHtml(normalized || '-')}</strong>
     </span>
   `;
 }
@@ -4178,9 +4178,14 @@ function canSelectDraftLivePick(row) {
 function draftLiveSelectionHtml(row) {
   const selection = String(row?.selection_text || '').trim();
   const skipped = Number(row?.skipped || 0) !== 0;
+  const pendingSelection = String(row?.pending_selection_text || '').trim();
   if (!selection && canSelectDraftLivePick(row)) {
-    return `<button type="button" class="draft-live-pick-btn" data-draft-live-pick="${escapeHtml(row.id)}">Elegir</button>`;
+    if (pendingSelection) {
+      return `<span class="draft-live-pending draft-live-pending--request">Solicitud enviada</span>`;
+    }
+    return `<button type="button" class="draft-live-pick-btn draft-live-pick-btn--now" data-draft-live-pick="${escapeHtml(row.id)}">ELIGE AHORA</button>`;
   }
+  if (!selection && pendingSelection) return '<span class="draft-live-pending draft-live-pending--request">Solicitud enviada</span>';
   if (!selection) return '<span class="draft-live-pending">Pendiente</span>';
   const cls = skipped ? 'draft-live-selection draft-live-selection--skipped' : 'draft-live-selection';
   return `<span class="${cls}">${escapeHtml(selection)}</span>`;
@@ -4286,6 +4291,7 @@ function openDraftLivePickModal(row) {
       setDraftLiveState(result);
       close();
       renderDraftOrder();
+      alert('Tu elección ha sido enviada a la administración. Será procesada pronto.');
     } catch (err) {
       alert(`No se pudo registrar la elección: ${err.message}`);
     }
@@ -4326,9 +4332,9 @@ function renderDraftOrderRound(round, label) {
         <table class="draft-order-table">
           <thead>
             <tr>
-              <th>Number</th>
-              <th>Team that owns the pick</th>
-              <th>Original pick</th>
+              <th>#</th>
+              <th>Team</th>
+              <th>Via</th>
               <th>Elección</th>
             </tr>
           </thead>

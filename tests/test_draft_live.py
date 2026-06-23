@@ -74,30 +74,62 @@ class DraftLiveTests(unittest.TestCase):
         self.assertEqual(180, live["duration_seconds"])
         self.assertEqual(["Jugador A", "Jugador B"], live["options"])
 
-    def test_gm_selection_advances_to_next_pick(self) -> None:
+    def test_gm_selection_creates_pending_request_without_advancing(self) -> None:
         self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True})
 
-        live = self.db.submit_draft_live_pick(
+        request = self.db.create_gm_draft_pick_request(
             self.first_pick,
             {"option_value": "Jugador A"},
             {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
-            is_admin=False,
+        )
+        live = self.db.list_draft_live(2026)
+
+        self.assertIsNotNone(request)
+        self.assertEqual("Jugador A", request["selection_text"])
+        first = next(row for row in live["draft_order"] if row["id"] == self.first_pick)
+        self.assertEqual("Jugador A", first["pending_selection_text"])
+        self.assertEqual("atl-gm@example.com", first["pending_requester_email"])
+        self.assertFalse(first["selection_text"])
+        self.assertEqual(self.first_pick, live["current_pick_id"])
+
+    def test_admin_approval_applies_selection_and_advances_to_next_pick(self) -> None:
+        self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True})
+        request = self.db.create_gm_draft_pick_request(
+            self.first_pick,
+            {"option_value": "Jugador A"},
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        live = self.db.submit_draft_live_pick(
+            self.first_pick,
+            {
+                "option_value": request["option_value"],
+                "custom_text": request["custom_text"] or request["selection_text"],
+                "advance": True,
+            },
+            {"email": request["requester_email"], "name": request["requester_name"], "role": "gm"},
+            is_admin=True,
+        )
+        updated = self.db.mark_gm_draft_pick_request_decided(
+            request["id"],
+            "approved",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
         )
 
         first = next(row for row in live["draft_order"] if row["id"] == self.first_pick)
         self.assertEqual("Jugador A", first["selection_text"])
         self.assertEqual("atl-gm@example.com", first["selected_by_email"])
         self.assertEqual(self.second_pick, live["current_pick_id"])
+        self.assertEqual("approved", updated["status"])
 
     def test_gm_cannot_select_non_current_pick(self) -> None:
         self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True})
 
         with self.assertRaises(ValueError) as raised:
-            self.db.submit_draft_live_pick(
+            self.db.create_gm_draft_pick_request(
                 self.second_pick,
                 {"option_value": "Jugador B"},
                 {"email": "bkn-gm@example.com", "name": "BKN GM", "role": "gm"},
-                is_admin=False,
             )
 
         self.assertEqual("not_current_pick", str(raised.exception))

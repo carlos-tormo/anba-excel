@@ -1517,7 +1517,7 @@ h1 {
 }
 .draft-order-table th:first-child,
 .draft-order-table td:first-child {
-  width: 76px;
+  width: 58px;
 }
 .draft-order-number {
   color: #0f172a;
@@ -1584,6 +1584,11 @@ h1 {
   color: #53657f;
   font-size: 0.84rem;
   font-weight: 900;
+}
+.draft-order-via-code {
+  color: #0f766e;
+  font-size: 0.78rem;
+  font-weight: 950;
 }
 .draft-order-empty {
   color: #64748b;
@@ -1763,6 +1768,13 @@ h1 {
   font-size: 0.82rem;
   font-weight: 900;
 }
+.draft-live-pick-btn--now {
+  border-color: #f97316;
+  background: linear-gradient(135deg, #f97316 0%, #b91c1c 100%);
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(185, 28, 28, 0.26);
+  white-space: nowrap;
+}
 .draft-live-selection,
 .draft-live-pending {
   display: inline-flex;
@@ -1789,6 +1801,11 @@ h1 {
   border: 1px solid #dbe5f0;
   background: #f8fafc;
   color: #64748b;
+}
+.draft-live-pending--request {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 .draft-live-admin-selection-cell {
   display: flex;
@@ -8111,17 +8128,56 @@ select[data-new-field="years_left"],
   }
   .draft-order-table th,
   .draft-order-table td {
-    padding: 8px;
+    padding: 7px 6px;
   }
   .draft-order-table th:first-child,
   .draft-order-table td:first-child {
-    width: 54px;
+    width: 38px;
+  }
+  .draft-order-table th:nth-child(2),
+  .draft-order-table td:nth-child(2) {
+    width: 112px;
+  }
+  .draft-order-table th:nth-child(3),
+  .draft-order-table td:nth-child(3) {
+    width: 50px;
+  }
+  .draft-order-number {
+    font-size: 1rem;
+  }
+  .draft-order-team,
+  .draft-order-via {
+    gap: 5px;
+  }
+  .draft-order-team-logo {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
   }
   .draft-order-team-text span {
-    max-width: 150px;
+    display: none;
   }
-  .draft-order-via {
-    gap: 6px;
+  .draft-order-team-text strong {
+    font-size: 0.84rem;
+  }
+  .draft-order-via-label,
+  .draft-order-via-logo {
+    display: none;
+  }
+  .draft-order-via-code {
+    font-size: 0.82rem;
+  }
+  .draft-live-pick-btn,
+  .draft-live-selection,
+  .draft-live-pending {
+    min-height: 28px;
+    padding: 5px 8px;
+    font-size: 0.72rem;
+  }
+  .draft-live-pick-btn--now {
+    padding: 6px 9px;
+    font-size: 0.68rem;
+    letter-spacing: 0.02em;
   }
   .draft-order-admin-board {
     gap: 14px;
