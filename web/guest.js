@@ -1943,6 +1943,10 @@ function draftPickIsProtected(asset) {
   return boolValue(asset?.draft_pick_protected);
 }
 
+function draftPickIsFrozen(asset) {
+  return boolValue(asset?.draft_pick_frozen);
+}
+
 function draftPickTradeOwner(asset, teamCode) {
   if (draftPickType(asset) === 'conditional') {
     return parseDraftConditionalTeams(asset?.draft_pick_conditional_teams)[0] || String(asset?.original_owner || teamCode || '').toUpperCase();
@@ -1993,6 +1997,7 @@ function tradeMachineAssetForSelection(meta, selection) {
 function tradeMachinePickBadges(asset) {
   const badges = [];
   const type = draftPickType(asset);
+  if (draftPickIsFrozen(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--danger">Congelada</span>');
   if (draftPickIsRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--danger">Restringida</span>');
   if (draftPickIsStepienRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--warning">Stepien</span>');
   if (draftPickIsProtected(asset)) badges.push('<span class="trade-machine-tag">Protegida</span>');
@@ -2056,6 +2061,7 @@ function tradeMachineAssetMeta(key) {
       restricted: draftPickIsRestricted(pick),
       stepienRestricted: draftPickIsStepienRestricted(pick),
       protected: draftPickIsProtected(pick),
+      frozen: draftPickIsFrozen(pick),
       conditional: draftPickType(pick) === 'conditional',
       round: draftPickRound(pick),
     };
@@ -2381,7 +2387,7 @@ function tradeMachinePickRowsHtml(data, code) {
       label: draftPickTradeLabel(pick, code),
       detail,
       badges: tradeMachinePickBadges(pick),
-      disabled: draftPickIsRestricted(pick),
+      disabled: draftPickIsRestricted(pick) || draftPickIsFrozen(pick),
       stepienRestricted: draftPickIsStepienRestricted(pick),
       salary: 0,
     });
@@ -5331,6 +5337,7 @@ function renderAssets() {
     .filter((a) => a.asset_type === 'draft_pick' && !isAssetBeforeSelectedSeason(a));
   if (picks.length === 0) {
     board.innerHTML = '<p>No draft picks loaded for this season view.</p>';
+    renderFrozenDraftPicksGuest(board);
     return;
   }
 
@@ -5362,6 +5369,7 @@ function renderAssets() {
         const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
         const isStepienRestricted = Number(pick.draft_pick_stepien_restricted || 0) !== 0;
         const isProtected = Number(pick.draft_pick_protected || 0) !== 0;
+        const isFrozen = Number(pick.draft_pick_frozen || 0) !== 0;
         const sourceTeams = conditionalTeams(pick);
         const soldToTeams = parseDraftConditionalTeams(pick.draft_pick_sold_to);
         const soldToLabel = soldToTeams.join(' / ');
@@ -5379,6 +5387,7 @@ function renderAssets() {
               ? `Conditional: ${sourceTeams.length ? sourceTeams.join(' / ') : 'teams TBD'}`
               : 'Own pick';
         const badgesHtml = [
+          isFrozen ? '<span class="pick-frozen-tag">Frozen</span>' : '',
           isRestricted ? '<span class="pick-restricted-tag">Restricted</span>' : '',
           isStepienRestricted ? '<span class="pick-stepien-tag">Stepien</span>' : '',
           isProtected ? '<span class="pick-protected-tag">Protected</span>' : '',
@@ -5396,6 +5405,7 @@ function renderAssets() {
         if (isRestricted) card.classList.add('draft-pick-card--restricted');
         if (isStepienRestricted) card.classList.add('draft-pick-card--stepien');
         if (isProtected) card.classList.add('draft-pick-card--protected');
+        if (isFrozen) card.classList.add('draft-pick-card--frozen');
         if (pickType === 'sold') card.classList.add('draft-pick-card--sold');
         if (pickType === 'conditional') card.classList.add('draft-pick-card--conditional');
         card.style.setProperty('--pick-primary-rgb', `${ownerPrimaryRgb.r}, ${ownerPrimaryRgb.g}, ${ownerPrimaryRgb.b}`);
@@ -5444,6 +5454,45 @@ function renderAssets() {
     seasonWrap.appendChild(grid);
     board.appendChild(seasonWrap);
   });
+  renderFrozenDraftPicksGuest(board);
+}
+
+function renderFrozenDraftPicksGuest(container) {
+  const rows = (state.teamData?.frozen_draft_picks || [])
+    .slice()
+    .sort((a, b) => Number(a.draft_year || 0) - Number(b.draft_year || 0));
+  if (!rows.length) return;
+  const panel = document.createElement('section');
+  panel.className = 'frozen-picks-panel';
+  panel.innerHTML = `
+    <div class="frozen-picks-heading">
+      <h3>Rondas congeladas</h3>
+      <p>Penalizaciones por finalizar la temporada por encima del 2do apron.</p>
+    </div>
+    <div class="table-wrap frozen-picks-table-wrap">
+      <table class="frozen-picks-table">
+        <thead>
+          <tr>
+            <th>Temporada penalizada</th>
+            <th>Ronda congelada</th>
+            <th>Motivo</th>
+            <th>Notas</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              <td>${escapeHtml(seasonLabel(Number(row.penalty_season_year || 0)))}</td>
+              <td><span class="pick-frozen-tag">Frozen</span> ${escapeHtml(String(row.draft_year || ''))} ${escapeHtml(String(row.draft_round || '1st').toUpperCase())}</td>
+              <td>${escapeHtml(row.reason || 'Finalizó por encima del 2do apron')}</td>
+              <td>${escapeHtml(row.notes || '')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  container.appendChild(panel);
 }
 
 function renderDeadContracts() {
@@ -5483,9 +5532,98 @@ function renderDeadContracts() {
   });
 }
 
+function exceptionModeLabel(mode) {
+  switch (String(mode || '')) {
+    case 'room':
+      return 'Equipo con espacio salarial';
+    case 'choice_pending':
+      return 'Decisión pendiente';
+    case 'over_cap_below_first':
+      return 'Over the cap / bajo 1er apron';
+    case 'above_first_below_second':
+      return 'Entre 1er y 2do apron';
+    case 'above_second_apron':
+      return 'Por encima del 2do apron';
+    default:
+      return 'Estimación';
+  }
+}
+
+function exceptionHardCapLabel(value) {
+  if (value === 'first') return 'Hard cap: 1er apron';
+  if (value === 'second') return 'Hard cap: 2do apron';
+  return 'Sin hard cap automático';
+}
+
+function exceptionEstimateItemHtml(item) {
+  return `
+    <div class="exception-estimate-card">
+      <div class="exception-estimate-name">${escapeHtml(item.short_label || item.label || '')}</div>
+      <div class="exception-estimate-amount">${formatMoneyDots(item.amount)}</div>
+      <div class="exception-estimate-note">${escapeHtml(exceptionHardCapLabel(item.hard_cap))}</div>
+    </div>
+  `;
+}
+
+function renderExceptionEstimate() {
+  const panel = document.getElementById('exceptionEstimatePanel');
+  if (!panel) return;
+  const selected = selectedSeasonStart();
+  const estimate = (state.teamData?.exception_estimates || {})[String(selected)];
+  if (!estimate) {
+    panel.innerHTML = '';
+    return;
+  }
+  const eligible = Array.isArray(estimate.eligible) ? estimate.eligible : [];
+  const paths = Array.isArray(estimate.paths) ? estimate.paths : [];
+  const official = Array.isArray(estimate.official_exceptions) ? estimate.official_exceptions : [];
+  const notes = Array.isArray(estimate.notes) ? estimate.notes : [];
+  const choiceHtml = paths.length
+    ? `
+      <div class="exception-estimate-paths">
+        ${paths.map((path) => `
+          <div class="exception-estimate-path">
+            <div class="exception-estimate-path-title">${escapeHtml(path.label || '')}</div>
+            <div class="exception-estimate-path-copy">${escapeHtml(path.description || '')}</div>
+            <div class="exception-estimate-cards">
+              ${(path.eligible || []).map(exceptionEstimateItemHtml).join('') || '<span class="muted">Sin excepción principal</span>'}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `
+    : `
+      <div class="exception-estimate-cards">
+        ${eligible.map(exceptionEstimateItemHtml).join('') || '<span class="muted">Sin excepciones principales proyectadas.</span>'}
+      </div>
+    `;
+  const officialHtml = estimate.official_generated
+    ? `<div class="exception-estimate-official">Oficial generado: ${official.map((item) => escapeHtml(item.label || item.key || '')).join(', ') || 'sí'}</div>`
+    : '<div class="exception-estimate-official is-estimate">Estimación pendiente de confirmación admin</div>';
+  panel.innerHTML = `
+    <section class="exception-estimate-box">
+      <div class="exception-estimate-head">
+        <div>
+          <h3>Excepciones estimadas</h3>
+          <p>${escapeHtml(seasonLabel(selected))} · ${escapeHtml(exceptionModeLabel(estimate.operating_mode))}</p>
+        </div>
+        <span class="exception-estimate-badge">${estimate.status === 'choice_pending' ? 'Revisión' : 'Estimación'}</span>
+      </div>
+      <div class="exception-estimate-metrics">
+        <span>Espacio bruto CAP <strong>${formatMoneyDots(estimate.raw_cap_space)}</strong></span>
+        <span>Cuenta apron <strong>${formatMoneyDots(estimate.apron_account)}</strong></span>
+      </div>
+      ${choiceHtml}
+      ${notes.length ? `<ul class="exception-estimate-notes">${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join('')}</ul>` : ''}
+      ${officialHtml}
+    </section>
+  `;
+}
+
 function renderExceptions() {
   const tbody = document.querySelector('#exceptionsTable tbody');
   if (!tbody) return;
+  renderExceptionEstimate();
   tbody.innerHTML = '';
 
   const rows = sortedRows(

@@ -163,6 +163,98 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual("second", tracker_row["apron_hard_cap"])
         self.assertEqual(round(float(summary["cap_figure"])), round(float(tracker_row["cap_total"])))
 
+    def test_offseason_exception_estimate_over_cap_below_first_apron(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Over Cap Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2025_text": "160000000",
+            },
+        )
+
+        team = self.db.get_team("ATL")
+        estimate = team["exception_estimates"]["2025"]
+
+        self.assertEqual("over_cap_below_first", estimate["operating_mode"])
+        self.assertEqual(["ntmle", "bae"], [item["key"] for item in estimate["eligible"]])
+
+    def test_offseason_exception_estimate_above_second_apron_has_no_main_exception(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Second Apron Player",
+                "bird_rights": "Reg",
+                "position": "PF",
+                "salary_2025_text": "220000000",
+            },
+        )
+
+        team = self.db.get_team("ATL")
+        estimate = team["exception_estimates"]["2025"]
+
+        self.assertEqual("above_second_apron", estimate["operating_mode"])
+        self.assertEqual([], estimate["eligible"])
+
+    def test_generate_offseason_exceptions_is_idempotent(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Generated Exception Player",
+                "bird_rights": "Reg",
+                "position": "C",
+                "salary_2025_text": "160000000",
+            },
+        )
+
+        first = self.db.generate_offseason_exceptions(2025)
+        second = self.db.generate_offseason_exceptions(2025)
+        team = self.db.get_team("ATL")
+        generated = [
+            asset for asset in team["assets"]
+            if asset.get("asset_type") == "exception"
+            and asset.get("generated_exception_season") == 2025
+        ]
+
+        self.assertEqual(2, sum(len(row["created"]) for row in first["generated"]))
+        self.assertEqual(2, sum(len(row["created"]) for row in second["generated"]))
+        self.assertEqual(2, len(generated))
+        self.assertEqual({"ntmle", "bae"}, {asset["generated_exception_key"] for asset in generated})
+
+    def test_generate_offseason_exceptions_uses_choice_for_small_cap_space_team(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Small Room Player",
+                "bird_rights": "Reg",
+                "position": "PG",
+                "salary_2025_text": "150000000",
+            },
+        )
+
+        skipped = self.db.generate_offseason_exceptions(2025)
+        chosen = self.db.generate_offseason_exceptions(2025, choices={"ATL": "room"})
+        team = self.db.get_team("ATL")
+        generated = [
+            asset for asset in team["assets"]
+            if asset.get("asset_type") == "exception"
+            and asset.get("generated_exception_season") == 2025
+        ]
+
+        self.assertEqual("choice_pending", team["exception_estimates"]["2025"]["operating_mode"])
+        self.assertEqual(1, len(skipped["skipped"]))
+        self.assertEqual(1, sum(len(row["created"]) for row in chosen["generated"]))
+        self.assertEqual(["room_mle"], [asset["generated_exception_key"] for asset in generated])
+
 
 if __name__ == "__main__":
     unittest.main()

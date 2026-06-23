@@ -207,6 +207,21 @@
           </div>
           <button id="openOfficialTradeToolBtn" type="button">Abrir herramienta de traspasos</button>
         </article>
+        <article class="admin-tool-card admin-tool-card-wide">
+          <div>
+            <h3>Excepciones offseason</h3>
+            <p>Previsualiza las excepciones proyectadas por temporada y genera las oficiales para los equipos sin decisión pendiente.</p>
+          </div>
+          <div class="admin-tool-inline">
+            <label class="season-view-control" for="offseasonExceptionSeasonSelect">
+              <span>Temporada</span>
+              <select id="offseasonExceptionSeasonSelect"></select>
+            </label>
+            <button id="previewOffseasonExceptionsBtn" type="button">Previsualizar</button>
+            <button id="generateOffseasonExceptionsBtn" type="button">Generar oficiales</button>
+          </div>
+          <div id="offseasonExceptionsPreview" class="offseason-exceptions-preview"></div>
+        </article>
       </div>
     </section>
 
@@ -604,6 +619,7 @@
 
     <section id="assetsSection">
       <h2>Exceptions</h2>
+      <div id="exceptionEstimatePanel" class="exception-estimate-panel"></div>
       <div class="table-wrap">
         <table id="exceptionsTable">
           <thead>

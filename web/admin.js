@@ -16,6 +16,8 @@ const state = {
   economySettingsSeason: null,
   economyImportPreview: null,
   ownerOfficeImportPreview: null,
+  offseasonExceptionPreview: null,
+  offseasonExceptionChoices: {},
   adminUsers: [],
   gmOptionRequests: [],
   leaguePlayers: [],
@@ -2444,6 +2446,10 @@ function draftPickIsProtected(asset) {
   return boolValue(asset?.draft_pick_protected);
 }
 
+function draftPickIsFrozen(asset) {
+  return boolValue(asset?.draft_pick_frozen);
+}
+
 function draftPickTradeOwner(asset, teamCode) {
   if (draftPickType(asset) === 'conditional') {
     const teams = parseDraftConditionalTeams(asset?.draft_pick_conditional_teams);
@@ -2533,6 +2539,7 @@ function tradeAssetMeta(key) {
       restricted: draftPickIsHardRestricted(pick),
       stepienRestricted: draftPickIsStepienRestricted(pick),
       protected: draftPickIsProtected(pick),
+      frozen: draftPickIsFrozen(pick),
       conditional: draftPickType(pick) === 'conditional',
       sold: draftPickType(pick) === 'sold',
       round: draftPickRound(pick),
@@ -2829,6 +2836,7 @@ function tradeRosterHtml(flow) {
 
 function tradePickBadges(asset) {
   const badges = [];
+  if (draftPickIsFrozen(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--danger">Congelada</span>');
   if (draftPickIsHardRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--danger">Restringida</span>');
   if (draftPickIsStepienRestricted(asset)) badges.push('<span class="trade-machine-tag trade-machine-tag--warning">Stepien</span>');
   if (draftPickIsProtected(asset)) badges.push('<span class="trade-machine-tag">Protegida</span>');
@@ -2911,7 +2919,7 @@ function tradePickRowsHtml(data, code) {
       ? parseDraftConditionalTeams(pick.draft_pick_conditional_teams).join(' / ')
       : String(pick.detail || '').trim(),
     badges: tradePickBadges(pick),
-    disabled: draftPickIsHardRestricted(pick),
+    disabled: draftPickIsHardRestricted(pick) || draftPickIsFrozen(pick),
     stepienRestricted: draftPickIsStepienRestricted(pick),
     salary: 0,
   })).join('');
@@ -3876,6 +3884,7 @@ function setupAdminMenu() {
     setViewMode('admin-tools');
     setPageHeading('ANBA Admin Tools', '');
     renderCapStatusPills({});
+    renderOffseasonExceptionControls();
   });
 
   openSettingsBtn.addEventListener('click', () => {
@@ -3889,6 +3898,155 @@ function setupAdminMenu() {
     if (menu.contains(e.target) || menuBtn.contains(e.target)) return;
     closeAdminMenuPopover();
   });
+}
+
+function offseasonExceptionSeasonOptions() {
+  const seasons = new Set(availableSeasonViewStarts());
+  seasons.add(currentSeasonStart());
+  return Array.from(seasons).sort((a, b) => a - b);
+}
+
+function selectedOffseasonExceptionSeason() {
+  const select = document.getElementById('offseasonExceptionSeasonSelect');
+  const fallback = defaultSeasonViewStart();
+  const options = offseasonExceptionSeasonOptions();
+  const selected = Number(select?.value || fallback);
+  return options.includes(selected) ? selected : (options[0] || currentSeasonStart());
+}
+
+function renderOffseasonExceptionControls() {
+  const select = document.getElementById('offseasonExceptionSeasonSelect');
+  if (!select) return;
+  const previous = Number(select.value || defaultSeasonViewStart());
+  const options = offseasonExceptionSeasonOptions();
+  const selected = options.includes(previous) ? previous : defaultSeasonViewStart();
+  select.innerHTML = options
+    .map((season) => `<option value="${season}">${seasonLabel(season)}${season === currentSeasonStart() ? ' (actual)' : ''}</option>`)
+    .join('');
+  select.value = String(options.includes(selected) ? selected : options[0]);
+  renderOffseasonExceptionPreview();
+}
+
+function offseasonPreviewExceptionNames(row) {
+  if (Array.isArray(row.paths) && row.paths.length) {
+    return row.paths
+      .map((path) => `${path.label}: ${(path.eligible || []).map((item) => item.short_label || item.label).join(', ') || 'sin excepción'}`)
+      .join(' / ');
+  }
+  const eligible = Array.isArray(row.eligible) ? row.eligible : [];
+  return eligible.map((item) => item.short_label || item.label).join(', ') || 'Sin excepción principal';
+}
+
+function renderOffseasonExceptionPreview() {
+  const container = document.getElementById('offseasonExceptionsPreview');
+  if (!container) return;
+  const preview = state.offseasonExceptionPreview;
+  if (!preview) {
+    container.innerHTML = '<p class="muted">Previsualiza una temporada para revisar excepciones proyectadas.</p>';
+    return;
+  }
+  const rows = Array.isArray(preview.rows) ? preview.rows : [];
+  const skippedCount = rows.filter((row) => row.status === 'choice_pending').length;
+  container.innerHTML = `
+    <div class="offseason-preview-summary">
+      <strong>${escapeHtml(preview.season_label || seasonLabel(preview.season_year))}</strong>
+      <span>${rows.length} equipos</span>
+      ${skippedCount ? `<span>${skippedCount} con decisión pendiente</span>` : ''}
+    </div>
+    <div class="table-wrap">
+      <table class="offseason-preview-table">
+        <thead>
+          <tr>
+            <th>Equipo</th>
+            <th>Situación</th>
+            <th>Espacio bruto CAP</th>
+            <th>Cuenta apron</th>
+            <th>Excepciones</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              <td><strong>${escapeHtml(row.team_code || '')}</strong></td>
+              <td>${escapeHtml(exceptionModeLabel(row.operating_mode))}</td>
+              <td class="${Number(row.raw_cap_space || 0) >= 0 ? 'amount-positive' : 'amount-negative'}">${formatMoneyDots(row.raw_cap_space)}</td>
+              <td>${formatMoneyDots(row.apron_account)}</td>
+              <td>${escapeHtml(offseasonPreviewExceptionNames(row))}</td>
+              <td>${
+                row.official_generated
+                  ? '<span class="status-pill status-success">Oficial</span>'
+                  : row.status === 'choice_pending'
+                    ? `
+                      <label class="offseason-choice-control">
+                        <span class="status-pill status-warning">Revisión</span>
+                        <select data-offseason-choice-team="${escapeHtml(row.team_code || '')}">
+                          <option value="">Elegir camino</option>
+                          <option value="room"${state.offseasonExceptionChoices[row.team_code] === 'room' ? ' selected' : ''}>Usar cap space</option>
+                          <option value="over_cap"${state.offseasonExceptionChoices[row.team_code] === 'over_cap' ? ' selected' : ''}>Mantener excepciones</option>
+                        </select>
+                      </label>
+                    `
+                    : '<span class="status-pill">Estimación</span>'
+              }</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  container.querySelectorAll('[data-offseason-choice-team]').forEach((select) => {
+    select.addEventListener('change', () => {
+      const teamCode = String(select.dataset.offseasonChoiceTeam || '').toUpperCase();
+      if (!teamCode) return;
+      if (select.value) state.offseasonExceptionChoices[teamCode] = select.value;
+      else delete state.offseasonExceptionChoices[teamCode];
+    });
+  });
+}
+
+async function loadOffseasonExceptionPreview() {
+  const season = selectedOffseasonExceptionSeason();
+  const result = await api(`/api/offseason-exceptions/preview?season=${encodeURIComponent(season)}`);
+  state.offseasonExceptionPreview = result;
+  state.offseasonExceptionChoices = {};
+  renderOffseasonExceptionPreview();
+}
+
+async function generateOffseasonExceptions() {
+  const season = selectedOffseasonExceptionSeason();
+  const confirmed = confirm(`Generar excepciones oficiales para ${seasonLabel(season)}?\n\nLos equipos con decisión pendiente usarán el camino que hayas elegido. Si no tienen elección, se saltarán. Las excepciones generadas previamente para esta temporada se reemplazarán.`);
+  if (!confirmed) return;
+  const result = await api('/api/offseason-exceptions/generate', {
+    method: 'POST',
+    body: JSON.stringify({ season_year: season, choices: state.offseasonExceptionChoices || {} }),
+  });
+  const createdCount = (result.generated || []).reduce((sum, row) => sum + ((row.created || []).length), 0);
+  alert(`Excepciones oficiales generadas: ${createdCount}. Equipos saltados: ${(result.skipped || []).length}.`);
+  await loadOffseasonExceptionPreview();
+  if (state.teamCode) await loadTeam(state.teamCode);
+}
+
+function setupOffseasonExceptionControls() {
+  document.getElementById('previewOffseasonExceptionsBtn')?.addEventListener('click', async () => {
+    try {
+      await loadOffseasonExceptionPreview();
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  });
+  document.getElementById('generateOffseasonExceptionsBtn')?.addEventListener('click', async () => {
+    try {
+      await generateOffseasonExceptions();
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  });
+  document.getElementById('offseasonExceptionSeasonSelect')?.addEventListener('change', () => {
+    state.offseasonExceptionPreview = null;
+    renderOffseasonExceptionPreview();
+  });
+  renderOffseasonExceptionControls();
 }
 
 function setAdminMobileOverlayVisible(backdropId, isVisible) {
@@ -7139,6 +7297,7 @@ function renderAssets() {
 
   if (picks.length === 0) {
     appendDraftAddCard();
+    renderFrozenDraftPicksAdmin(board);
     return;
   }
 
@@ -7179,6 +7338,7 @@ function renderAssets() {
           : state.teamCode;
         const isRestricted = Number(pick.draft_pick_restricted || 0) !== 0;
         const isStepienRestricted = Number(pick.draft_pick_stepien_restricted || 0) !== 0;
+        const isFrozen = Number(pick.draft_pick_frozen || 0) !== 0;
         const ownerTheme = TEAM_THEMES[ownerCode] || { primary: '#0f766e', secondary: '#99f6e4' };
         const ownerPrimaryRgb = hexToRgb(ownerTheme.primary);
         const ownerSecondaryRgb = hexToRgb(ownerTheme.secondary);
@@ -7186,6 +7346,7 @@ function renderAssets() {
         card.className = 'draft-pick-card admin-pick-card';
         if (isRestricted) card.classList.add('draft-pick-card--restricted');
         if (isStepienRestricted) card.classList.add('draft-pick-card--stepien');
+        if (isFrozen) card.classList.add('draft-pick-card--frozen');
         if (pickType === 'sold') card.classList.add('draft-pick-card--sold');
         if (pickType === 'conditional') card.classList.add('draft-pick-card--conditional');
         card.style.setProperty('--pick-primary-rgb', `${ownerPrimaryRgb.r}, ${ownerPrimaryRgb.g}, ${ownerPrimaryRgb.b}`);
@@ -7244,6 +7405,7 @@ function renderAssets() {
               <input data-field="draft_pick_protected" type="checkbox" ${Number(pick.draft_pick_protected || 0) ? 'checked' : ''}>
               <span>Protected?</span>
             </label>
+            ${isFrozen ? '<span class="pick-frozen-tag">Frozen</span>' : ''}
           </div>
           <div class="pick-card-actions">
             <button data-action="delete-pick" class="danger" type="button">Delete</button>
@@ -7399,6 +7561,106 @@ function renderAssets() {
     board.appendChild(seasonWrap);
   });
   appendDraftAddCard();
+  renderFrozenDraftPicksAdmin(board);
+}
+
+function renderFrozenDraftPicksAdmin(container) {
+  const rows = (state.teamData?.frozen_draft_picks || [])
+    .slice()
+    .sort((a, b) => Number(a.draft_year || 0) - Number(b.draft_year || 0));
+  const current = currentSeasonStart();
+  const panel = document.createElement('section');
+  panel.className = 'frozen-picks-panel frozen-picks-panel--admin';
+  panel.innerHTML = `
+    <div class="frozen-picks-heading">
+      <h3>Rondas congeladas</h3>
+      <p>Penalizaciones por finalizar una temporada por encima del 2do apron.</p>
+    </div>
+    <div class="table-wrap frozen-picks-table-wrap">
+      <table class="frozen-picks-table">
+        <thead>
+          <tr>
+            <th>Temporada</th>
+            <th>Ronda</th>
+            <th>Motivo</th>
+            <th>Notas</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr data-frozen-pick-id="${row.id}">
+              <td><input data-field="penalty_season_year" type="number" value="${escapeHtml(row.penalty_season_year || '')}"></td>
+              <td class="frozen-pick-round-cell">
+                <input data-field="draft_year" type="number" value="${escapeHtml(row.draft_year || '')}">
+                <select data-field="draft_round">
+                  <option value="1st" ${String(row.draft_round || '1st') === '1st' ? 'selected' : ''}>1st</option>
+                  <option value="2nd" ${String(row.draft_round || '') === '2nd' ? 'selected' : ''}>2nd</option>
+                </select>
+                <span class="pick-frozen-tag">Frozen</span>
+              </td>
+              <td><input data-field="reason" value="${escapeHtml(row.reason || '')}" placeholder="Finalizó por encima del 2do apron"></td>
+              <td><input data-field="notes" value="${escapeHtml(row.notes || '')}" placeholder="Notas"></td>
+              <td><button type="button" class="danger" data-action="delete-frozen-pick">Delete</button></td>
+            </tr>
+          `).join('')}
+          <tr data-frozen-pick-new>
+            <td><input data-field="penalty_season_year" type="number" value="${current}"></td>
+            <td class="frozen-pick-round-cell">
+              <input data-field="draft_year" type="number" value="${current + 7}">
+              <select data-field="draft_round">
+                <option value="1st" selected>1st</option>
+                <option value="2nd">2nd</option>
+              </select>
+            </td>
+            <td><input data-field="reason" value="Finalizó por encima del 2do apron"></td>
+            <td><input data-field="notes" value=""></td>
+            <td><button type="button" data-action="add-frozen-pick">Add</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  panel.querySelectorAll('tr[data-frozen-pick-id]').forEach((row) => {
+    const id = Number(row.dataset.frozenPickId);
+    const persist = async () => {
+      const payload = {};
+      row.querySelectorAll('[data-field]').forEach((input) => {
+        payload[input.dataset.field] = input.value;
+      });
+      await api(`/api/frozen-draft-picks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+      await loadTeam(state.teamCode);
+    };
+    row.querySelectorAll('input[data-field], select[data-field]').forEach((input) => {
+      input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'blur', () => {
+        void persist().catch((err) => alert(`Frozen pick save failed: ${err.message}`));
+      });
+    });
+    row.querySelector('[data-action="delete-frozen-pick"]')?.addEventListener('click', async () => {
+      if (!confirm('Delete this frozen pick penalty?')) return;
+      await api(`/api/frozen-draft-picks/${id}`, { method: 'DELETE' });
+      await loadTeam(state.teamCode);
+    });
+  });
+
+  panel.querySelector('[data-action="add-frozen-pick"]')?.addEventListener('click', async () => {
+    const row = panel.querySelector('tr[data-frozen-pick-new]');
+    const payload = { team_code: state.teamCode };
+    row.querySelectorAll('[data-field]').forEach((input) => {
+      payload[input.dataset.field] = input.value;
+    });
+    await api('/api/frozen-draft-picks', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    await loadTeam(state.teamCode);
+  });
+
+  container.appendChild(panel);
 }
 
 function renderPlayerRights() {
@@ -7501,10 +7763,99 @@ function renderPlayerRights() {
   }
 }
 
+function exceptionModeLabel(mode) {
+  switch (String(mode || '')) {
+    case 'room':
+      return 'Equipo con espacio salarial';
+    case 'choice_pending':
+      return 'Decisión pendiente';
+    case 'over_cap_below_first':
+      return 'Over the cap / bajo 1er apron';
+    case 'above_first_below_second':
+      return 'Entre 1er y 2do apron';
+    case 'above_second_apron':
+      return 'Por encima del 2do apron';
+    default:
+      return 'Estimación';
+  }
+}
+
+function exceptionHardCapLabel(value) {
+  if (value === 'first') return 'Hard cap: 1er apron';
+  if (value === 'second') return 'Hard cap: 2do apron';
+  return 'Sin hard cap automático';
+}
+
+function exceptionEstimateItemHtml(item) {
+  return `
+    <div class="exception-estimate-card">
+      <div class="exception-estimate-name">${escapeHtml(item.short_label || item.label || '')}</div>
+      <div class="exception-estimate-amount">${formatMoneyDots(item.amount)}</div>
+      <div class="exception-estimate-note">${escapeHtml(exceptionHardCapLabel(item.hard_cap))}</div>
+    </div>
+  `;
+}
+
+function renderExceptionEstimate() {
+  const panel = document.getElementById('exceptionEstimatePanel');
+  if (!panel) return;
+  const selected = selectedSeasonStart();
+  const estimate = (state.teamData?.exception_estimates || {})[String(selected)];
+  if (!estimate) {
+    panel.innerHTML = '';
+    return;
+  }
+  const eligible = Array.isArray(estimate.eligible) ? estimate.eligible : [];
+  const paths = Array.isArray(estimate.paths) ? estimate.paths : [];
+  const official = Array.isArray(estimate.official_exceptions) ? estimate.official_exceptions : [];
+  const notes = Array.isArray(estimate.notes) ? estimate.notes : [];
+  const choiceHtml = paths.length
+    ? `
+      <div class="exception-estimate-paths">
+        ${paths.map((path) => `
+          <div class="exception-estimate-path">
+            <div class="exception-estimate-path-title">${escapeHtml(path.label || '')}</div>
+            <div class="exception-estimate-path-copy">${escapeHtml(path.description || '')}</div>
+            <div class="exception-estimate-cards">
+              ${(path.eligible || []).map(exceptionEstimateItemHtml).join('') || '<span class="muted">Sin excepción principal</span>'}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `
+    : `
+      <div class="exception-estimate-cards">
+        ${eligible.map(exceptionEstimateItemHtml).join('') || '<span class="muted">Sin excepciones principales proyectadas.</span>'}
+      </div>
+    `;
+  const officialHtml = estimate.official_generated
+    ? `<div class="exception-estimate-official">Oficial generado: ${official.map((item) => escapeHtml(item.label || item.key || '')).join(', ') || 'sí'}</div>`
+    : '<div class="exception-estimate-official is-estimate">Estimación pendiente de confirmación admin</div>';
+  panel.innerHTML = `
+    <section class="exception-estimate-box">
+      <div class="exception-estimate-head">
+        <div>
+          <h3>Excepciones estimadas</h3>
+          <p>${escapeHtml(seasonLabel(selected))} · ${escapeHtml(exceptionModeLabel(estimate.operating_mode))}</p>
+        </div>
+        <span class="exception-estimate-badge">${estimate.status === 'choice_pending' ? 'Revisión' : 'Estimación'}</span>
+      </div>
+      <div class="exception-estimate-metrics">
+        <span>Espacio bruto CAP <strong>${formatMoneyDots(estimate.raw_cap_space)}</strong></span>
+        <span>Cuenta apron <strong>${formatMoneyDots(estimate.apron_account)}</strong></span>
+      </div>
+      ${choiceHtml}
+      ${notes.length ? `<ul class="exception-estimate-notes">${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join('')}</ul>` : ''}
+      ${officialHtml}
+    </section>
+  `;
+}
+
 function renderExceptions() {
   const tbody = document.querySelector('#exceptionsTable tbody');
   const tpl = document.getElementById('exceptionRowTemplate');
   if (!tbody || !tpl) return;
+  renderExceptionEstimate();
   tbody.innerHTML = '';
 
   const rows = sortedRows(
@@ -9252,6 +9603,7 @@ async function init() {
   setupTrackerEconomySeasonControl();
   setupTeamTabs();
   setupEconomySettingsControls();
+  setupOffseasonExceptionControls();
   await loadEconomySettingsSeason(Number(state.settings.current_year || 2025));
   document.getElementById('logActionFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('logEntityFilter').addEventListener('change', () => { void loadAdminLogs(); });

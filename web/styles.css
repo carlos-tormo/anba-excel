@@ -1267,6 +1267,9 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
 }
+.admin-tool-card-wide {
+  grid-column: 1 / -1;
+}
 .admin-tool-card {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -1284,6 +1287,165 @@ h1 {
   margin: 0;
   color: #64748b;
   line-height: 1.45;
+}
+.admin-tool-inline {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.offseason-exceptions-preview {
+  margin-top: 12px;
+}
+.offseason-preview-summary {
+  align-items: center;
+  color: #64748b;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 4px 0 10px;
+}
+.offseason-preview-table {
+  min-width: 980px;
+}
+.offseason-choice-control {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.offseason-choice-control select {
+  min-height: 34px;
+  min-width: 160px;
+}
+.exception-estimate-panel {
+  margin: 0 0 16px;
+}
+.exception-estimate-box {
+  background: #f8fafc;
+  border: 1px solid #d8e4f2;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+  padding: 14px;
+}
+.exception-estimate-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.exception-estimate-head h3 {
+  font-size: 1.05rem;
+  margin: 0;
+}
+.exception-estimate-head p {
+  color: #64748b;
+  font-weight: 700;
+  margin: 4px 0 0;
+}
+.exception-estimate-badge,
+.exception-estimate-official,
+.status-pill {
+  background: #e0f2fe;
+  border: 1px solid #bae6fd;
+  border-radius: 999px;
+  color: #0369a1;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1;
+  padding: 7px 10px;
+  text-transform: uppercase;
+}
+.status-success {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+.status-warning {
+  background: #fef3c7;
+  border-color: #fbbf24;
+  color: #92400e;
+}
+.exception-estimate-official {
+  margin-top: 10px;
+  text-transform: none;
+}
+.exception-estimate-official.is-estimate {
+  background: #fef3c7;
+  border-color: #fde68a;
+  color: #92400e;
+}
+.exception-estimate-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+.exception-estimate-metrics span {
+  background: white;
+  border: 1px solid #dbe7f4;
+  border-radius: 8px;
+  color: #64748b;
+  font-weight: 800;
+  padding: 8px 10px;
+}
+.exception-estimate-metrics strong {
+  color: #111827;
+}
+.exception-estimate-cards,
+.exception-estimate-paths {
+  display: grid;
+  gap: 10px;
+}
+.exception-estimate-cards {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.exception-estimate-paths {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.exception-estimate-path {
+  background: white;
+  border: 1px solid #dbe7f4;
+  border-radius: 10px;
+  padding: 10px;
+}
+.exception-estimate-path-title {
+  color: #0f766e;
+  font-weight: 900;
+}
+.exception-estimate-path-copy {
+  color: #64748b;
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin: 4px 0 8px;
+}
+.exception-estimate-card {
+  background: white;
+  border: 1px solid #dbe7f4;
+  border-radius: 8px;
+  padding: 10px;
+}
+.exception-estimate-name {
+  color: #334155;
+  font-weight: 900;
+}
+.exception-estimate-amount {
+  color: #0f766e;
+  font-size: 1.25rem;
+  font-weight: 950;
+  margin-top: 4px;
+}
+.exception-estimate-note {
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+.exception-estimate-notes {
+  color: #64748b;
+  font-weight: 700;
+  margin: 10px 0 0 18px;
+  padding: 0;
 }
 .trade-machine-section {
   display: grid;
@@ -2520,6 +2682,25 @@ h1 {
 .draft-pick-card--stepien:not(.draft-pick-card--restricted) .pick-card-title {
   color: #9a3412;
 }
+.draft-pick-card--frozen {
+  border-color: rgba(79, 70, 229, 0.68);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(99, 102, 241, 0.1) 0,
+      rgba(99, 102, 241, 0.1) 8px,
+      rgba(241, 245, 249, 0.92) 8px,
+      rgba(241, 245, 249, 0.92) 18px
+    ),
+    linear-gradient(180deg, #eef2ff, #f8fafc);
+  box-shadow:
+    inset 7px 0 0 rgba(79, 70, 229, 0.82),
+    0 0 0 1px rgba(79, 70, 229, 0.18),
+    0 8px 16px rgba(100, 116, 139, 0.12);
+}
+.draft-pick-card--frozen .pick-card-title {
+  color: #3730a3;
+}
 .pick-card-logo-wrap {
   width: 58px;
   height: 58px;
@@ -2629,6 +2810,75 @@ h1 {
   line-height: 1.2;
   font-weight: 800;
   text-transform: uppercase;
+}
+.pick-frozen-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(79, 70, 229, 0.42);
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.frozen-picks-panel {
+  margin-top: 26px;
+  padding: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(239, 246, 255, 0.72));
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+}
+.frozen-picks-heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.frozen-picks-heading h3 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 1.15rem;
+}
+.frozen-picks-heading p {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+.frozen-picks-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.frozen-picks-table th {
+  background: #4f46e5;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.frozen-picks-table th,
+.frozen-picks-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(203, 213, 225, 0.9);
+  text-align: left;
+}
+.frozen-picks-table td {
+  background: rgba(255, 255, 255, 0.72);
+}
+.frozen-picks-table input,
+.frozen-picks-table select {
+  width: 100%;
+  min-height: 36px;
+}
+.frozen-pick-round-cell {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) 76px auto;
+  gap: 8px;
+  align-items: center;
 }
 .pick-detail {
   display: none;

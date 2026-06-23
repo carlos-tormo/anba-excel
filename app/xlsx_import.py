@@ -219,6 +219,9 @@ def create_schema(conn: sqlite3.Connection) -> None:
             draft_pick_protected INTEGER NOT NULL DEFAULT 0,
             draft_pick_sold_to TEXT,
             draft_pick_conditional_teams TEXT,
+            draft_pick_frozen INTEGER NOT NULL DEFAULT 0,
+            generated_exception_key TEXT,
+            generated_exception_season INTEGER,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );

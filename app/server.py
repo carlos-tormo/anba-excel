@@ -24,6 +24,11 @@ try:
         CAP_FORECAST_MAX_YEAR,
         CAP_FORECAST_MIN_YEAR,
         CAP_FORECAST_WINDOW,
+        OFFSEASON_EXCEPTION_BAE_RATIO,
+        OFFSEASON_EXCEPTION_NTMLE_RATIO,
+        OFFSEASON_EXCEPTION_ROOM_MLE_RATIO,
+        OFFSEASON_EXCEPTION_TAXPAYER_MLE_BASE_AMOUNT,
+        OFFSEASON_EXCEPTION_TAXPAYER_MLE_BASE_CAP,
         OPEN_ROSTER_SPOT_MINIMUM,
         ROSTER_STANDARD_MAX_DEFAULT,
         ROSTER_STANDARD_MIN_DEFAULT,
@@ -69,6 +74,11 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         CAP_FORECAST_MAX_YEAR,
         CAP_FORECAST_MIN_YEAR,
         CAP_FORECAST_WINDOW,
+        OFFSEASON_EXCEPTION_BAE_RATIO,
+        OFFSEASON_EXCEPTION_NTMLE_RATIO,
+        OFFSEASON_EXCEPTION_ROOM_MLE_RATIO,
+        OFFSEASON_EXCEPTION_TAXPAYER_MLE_BASE_AMOUNT,
+        OFFSEASON_EXCEPTION_TAXPAYER_MLE_BASE_CAP,
         OPEN_ROSTER_SPOT_MINIMUM,
         ROSTER_STANDARD_MAX_DEFAULT,
         ROSTER_STANDARD_MIN_DEFAULT,
@@ -521,6 +531,67 @@ def normalize_exception_type(value: Any) -> Optional[str]:
     if "mid" in raw:
         return "Mid-Level"
     return str(value).strip() or None
+
+
+OFFSEASON_EXCEPTION_DEFINITIONS = {
+    "room_mle": {
+        "label": "Room Mid-Level Exception",
+        "short_label": "Room MLE",
+        "exception_type": "ROOM Mid",
+        "hard_cap": "",
+        "ratio": OFFSEASON_EXCEPTION_ROOM_MLE_RATIO,
+    },
+    "ntmle": {
+        "label": "Non-Taxpayer Mid-Level Exception",
+        "short_label": "NTMLE",
+        "exception_type": "Mid-Level",
+        "hard_cap": "first",
+        "ratio": OFFSEASON_EXCEPTION_NTMLE_RATIO,
+    },
+    "bae": {
+        "label": "Bi-Annual Exception",
+        "short_label": "BAE",
+        "exception_type": "Bianual",
+        "hard_cap": "first",
+        "ratio": OFFSEASON_EXCEPTION_BAE_RATIO,
+    },
+    "tmle": {
+        "label": "Taxpayer Mid-Level Exception",
+        "short_label": "TMLE",
+        "exception_type": "TAXPAYER Mid",
+        "hard_cap": "second",
+        "ratio": None,
+    },
+}
+
+GENERATED_OFFSEASON_EXCEPTION_KEYS = tuple(OFFSEASON_EXCEPTION_DEFINITIONS.keys())
+
+
+def offseason_exception_amounts(salary_cap: Any) -> Dict[str, float]:
+    cap = parse_float(str(salary_cap)) or 0.0
+    tmle = 0.0
+    if cap > 0:
+        tmle = OFFSEASON_EXCEPTION_TAXPAYER_MLE_BASE_AMOUNT * (
+            cap / OFFSEASON_EXCEPTION_TAXPAYER_MLE_BASE_CAP
+        )
+    return {
+        "room_mle": cap * OFFSEASON_EXCEPTION_ROOM_MLE_RATIO,
+        "ntmle": cap * OFFSEASON_EXCEPTION_NTMLE_RATIO,
+        "bae": cap * OFFSEASON_EXCEPTION_BAE_RATIO,
+        "tmle": tmle,
+    }
+
+
+def offseason_exception_item(key: str, amount: float) -> Dict[str, Any]:
+    definition = OFFSEASON_EXCEPTION_DEFINITIONS[key]
+    return {
+        "key": key,
+        "label": definition["label"],
+        "short_label": definition["short_label"],
+        "exception_type": definition["exception_type"],
+        "amount": round(float(amount or 0.0)),
+        "hard_cap": definition["hard_cap"],
+    }
 
 
 def normalize_apron_hard_cap(value: Any) -> Optional[str]:
@@ -1295,6 +1366,39 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_sold_to TEXT")
             if "draft_pick_conditional_teams" not in asset_cols:
                 conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_conditional_teams TEXT")
+            if "draft_pick_frozen" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN draft_pick_frozen INTEGER NOT NULL DEFAULT 0")
+            if "generated_exception_key" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN generated_exception_key TEXT")
+            if "generated_exception_season" not in asset_cols:
+                conn.execute("ALTER TABLE assets ADD COLUMN generated_exception_season INTEGER")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS frozen_draft_picks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    penalty_season_year INTEGER NOT NULL,
+                    draft_year INTEGER NOT NULL,
+                    draft_round TEXT NOT NULL DEFAULT '1st',
+                    reason TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_frozen_draft_picks_unique
+                ON frozen_draft_picks(team_id, penalty_season_year, draft_year, draft_round)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_frozen_draft_picks_team
+                ON frozen_draft_picks(team_id, draft_year)
+                """
+            )
             conn.execute(
                 """
                 UPDATE assets
@@ -1983,6 +2087,63 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
         return len(updates)
 
+    def _freeze_second_apron_pick_rollover(
+        self,
+        conn: sqlite3.Connection,
+        previous_year: int,
+        next_year: int,
+        settings: Dict[str, str],
+        timestamp: str,
+    ) -> List[Dict[str, Any]]:
+        if int(next_year) <= int(previous_year):
+            return []
+        frozen_rows: List[Dict[str, Any]] = []
+        teams_cur = conn.execute("SELECT * FROM teams ORDER BY code")
+        teams = [row_to_dict(teams_cur, row) for row in teams_cur.fetchall()]
+        for penalty_year in range(int(previous_year), int(next_year)):
+            frozen_draft_year = int(penalty_year) + 7
+            for team in teams:
+                team_id = int(team["id"])
+                players = self._select_team_players(conn, team_id)
+                assets_cur = conn.execute(
+                    "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
+                    (team_id,),
+                )
+                assets = [row_to_dict(assets_cur, row) for row in assets_cur.fetchall()]
+                dead_cur = conn.execute(
+                    "SELECT * FROM dead_contracts WHERE team_id = ? ORDER BY dead_type, row_order, id",
+                    (team_id,),
+                )
+                dead_contracts = [row_to_dict(dead_cur, row) for row in dead_cur.fetchall()]
+                luxury_repeater = self._team_luxury_repeater_for_season(conn, team_id, int(penalty_year))
+                hard_cap = self._team_apron_hard_cap_for_season(conn, team_id, int(penalty_year), team.get("apron_hard_cap"))
+                summary = self._calc_summary(
+                    team,
+                    players,
+                    assets,
+                    dead_contracts,
+                    settings,
+                    season_year=int(penalty_year),
+                    luxury_repeater=luxury_repeater,
+                    apron_hard_cap=hard_cap,
+                )
+                if float(summary.get("apron_account") or 0.0) <= float(summary.get("second_apron") or 0.0):
+                    continue
+                frozen_rows.append(
+                    self._upsert_frozen_draft_pick_conn(
+                        conn,
+                        team_id,
+                        str(team["code"]),
+                        int(penalty_year),
+                        int(frozen_draft_year),
+                        "1st",
+                        "Finalizó por encima del 2do apron",
+                        "Bloqueo automático al avanzar la temporada.",
+                        timestamp,
+                    )
+                )
+        return frozen_rows
+
     def update_current_year(self, next_year: int) -> Dict[str, Any]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
@@ -2002,12 +2163,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 (str(next_year), timestamp),
             )
             updated_bird_years = self._increment_player_bird_years(conn, delta, timestamp)
+            frozen_picks = self._freeze_second_apron_pick_rollover(conn, previous_year, int(next_year), settings, timestamp)
             conn.commit()
             return {
                 "previous_year": previous_year,
                 "current_year": int(next_year),
                 "bird_year_steps": delta,
                 "bird_year_players_updated": updated_bird_years,
+                "frozen_picks_created": len(frozen_picks),
+                "frozen_picks": frozen_picks,
             }
 
     def progress_to_next_year(self) -> Dict[str, Any]:
@@ -2056,6 +2220,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 (timestamp,),
             )
             updated_bird_years = self._increment_player_bird_years(conn, 1, timestamp)
+            frozen_picks = self._freeze_second_apron_pick_rollover(conn, current_year, next_year, settings, timestamp)
             conn.commit()
             return {
                 "previous_year": current_year,
@@ -2063,6 +2228,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "deleted_draft_assets": int(deleted_draft_assets),
                 "bird_year_steps": 1,
                 "bird_year_players_updated": updated_bird_years,
+                "frozen_picks_created": len(frozen_picks),
+                "frozen_picks": frozen_picks,
             }
 
     def upsert_google_user(self, google_sub: str, email: str, display_name: Optional[str], avatar_url: Optional[str]) -> Dict[str, Any]:
@@ -2643,6 +2810,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 (team["id"],),
             )
             assets = [row_to_dict(assets_cur, r) for r in assets_cur.fetchall()]
+            frozen_draft_picks = self._select_frozen_draft_picks(conn, int(team["id"]))
 
             dead_cur = conn.execute(
                 "SELECT * FROM dead_contracts WHERE team_id = ? ORDER BY dead_type, row_order, id",
@@ -2664,6 +2832,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 apron_hard_cap=current_hard_cap,
             )
             season_summaries = self._team_season_summaries(conn, team, players, assets, dead_contracts, settings)
+            exception_estimates = self._team_exception_estimates(season_summaries, assets)
             requested_move_year = parse_int(move_season_year) or int(summary["current_year"])
             move_summary = self._team_move_summary(conn, int(team["id"]), int(requested_move_year), settings)
             move_summaries = self._team_move_summaries(conn, int(team["id"]), settings, include_year=int(requested_move_year))
@@ -2693,9 +2862,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "team": team,
                 "players": players,
                 "assets": assets,
+                "frozen_draft_picks": frozen_draft_picks,
                 "dead_contracts": dead_contracts,
                 "summary": summary,
                 "season_summaries": season_summaries,
+                "exception_estimates": exception_estimates,
                 "move_summary": move_summary,
                 "move_summaries": move_summaries,
                 "luxury_history": luxury_history,
@@ -2731,6 +2902,272 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             row = cur.fetchone()
             return row_to_dict(cur, row) if row else None
+
+    def _select_frozen_draft_picks(self, conn: sqlite3.Connection, team_id: int) -> List[Dict[str, Any]]:
+        cur = conn.execute(
+            """
+            SELECT
+                f.*,
+                t.code AS team_code,
+                t.name AS team_name
+            FROM frozen_draft_picks f
+            JOIN teams t ON t.id = f.team_id
+            WHERE f.team_id = ?
+            ORDER BY f.draft_year, f.penalty_season_year, f.id
+            """,
+            (team_id,),
+        )
+        return [row_to_dict(cur, row) for row in cur.fetchall()]
+
+    def _set_matching_draft_pick_frozen(
+        self,
+        conn: sqlite3.Connection,
+        team_id: int,
+        team_code: str,
+        draft_year: int,
+        draft_round: str,
+        frozen: bool,
+        timestamp: str,
+    ) -> Optional[int]:
+        normalized_round = normalize_pick_round(draft_round)
+        row = conn.execute(
+            """
+            SELECT id
+            FROM assets
+            WHERE team_id = ?
+              AND asset_type = 'draft_pick'
+              AND CAST(COALESCE(year, '') AS INTEGER) = ?
+              AND COALESCE(draft_round, '1st') = ?
+            ORDER BY
+              CASE WHEN COALESCE(draft_pick_type, 'own') = 'own' THEN 0 ELSE 1 END,
+              id
+            LIMIT 1
+            """,
+            (team_id, int(draft_year), normalized_round),
+        ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE assets SET draft_pick_frozen = ?, updated_at = ? WHERE id = ?",
+                (1 if frozen else 0, timestamp, int(row["id"])),
+            )
+            return int(row["id"])
+        if not frozen:
+            return None
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+            (team_id,),
+        ).fetchone()["mx"]
+        cur = conn.execute(
+            """
+            INSERT INTO assets (
+                team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
+                draft_pick_type, draft_round, original_owner, exception_type,
+                draft_pick_restricted, draft_pick_stepien_restricted, draft_pick_protected,
+                draft_pick_sold_to, draft_pick_conditional_teams, draft_pick_frozen,
+                created_at, updated_at
+            )
+            VALUES (?, ?, 'draft_pick', ?, ?, '', NULL, NULL, 'own', ?, NULL, NULL, 0, 0, 0, NULL, NULL, 1, ?, ?)
+            """,
+            (
+                team_id,
+                int(max_order) + 1,
+                str(int(draft_year)),
+                f"{normalized_round} pick",
+                normalized_round,
+                timestamp,
+                timestamp,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def _sync_frozen_draft_pick_asset_flag(
+        self,
+        conn: sqlite3.Connection,
+        team_id: int,
+        team_code: str,
+        draft_year: int,
+        draft_round: str,
+        timestamp: str,
+    ) -> Optional[int]:
+        normalized_round = normalize_pick_round(draft_round)
+        active = conn.execute(
+            """
+            SELECT 1
+            FROM frozen_draft_picks
+            WHERE team_id = ?
+              AND draft_year = ?
+              AND draft_round = ?
+            LIMIT 1
+            """,
+            (team_id, int(draft_year), normalized_round),
+        ).fetchone()
+        return self._set_matching_draft_pick_frozen(
+            conn,
+            team_id,
+            team_code,
+            int(draft_year),
+            normalized_round,
+            bool(active),
+            timestamp,
+        )
+
+    def _upsert_frozen_draft_pick_conn(
+        self,
+        conn: sqlite3.Connection,
+        team_id: int,
+        team_code: str,
+        penalty_season_year: int,
+        draft_year: int,
+        draft_round: str,
+        reason: Optional[str],
+        notes: Optional[str],
+        timestamp: str,
+    ) -> Dict[str, Any]:
+        normalized_round = normalize_pick_round(draft_round)
+        conn.execute(
+            """
+            INSERT INTO frozen_draft_picks (
+                team_id, penalty_season_year, draft_year, draft_round, reason, notes, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(team_id, penalty_season_year, draft_year, draft_round)
+            DO UPDATE SET
+                reason = excluded.reason,
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+            """,
+            (
+                team_id,
+                int(penalty_season_year),
+                int(draft_year),
+                normalized_round,
+                reason,
+                notes,
+                timestamp,
+                timestamp,
+            ),
+        )
+        self._sync_frozen_draft_pick_asset_flag(conn, team_id, team_code, int(draft_year), normalized_round, timestamp)
+        cur = conn.execute(
+            """
+            SELECT f.*, t.code AS team_code, t.name AS team_name
+            FROM frozen_draft_picks f
+            JOIN teams t ON t.id = f.team_id
+            WHERE f.team_id = ?
+              AND f.penalty_season_year = ?
+              AND f.draft_year = ?
+              AND f.draft_round = ?
+            """,
+            (team_id, int(penalty_season_year), int(draft_year), normalized_round),
+        )
+        row = cur.fetchone()
+        return row_to_dict(cur, row)
+
+    def create_frozen_draft_pick(self, team_code: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        code = normalize_team_code(team_code)
+        penalty_season_year = parse_int(payload.get("penalty_season_year"))
+        draft_year = parse_int(payload.get("draft_year"))
+        if not code or penalty_season_year is None or draft_year is None:
+            return None
+        timestamp = now_iso()
+        with self.connect() as conn:
+            team = conn.execute("SELECT id, code FROM teams WHERE code = ?", (code,)).fetchone()
+            if not team:
+                return None
+            row = self._upsert_frozen_draft_pick_conn(
+                conn,
+                int(team["id"]),
+                str(team["code"]),
+                int(penalty_season_year),
+                int(draft_year),
+                payload.get("draft_round") or "1st",
+                str(payload.get("reason") or "").strip() or "Finalizó por encima del 2do apron",
+                str(payload.get("notes") or "").strip() or None,
+                timestamp,
+            )
+            conn.commit()
+            return row
+
+    def update_frozen_draft_pick(self, frozen_pick_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            old_cur = conn.execute(
+                """
+                SELECT f.*, t.code AS team_code
+                FROM frozen_draft_picks f
+                JOIN teams t ON t.id = f.team_id
+                WHERE f.id = ?
+                """,
+                (int(frozen_pick_id),),
+            )
+            old_row = old_cur.fetchone()
+            if not old_row:
+                return None
+            old = row_to_dict(old_cur, old_row)
+            team_id = int(old["team_id"])
+            team_code = str(old["team_code"])
+            penalty_season_year = parse_int(payload.get("penalty_season_year")) or int(old["penalty_season_year"])
+            draft_year = parse_int(payload.get("draft_year")) or int(old["draft_year"])
+            draft_round = normalize_pick_round(payload.get("draft_round") or old.get("draft_round"))
+            reason = str(payload.get("reason") if "reason" in payload else old.get("reason") or "").strip() or None
+            notes = str(payload.get("notes") if "notes" in payload else old.get("notes") or "").strip() or None
+            conn.execute(
+                """
+                UPDATE frozen_draft_picks
+                SET penalty_season_year = ?, draft_year = ?, draft_round = ?, reason = ?, notes = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (int(penalty_season_year), int(draft_year), draft_round, reason, notes, timestamp, int(frozen_pick_id)),
+            )
+            self._sync_frozen_draft_pick_asset_flag(
+                conn,
+                team_id,
+                team_code,
+                int(old["draft_year"]),
+                str(old.get("draft_round") or "1st"),
+                timestamp,
+            )
+            self._sync_frozen_draft_pick_asset_flag(conn, team_id, team_code, int(draft_year), draft_round, timestamp)
+            cur = conn.execute(
+                """
+                SELECT f.*, t.code AS team_code, t.name AS team_name
+                FROM frozen_draft_picks f
+                JOIN teams t ON t.id = f.team_id
+                WHERE f.id = ?
+                """,
+                (int(frozen_pick_id),),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return row_to_dict(cur, row) if row else None
+
+    def delete_frozen_draft_pick(self, frozen_pick_id: int) -> Optional[Dict[str, Any]]:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT f.*, t.code AS team_code, t.name AS team_name
+                FROM frozen_draft_picks f
+                JOIN teams t ON t.id = f.team_id
+                WHERE f.id = ?
+                """,
+                (int(frozen_pick_id),),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            deleted = row_to_dict(cur, row)
+            conn.execute("DELETE FROM frozen_draft_picks WHERE id = ?", (int(frozen_pick_id),))
+            self._sync_frozen_draft_pick_asset_flag(
+                conn,
+                int(deleted["team_id"]),
+                str(deleted["team_code"]),
+                int(deleted["draft_year"]),
+                str(deleted.get("draft_round") or "1st"),
+                timestamp,
+            )
+            conn.commit()
+            return deleted
 
     def get_dead_contract_record(self, dead_contract_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
@@ -5515,6 +5952,282 @@ class LeagueDB(DatabaseMaintenanceMixin):
             summaries[str(season_year)] = summary
         return summaries
 
+    def _official_generated_exception_assets(
+        self,
+        assets: List[Dict[str, Any]],
+        season_year: int,
+    ) -> List[Dict[str, Any]]:
+        return [
+            asset
+            for asset in assets
+            if asset.get("asset_type") == "exception"
+            and parse_int(asset.get("generated_exception_season")) == int(season_year)
+            and str(asset.get("generated_exception_key") or "").strip() in GENERATED_OFFSEASON_EXCEPTION_KEYS
+        ]
+
+    def _offseason_exception_estimate_from_summary(
+        self,
+        summary: Dict[str, Any],
+        assets: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        season_year = parse_int(summary.get("current_year")) or 2025
+        salary_cap = float(summary.get("salary_cap") or 0.0)
+        first_apron = float(summary.get("first_apron") or 0.0)
+        second_apron = float(summary.get("second_apron") or 0.0)
+        raw_cap_space = float(summary.get("room_to_cap") or 0.0)
+        apron_account = float(summary.get("apron_account") or 0.0)
+        amounts = offseason_exception_amounts(salary_cap)
+        official = self._official_generated_exception_assets(assets, season_year)
+
+        def items(keys: List[str]) -> List[Dict[str, Any]]:
+            return [offseason_exception_item(key, amounts.get(key, 0.0)) for key in keys]
+
+        notes: List[str] = []
+        paths: List[Dict[str, Any]] = []
+        eligible: List[Dict[str, Any]] = []
+        ineligible: List[Dict[str, Any]] = []
+        operating_mode = "above_second_apron"
+        status = "estimate"
+
+        ntmle_amount = float(amounts.get("ntmle") or 0.0)
+        if raw_cap_space > 0 and raw_cap_space < ntmle_amount:
+            operating_mode = "choice_pending"
+            status = "choice_pending"
+            paths = [
+                {
+                    "key": "room",
+                    "label": "Usar espacio salarial",
+                    "description": "Renuncia las excepciones over-the-cap y opera como equipo con espacio.",
+                    "eligible": items(["room_mle"]),
+                },
+                {
+                    "key": "over_cap",
+                    "label": "Mantener excepciones",
+                    "description": "Pierde el espacio salarial y opera como equipo over-the-cap.",
+                    "eligible": items(["ntmle", "bae"]),
+                },
+            ]
+            ineligible = []
+            notes.append(
+                "El equipo tiene espacio positivo, pero menor que la NTMLE. Admin debe decidir si usa cap space o mantiene excepciones."
+            )
+            notes.append("La BAE queda sujeta a revisar si fue usada la temporada anterior.")
+        elif raw_cap_space > 0:
+            operating_mode = "room"
+            eligible = items(["room_mle"])
+            ineligible = items(["ntmle", "bae", "tmle"])
+            notes.append("Equipo proyectado con espacio salarial: opera con Room MLE si mantiene ese camino.")
+        elif apron_account >= second_apron:
+            operating_mode = "above_second_apron"
+            eligible = []
+            ineligible = items(["room_mle", "ntmle", "bae", "tmle"])
+            notes.append("Equipo proyectado por encima del 2do apron: sin excepciones principales disponibles.")
+        elif apron_account >= first_apron:
+            operating_mode = "above_first_below_second"
+            eligible = items(["tmle"])
+            ineligible = items(["room_mle", "ntmle", "bae"])
+            notes.append("El uso de la TMLE genera hard cap en el 2do apron.")
+        else:
+            operating_mode = "over_cap_below_first"
+            eligible = items(["ntmle", "bae"])
+            ineligible = items(["room_mle", "tmle"])
+            notes.append("El uso de la NTMLE o BAE genera hard cap en el 1er apron.")
+            notes.append("La BAE queda sujeta a revisar si fue usada la temporada anterior.")
+
+        return {
+            "season_year": season_year,
+            "season_label": season_label(season_year),
+            "status": status,
+            "operating_mode": operating_mode,
+            "raw_cap_space": round(raw_cap_space),
+            "cap_figure": round(float(summary.get("cap_figure") or 0.0)),
+            "apron_account": round(apron_account),
+            "salary_cap": round(salary_cap),
+            "first_apron": round(first_apron),
+            "second_apron": round(second_apron),
+            "values": {key: round(value) for key, value in amounts.items()},
+            "eligible": eligible,
+            "ineligible": ineligible,
+            "paths": paths,
+            "notes": notes,
+            "official_generated": bool(official),
+            "official_exceptions": [
+                {
+                    "id": asset.get("id"),
+                    "key": asset.get("generated_exception_key"),
+                    "label": asset.get("label"),
+                    "amount": round(float(asset.get("amount_num") or 0.0)),
+                    "exception_type": asset.get("exception_type"),
+                }
+                for asset in official
+            ],
+        }
+
+    def _team_exception_estimates(
+        self,
+        season_summaries: Dict[str, Dict[str, Any]],
+        assets: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            str(season_year): self._offseason_exception_estimate_from_summary(summary, assets)
+            for season_year, summary in season_summaries.items()
+        }
+
+    def list_offseason_exception_preview(self, season_year: Optional[int] = None) -> Dict[str, Any]:
+        with self.connect() as conn:
+            settings = self.get_settings()
+            current_year = parse_int(settings.get("current_year")) or 2025
+            selected_year = parse_int(season_year) or current_year
+            teams = self.list_teams()
+            rows = []
+            for team in teams:
+                team_data = self.get_team(str(team.get("code") or ""), move_season_year=selected_year)
+                if not team_data:
+                    continue
+                summary = (team_data.get("season_summaries") or {}).get(str(selected_year))
+                if not summary:
+                    continue
+                estimate = self._offseason_exception_estimate_from_summary(
+                    summary,
+                    team_data.get("assets") or [],
+                )
+                rows.append(
+                    {
+                        "team_code": team.get("code"),
+                        "team_name": team.get("name"),
+                        **estimate,
+                    }
+                )
+            return {
+                "season_year": selected_year,
+                "season_label": season_label(selected_year),
+                "rows": rows,
+            }
+
+    def generate_offseason_exceptions(
+        self,
+        season_year: int,
+        team_codes: Optional[List[str]] = None,
+        choices: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        selected_year = parse_int(season_year)
+        if selected_year is None:
+            raise ValueError("invalid_season_year")
+        selected_codes = set(normalize_team_codes(team_codes)) if team_codes else None
+        choices = {str(k).upper(): str(v or "").strip().lower() for k, v in (choices or {}).items()}
+        generated: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        with self.connect() as conn:
+            teams = self.list_teams()
+            timestamp = now_iso()
+            for team in teams:
+                team_code = str(team.get("code") or "").upper()
+                if selected_codes is not None and team_code not in selected_codes:
+                    continue
+                team_data = self.get_team(team_code, move_season_year=selected_year)
+                if not team_data:
+                    continue
+                team_row = team_data.get("team") or {}
+                team_id = parse_int(team_row.get("id"))
+                summary = (team_data.get("season_summaries") or {}).get(str(selected_year))
+                if team_id is None or not summary:
+                    continue
+                estimate = self._offseason_exception_estimate_from_summary(
+                    summary,
+                    team_data.get("assets") or [],
+                )
+                mode = str(estimate.get("operating_mode") or "")
+                if mode == "choice_pending":
+                    choice = choices.get(team_code)
+                    if choice == "room":
+                        exception_keys = ["room_mle"]
+                    elif choice in {"over_cap", "exceptions"}:
+                        exception_keys = ["ntmle", "bae"]
+                    else:
+                        skipped.append(
+                            {
+                                "team_code": team_code,
+                                "reason": "choice_pending",
+                                "message": "Decisión pendiente: cap space o excepciones over-the-cap.",
+                            }
+                        )
+                        continue
+                elif mode == "room":
+                    exception_keys = ["room_mle"]
+                elif mode == "over_cap_below_first":
+                    exception_keys = ["ntmle", "bae"]
+                elif mode == "above_first_below_second":
+                    exception_keys = ["tmle"]
+                else:
+                    exception_keys = []
+
+                placeholders = ",".join("?" for _ in GENERATED_OFFSEASON_EXCEPTION_KEYS)
+                conn.execute(
+                    f"""
+                    DELETE FROM assets
+                    WHERE team_id = ?
+                      AND asset_type = 'exception'
+                      AND generated_exception_season = ?
+                      AND generated_exception_key IN ({placeholders})
+                    """,
+                    (team_id, selected_year, *GENERATED_OFFSEASON_EXCEPTION_KEYS),
+                )
+
+                created_assets = []
+                mx = conn.execute(
+                    "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                    (team_id,),
+                ).fetchone()["mx"]
+                row_order = int(mx)
+                values = estimate.get("values") or {}
+                for key in exception_keys:
+                    definition = OFFSEASON_EXCEPTION_DEFINITIONS[key]
+                    amount = round(float(values.get(key) or 0.0))
+                    row_order += 1
+                    cur = conn.execute(
+                        """
+                        INSERT INTO assets (
+                            team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
+                            draft_pick_type, draft_round, original_owner, exception_type,
+                            draft_pick_restricted, draft_pick_stepien_restricted, draft_pick_protected,
+                            draft_pick_sold_to, draft_pick_conditional_teams, draft_pick_frozen,
+                            generated_exception_key, generated_exception_season,
+                            created_at, updated_at
+                        )
+                        VALUES (?, ?, 'exception', ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 0, 0, 0, NULL, NULL, 0, ?, ?, ?, ?)
+                        """,
+                        (
+                            team_id,
+                            row_order,
+                            selected_year,
+                            definition["label"],
+                            f"Excepción oficial generada automáticamente para {season_label(selected_year)}.",
+                            str(amount),
+                            float(amount),
+                            definition["exception_type"],
+                            key,
+                            selected_year,
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    created_assets.append({"id": int(cur.lastrowid), "key": key, "amount": amount})
+                generated.append(
+                    {
+                        "team_code": team_code,
+                        "operating_mode": mode,
+                        "created": created_assets,
+                    }
+                )
+            conn.commit()
+        return {
+            "ok": True,
+            "season_year": selected_year,
+            "season_label": season_label(selected_year),
+            "generated": generated,
+            "skipped": skipped,
+        }
+
     def _hard_cap_from_trade_issue(self, issue: Dict[str, Any]) -> str:
         raw = normalize_apron_hard_cap(issue.get("hardCap") or issue.get("hard_cap"))
         if raw:
@@ -6356,6 +7069,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             draft_pick_restricted = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_restricted")) else 0
             draft_pick_stepien_restricted = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_stepien_restricted")) else 0
             draft_pick_protected = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_protected")) else 0
+            draft_pick_frozen = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_frozen")) else 0
             if asset_type == "draft_pick" and draft_pick_type != "acquired":
                 original_owner = None
             if asset_type == "draft_pick" and draft_pick_type != "sold":
@@ -6368,9 +7082,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
                     draft_pick_type, draft_round, original_owner, exception_type,
                     draft_pick_restricted, draft_pick_stepien_restricted, draft_pick_protected, draft_pick_sold_to,
-                    draft_pick_conditional_teams, created_at, updated_at
+                    draft_pick_conditional_teams, draft_pick_frozen, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -6390,6 +7104,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     draft_pick_protected,
                     draft_pick_sold_to,
                     draft_pick_conditional_teams,
+                    draft_pick_frozen,
                     now,
                     now,
                 ),
@@ -6402,7 +7117,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "asset_type", "year", "label", "detail", "amount_text", "draft_pick_type",
             "draft_round", "original_owner", "exception_type", "draft_pick_restricted",
             "draft_pick_stepien_restricted",
-            "draft_pick_protected", "draft_pick_sold_to", "draft_pick_conditional_teams",
+            "draft_pick_protected", "draft_pick_frozen", "draft_pick_sold_to", "draft_pick_conditional_teams",
         ]
         assigns = []
         vals = []
@@ -6426,7 +7141,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 elif f == "exception_type":
                     assigns.append("exception_type = ?")
                     vals.append(normalize_exception_type(payload[f]))
-                elif f in {"draft_pick_restricted", "draft_pick_stepien_restricted", "draft_pick_protected"}:
+                elif f in {"draft_pick_restricted", "draft_pick_stepien_restricted", "draft_pick_protected", "draft_pick_frozen"}:
                     assigns.append(f"{f} = ?")
                     vals.append(1 if parse_bool(payload[f]) else 0)
                 else:
@@ -6975,6 +7690,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "restricted": parse_bool(pick.get("draft_pick_restricted")),
                 "stepienRestricted": parse_bool(pick.get("draft_pick_stepien_restricted")),
                 "protected": parse_bool(pick.get("draft_pick_protected")),
+                "frozen": parse_bool(pick.get("draft_pick_frozen")),
                 "conditional": normalize_pick_type(pick.get("draft_pick_type")) == "conditional",
                 "sold": normalize_pick_type(pick.get("draft_pick_type")) == "sold",
                 "round": normalize_pick_round(pick.get("draft_round")),
@@ -7296,6 +8012,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "messages": messages("restricted_pick", ["No hay ninguna ronda restringida seleccionada."]),
             },
             {
+                "key": "frozen_pick",
+                "label": "Ronda congelada",
+                "status": "fail" if has("frozen_pick") else "pass",
+                "messages": messages("frozen_pick", ["No hay ninguna ronda congelada seleccionada."]),
+            },
+            {
                 "key": "manual_review",
                 "label": "Revisión manual ANBA",
                 "status": "warning" if has("manual_review") else "pass",
@@ -7371,6 +8093,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             selected_assets.append(selected)
             if meta.get("sold"):
                 issues.append({"severity": "illegal", "rule": "setup", "teamCode": from_team, "message": f"{meta.get('label')} ya está vendida y no se puede mover."})
+            if meta.get("frozen"):
+                issues.append({"severity": "illegal", "rule": "frozen_pick", "teamCode": from_team, "message": f"{meta.get('label')} está congelada por penalización del 2do apron y no se puede mover."})
             if meta.get("restricted"):
                 issues.append({"severity": "illegal", "rule": "restricted_pick", "teamCode": from_team, "message": f"{meta.get('label')} está restringida por protecciones previas y no se puede mover ni vender como swap."})
             if meta.get("stepienRestricted") and selected.get("pickAction") != TRADE_PICK_ACTION_SWAP:
@@ -10263,6 +10987,18 @@ QUALITY REQUIREMENTS
             self._json(200, self.db.list_team_economy(season_year))
             return
 
+        if parsed.path == "/api/offseason-exceptions/preview":
+            if not self._require_admin():
+                return
+            qs = parse_qs(parsed.query)
+            raw_season = (qs.get("season") or [""])[0].strip()
+            season_year = parse_int(raw_season) if raw_season else None
+            if raw_season and season_year is None:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            self._json(200, self.db.list_offseason_exception_preview(season_year))
+            return
+
         if parsed.path == "/api/free-agents":
             self._json(200, {"free_agents": self.db.list_free_agents()})
             return
@@ -10657,6 +11393,34 @@ QUALITY REQUIREMENTS
         if not self._require_csrf():
             return
         if not self._require_sensitive_rate_limit("admin_post"):
+            return
+
+        if parsed.path == "/api/offseason-exceptions/generate":
+            season_year = parse_int(payload.get("season_year"))
+            if season_year is None:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            try:
+                result = self.db.generate_offseason_exceptions(
+                    season_year,
+                    team_codes=payload.get("team_codes") if isinstance(payload.get("team_codes"), list) else None,
+                    choices=payload.get("choices") if isinstance(payload.get("choices"), dict) else None,
+                )
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_request"})
+                return
+            self._log_admin_action(
+                "generate",
+                "offseason_exceptions",
+                str(season_year),
+                None,
+                {
+                    "generated_count": sum(len(row.get("created") or []) for row in result.get("generated", [])),
+                    "team_count": len(result.get("generated") or []),
+                    "skipped": result.get("skipped") or [],
+                },
+            )
+            self._json(200, result)
             return
 
         if parsed.path == "/api/admin/economy-import/preview":
@@ -11203,6 +11967,25 @@ QUALITY REQUIREMENTS
                 return
             self._log_admin_action("create", "asset", str(asset_id), str(team_code), {"asset_type": payload.get("asset_type")})
             self._json(201, {"asset_id": asset_id})
+            return
+
+        if parsed.path == "/api/frozen-draft-picks":
+            team_code = normalize_team_code(payload.get("team_code")) or ""
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            row = self.db.create_frozen_draft_pick(team_code, payload)
+            if not row:
+                self._json(400, {"error": "invalid_frozen_pick"})
+                return
+            self._log_admin_action(
+                "create",
+                "frozen_draft_pick",
+                str(row.get("id")),
+                team_code,
+                row,
+            )
+            self._json(201, {"ok": True, "frozen_pick": row})
             return
 
         if parsed.path == "/api/dead-contracts":
@@ -11997,6 +12780,29 @@ QUALITY REQUIREMENTS
             self._json(200 if ok else 404, {"ok": ok})
             return
 
+        if parsed.path.startswith("/api/frozen-draft-picks/"):
+            try:
+                frozen_pick_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_frozen_pick_id"})
+                return
+            before = None
+            row = self.db.update_frozen_draft_pick(frozen_pick_id, payload)
+            if not row:
+                self._json(404, {"error": "frozen_pick_not_found"})
+                return
+            self._log_admin_action(
+                "update",
+                "frozen_draft_pick",
+                str(frozen_pick_id),
+                row.get("team_code"),
+                {"fields": sorted(payload.keys())},
+                before=before,
+                after=row,
+            )
+            self._json(200, {"ok": True, "frozen_pick": row})
+            return
+
         if parsed.path.startswith("/api/dead-contracts/"):
             try:
                 dead_contract_id = int(parsed.path.split("/")[-1])
@@ -12022,6 +12828,26 @@ QUALITY REQUIREMENTS
                     after=dead_after,
                 )
             self._json(200 if ok else 404, {"ok": ok})
+            return
+
+        if parsed.path.startswith("/api/frozen-draft-picks/"):
+            try:
+                frozen_pick_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_frozen_pick_id"})
+                return
+            row = self.db.delete_frozen_draft_pick(frozen_pick_id)
+            if not row:
+                self._json(404, {"error": "frozen_pick_not_found"})
+                return
+            self._log_admin_action(
+                "delete",
+                "frozen_draft_pick",
+                str(frozen_pick_id),
+                row.get("team_code"),
+                before=row,
+            )
+            self._json(200, {"ok": True})
             return
 
         self._json(404, {"error": "not_found"})

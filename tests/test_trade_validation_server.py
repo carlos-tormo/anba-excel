@@ -187,6 +187,64 @@ class TradeValidationServerTests(unittest.TestCase):
             any(issue["severity"] == "illegal" and issue["rule"] == "restricted_pick" for issue in swap_result["issues"])
         )
 
+    def test_trade_machine_validation_rejects_frozen_pick(self) -> None:
+        pick_id = self.db.create_asset(
+            "ATL",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "1st",
+                "year": 2026,
+                "draft_pick_frozen": True,
+            },
+        )
+
+        result = self.db.validate_trade_machine(
+            {
+                "teams": ["ATL", "BOS"],
+                "season": 2025,
+                "selections": [
+                    {"type": "pick", "id": pick_id, "from_team": "ATL", "to_team": "BOS"},
+                ],
+            }
+        )
+
+        self.assertEqual("illegal", result["status"])
+        self.assertTrue(
+            any(issue["severity"] == "illegal" and issue["rule"] == "frozen_pick" for issue in result["issues"])
+        )
+
+    def test_second_apron_rollover_freezes_newly_available_first(self) -> None:
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Second Apron Player",
+                "position": "SF",
+                "salary_2025_text": "220000000",
+            },
+        )
+
+        result = self.db.update_current_year(2026)
+        team = self.db.get_team("ATL")
+        frozen_rows = team["frozen_draft_picks"]
+        frozen_pick = next(
+            (
+                asset
+                for asset in team["assets"]
+                if asset["asset_type"] == "draft_pick"
+                and int(asset["year"]) == 2032
+                and asset["draft_round"] == "1st"
+            ),
+            None,
+        )
+
+        self.assertEqual(1, result["frozen_picks_created"])
+        self.assertEqual(1, len(frozen_rows))
+        self.assertEqual(2025, int(frozen_rows[0]["penalty_season_year"]))
+        self.assertEqual(2032, int(frozen_rows[0]["draft_year"]))
+        self.assertIsNotNone(frozen_pick)
+        self.assertEqual(1, int(frozen_pick["draft_pick_frozen"]))
+
     def test_aggregation_triggers_second_apron_hard_cap_even_when_salary_decreases(self) -> None:
         outgoing_a = self.db.create_player(
             "ATL",
