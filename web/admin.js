@@ -4,6 +4,7 @@ const TRADE_PICK_ACTION_SEND = 'send_pick';
 const TRADE_PICK_ACTION_SWAP = 'swap_rights';
 const TRADE_MACHINE_MIN_TEAMS = 2;
 const TRADE_MACHINE_MAX_TEAMS = 6;
+const TRADE_DRAFT_YEAR_WINDOW = 7;
 
 const state = {
   teams: [],
@@ -2897,12 +2898,13 @@ function tradePlayerRowsHtml(data, code) {
 
 function tradePickRowsHtml(data, code) {
   const minDraftYear = tradeSeasonStart() + 1;
+  const maxDraftYear = minDraftYear + TRADE_DRAFT_YEAR_WINDOW - 1;
   const picks = (data.assets || [])
     .filter((asset) => asset.asset_type === 'draft_pick')
     .filter((asset) => draftPickType(asset) !== 'sold')
     .filter((asset) => {
       const year = Number(asset.year);
-      return !Number.isFinite(year) || year >= minDraftYear;
+      return Number.isFinite(year) && year >= minDraftYear && year <= maxDraftYear;
     })
     .sort((a, b) => {
       const yearA = Number(a.year || 0);
