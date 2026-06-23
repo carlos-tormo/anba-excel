@@ -13,6 +13,7 @@ const state = {
     draft_year: null,
     draft_order: [],
   },
+  draftLive: null,
   teamCode: null,
   teamData: null,
   auth: null,
@@ -78,6 +79,9 @@ const state = {
     showEmptyYears: true,
   },
 };
+
+let draftLiveTimer = null;
+let draftLivePollTimer = null;
 
 const SEASON_WINDOW_SIZE = 6;
 const TRADE_MACHINE_MIN_TEAMS = 2;
@@ -1060,21 +1064,39 @@ function optionDecisionForSeason(row, season) {
   return row?.option_decisions?.[`option_${season}`] || null;
 }
 
-function qoAcceptedByTeam(row, season) {
+function optionAcceptedByTeam(row, season, expectedOption = '') {
   const option = seasonOptionCode(row, season);
   const decision = optionDecisionForSeason(row, season);
-  if (option !== 'QO' || !decision) return false;
+  if (!['QO', 'GAP'].includes(option) || !decision) return false;
+  const expected = String(expectedOption || '').trim().toUpperCase();
+  if (expected && option !== expected) return false;
   const decisionOption = String(decision.option_value || '').trim().toUpperCase();
   const action = String(decision.action || '').trim().toLowerCase();
   const status = String(decision.status || '').trim().toLowerCase();
-  return decisionOption === 'QO'
+  return decisionOption === option
     && action === 'accepted'
     && status === 'approved';
 }
 
+function qoAcceptedByTeam(row, season) {
+  return optionAcceptedByTeam(row, season, 'QO');
+}
+
+function acceptedOptionLabel(optionValue) {
+  const option = String(optionValue || '').trim().toUpperCase();
+  if (option === 'GAP') return 'GAP aceptada por el equipo';
+  return 'QO aceptada por el equipo';
+}
+
+function optionAcceptedIndicatorHtml(row, season) {
+  const option = seasonOptionCode(row, season);
+  if (!optionAcceptedByTeam(row, season, option)) return '';
+  const label = acceptedOptionLabel(option);
+  return `<span class="qo-accepted-indicator" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">✓</span>`;
+}
+
 function qoAcceptedIndicatorHtml(row, season) {
-  if (!qoAcceptedByTeam(row, season)) return '';
-  return '<span class="qo-accepted-indicator" title="QO aceptada por el equipo" aria-label="QO aceptada por el equipo">✓</span>';
+  return optionAcceptedIndicatorHtml(row, season);
 }
 
 function canSubmitGmOptionRequest(row, season, optionCode) {
@@ -1092,7 +1114,7 @@ function canSubmitGmOptionRequest(row, season, optionCode) {
 function gmOptionRequestActionsHtml(row, season, optionCode) {
   const option = String(optionCode || '').trim().toUpperCase();
   if (!canSubmitGmOptionRequest(row, season, option)) return '';
-  const hideAccept = option === 'QO' && qoAcceptedByTeam(row, season);
+  const hideAccept = ['QO', 'GAP'].includes(option) && optionAcceptedByTeam(row, season, option);
   return `
     <span class="gm-option-request-actions" data-player-id="${escapeHtml(row.id)}" data-option-field="option_${escapeHtml(season)}" data-option-value="${escapeHtml(option)}">
       ${hideAccept ? '' : '<button type="button" data-gm-option-action="accepted">Aceptar</button>'}
@@ -4016,19 +4038,287 @@ function draftOrderViaCellHtml(row) {
   return draftOrderViaHtml(row?.original_team_code, row?.original_team_name);
 }
 
+function setDraftLiveState(data) {
+  state.draftLive = data || null;
+  if (data && Array.isArray(data.draft_order)) {
+    state.draftOrder = {
+      draft_year: data.draft_year || currentSeasonStart() + 1,
+      draft_order: data.draft_order || [],
+    };
+    state.draftLive.loaded_at_ms = Date.now();
+  }
+}
+
+function draftLiveCurrentPick() {
+  const currentId = Number(state.draftLive?.current_pick_id || 0);
+  if (!currentId) return null;
+  return (state.draftLive?.draft_order || state.draftOrder?.draft_order || [])
+    .find((row) => Number(row.id || 0) === currentId) || null;
+}
+
+function draftLiveOrderedRows() {
+  return (state.draftOrder?.draft_order || state.draftLive?.draft_order || [])
+    .slice()
+    .sort((a, b) => {
+      const roundA = String(a.draft_round || '') === '1st' ? 1 : String(a.draft_round || '') === '2nd' ? 2 : 3;
+      const roundB = String(b.draft_round || '') === '1st' ? 1 : String(b.draft_round || '') === '2nd' ? 2 : 3;
+      return roundA - roundB || Number(a.pick_number || 0) - Number(b.pick_number || 0) || Number(a.id || 0) - Number(b.id || 0);
+    });
+}
+
+function draftLiveUpcomingRows() {
+  const rows = draftLiveOrderedRows();
+  if (!rows.length) return [];
+  const currentId = Number(state.draftLive?.current_pick_id || 0);
+  let index = currentId ? rows.findIndex((row) => Number(row.id || 0) === currentId) : -1;
+  if (index < 0) {
+    index = rows.findIndex((row) => !String(row.selection_text || '').trim() && Number(row.skipped || 0) === 0);
+  }
+  return rows.slice(index >= 0 ? index : 0);
+}
+
+function draftLiveUpcomingHtml() {
+  const rows = draftLiveUpcomingRows();
+  if (!rows.length) return '';
+  const currentId = Number(state.draftLive?.current_pick_id || 0);
+  return `
+    <div class="draft-live-upcoming">
+      <div class="draft-live-upcoming-head">
+        <span>Orden desde el pick actual</span>
+        <strong>${escapeHtml(rows.length)} picks</strong>
+      </div>
+      <ol class="draft-live-upcoming-list">
+        ${rows.map((row) => {
+          const isCurrent = currentId && Number(row.id || 0) === currentId;
+          const selection = String(row.selection_text || '').trim();
+          return `
+            <li class="${isCurrent ? 'is-current-draft-pick' : ''}">
+              <span class="draft-live-upcoming-number">#${escapeHtml(row.pick_number || '')}</span>
+              <span class="draft-live-upcoming-main">
+                <strong>${escapeHtml(row.owner_team_code || '')}</strong>
+                <small>${escapeHtml(row.draft_round || '')}${selection ? ` · ${selection}` : ''}</small>
+              </span>
+            </li>
+          `;
+        }).join('')}
+      </ol>
+    </div>
+  `;
+}
+
+function draftLiveRemainingSeconds() {
+  const live = state.draftLive || {};
+  const duration = Number(live.duration_seconds || 180);
+  if (!live.enabled || !live.started_at) return duration;
+  const started = Date.parse(live.started_at);
+  const serverNow = Date.parse(live.server_now || '');
+  if (!Number.isFinite(started) || !Number.isFinite(serverNow)) {
+    return Math.max(0, Number(live.remaining_seconds || duration));
+  }
+  const loadedAt = Number(live.loaded_at_ms || Date.now());
+  const elapsedSinceLoad = Math.max(0, Date.now() - loadedAt);
+  const estimatedNow = serverNow + elapsedSinceLoad;
+  return Math.max(0, Math.ceil((started + duration * 1000 - estimatedNow) / 1000));
+}
+
+function formatDraftLiveClock(seconds) {
+  const total = Math.max(0, Number(seconds || 0));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+function updateDraftLiveClock() {
+  const remaining = draftLiveRemainingSeconds();
+  document.querySelectorAll('[data-draft-live-countdown]').forEach((el) => {
+    el.textContent = formatDraftLiveClock(remaining);
+    el.classList.toggle('is-expired', remaining <= 0);
+  });
+}
+
+function startDraftLiveTimer() {
+  if (draftLiveTimer) {
+    clearInterval(draftLiveTimer);
+    draftLiveTimer = null;
+  }
+  if (draftLivePollTimer) {
+    clearInterval(draftLivePollTimer);
+    draftLivePollTimer = null;
+  }
+  updateDraftLiveClock();
+  if (!state.draftLive?.enabled) return;
+  draftLiveTimer = setInterval(updateDraftLiveClock, 1000);
+  draftLivePollTimer = setInterval(async () => {
+    if (state.ui.viewMode !== 'draft-order') return;
+    if (document.querySelector('.draft-live-modal-backdrop')) return;
+    try {
+      const res = await api('/api/draft-live');
+      setDraftLiveState(res);
+      renderDraftOrder();
+    } catch (err) {
+      console.warn('Draft live refresh failed', err);
+    }
+  }, 8000);
+}
+
+function canSelectDraftLivePick(row) {
+  const live = state.draftLive || {};
+  const auth = state.auth || {};
+  if (!live.enabled || !auth.authenticated) return false;
+  if (Number(row?.id || 0) !== Number(live.current_pick_id || 0)) return false;
+  if (auth.role === 'admin') return true;
+  if (auth.role !== 'gm') return false;
+  const owned = String(row?.owner_team_code || '').trim().toUpperCase();
+  const teamCodes = Array.isArray(auth.team_codes)
+    ? auth.team_codes.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean)
+    : [];
+  return Boolean(owned && teamCodes.includes(owned));
+}
+
+function draftLiveSelectionHtml(row) {
+  const selection = String(row?.selection_text || '').trim();
+  const skipped = Number(row?.skipped || 0) !== 0;
+  if (!selection && canSelectDraftLivePick(row)) {
+    return `<button type="button" class="draft-live-pick-btn" data-draft-live-pick="${escapeHtml(row.id)}">Elegir</button>`;
+  }
+  if (!selection) return '<span class="draft-live-pending">Pendiente</span>';
+  const cls = skipped ? 'draft-live-selection draft-live-selection--skipped' : 'draft-live-selection';
+  return `<span class="${cls}">${escapeHtml(selection)}</span>`;
+}
+
+function renderDraftLivePanel() {
+  const panel = document.getElementById('draftLivePanel');
+  if (!panel) return;
+  const live = state.draftLive || {};
+  const upcoming = draftLiveUpcomingRows();
+  if (!live.enabled && !upcoming.length) {
+    panel.classList.add('section-hidden');
+    panel.innerHTML = '';
+    startDraftLiveTimer();
+    return;
+  }
+  const current = draftLiveCurrentPick() || upcoming[0] || null;
+  const currentLabel = current
+    ? `Pick #${current.pick_number} · ${current.draft_round} · ${current.owner_team_code}`
+    : 'Sin picks configurados';
+  panel.classList.remove('section-hidden');
+  panel.innerHTML = `
+    <div class="draft-live-card">
+      <div>
+        <span class="draft-live-kicker">${live.enabled ? 'Modo draft activo' : 'Modo draft inactivo'}</span>
+        <strong>${escapeHtml(currentLabel)}</strong>
+        ${current ? `<span>Siguiente elección: ${escapeHtml(current.owner_team_name || current.owner_team_code || '')}</span>` : '<span>No quedan picks pendientes.</span>'}
+      </div>
+      ${live.enabled ? `<div class="draft-live-clock" data-draft-live-countdown>${formatDraftLiveClock(draftLiveRemainingSeconds())}</div>` : '<div class="draft-live-clock draft-live-clock--idle">--</div>'}
+    </div>
+    ${draftLiveUpcomingHtml()}
+  `;
+  startDraftLiveTimer();
+}
+
+function draftLiveChoiceOptionsHtml(selected = '') {
+  const normalized = String(selected || '').trim();
+  const options = Array.isArray(state.draftLive?.options) ? state.draftLive.options : [];
+  return [
+    '<option value="">Selecciona jugador</option>',
+    ...options.map((option) => `<option value="${escapeHtml(option)}"${option === normalized ? ' selected' : ''}>${escapeHtml(option)}</option>`),
+    `<option value="__other__"${normalized === '__other__' ? ' selected' : ''}>Otro</option>`,
+  ].join('');
+}
+
+function openDraftLivePickModal(row) {
+  const existing = document.querySelector('.draft-live-modal-backdrop');
+  if (existing) existing.remove();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'draft-live-modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="draft-live-modal" role="dialog" aria-modal="true" aria-label="Elegir jugador">
+      <div class="draft-live-modal-head">
+        <div>
+          <span>${escapeHtml(row.draft_round || '')} · Pick #${escapeHtml(row.pick_number || '')}</span>
+          <h3>${escapeHtml(row.owner_team_code || '')} elige</h3>
+        </div>
+        <button type="button" class="danger" data-draft-live-close>Cerrar</button>
+      </div>
+      <label>
+        <span>Jugador</span>
+        <select data-draft-live-choice>${draftLiveChoiceOptionsHtml()}</select>
+      </label>
+      <label class="section-hidden" data-draft-live-custom-wrap>
+        <span>Otro</span>
+        <input data-draft-live-custom type="text" placeholder="Nombre del jugador">
+      </label>
+      <div class="draft-live-modal-actions">
+        <button type="button" data-draft-live-submit>Confirmar elección</button>
+      </div>
+    </div>
+  `;
+  const close = () => backdrop.remove();
+  const choice = backdrop.querySelector('[data-draft-live-choice]');
+  const customWrap = backdrop.querySelector('[data-draft-live-custom-wrap]');
+  const customInput = backdrop.querySelector('[data-draft-live-custom]');
+  const syncCustom = () => {
+    const isOther = choice.value === '__other__';
+    customWrap.classList.toggle('section-hidden', !isOther);
+    if (isOther) customInput.focus();
+  };
+  choice.addEventListener('change', syncCustom);
+  backdrop.querySelector('[data-draft-live-close]').addEventListener('click', close);
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop) close();
+  });
+  backdrop.querySelector('[data-draft-live-submit]').addEventListener('click', async () => {
+    const optionValue = String(choice.value || '').trim();
+    const customText = String(customInput.value || '').trim();
+    if (!optionValue || (optionValue === '__other__' && !customText)) {
+      alert('Elige un jugador o escribe el nombre en Otro.');
+      return;
+    }
+    try {
+      const result = await api(`/api/draft-live/picks/${encodeURIComponent(row.id)}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          option_value: optionValue,
+          custom_text: customText,
+          advance: true,
+        }),
+      });
+      setDraftLiveState(result);
+      close();
+      renderDraftOrder();
+    } catch (err) {
+      alert(`No se pudo registrar la elección: ${err.message}`);
+    }
+  });
+  document.body.appendChild(backdrop);
+  choice.focus();
+  syncCustom();
+}
+
+function bindDraftLiveButtons(container) {
+  container.querySelectorAll('[data-draft-live-pick]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const pickId = Number(btn.dataset.draftLivePick || 0);
+      const row = (state.draftOrder?.draft_order || []).find((item) => Number(item.id || 0) === pickId);
+      if (row) openDraftLivePickModal(row);
+    });
+  });
+}
+
 function renderDraftOrderRound(round, label) {
   const rows = (state.draftOrder?.draft_order || [])
     .filter((row) => String(row.draft_round || '').trim() === round)
     .sort((a, b) => Number(a.pick_number || 0) - Number(b.pick_number || 0));
   const body = rows.length
     ? rows.map((row) => `
-        <tr>
+        <tr class="${Number(row.id || 0) === Number(state.draftLive?.current_pick_id || 0) ? 'is-current-draft-pick' : ''}">
           <td class="draft-order-number">${escapeHtml(row.pick_number || '')}</td>
           <td>${draftOrderTeamHtml(row.owner_team_code, row.owner_team_name)}</td>
           <td>${draftOrderViaCellHtml(row)}</td>
+          <td>${draftLiveSelectionHtml(row)}</td>
         </tr>
       `).join('')
-    : '<tr><td colspan="3" class="draft-order-empty">No selections configured.</td></tr>';
+    : '<tr><td colspan="4" class="draft-order-empty">No selections configured.</td></tr>';
   return `
     <article class="draft-order-round">
       <h3>${escapeHtml(label)}</h3>
@@ -4039,6 +4329,7 @@ function renderDraftOrderRound(round, label) {
               <th>Number</th>
               <th>Team that owns the pick</th>
               <th>Original pick</th>
+              <th>Elección</th>
             </tr>
           </thead>
           <tbody>${body}</tbody>
@@ -4054,10 +4345,12 @@ function renderDraftOrder() {
   if (!board) return;
   const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart() + 1);
   if (subtitle) subtitle.textContent = `${draftYear} order of selection`;
+  renderDraftLivePanel();
   board.innerHTML = `
     ${renderDraftOrderRound('1st', '1st Round')}
     ${renderDraftOrderRound('2nd', '2nd Round')}
   `;
+  bindDraftLiveButtons(board);
 }
 
 function ownerOfficeSeasonOptions() {
@@ -5863,11 +6156,8 @@ async function loadLeaguePlayers() {
 }
 
 async function loadDraftOrder() {
-  const res = await api('/api/draft-order');
-  state.draftOrder = {
-    draft_year: res.draft_year || currentSeasonStart() + 1,
-    draft_order: res.draft_order || [],
-  };
+  const res = await api('/api/draft-live');
+  setDraftLiveState(res);
   state.teamCode = null;
   state.teamData = null;
   setTeamInUrl(null);

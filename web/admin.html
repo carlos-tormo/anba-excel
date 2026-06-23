@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260622b">
+  <link rel="stylesheet" href="/styles.css?v=20260623d">
 </head>
 <body class="app-layout">
   <header>
@@ -360,6 +360,7 @@
           <button id="addDraftOrderSecondBtn" type="button">Add 2nd-round pick</button>
         </div>
       </div>
+      <div id="draftLiveAdminPanel" class="draft-live-panel draft-live-admin-panel"></div>
       <div id="draftOrderBoard" class="draft-order-board draft-order-admin-board">
         <article class="draft-order-round">
           <h3>1st Round</h3>
@@ -370,6 +371,7 @@
                   <th>Number</th>
                   <th>Team that owns the pick</th>
                   <th>Original pick</th>
+                  <th>Selection</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -386,6 +388,7 @@
                   <th>Number</th>
                   <th>Team that owns the pick</th>
                   <th>Original pick</th>
+                  <th>Selection</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1061,6 +1064,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260623a" defer></script>
+  <script src="/admin.js?v=20260623d" defer></script>
 </body>
 </html>

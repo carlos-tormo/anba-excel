@@ -27,6 +27,7 @@ const state = {
     draft_year: null,
     draft_order: [],
   },
+  draftLive: null,
   teamCode: null,
   teamData: null,
   csrfToken: null,
@@ -114,6 +115,7 @@ const PLAYER_SORT_CYCLE = [
   { key: 'rating', dir: 'asc' },
 ];
 let tradeValidationTimer = null;
+let draftLiveTimer = null;
 const POSITION_ORDER = { PG: 1, SG: 2, SF: 3, PF: 4, C: 5, TW: 6 };
 const ALL_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030];
 const TAXPAYER_MLE_BASE_AMOUNT = 5_500_007;
@@ -276,25 +278,42 @@ function optionDecisionForSeason(row, season) {
   return row?.option_decisions?.[`option_${season}`] || null;
 }
 
-function qoAcceptedByTeam(row, season) {
+function optionAcceptedByTeam(row, season, expectedOption = '') {
   const option = String(row?.[`option_${season}`] || '').trim().toUpperCase();
   const decision = optionDecisionForSeason(row, season);
-  if (option !== 'QO' || !decision) return false;
+  if (!['QO', 'GAP'].includes(option) || !decision) return false;
+  const expected = String(expectedOption || '').trim().toUpperCase();
+  if (expected && option !== expected) return false;
   const decisionOption = String(decision.option_value || '').trim().toUpperCase();
   const action = String(decision.action || '').trim().toLowerCase();
   const status = String(decision.status || '').trim().toLowerCase();
-  return decisionOption === 'QO'
+  return decisionOption === option
     && action === 'accepted'
     && status === 'approved';
 }
 
-function buildQoAcceptedIndicator() {
+function qoAcceptedByTeam(row, season) {
+  return optionAcceptedByTeam(row, season, 'QO');
+}
+
+function acceptedOptionLabel(optionValue) {
+  const option = String(optionValue || '').trim().toUpperCase();
+  if (option === 'GAP') return 'GAP aceptada por el equipo';
+  return 'QO aceptada por el equipo';
+}
+
+function buildAcceptedOptionIndicator(optionValue = 'QO') {
   const indicator = document.createElement('span');
   indicator.className = 'qo-accepted-indicator';
-  indicator.title = 'QO aceptada por el equipo';
-  indicator.setAttribute('aria-label', 'QO aceptada por el equipo');
+  const label = acceptedOptionLabel(optionValue);
+  indicator.title = label;
+  indicator.setAttribute('aria-label', label);
   indicator.textContent = '✓';
   return indicator;
+}
+
+function buildQoAcceptedIndicator() {
+  return buildAcceptedOptionIndicator('QO');
 }
 
 function contractOptionActionMessage(teamCode, playerName, season, optionValue, action) {
@@ -4841,6 +4860,333 @@ function draftOrderTeamOptions(selectedCode = '') {
     .join('');
 }
 
+function setDraftLiveState(data) {
+  state.draftLive = data || null;
+  if (data && Array.isArray(data.draft_order)) {
+    state.draftOrder = {
+      draft_year: data.draft_year || currentSeasonStart() + 1,
+      draft_order: data.draft_order || [],
+    };
+    state.draftLive.loaded_at_ms = Date.now();
+  }
+}
+
+function draftLiveCurrentPick() {
+  const currentId = Number(state.draftLive?.current_pick_id || 0);
+  if (!currentId) return null;
+  return (state.draftLive?.draft_order || state.draftOrder?.draft_order || [])
+    .find((row) => Number(row.id || 0) === currentId) || null;
+}
+
+function draftLiveOrderedRows() {
+  return (state.draftOrder?.draft_order || state.draftLive?.draft_order || [])
+    .slice()
+    .sort((a, b) => {
+      const roundA = String(a.draft_round || '') === '1st' ? 1 : String(a.draft_round || '') === '2nd' ? 2 : 3;
+      const roundB = String(b.draft_round || '') === '1st' ? 1 : String(b.draft_round || '') === '2nd' ? 2 : 3;
+      return roundA - roundB || Number(a.pick_number || 0) - Number(b.pick_number || 0) || Number(a.id || 0) - Number(b.id || 0);
+    });
+}
+
+function draftLiveUpcomingRows() {
+  const rows = draftLiveOrderedRows();
+  if (!rows.length) return [];
+  const currentId = Number(state.draftLive?.current_pick_id || 0);
+  let index = currentId ? rows.findIndex((row) => Number(row.id || 0) === currentId) : -1;
+  if (index < 0) {
+    index = rows.findIndex((row) => !String(row.selection_text || '').trim() && Number(row.skipped || 0) === 0);
+  }
+  return rows.slice(index >= 0 ? index : 0);
+}
+
+function draftLiveRemainingSeconds() {
+  const live = state.draftLive || {};
+  const duration = Number(live.duration_seconds || 180);
+  if (!live.enabled || !live.started_at) return duration;
+  const started = Date.parse(live.started_at);
+  const serverNow = Date.parse(live.server_now || '');
+  if (!Number.isFinite(started) || !Number.isFinite(serverNow)) {
+    return Math.max(0, Number(live.remaining_seconds || duration));
+  }
+  const loadedAt = Number(live.loaded_at_ms || Date.now());
+  const elapsedSinceLoad = Math.max(0, Date.now() - loadedAt);
+  const estimatedNow = serverNow + elapsedSinceLoad;
+  return Math.max(0, Math.ceil((started + duration * 1000 - estimatedNow) / 1000));
+}
+
+function formatDraftLiveClock(seconds) {
+  const total = Math.max(0, Number(seconds || 0));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+function updateDraftLiveClock() {
+  const remaining = draftLiveRemainingSeconds();
+  document.querySelectorAll('[data-draft-live-countdown]').forEach((el) => {
+    el.textContent = formatDraftLiveClock(remaining);
+    el.classList.toggle('is-expired', remaining <= 0);
+  });
+}
+
+function startDraftLiveTimer() {
+  if (draftLiveTimer) {
+    clearInterval(draftLiveTimer);
+    draftLiveTimer = null;
+  }
+  updateDraftLiveClock();
+  if (!state.draftLive?.enabled) return;
+  draftLiveTimer = setInterval(updateDraftLiveClock, 1000);
+}
+
+function draftLivePickLabel(row) {
+  if (!row) return 'Sin picks configurados';
+  return `#${row.pick_number} · ${row.draft_round} · ${row.owner_team_code}`;
+}
+
+function draftLiveUpcomingHtml() {
+  const rows = draftLiveUpcomingRows();
+  if (!rows.length) return '';
+  const currentId = Number(state.draftLive?.current_pick_id || 0);
+  return `
+    <div class="draft-live-upcoming">
+      <div class="draft-live-upcoming-head">
+        <span>Orden desde el pick actual</span>
+        <strong>${escapeHtml(rows.length)} picks</strong>
+      </div>
+      <ol class="draft-live-upcoming-list">
+        ${rows.map((row) => {
+          const isCurrent = currentId && Number(row.id || 0) === currentId;
+          const selection = String(row.selection_text || '').trim();
+          return `
+            <li class="${isCurrent ? 'is-current-draft-pick' : ''}">
+              <span class="draft-live-upcoming-number">#${escapeHtml(row.pick_number || '')}</span>
+              <span class="draft-live-upcoming-main">
+                <strong>${escapeHtml(row.owner_team_code || '')}</strong>
+                <small>${escapeHtml(row.draft_round || '')}${selection ? ` · ${selection}` : ''}</small>
+              </span>
+            </li>
+          `;
+        }).join('')}
+      </ol>
+    </div>
+  `;
+}
+
+function draftLiveCurrentPickOptionsHtml(selectedId = '') {
+  const selected = String(selectedId || '');
+  return (state.draftOrder?.draft_order || [])
+    .map((row) => {
+      const id = String(row.id || '');
+      return `<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(draftLivePickLabel(row))}</option>`;
+    })
+    .join('');
+}
+
+function draftLiveSelectionHtml(row) {
+  const selection = String(row?.selection_text || '').trim();
+  const skipped = Number(row?.skipped || 0) !== 0;
+  if (!selection) return '<span class="draft-live-pending">Pendiente</span>';
+  const cls = skipped ? 'draft-live-selection draft-live-selection--skipped' : 'draft-live-selection';
+  return `<span class="${cls}">${escapeHtml(selection)}</span>`;
+}
+
+function draftLiveChoiceOptionsHtml(selected = '') {
+  const normalized = String(selected || '').trim();
+  const options = Array.isArray(state.draftLive?.options) ? state.draftLive.options : [];
+  return [
+    '<option value="">Selecciona jugador</option>',
+    ...options.map((option) => `<option value="${escapeHtml(option)}"${option === normalized ? ' selected' : ''}>${escapeHtml(option)}</option>`),
+    `<option value="__other__"${normalized === '__other__' ? ' selected' : ''}>Otro</option>`,
+  ].join('');
+}
+
+function renderDraftLiveAdminPanel() {
+  const panel = document.getElementById('draftLiveAdminPanel');
+  if (!panel) return;
+  const live = state.draftLive || {};
+  const current = draftLiveCurrentPick() || draftLiveUpcomingRows()[0] || null;
+  panel.innerHTML = `
+    <div class="draft-live-card draft-live-card--admin">
+      <div class="draft-live-status">
+        <span class="draft-live-kicker">${live.enabled ? 'Modo draft activo' : 'Modo draft inactivo'}</span>
+        <strong>${escapeHtml(draftLivePickLabel(current))}</strong>
+        <span>${live.enabled ? 'El contador está corriendo para el pick actual.' : 'Activa el modo draft para abrir elecciones de GM.'}</span>
+      </div>
+      ${live.enabled ? `<div class="draft-live-clock" data-draft-live-countdown>${formatDraftLiveClock(draftLiveRemainingSeconds())}</div>` : '<div class="draft-live-clock draft-live-clock--idle">--</div>'}
+    </div>
+    ${draftLiveUpcomingHtml()}
+    <div class="draft-live-admin-controls">
+      <label class="settings-check">
+        <input id="draftLiveEnabledInput" type="checkbox" ${live.enabled ? 'checked' : ''}>
+        <span>Modo draft</span>
+      </label>
+      <label>
+        <span>Duración</span>
+        <input id="draftLiveDurationInput" type="number" min="10" max="3600" step="5" value="${escapeHtml(live.duration_seconds || 180)}">
+      </label>
+      <label>
+        <span>Pick actual</span>
+        <select id="draftLiveCurrentPickSelect">${draftLiveCurrentPickOptionsHtml(live.current_pick_id || '')}</select>
+      </label>
+      <button id="draftLiveSaveBtn" type="button">Guardar modo draft</button>
+      <button id="draftLiveRestartBtn" type="button">Reiniciar contador</button>
+      <button id="draftLivePreviousBtn" type="button">Pick anterior</button>
+      <button id="draftLiveNextBtn" type="button">Avanzar pick</button>
+      <button id="draftLiveSkipBtn" type="button" class="danger">Saltar al siguiente</button>
+    </div>
+    <label class="draft-live-options-editor">
+      <span>Opciones de jugadores elegibles, una por línea</span>
+      <textarea id="draftLiveOptionsInput" rows="5" placeholder="Jugador 1&#10;Jugador 2">${escapeHtml(live.options_text || '')}</textarea>
+    </label>
+  `;
+  startDraftLiveTimer();
+  const save = async (extra = {}) => {
+    const result = await api('/api/draft-live/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        draft_year: state.draftOrder?.draft_year || currentSeasonStart() + 1,
+        enabled: document.getElementById('draftLiveEnabledInput')?.checked,
+        duration_seconds: Number(document.getElementById('draftLiveDurationInput')?.value || 180),
+        current_pick_id: Number(document.getElementById('draftLiveCurrentPickSelect')?.value || 0) || null,
+        options_text: document.getElementById('draftLiveOptionsInput')?.value || '',
+        ...extra,
+      }),
+    });
+    setDraftLiveState(result);
+    renderDraftOrder();
+  };
+  const control = async (action) => {
+    const result = await api('/api/draft-live/control', {
+      method: 'POST',
+      body: JSON.stringify({
+        draft_year: state.draftOrder?.draft_year || currentSeasonStart() + 1,
+        action,
+      }),
+    });
+    setDraftLiveState(result);
+    renderDraftOrder();
+  };
+  document.getElementById('draftLiveSaveBtn')?.addEventListener('click', () => {
+    save().catch((err) => alert(`Draft live save failed: ${err.message}`));
+  });
+  document.getElementById('draftLiveRestartBtn')?.addEventListener('click', () => {
+    save({ reset_timer: true }).catch((err) => alert(`Draft timer restart failed: ${err.message}`));
+  });
+  document.getElementById('draftLivePreviousBtn')?.addEventListener('click', () => {
+    control('previous').catch((err) => alert(`Draft previous failed: ${err.message}`));
+  });
+  document.getElementById('draftLiveNextBtn')?.addEventListener('click', () => {
+    control('next').catch((err) => alert(`Draft next failed: ${err.message}`));
+  });
+  document.getElementById('draftLiveSkipBtn')?.addEventListener('click', () => {
+    if (!confirm('¿Saltar el pick actual y pasar al siguiente?')) return;
+    control('skip').catch((err) => alert(`Draft skip failed: ${err.message}`));
+  });
+}
+
+function openDraftLivePickModal(row) {
+  const existing = document.querySelector('.draft-live-modal-backdrop');
+  if (existing) existing.remove();
+  const isCurrent = Number(row?.id || 0) === Number(state.draftLive?.current_pick_id || 0);
+  const hasSelection = Boolean(String(row?.selection_text || '').trim());
+  const existingOption = String(row?.option_value || '').trim();
+  const isOther = hasSelection && existingOption && !(state.draftLive?.options || []).includes(existingOption) && existingOption !== 'Saltado';
+  const backdrop = document.createElement('div');
+  backdrop.className = 'draft-live-modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="draft-live-modal" role="dialog" aria-modal="true" aria-label="Corregir elección">
+      <div class="draft-live-modal-head">
+        <div>
+          <span>${escapeHtml(row.draft_round || '')} · Pick #${escapeHtml(row.pick_number || '')}</span>
+          <h3>${escapeHtml(row.owner_team_code || '')} elige</h3>
+        </div>
+        <button type="button" class="danger" data-draft-live-close>Cerrar</button>
+      </div>
+      <label>
+        <span>Jugador</span>
+        <select data-draft-live-choice>${draftLiveChoiceOptionsHtml(isOther ? '__other__' : existingOption)}</select>
+      </label>
+      <label class="${isOther ? '' : 'section-hidden'}" data-draft-live-custom-wrap>
+        <span>Otro</span>
+        <input data-draft-live-custom type="text" placeholder="Nombre del jugador" value="${escapeHtml(isOther ? row.selection_text || '' : '')}">
+      </label>
+      <label class="settings-check">
+        <input data-draft-live-advance type="checkbox" ${isCurrent ? 'checked' : ''}>
+        <span>Avanzar al siguiente tras guardar</span>
+      </label>
+      <div class="draft-live-modal-actions">
+        ${hasSelection ? '<button type="button" class="danger" data-draft-live-clear>Limpiar elección</button>' : ''}
+        <button type="button" data-draft-live-submit>Guardar elección</button>
+      </div>
+    </div>
+  `;
+  const close = () => backdrop.remove();
+  const choice = backdrop.querySelector('[data-draft-live-choice]');
+  const customWrap = backdrop.querySelector('[data-draft-live-custom-wrap]');
+  const customInput = backdrop.querySelector('[data-draft-live-custom]');
+  const syncCustom = () => {
+    const show = choice.value === '__other__';
+    customWrap.classList.toggle('section-hidden', !show);
+    if (show) customInput.focus();
+  };
+  choice.addEventListener('change', syncCustom);
+  backdrop.querySelector('[data-draft-live-close]')?.addEventListener('click', close);
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop) close();
+  });
+  backdrop.querySelector('[data-draft-live-clear]')?.addEventListener('click', async () => {
+    if (!confirm('¿Limpiar esta elección?')) return;
+    try {
+      const result = await api(`/api/draft-live/picks/${encodeURIComponent(row.id)}`, {
+        method: 'POST',
+        body: JSON.stringify({ clear: true, advance: false }),
+      });
+      setDraftLiveState(result);
+      close();
+      renderDraftOrder();
+    } catch (err) {
+      alert(`Draft pick clear failed: ${err.message}`);
+    }
+  });
+  backdrop.querySelector('[data-draft-live-submit]')?.addEventListener('click', async () => {
+    const optionValue = String(choice.value || '').trim();
+    const customText = String(customInput.value || '').trim();
+    if (!optionValue || (optionValue === '__other__' && !customText)) {
+      alert('Elige un jugador o escribe el nombre en Otro.');
+      return;
+    }
+    try {
+      const result = await api(`/api/draft-live/picks/${encodeURIComponent(row.id)}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          option_value: optionValue,
+          custom_text: customText,
+          advance: Boolean(backdrop.querySelector('[data-draft-live-advance]')?.checked),
+        }),
+      });
+      setDraftLiveState(result);
+      close();
+      renderDraftOrder();
+    } catch (err) {
+      alert(`Draft pick save failed: ${err.message}`);
+    }
+  });
+  document.body.appendChild(backdrop);
+  choice.focus();
+  syncCustom();
+}
+
+function bindDraftLiveAdminButtons(container) {
+  container.querySelectorAll('[data-draft-live-pick]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const pickId = Number(btn.dataset.draftLivePick || 0);
+      const row = (state.draftOrder?.draft_order || []).find((item) => Number(item.id || 0) === pickId);
+      if (row) openDraftLivePickModal(row);
+    });
+  });
+}
+
 function draftOrderPayloadFromRow(row, attrName = 'data-draft-order-field') {
   const payload = {
     draft_year: Number(state.draftOrder?.draft_year || currentSeasonStart() + 1),
@@ -4866,10 +5212,17 @@ function renderDraftOrderTable(round, tableId) {
   rows.forEach((entry) => {
     const tr = document.createElement('tr');
     tr.dataset.id = entry.id;
+    tr.classList.toggle('is-current-draft-pick', Number(entry.id || 0) === Number(state.draftLive?.current_pick_id || 0));
     tr.innerHTML = `
       <td><input data-draft-order-field="pick_number" type="number" min="1" step="1" value="${escapeHtml(entry.pick_number || '')}"></td>
       <td><select data-draft-order-field="owner_team_code">${draftOrderTeamOptions(entry.owner_team_code || '')}</select></td>
       <td><select data-draft-order-field="original_team_code">${draftOrderTeamOptions(entry.original_team_code || '')}</select></td>
+      <td>
+        <div class="draft-live-admin-selection-cell">
+          ${draftLiveSelectionHtml(entry)}
+          <button type="button" data-draft-live-pick="${escapeHtml(entry.id)}">Elegir/corregir</button>
+        </div>
+      </td>
       <td><button type="button" class="danger" data-action="delete-draft-order">Delete</button></td>
     `;
     tr.querySelectorAll('[data-draft-order-field]').forEach((el) => {
@@ -4897,6 +5250,7 @@ function renderDraftOrderTable(round, tableId) {
       <td><input data-new-draft-order-field="pick_number" data-autofocus type="number" min="1" step="1" value="${draftOrderNextPickNumber(round)}"></td>
       <td><select data-new-draft-order-field="owner_team_code">${draftOrderTeamOptions(defaultTeam)}</select></td>
       <td><select data-new-draft-order-field="original_team_code">${draftOrderTeamOptions(defaultTeam)}</select></td>
+      <td><span class="draft-live-pending">Pendiente</span></td>
       <td class="table-add-actions-cell">
         <button type="button" class="inline-save" data-action="save-draft">✓</button>
         <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
@@ -4925,7 +5279,7 @@ function renderDraftOrderTable(round, tableId) {
     requestAnimationFrame(() => tr.querySelector('[data-autofocus]')?.focus());
   } else if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="4" class="draft-order-empty">No selections configured.</td>';
+    tr.innerHTML = '<td colspan="5" class="draft-order-empty">No selections configured.</td>';
     tbody.appendChild(tr);
   }
 }
@@ -4934,8 +5288,11 @@ function renderDraftOrder() {
   const subtitle = document.getElementById('draftOrderSubtitle');
   const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart() + 1);
   if (subtitle) subtitle.textContent = `${draftYear} order of selection`;
+  renderDraftLiveAdminPanel();
   renderDraftOrderTable('1st', 'draftOrderFirstTable');
   renderDraftOrderTable('2nd', 'draftOrderSecondTable');
+  const board = document.getElementById('draftOrderBoard');
+  if (board) bindDraftLiveAdminButtons(board);
 }
 
 function populateSignFreeAgentTeams(selectedCode = '') {
@@ -6625,7 +6982,10 @@ function renderPlayers() {
             body: JSON.stringify({ [optionField]: optionSelect.value || null }),
           });
           p[optionField] = optionSelect.value || null;
-          if (p.option_decisions && (!p[optionField] || String(p[optionField]).toUpperCase() !== 'QO')) {
+          if (
+            p.option_decisions
+            && (!p[optionField] || !['QO', 'GAP'].includes(String(p[optionField]).toUpperCase()))
+          ) {
             delete p.option_decisions[optionField];
           }
           applyOptionVisual();
@@ -6646,18 +7006,21 @@ function renderPlayers() {
       rejectBtn.type = 'button';
       rejectBtn.className = 'option-action-btn option-action-btn--reject';
       rejectBtn.textContent = 'Reject';
-      const qoAcceptedIndicator = buildQoAcceptedIndicator();
-      actionWrap.append(acceptBtn, qoAcceptedIndicator, rejectBtn);
+      const acceptedOptionIndicator = buildAcceptedOptionIndicator(optionSelect.value);
+      actionWrap.append(acceptBtn, acceptedOptionIndicator, rejectBtn);
       optionSelect.insertAdjacentElement('afterend', actionWrap);
 
       const syncOptionActions = () => {
         const option = String(optionSelect.value || '').toUpperCase();
         const hasOption = ['TO', 'PO', 'QO', 'GAP'].includes(option);
-        const qoAccepted = option === 'QO' && qoAcceptedByTeam(p, season);
+        const optionAccepted = ['QO', 'GAP'].includes(option) && optionAcceptedByTeam(p, season, option);
+        const optionAcceptedLabel = acceptedOptionLabel(option);
+        acceptedOptionIndicator.title = optionAcceptedLabel;
+        acceptedOptionIndicator.setAttribute('aria-label', optionAcceptedLabel);
         actionWrap.classList.toggle('section-hidden', !hasOption);
-        acceptBtn.classList.toggle('section-hidden', qoAccepted);
-        qoAcceptedIndicator.classList.toggle('section-hidden', !qoAccepted);
-        acceptBtn.disabled = saving || !hasOption || qoAccepted;
+        acceptBtn.classList.toggle('section-hidden', optionAccepted);
+        acceptedOptionIndicator.classList.toggle('section-hidden', !optionAccepted);
+        acceptBtn.disabled = saving || !hasOption || optionAccepted;
         rejectBtn.disabled = saving || !hasOption;
       };
       const processOptionAction = async (action) => {
@@ -6696,11 +7059,11 @@ function renderPlayers() {
           });
           p[optionField] = nextOptionValue || null;
           optionSelect.value = nextOptionValue;
-          if (action === 'accepted' && optionValue === 'QO') {
+          if (action === 'accepted' && ['QO', 'GAP'].includes(optionValue)) {
             p.option_decisions = {
               ...(p.option_decisions || {}),
               [optionField]: {
-                option_value: 'QO',
+                option_value: optionValue,
                 action: 'accepted',
                 status: 'approved',
               },
@@ -8272,11 +8635,8 @@ async function loadLeaguePlayers() {
 }
 
 async function loadDraftOrder() {
-  const res = await api('/api/draft-order');
-  state.draftOrder = {
-    draft_year: res.draft_year || currentSeasonStart() + 1,
-    draft_order: res.draft_order || [],
-  };
+  const res = await api('/api/draft-live');
+  setDraftLiveState(res);
   state.teamCode = null;
   state.teamData = null;
   state.selectedPlayerIds.clear();

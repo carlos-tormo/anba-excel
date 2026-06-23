@@ -1590,6 +1590,269 @@ h1 {
   font-weight: 800;
   text-align: center;
 }
+.draft-live-panel {
+  display: grid;
+  gap: 12px;
+}
+.draft-live-panel.section-hidden {
+  display: none;
+}
+.draft-live-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.08);
+}
+.draft-live-card > div:first-child,
+.draft-live-status {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.draft-live-kicker {
+  color: #0f766e;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.draft-live-card strong {
+  color: #0f172a;
+  font-size: 1.16rem;
+  font-weight: 950;
+}
+.draft-live-card span:not(.draft-live-kicker) {
+  color: #64748b;
+  font-weight: 800;
+}
+.draft-live-clock {
+  flex: 0 0 auto;
+  min-width: 104px;
+  padding: 9px 14px;
+  border: 2px solid #0f766e;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #0f766e;
+  font-size: 1.7rem;
+  font-weight: 950;
+  line-height: 1;
+  text-align: center;
+}
+.draft-live-clock.is-expired {
+  border-color: #b91c1c;
+  color: #b91c1c;
+}
+.draft-live-clock--idle {
+  border-color: #cbd5e1;
+  color: #94a3b8;
+}
+.draft-live-upcoming {
+  overflow: hidden;
+  border: 1px solid #d6e0ec;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
+}
+.draft-live-upcoming-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #dbe5f0;
+  background: #f8fafc;
+  color: #53657f;
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.draft-live-upcoming-head strong {
+  color: #0f766e;
+}
+.draft-live-upcoming-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  max-height: 250px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  list-style: none;
+  gap: 8px;
+}
+.draft-live-upcoming-list li {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid #dbe5f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.draft-live-upcoming-list li.is-current-draft-pick {
+  border-color: #86efac;
+  background: #ecfdf5;
+  box-shadow: inset 3px 0 0 #0f766e;
+}
+.draft-live-upcoming-number {
+  flex: 0 0 auto;
+  color: #0f172a;
+  font-size: 0.92rem;
+  font-weight: 950;
+}
+.draft-live-upcoming-main {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.draft-live-upcoming-main strong,
+.draft-live-upcoming-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.draft-live-upcoming-main strong {
+  color: #0f766e;
+  font-size: 0.82rem;
+  font-weight: 950;
+}
+.draft-live-upcoming-main small {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.draft-live-admin-controls {
+  display: grid;
+  grid-template-columns: auto minmax(110px, 150px) minmax(220px, 1fr) repeat(5, auto);
+  gap: 10px;
+  align-items: end;
+}
+.draft-live-admin-controls label,
+.draft-live-options-editor {
+  display: grid;
+  gap: 5px;
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+.draft-live-admin-controls input,
+.draft-live-admin-controls select,
+.draft-live-options-editor textarea {
+  width: 100%;
+  min-width: 0;
+}
+.draft-live-options-editor textarea {
+  resize: vertical;
+}
+.draft-order-table tbody tr.is-current-draft-pick td {
+  background: #ecfdf5;
+  box-shadow: inset 4px 0 0 #0f766e;
+}
+.draft-live-pick-btn {
+  padding: 7px 12px;
+  border: 1px solid #0f766e;
+  border-radius: 999px;
+  background: #0f766e;
+  color: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+.draft-live-selection,
+.draft-live-pending {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+.draft-live-selection {
+  border: 1px solid #86efac;
+  background: #dcfce7;
+  color: #166534;
+}
+.draft-live-selection--skipped {
+  border-color: #fecaca;
+  background: #fee2e2;
+  color: #991b1b;
+}
+.draft-live-pending {
+  border: 1px solid #dbe5f0;
+  background: #f8fafc;
+  color: #64748b;
+}
+.draft-live-admin-selection-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.draft-live-admin-selection-cell button {
+  padding: 6px 9px;
+  font-size: 0.78rem;
+}
+.draft-live-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.52);
+}
+.draft-live-modal {
+  display: grid;
+  gap: 14px;
+  width: min(520px, 100%);
+  padding: 18px;
+  border: 1px solid #d6e0ec;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+}
+.draft-live-modal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: start;
+}
+.draft-live-modal-head span {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.draft-live-modal-head h3 {
+  margin: 2px 0 0;
+  color: #0f172a;
+  font-size: 1.3rem;
+}
+.draft-live-modal label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 900;
+}
+.draft-live-modal select,
+.draft-live-modal input {
+  width: 100%;
+}
+.draft-live-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
 .draft-order-admin-table input,
 .draft-order-admin-table select {
   width: 100%;
@@ -1597,7 +1860,7 @@ h1 {
 }
 .draft-order-admin-table th:last-child,
 .draft-order-admin-table td:last-child {
-  width: 104px;
+  width: 118px;
 }
 .trade-machine-head {
   align-items: end;
@@ -7827,6 +8090,20 @@ select[data-new-field="years_left"],
   .draft-order-board {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+  .draft-live-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .draft-live-clock {
+    width: 100%;
+  }
+  .draft-live-upcoming-list {
+    grid-template-columns: 1fr;
+    max-height: 220px;
+  }
+  .draft-live-admin-controls {
+    grid-template-columns: 1fr;
   }
   .draft-order-round h3 {
     padding: 10px 12px;

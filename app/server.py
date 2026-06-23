@@ -1024,6 +1024,38 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS draft_live_state (
+                    draft_year INTEGER PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    current_draft_order_id INTEGER,
+                    duration_seconds INTEGER NOT NULL DEFAULT 180,
+                    started_at TEXT,
+                    options_text TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(current_draft_order_id) REFERENCES draft_order(id) ON DELETE SET NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS draft_live_selections (
+                    draft_order_id INTEGER PRIMARY KEY,
+                    selection_text TEXT,
+                    option_value TEXT,
+                    custom_text TEXT,
+                    skipped INTEGER NOT NULL DEFAULT 0,
+                    selected_by_email TEXT,
+                    selected_by_name TEXT,
+                    selected_by_role TEXT,
+                    selected_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(draft_order_id) REFERENCES draft_order(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS team_economy (
                     team_id INTEGER NOT NULL,
                     season_year INTEGER NOT NULL,
@@ -1165,6 +1197,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_apron_hard_caps_team_year ON team_apron_hard_caps(team_id, season_year)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_team_start ON team_gm_history(team_id, start_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_order_year_round ON draft_order(draft_year, draft_round, pick_number)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_live_selections_selected_at ON draft_live_selections(selected_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_team_economy_season ON team_economy(season_year)")
             conn.execute(
                 """
@@ -2743,6 +2776,393 @@ class LeagueDB(DatabaseMaintenanceMixin):
             cur = conn.execute("DELETE FROM draft_order WHERE id = ?", (entry_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    def get_draft_order_entry(self, entry_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    d.id,
+                    d.draft_year,
+                    d.draft_round,
+                    d.pick_number,
+                    d.owner_team_code,
+                    COALESCE(owner.name, d.owner_team_code) AS owner_team_name,
+                    d.original_team_code,
+                    COALESCE(original.name, d.original_team_code) AS original_team_name,
+                    d.created_at,
+                    d.updated_at
+                FROM draft_order d
+                LEFT JOIN teams owner ON owner.code = d.owner_team_code
+                LEFT JOIN teams original ON original.code = d.original_team_code
+                WHERE d.id = ?
+                """,
+                (int(entry_id),),
+            )
+            row = cur.fetchone()
+            return row_to_dict(cur, row) if row else None
+
+    def _draft_live_order_rows(self, conn: sqlite3.Connection, draft_year: int) -> List[Dict[str, Any]]:
+        cur = conn.execute(
+            """
+            SELECT
+                d.id,
+                d.draft_year,
+                d.draft_round,
+                d.pick_number,
+                d.owner_team_code,
+                COALESCE(owner.name, d.owner_team_code) AS owner_team_name,
+                d.original_team_code,
+                COALESCE(original.name, d.original_team_code) AS original_team_name,
+                d.created_at,
+                d.updated_at,
+                s.selection_text,
+                s.option_value,
+                s.custom_text,
+                COALESCE(s.skipped, 0) AS skipped,
+                s.selected_by_email,
+                s.selected_by_name,
+                s.selected_by_role,
+                s.selected_at,
+                s.updated_at AS selection_updated_at
+            FROM draft_order d
+            LEFT JOIN teams owner ON owner.code = d.owner_team_code
+            LEFT JOIN teams original ON original.code = d.original_team_code
+            LEFT JOIN draft_live_selections s ON s.draft_order_id = d.id
+            WHERE d.draft_year = ?
+            ORDER BY
+                CASE d.draft_round WHEN '1st' THEN 1 WHEN '2nd' THEN 2 ELSE 3 END,
+                d.pick_number,
+                d.id
+            """,
+            (int(draft_year),),
+        )
+        return [row_to_dict(cur, row) for row in cur.fetchall()]
+
+    def _draft_live_state_row(self, conn: sqlite3.Connection, draft_year: int) -> Optional[Dict[str, Any]]:
+        cur = conn.execute("SELECT * FROM draft_live_state WHERE draft_year = ?", (int(draft_year),))
+        row = cur.fetchone()
+        return row_to_dict(cur, row) if row else None
+
+    def _draft_live_options(self, options_text: Any) -> List[str]:
+        seen: set[str] = set()
+        options: List[str] = []
+        for line in str(options_text or "").splitlines():
+            option = line.strip()
+            if not option:
+                continue
+            key = option.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append(option)
+        return options
+
+    def _draft_live_first_open_pick_id(self, rows: List[Dict[str, Any]]) -> Optional[int]:
+        for row in rows:
+            if str(row.get("selection_text") or "").strip() or parse_bool(row.get("skipped")):
+                continue
+            parsed = parse_int(row.get("id"))
+            if parsed is not None:
+                return int(parsed)
+        return parse_int(rows[0].get("id")) if rows else None
+
+    def _draft_live_adjacent_pick_id(
+        self,
+        rows: List[Dict[str, Any]],
+        current_pick_id: Optional[int],
+        direction: str,
+        *,
+        prefer_open: bool = False,
+    ) -> Optional[int]:
+        ids = [int(row["id"]) for row in rows if parse_int(row.get("id")) is not None]
+        if not ids:
+            return None
+        if current_pick_id not in ids:
+            return self._draft_live_first_open_pick_id(rows) or ids[0]
+        idx = ids.index(int(current_pick_id))
+        step = -1 if direction == "previous" else 1
+        next_idx = max(0, min(len(ids) - 1, idx + step))
+        if prefer_open and step > 0:
+            for row in rows[idx + 1:]:
+                if str(row.get("selection_text") or "").strip() or parse_bool(row.get("skipped")):
+                    continue
+                parsed = parse_int(row.get("id"))
+                if parsed is not None:
+                    return int(parsed)
+        return ids[next_idx]
+
+    def _draft_live_remaining_seconds(self, started_at: Any, duration_seconds: int) -> int:
+        raw = str(started_at or "").strip()
+        if not raw:
+            return int(duration_seconds)
+        try:
+            started = datetime.fromisoformat(raw)
+        except ValueError:
+            return int(duration_seconds)
+        elapsed = (datetime.now(UTC) - started).total_seconds()
+        return max(0, int(duration_seconds) - int(elapsed))
+
+    def _draft_live_payload(
+        self,
+        conn: sqlite3.Connection,
+        draft_year: int,
+        *,
+        state_row: Optional[Dict[str, Any]] = None,
+        rows: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        rows = rows if rows is not None else self._draft_live_order_rows(conn, draft_year)
+        state_row = state_row if state_row is not None else self._draft_live_state_row(conn, draft_year)
+        duration_seconds = max(10, min(3600, parse_int((state_row or {}).get("duration_seconds")) or 180))
+        enabled = parse_bool((state_row or {}).get("enabled"))
+        current_pick_id = parse_int((state_row or {}).get("current_draft_order_id"))
+        row_ids = {parse_int(row.get("id")) for row in rows}
+        if current_pick_id not in row_ids:
+            current_pick_id = self._draft_live_first_open_pick_id(rows)
+        started_at = str((state_row or {}).get("started_at") or "").strip() or None
+        options_text = str((state_row or {}).get("options_text") or "")
+        return {
+            "draft_year": int(draft_year),
+            "enabled": bool(enabled),
+            "current_pick_id": current_pick_id,
+            "duration_seconds": duration_seconds,
+            "started_at": started_at,
+            "remaining_seconds": self._draft_live_remaining_seconds(started_at, duration_seconds) if enabled else duration_seconds,
+            "server_now": now_iso(),
+            "options": self._draft_live_options(options_text),
+            "options_text": options_text,
+            "draft_order": rows,
+        }
+
+    def list_draft_live(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
+        year = draft_year if draft_year is not None else self.current_draft_year()
+        if year < 2000 or year > 2100:
+            raise ValueError("invalid_draft_year")
+        with self.connect() as conn:
+            return self._draft_live_payload(conn, int(year))
+
+    def update_draft_live_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        draft_year = parse_int(payload.get("draft_year")) or self.current_draft_year()
+        if draft_year < 2000 or draft_year > 2100:
+            raise ValueError("invalid_draft_year")
+        enabled = parse_bool(payload.get("enabled"))
+        duration_seconds = max(10, min(3600, parse_int(payload.get("duration_seconds")) or 180))
+        current_pick_id = parse_int(payload.get("current_pick_id"))
+        reset_timer = parse_bool(payload.get("reset_timer"))
+        options_text = "\n".join(str(item).strip() for item in payload.get("options") or [] if str(item).strip()) \
+            if isinstance(payload.get("options"), list) else str(payload.get("options_text") or "")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            rows = self._draft_live_order_rows(conn, int(draft_year))
+            ids = {parse_int(row.get("id")) for row in rows}
+            if current_pick_id is None:
+                current_pick_id = self._draft_live_first_open_pick_id(rows)
+            elif current_pick_id not in ids:
+                raise ValueError("invalid_current_pick")
+            existing = self._draft_live_state_row(conn, int(draft_year))
+            previous_pick_id = parse_int((existing or {}).get("current_draft_order_id"))
+            started_at = str((existing or {}).get("started_at") or "").strip() or None
+            if enabled and (reset_timer or not started_at or previous_pick_id != current_pick_id or not parse_bool((existing or {}).get("enabled"))):
+                started_at = timestamp
+            if not enabled:
+                started_at = None
+            conn.execute(
+                """
+                INSERT INTO draft_live_state (
+                    draft_year, enabled, current_draft_order_id, duration_seconds,
+                    started_at, options_text, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(draft_year)
+                DO UPDATE SET
+                    enabled = excluded.enabled,
+                    current_draft_order_id = excluded.current_draft_order_id,
+                    duration_seconds = excluded.duration_seconds,
+                    started_at = excluded.started_at,
+                    options_text = excluded.options_text,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(draft_year),
+                    1 if enabled else 0,
+                    current_pick_id,
+                    duration_seconds,
+                    started_at,
+                    options_text,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            conn.commit()
+            return self._draft_live_payload(conn, int(draft_year))
+
+    def control_draft_live(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        draft_year = parse_int(payload.get("draft_year")) or self.current_draft_year()
+        if draft_year < 2000 or draft_year > 2100:
+            raise ValueError("invalid_draft_year")
+        action = str(payload.get("action") or "").strip().lower()
+        if action not in {"previous", "next", "restart", "skip"}:
+            raise ValueError("invalid_draft_control")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            rows = self._draft_live_order_rows(conn, int(draft_year))
+            if not rows:
+                raise ValueError("draft_order_empty")
+            state_row = self._draft_live_state_row(conn, int(draft_year)) or {}
+            current_pick_id = parse_int(state_row.get("current_draft_order_id")) or self._draft_live_first_open_pick_id(rows)
+            if action == "restart":
+                next_pick_id = current_pick_id
+            else:
+                if action == "skip" and current_pick_id is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO draft_live_selections (
+                            draft_order_id, selection_text, option_value, custom_text,
+                            skipped, selected_by_email, selected_by_name, selected_by_role,
+                            selected_at, updated_at
+                        ) VALUES (?, 'Saltado', 'Saltado', NULL, 1, NULL, NULL, 'admin', ?, ?)
+                        ON CONFLICT(draft_order_id)
+                        DO UPDATE SET
+                            selection_text = excluded.selection_text,
+                            option_value = excluded.option_value,
+                            custom_text = excluded.custom_text,
+                            skipped = excluded.skipped,
+                            selected_by_email = excluded.selected_by_email,
+                            selected_by_name = excluded.selected_by_name,
+                            selected_by_role = excluded.selected_by_role,
+                            selected_at = excluded.selected_at,
+                            updated_at = excluded.updated_at
+                        """,
+                        (int(current_pick_id), timestamp, timestamp),
+                    )
+                    rows = self._draft_live_order_rows(conn, int(draft_year))
+                next_pick_id = self._draft_live_adjacent_pick_id(
+                    rows,
+                    current_pick_id,
+                    "previous" if action == "previous" else "next",
+                    prefer_open=action in {"next", "skip"},
+                )
+            duration_seconds = max(10, min(3600, parse_int(state_row.get("duration_seconds")) or 180))
+            options_text = str(state_row.get("options_text") or "")
+            conn.execute(
+                """
+                INSERT INTO draft_live_state (
+                    draft_year, enabled, current_draft_order_id, duration_seconds,
+                    started_at, options_text, created_at, updated_at
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(draft_year)
+                DO UPDATE SET
+                    enabled = 1,
+                    current_draft_order_id = excluded.current_draft_order_id,
+                    started_at = excluded.started_at,
+                    updated_at = excluded.updated_at
+                """,
+                (int(draft_year), next_pick_id, duration_seconds, timestamp, options_text, timestamp, timestamp),
+            )
+            conn.commit()
+            return self._draft_live_payload(conn, int(draft_year))
+
+    def submit_draft_live_pick(
+        self,
+        draft_order_id: int,
+        payload: Dict[str, Any],
+        actor: Dict[str, Any],
+        *,
+        is_admin: bool = False,
+    ) -> Dict[str, Any]:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            pick = conn.execute("SELECT * FROM draft_order WHERE id = ?", (int(draft_order_id),)).fetchone()
+            if not pick:
+                raise ValueError("draft_pick_not_found")
+            draft_year = int(pick["draft_year"])
+            state_row = self._draft_live_state_row(conn, draft_year) or {}
+            if not is_admin and not parse_bool(state_row.get("enabled")):
+                raise ValueError("draft_mode_inactive")
+            current_pick_id = parse_int(state_row.get("current_draft_order_id"))
+            if current_pick_id is None:
+                rows_for_current = self._draft_live_order_rows(conn, draft_year)
+                current_pick_id = self._draft_live_first_open_pick_id(rows_for_current)
+            if not is_admin and current_pick_id != int(draft_order_id):
+                raise ValueError("not_current_pick")
+
+            if parse_bool(payload.get("clear")):
+                conn.execute("DELETE FROM draft_live_selections WHERE draft_order_id = ?", (int(draft_order_id),))
+            else:
+                option_value = str(payload.get("option_value") or "").strip()
+                custom_text = str(payload.get("custom_text") or "").strip()
+                skipped = parse_bool(payload.get("skipped"))
+                if skipped:
+                    selection_text = "Saltado"
+                    option_value = "Saltado"
+                    custom_text = ""
+                elif option_value == "__other__":
+                    if not custom_text:
+                        raise ValueError("selection_required")
+                    selection_text = custom_text
+                else:
+                    if not option_value:
+                        raise ValueError("selection_required")
+                    selection_text = option_value
+                    custom_text = ""
+                conn.execute(
+                    """
+                    INSERT INTO draft_live_selections (
+                        draft_order_id, selection_text, option_value, custom_text,
+                        skipped, selected_by_email, selected_by_name, selected_by_role,
+                        selected_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(draft_order_id)
+                    DO UPDATE SET
+                        selection_text = excluded.selection_text,
+                        option_value = excluded.option_value,
+                        custom_text = excluded.custom_text,
+                        skipped = excluded.skipped,
+                        selected_by_email = excluded.selected_by_email,
+                        selected_by_name = excluded.selected_by_name,
+                        selected_by_role = excluded.selected_by_role,
+                        selected_at = excluded.selected_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        int(draft_order_id),
+                        selection_text,
+                        option_value,
+                        custom_text or None,
+                        1 if skipped else 0,
+                        str(actor.get("email") or "").strip() or None,
+                        str(actor.get("name") or "").strip() or None,
+                        str(actor.get("role") or "").strip() or ("admin" if is_admin else "gm"),
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+
+            rows = self._draft_live_order_rows(conn, draft_year)
+            state_row = self._draft_live_state_row(conn, draft_year) or state_row
+            should_advance = parse_bool(payload.get("advance")) if "advance" in payload else (current_pick_id == int(draft_order_id) and not parse_bool(payload.get("clear")))
+            if should_advance:
+                next_pick_id = self._draft_live_adjacent_pick_id(rows, int(draft_order_id), "next", prefer_open=True)
+                if next_pick_id == int(draft_order_id):
+                    next_pick_id = None
+                duration_seconds = max(10, min(3600, parse_int(state_row.get("duration_seconds")) or 180))
+                options_text = str(state_row.get("options_text") or "")
+                conn.execute(
+                    """
+                    INSERT INTO draft_live_state (
+                        draft_year, enabled, current_draft_order_id, duration_seconds,
+                        started_at, options_text, created_at, updated_at
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(draft_year)
+                    DO UPDATE SET
+                        enabled = 1,
+                        current_draft_order_id = excluded.current_draft_order_id,
+                        started_at = excluded.started_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (draft_year, next_pick_id, duration_seconds, timestamp, options_text, timestamp, timestamp),
+                )
+            conn.commit()
+            return self._draft_live_payload(conn, draft_year)
 
     def _attach_option_decisions(self, conn: sqlite3.Connection, players: List[Dict[str, Any]], team_id: int) -> None:
         if not players:
@@ -11102,6 +11522,21 @@ QUALITY REQUIREMENTS
             self._json(200, self.db.list_draft_order(draft_year))
             return
 
+        if parsed.path == "/api/draft-live":
+            qs = parse_qs(parsed.query)
+            raw_year = (qs.get("year") or [""])[0].strip()
+            draft_year = None
+            if raw_year:
+                draft_year = parse_int(raw_year)
+                if draft_year is None or draft_year < 2000 or draft_year > 2100:
+                    self._json(400, {"error": "invalid_draft_year"})
+                    return
+            try:
+                self._json(200, self.db.list_draft_live(draft_year))
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_draft_live"})
+            return
+
         if parsed.path == "/api/gm-history":
             if not self._require_admin():
                 return
@@ -11286,6 +11721,100 @@ QUALITY REQUIREMENTS
 
         if parsed.path == "/api/trades/validate":
             result = self.db.validate_trade_machine(payload)
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/draft-live/settings":
+            if not self._require_admin():
+                return
+            if not self._require_csrf():
+                return
+            try:
+                result = self.db.update_draft_live_settings(payload)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_draft_live_settings"})
+                return
+            self._log_admin_action(
+                "update",
+                "draft_live",
+                str(result.get("draft_year") or ""),
+                None,
+                {
+                    "enabled": result.get("enabled"),
+                    "current_pick_id": result.get("current_pick_id"),
+                    "duration_seconds": result.get("duration_seconds"),
+                },
+            )
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/draft-live/control":
+            if not self._require_admin():
+                return
+            if not self._require_csrf():
+                return
+            try:
+                result = self.db.control_draft_live(payload)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_draft_live_control"})
+                return
+            self._log_admin_action(
+                "control",
+                "draft_live",
+                str(result.get("draft_year") or ""),
+                None,
+                {
+                    "action": payload.get("action"),
+                    "current_pick_id": result.get("current_pick_id"),
+                },
+            )
+            self._json(200, result)
+            return
+
+        if parsed.path.startswith("/api/draft-live/picks/"):
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            try:
+                draft_order_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_draft_order_id"})
+                return
+            pick = self.db.get_draft_order_entry(draft_order_id)
+            if not pick:
+                self._json(404, {"error": "draft_pick_not_found"})
+                return
+            if not self._is_admin() and not self._can_manage_team(pick.get("owner_team_code")):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                result = self.db.submit_draft_live_pick(
+                    draft_order_id,
+                    payload,
+                    self._current_session() or {},
+                    is_admin=self._is_admin(),
+                )
+            except ValueError as err:
+                message = str(err) or "invalid_draft_selection"
+                status = 409 if message in {"not_current_pick", "draft_mode_inactive"} else 400
+                self._json(status, {"error": message})
+                return
+            self._log_admin_action(
+                "select",
+                "draft_live_pick",
+                str(draft_order_id),
+                pick.get("owner_team_code"),
+                {
+                    "draft_year": pick.get("draft_year"),
+                    "draft_round": pick.get("draft_round"),
+                    "pick_number": pick.get("pick_number"),
+                    "selection": payload.get("custom_text") or payload.get("option_value"),
+                    "clear": parse_bool(payload.get("clear")),
+                    "skipped": parse_bool(payload.get("skipped")),
+                },
+                team_codes=[pick.get("owner_team_code")],
+            )
             self._json(200, result)
             return
 
@@ -12275,11 +12804,12 @@ QUALITY REQUIREMENTS
                 return
 
             player_payload: Dict[str, Any] = {}
-            if option_action == "accepted" and option_value == "QO":
-                # Keep the QO marker so cap-hold calculations continue to work.
+            if option_action == "accepted" and option_value in {"QO", "GAP"}:
+                # Keep QO/GAP markers so accepted option state and cap-hold UI
+                # continue to work until an admin applies the contract outcome.
                 player_payload[option_field] = option_value
             else:
-                # Rejected options, and accepted non-QO options, remove the
+                # Rejected options, and accepted TO/PO options, remove the
                 # pending option marker from the roster cell.
                 player_payload[option_field] = None
 

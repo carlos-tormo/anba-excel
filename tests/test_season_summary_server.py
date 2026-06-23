@@ -163,6 +163,44 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual("second", tracker_row["apron_hard_cap"])
         self.assertEqual(round(float(summary["cap_figure"])), round(float(tracker_row["cap_total"])))
 
+    def test_approved_gap_option_request_remains_visible_on_team_payload(self) -> None:
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Gap Option Player",
+                "bird_rights": "R",
+                "position": "SG",
+                "salary_2026_text": "2500000",
+                "option_2026": "GAP",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        request = self.db.create_gm_option_request(
+            int(player_id),
+            "option_2026",
+            "GAP",
+            "accepted",
+            {"email": "gm@example.com", "name": "GM"},
+        )
+        self.assertIsNotNone(request)
+
+        self.assertTrue(self.db.update_player(int(player_id), {"option_2026": "GAP"}))
+        self.assertIsNotNone(
+            self.db.mark_gm_option_request_decided(
+                int(request["id"]),
+                "approved",
+                {"email": "admin@example.com", "name": "Admin"},
+            )
+        )
+        team = self.db.get_team("ATL")
+        player = next(p for p in team["players"] if p["id"] == player_id)
+        decision = player["option_decisions"]["option_2026"]
+
+        self.assertEqual("GAP", player["option_2026"])
+        self.assertEqual("GAP", decision["option_value"])
+        self.assertEqual("accepted", decision["action"])
+        self.assertEqual("approved", decision["status"])
+
     def test_offseason_exception_estimate_over_cap_below_first_apron(self) -> None:
         self.db.update_setting("current_year", "2025")
         self.db.update_setting("salary_cap_2025", "154647000")
