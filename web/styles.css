@@ -574,10 +574,14 @@ h1 {
     font-size: 1.22rem;
   }
 
-	  #trackerHomeBtn::before { content: "▦"; }
-	  #freeAgentsHomeBtn::before { content: "○"; }
-	  #tradeMachineHomeBtn::before { content: "⇄"; }
-	  #adminMenuBtn::before { content: "⚙"; }
+  #trackerHomeBtn::before { content: "▦"; }
+  #figuresHomeBtn::before { content: "▤"; }
+  #draftHomeBtn::before { content: "◈"; }
+  #leaguePlayersHomeBtn::before { content: "◎"; }
+  #freeAgentsHomeBtn::before { content: "○"; }
+  #tradeMachineHomeBtn::before { content: "⇄"; }
+  #gmOptionRequestsBtn::before { content: "!"; }
+  #adminMenuBtn::before { content: "⚙"; }
   #adminLink::before,
   a[href="/admin"].ghost-link::before { content: "⚙"; }
   #loginLink::before { content: "→"; }

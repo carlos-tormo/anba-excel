@@ -115,6 +115,49 @@ class TradeValidationServerTests(unittest.TestCase):
             any(issue["severity"] == "illegal" and issue["rule"] == "restricted_pick" for issue in result["issues"])
         )
 
+    def test_validation_counts_received_players_for_trade_moves(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            conn.execute(
+                """
+                INSERT INTO team_move_logs (
+                    team_id, season_year, bucket, delta, source_type, source_ref, note, detail_json, created_at
+                ) VALUES (?, 2026, 'pre30', 20, 'trade', 'seed', 'Seed usage', '{}', ?)
+                """,
+                (team_id, now_iso()),
+            )
+            conn.commit()
+        player_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Incoming Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2026_text": "1000000",
+            },
+        )
+
+        result = self.db.validate_trade_machine(
+            {
+                "teams": ["ATL", "BOS"],
+                "season": 2026,
+                "selections": [
+                    {"type": "player", "id": player_id, "from_team": "BOS", "to_team": "ATL"},
+                ],
+            }
+        )
+
+        self.assertTrue(
+            any(
+                issue["severity"] == "illegal"
+                and issue["rule"] == "moves"
+                and issue["teamCode"] == "ATL"
+                and "Necesita 1 movimiento" in issue["message"]
+                for issue in result["issues"]
+            )
+        )
+
     def test_stepien_restricted_pick_only_allows_swap_action(self) -> None:
         pick_id = self.db.create_asset(
             "ATL",
@@ -500,7 +543,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual(20, future_team["move_summary"]["remaining_pre30"])
         self.assertEqual(4, future_team["move_summary"]["remaining_post30"])
 
-    def test_post30_trade_spends_pre30_before_post30(self) -> None:
+    def test_post30_trade_counts_players_and_next_first_before_post30(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
@@ -513,10 +556,39 @@ class TradeValidationServerTests(unittest.TestCase):
                 (team_id, now_iso()),
             )
             conn.commit()
-        right_ids = [
-            self.db.create_asset("ATL", {"asset_type": "player_right", "label": f"Rights {idx}"})
-            for idx in range(3)
+        player_ids = [
+            self.db.create_player(
+                "ATL",
+                {
+                    "name": f"Move Player {idx}",
+                    "bird_rights": "Reg",
+                    "position": "SG",
+                    "salary_2026_text": "1000000",
+                },
+            )
+            for idx in range(2)
         ]
+        next_first_id = self.db.create_asset(
+            "ATL",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "1st",
+                "year": 2027,
+                "label": "1st pick",
+            },
+        )
+        future_first_id = self.db.create_asset(
+            "ATL",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "1st",
+                "year": 2028,
+                "label": "1st pick",
+            },
+        )
+        right_id = self.db.create_asset("ATL", {"asset_type": "player_right", "label": "Rights Player"})
 
         result = self.db.process_trade_from_payload(
             {
@@ -524,13 +596,20 @@ class TradeValidationServerTests(unittest.TestCase):
                 "season": 2026,
                 "trade_bucket": "post30",
                 "selections": [
-                    {"type": "right", "id": right_id, "from_team": "ATL", "to_team": "BOS"}
-                    for right_id in right_ids
+                    *[
+                        {"type": "player", "id": player_id, "from_team": "ATL", "to_team": "BOS"}
+                        for player_id in player_ids
+                    ],
+                    {"type": "pick", "id": next_first_id, "from_team": "ATL", "to_team": "BOS"},
+                    {"type": "pick", "id": future_first_id, "from_team": "ATL", "to_team": "BOS"},
+                    {"type": "right", "id": right_id, "from_team": "ATL", "to_team": "BOS"},
                 ],
             }
         )
 
         self.assertIsNotNone(result)
+        self.assertEqual(3, result["team_a"]["move_count"])
+        self.assertEqual(3, result["team_b"]["move_count"])
         team = self.db.get_team("ATL", move_season_year=2026)
         self.assertEqual(20, team["move_summary"]["used_pre30"])
         self.assertEqual(2, team["move_summary"]["used_post30"])

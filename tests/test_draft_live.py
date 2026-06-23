@@ -65,7 +65,7 @@ class DraftLiveTests(unittest.TestCase):
                 "draft_year": 2026,
                 "enabled": True,
                 "duration_seconds": 180,
-                "options_text": "Jugador A\nJugador B\nJugador A",
+                "options_text": "Jugador B\nJugador A\nJugador B",
             }
         )
 

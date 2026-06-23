@@ -3132,7 +3132,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 continue
             seen.add(key)
             options.append(option)
-        return options
+        return sorted(options, key=lambda value: (value.casefold(), value))
 
     def _draft_live_first_open_pick_id(self, rows: List[Dict[str, Any]]) -> Optional[int]:
         for row in rows:
@@ -8390,6 +8390,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "conditional": normalize_pick_type(pick.get("draft_pick_type")) == "conditional",
                 "sold": normalize_pick_type(pick.get("draft_pick_type")) == "sold",
                 "round": normalize_pick_round(pick.get("draft_round")),
+                "year": parse_int(pick.get("year")),
             }
         if asset_type == "right":
             right = next(
@@ -8450,6 +8451,31 @@ class LeagueDB(DatabaseMaintenanceMixin):
             detail = str(asset.get("detail") or "").strip()
             asset["detail"] = " · ".join(part for part in [detail, "La ronda no cambia de dueño; se venden derechos de intercambio."] if part)
         return asset
+
+    def _trade_asset_counts_as_move(self, asset: Dict[str, Any], season_year: int) -> bool:
+        if not parse_bool(asset.get("countsMove", True)):
+            return False
+        asset_type = str(asset.get("type") or asset.get("asset_type") or "").strip().lower()
+        if asset_type == "player":
+            return True
+        if asset_type not in {"pick", "draft_pick"}:
+            return False
+        if self._trade_machine_pick_action(asset.get("pickAction") or asset.get("pick_action")) == TRADE_PICK_ACTION_SWAP:
+            return False
+        pick_year = parse_int(asset.get("year"))
+        pick_round = normalize_pick_round(asset.get("round") or asset.get("draft_round"))
+        return pick_round == "1st" and pick_year == int(season_year) + 1
+
+    def _trade_flow_move_count(self, flow: Dict[str, Any], season_year: int) -> int:
+        outgoing = sum(
+            1 for asset in flow.get("outgoingAssets") or []
+            if self._trade_asset_counts_as_move(asset, season_year)
+        )
+        incoming = sum(
+            1 for asset in flow.get("incomingAssets") or []
+            if self._trade_asset_counts_as_move(asset, season_year)
+        )
+        return outgoing + incoming
 
     def _trade_machine_normalized_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         raw_teams = payload.get("teams")
@@ -8897,14 +8923,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
             move_summary = data.get("move_summary") or {}
             availability = self._trade_move_availability_for_bucket(move_summary, bucket)
             remaining = parse_int(availability.get("remaining"))
-            outgoing_count = len([a for a in flow.get("outgoingAssets") or [] if a.get("countsMove", True)])
-            if outgoing_count:
+            move_count = self._trade_flow_move_count(flow, season)
+            if move_count:
                 if remaining is None:
-                    issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Envía {outgoing_count} activo(s); no se pudo leer el saldo de movimientos {availability.get('label') or bucket}."})
-                elif outgoing_count > remaining:
-                    issues.append({"severity": "illegal", "rule": "moves", "teamCode": code, "message": f"Necesita {outgoing_count} movimiento(s) y solo tiene {remaining} disponible(s) en {availability.get('label') or bucket}."})
+                    issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Necesita {move_count} movimiento(s); no se pudo leer el saldo de movimientos {availability.get('label') or bucket}."})
+                elif move_count > remaining:
+                    issues.append({"severity": "illegal", "rule": "moves", "teamCode": code, "message": f"Necesita {move_count} movimiento(s) y solo tiene {remaining} disponible(s) en {availability.get('label') or bucket}."})
                 elif bucket == "post30" and availability.get("pre_remaining"):
-                    issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Cuenta como post-30, pero primero consumirá {min(outgoing_count, int(availability.get('pre_remaining') or 0))} movimiento(s) pre-30 disponible(s)."})
+                    issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Cuenta como post-30, pero primero consumirá {min(move_count, int(availability.get('pre_remaining') or 0))} movimiento(s) pre-30 disponible(s)."})
 
             if self._trade_machine_second_apron_limited(flow, thresholds):
                 outgoing_players = [a for a in flow.get("outgoingAssets") or [] if a.get("type") == "player"]
@@ -9021,9 +9047,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 for code in teams
             }
 
-            def add_move_count(code: str, selection: Dict[str, Any]) -> None:
-                if selection.get("countsMove", True):
+            def add_move_count(code: str) -> None:
+                if code in summaries:
                     summaries[code]["move_count"] += 1
+
+            def add_selection_move_counts(from_team: str, to_team: str, asset: Dict[str, Any]) -> None:
+                if not self._trade_asset_counts_as_move(asset, season_year):
+                    return
+                add_move_count(from_team)
+                add_move_count(to_team)
 
             def pick_label(pick_row: Dict[str, Any], source_code: str, prefix: str = "") -> str:
                 year = parse_int(pick_row.get("year"))
@@ -9166,7 +9198,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     player_name = str(row["name"] or "Jugador")
                     summaries[from_team]["sent"]["players"].append(player_name)
                     summaries[to_team]["received"]["players"].append(player_name)
-                    add_move_count(from_team, selection)
+                    add_selection_move_counts(
+                        from_team,
+                        to_team,
+                        {"type": "player", "countsMove": selection.get("countsMove", True)},
+                    )
                     self._record_player_transaction(
                         conn,
                         row["profile_id"],
@@ -9212,7 +9248,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         summaries[from_team]["sent"]["picks"].append(label)
                         summaries[to_team]["received"]["pick_count"] += 1
                         summaries[to_team]["received"]["picks"].append(label)
-                    add_move_count(from_team, selection)
+                    add_selection_move_counts(
+                        from_team,
+                        to_team,
+                        {
+                            **pick_row,
+                            "type": "pick",
+                            "round": normalize_pick_round(pick_row.get("draft_round")),
+                            "pickAction": pick_action,
+                            "countsMove": selection.get("countsMove", True),
+                        },
+                    )
                     continue
 
                 if asset_type == "right":
@@ -9239,7 +9285,6 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     summaries[from_team]["sent"]["rights"].append(label)
                     summaries[to_team]["received"]["right_count"] += 1
                     summaries[to_team]["received"]["rights"].append(label)
-                    add_move_count(from_team, selection)
                     continue
 
                 return None
@@ -9267,8 +9312,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     details={
                         "opponents": opponents,
                         "players": sent.get("players") or [],
+                        "players_received": (summary.get("received") or {}).get("players") or [],
                         "pick_count": sent.get("pick_count") or 0,
                         "pick_refs": sent.get("picks") or [],
+                        "pick_refs_received": (summary.get("received") or {}).get("picks") or [],
                         "swap_count": sent.get("swap_count") or 0,
                         "swap_refs": sent.get("swaps") or [],
                         "rights": sent.get("rights") or [],
@@ -9644,8 +9691,39 @@ class LeagueDB(DatabaseMaintenanceMixin):
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
             bucket = normalize_trade_bucket(trade_bucket or settings.get("trade_move_phase"))
-            move_count_a = len([row for row in players_a_rows if int(row["id"]) not in no_count_a]) + len(picks_a_rows) + len(pick_swaps_a_rows) + len(rights_a_rows)
-            move_count_b = len([row for row in players_b_rows if int(row["id"]) not in no_count_b]) + len(picks_b_rows) + len(pick_swaps_b_rows) + len(rights_b_rows)
+
+            def player_move_count(rows: List[Dict[str, Any]], excluded_ids: set[int]) -> int:
+                return sum(
+                    1
+                    for row in rows
+                    if self._trade_asset_counts_as_move(
+                        {"type": "player", "countsMove": int(row["id"]) not in excluded_ids},
+                        current_year,
+                    )
+                )
+
+            def pick_move_count(rows: List[Dict[str, Any]]) -> int:
+                return sum(
+                    1
+                    for row in rows
+                    if self._trade_asset_counts_as_move(
+                        {"type": "pick", "draft_round": row.get("draft_round"), "year": row.get("year")},
+                        current_year,
+                    )
+                )
+
+            move_count_a = (
+                player_move_count(players_a_rows, no_count_a)
+                + player_move_count(players_b_rows, no_count_b)
+                + pick_move_count(picks_a_rows)
+                + pick_move_count(picks_b_rows)
+            )
+            move_count_b = (
+                player_move_count(players_b_rows, no_count_b)
+                + player_move_count(players_a_rows, no_count_a)
+                + pick_move_count(picks_b_rows)
+                + pick_move_count(picks_a_rows)
+            )
 
             def pick_ref(pick_row: Dict[str, Any], source_team: sqlite3.Row, prefix: str = "") -> str:
                 year = parse_int(pick_row.get("year"))
@@ -9671,9 +9749,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     details={
                         "opponent": team_b["code"],
                         "players": [row["name"] for row in players_a_rows if int(row["id"]) not in no_count_a],
+                        "players_received": [row["name"] for row in players_b_rows if int(row["id"]) not in no_count_b],
                         "players_excluded": [row["name"] for row in players_a_rows if int(row["id"]) in no_count_a],
                         "pick_count": len(picks_a_rows),
                         "pick_refs": pick_refs_a,
+                        "pick_refs_received": pick_refs_b,
                         "swap_count": len(pick_swaps_a_rows),
                         "swap_refs": swap_refs_a,
                         "rights": [row.get("label") for row in rights_a_rows],
@@ -9692,9 +9772,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     details={
                         "opponent": team_a["code"],
                         "players": [row["name"] for row in players_b_rows if int(row["id"]) not in no_count_b],
+                        "players_received": [row["name"] for row in players_a_rows if int(row["id"]) not in no_count_a],
                         "players_excluded": [row["name"] for row in players_b_rows if int(row["id"]) in no_count_b],
                         "pick_count": len(picks_b_rows),
                         "pick_refs": pick_refs_b,
+                        "pick_refs_received": pick_refs_a,
                         "swap_count": len(pick_swaps_b_rows),
                         "swap_refs": swap_refs_b,
                         "rights": [row.get("label") for row in rights_b_rows],

@@ -1608,11 +1608,15 @@ function formatMoveLogItem(item) {
   const delta = Number(item?.delta || 0);
   const sign = delta > 0 ? '+' : '';
   const players = Array.isArray(details.players) ? details.players : [];
+  const playersReceived = Array.isArray(details.players_received) ? details.players_received : [];
   const playersExcluded = Array.isArray(details.players_excluded) ? details.players_excluded : [];
   const pickRefs = Array.isArray(details.pick_refs) ? details.pick_refs : [];
+  const pickRefsReceived = Array.isArray(details.pick_refs_received) ? details.pick_refs_received : [];
   const bits = [];
-  if (players.length) bits.push(`Players: ${players.join(', ')}`);
-  if (pickRefs.length) bits.push(`Picks: ${pickRefs.join(', ')}`);
+  if (players.length) bits.push(`Players sent: ${players.join(', ')}`);
+  if (playersReceived.length) bits.push(`Players received: ${playersReceived.join(', ')}`);
+  if (pickRefs.length) bits.push(`Picks sent: ${pickRefs.join(', ')}`);
+  if (pickRefsReceived.length) bits.push(`Picks received: ${pickRefsReceived.join(', ')}`);
   if (playersExcluded.length) bits.push(`Excluded: ${playersExcluded.join(', ')}`);
   if (details.target_remaining != null) bits.push(`Target remaining: ${details.target_remaining}`);
   const meta = bits.length ? `<div class="move-log-meta">${escapeHtml(bits.join(' · '))}</div>` : '';
