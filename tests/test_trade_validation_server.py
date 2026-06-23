@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from app.server import LeagueDB
+from app.server import Handler, LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
 
@@ -41,6 +41,25 @@ class TradeValidationServerTests(unittest.TestCase):
             os.unlink(self.db_path)
         except FileNotFoundError:
             pass
+
+    def test_discord_trade_summary_lists_pick_rounds(self) -> None:
+        handler = object.__new__(Handler)
+
+        result = Handler._trade_asset_summary(
+            handler,
+            ["Example Player"],
+            2,
+            0,
+            1,
+            ["2028 1ST (ATL)", "2029 2ND (BOS)"],
+            ["Swap 2030 1ST (CHA)"],
+        )
+
+        self.assertIn("- Example Player", result)
+        self.assertIn("- 2028 1ª ronda (ATL)", result)
+        self.assertIn("- 2029 2ª ronda (BOS)", result)
+        self.assertIn("- Swap 2030 1ª ronda (CHA)", result)
+        self.assertNotIn("2 ronda(s) del draft", result)
 
     def test_trade_machine_validation_rejects_restricted_pick(self) -> None:
         pick_id = self.db.create_asset(
@@ -404,6 +423,61 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual("acquired", acquired_pick["draft_pick_type"])
         self.assertEqual("2nd", acquired_pick["draft_round"])
         self.assertEqual("BOS", acquired_pick["original_owner"])
+
+    def test_legacy_process_moves_selected_future_second_round_pick(self) -> None:
+        player_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Return Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2026_text": "10000000",
+            },
+        )
+        pick_id = self.db.create_asset(
+            "ATL",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "2nd",
+                "year": 2030,
+                "label": "2nd pick",
+                "draft_pick_protected": True,
+            },
+        )
+
+        result = self.db.process_trade(
+            "ATL",
+            "BOS",
+            [],
+            [player_id],
+            pick_ids_a=[pick_id],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(["2030 2ND (ATL)"], result["pick_refs_a"])
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            source_pick = conn.execute(
+                "SELECT draft_pick_type, draft_pick_sold_to FROM assets WHERE id = ?",
+                (pick_id,),
+            ).fetchone()
+            acquired_pick = conn.execute(
+                """
+                SELECT a.draft_pick_type, a.draft_round, a.original_owner, a.draft_pick_protected, t.code
+                FROM assets a
+                JOIN teams t ON t.id = a.team_id
+                WHERE t.code = 'BOS' AND a.asset_type = 'draft_pick' AND CAST(a.year AS INTEGER) = 2030
+                """,
+            ).fetchone()
+
+        self.assertEqual("sold", source_pick["draft_pick_type"])
+        self.assertEqual("BOS", source_pick["draft_pick_sold_to"])
+        self.assertIsNotNone(acquired_pick)
+        self.assertEqual("acquired", acquired_pick["draft_pick_type"])
+        self.assertEqual("2nd", acquired_pick["draft_round"])
+        self.assertEqual("ATL", acquired_pick["original_owner"])
+        self.assertEqual(1, acquired_pick["draft_pick_protected"])
 
     def test_move_summaries_reset_by_season(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
