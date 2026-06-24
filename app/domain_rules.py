@@ -179,10 +179,12 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
     if current_year < 2025 or current_year > 2030:
         current_year = 2025
     salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
+    salary_floor = salary_floor_for_season(settings, current_year, salary_cap)
     first_apron = parse_float(settings.get("first_apron")) or 195945000.0
     second_apron = parse_float(settings.get("second_apron")) or 207824000.0
     payload = {
         "salary_cap_2025": salary_cap,
+        "salary_floor_2025": parse_float(settings.get("salary_floor_2025")) or salary_cap * 0.9,
         "current_year": current_year,
         "first_apron": first_apron,
         "second_apron": second_apron,
@@ -201,20 +203,40 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
         "roster_two_way_min": settings_int(settings, "roster_two_way_min", ROSTER_TWO_WAY_MIN_DEFAULT),
         "roster_two_way_max": settings_int(settings, "roster_two_way_max", ROSTER_TWO_WAY_MAX_DEFAULT),
         "luxury_cap": salary_cap * 1.215,
-        "minimum_cap_allowed": salary_cap * 0.9,
+        "minimum_cap_allowed": salary_floor,
     }
     for season in range(current_year, current_year + CAP_FORECAST_WINDOW):
         season_cap = parse_float(settings.get(f"salary_cap_{season}")) or salary_cap
+        season_salary_floor = salary_floor_for_season(settings, season, season_cap)
         season_first_apron = parse_float(settings.get(f"first_apron_{season}")) or first_apron
         season_second_apron = parse_float(settings.get(f"second_apron_{season}")) or second_apron
         season_average_salary = parse_float(settings.get(f"average_salary_{season}"))
         payload[f"salary_cap_{season}"] = season_cap
+        payload[f"salary_floor_{season}"] = season_salary_floor
         payload[f"first_apron_{season}"] = season_first_apron
         payload[f"second_apron_{season}"] = season_second_apron
         payload[f"average_salary_{season}"] = (
             season_average_salary if season_average_salary and season_average_salary > 0 else 0.0
         )
     return payload
+
+
+def salary_floor_for_season(settings: Dict[str, str], season: int, salary_cap: float) -> float:
+    cap = float(salary_cap or 0.0)
+    configured = parse_float(settings.get(f"salary_floor_{int(season)}"))
+    if configured is None and int(season) == 2025:
+        configured = parse_float(settings.get("salary_floor_2025"))
+    if configured is not None and configured > 0:
+        return float(configured)
+    return cap * 0.9
+
+
+def apply_salary_floor(settings: Dict[str, str], season: int, salary_cap: float, cap_figure: float) -> float:
+    raw = float(cap_figure or 0.0)
+    if parse_bool(settings.get("free_agency_mode")):
+        return raw
+    floor = salary_floor_for_season(settings, season, salary_cap)
+    return max(raw, floor)
 
 
 def luxury_tax_amount(overage: float, repeater: bool) -> float:

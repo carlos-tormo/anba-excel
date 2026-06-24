@@ -52,6 +52,15 @@ class DraftLiveTests(unittest.TestCase):
                 "original_team_code": "BKN",
             }
         )
+        self.third_pick = self.db.create_draft_order_entry(
+            {
+                "draft_year": 2026,
+                "draft_round": "1st",
+                "pick_number": 3,
+                "owner_team_code": "ATL",
+                "original_team_code": "ATL",
+            }
+        )
 
     def tearDown(self) -> None:
         try:
@@ -91,6 +100,8 @@ class DraftLiveTests(unittest.TestCase):
         self.assertEqual("atl-gm@example.com", first["pending_requester_email"])
         self.assertFalse(first["selection_text"])
         self.assertEqual(self.first_pick, live["current_pick_id"])
+        self.assertEqual([self.second_pick], live["requestable_pick_ids"])
+        self.assertEqual(1, live["pending_request_count"])
 
     def test_admin_approval_applies_selection_and_advances_to_next_pick(self) -> None:
         self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True})
@@ -133,6 +144,56 @@ class DraftLiveTests(unittest.TestCase):
             )
 
         self.assertEqual("not_current_pick", str(raised.exception))
+
+    def test_two_pending_draft_pick_requests_can_queue_but_third_waits(self) -> None:
+        self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True})
+
+        first_request = self.db.create_gm_draft_pick_request(
+            self.first_pick,
+            {"option_value": "Jugador A"},
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+        second_request = self.db.create_gm_draft_pick_request(
+            self.second_pick,
+            {"option_value": "Jugador B"},
+            {"email": "bkn-gm@example.com", "name": "BKN GM", "role": "gm"},
+        )
+        live = self.db.list_draft_live(2026)
+
+        self.assertIsNotNone(first_request)
+        self.assertIsNotNone(second_request)
+        self.assertEqual(2, live["pending_request_count"])
+        self.assertEqual(2, live["max_pending_requests"])
+        self.assertEqual([], live["requestable_pick_ids"])
+        with self.assertRaises(ValueError) as raised:
+            self.db.create_gm_draft_pick_request(
+                self.third_pick,
+                {"option_value": "Jugador C"},
+                {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+            )
+
+        self.assertEqual("too_many_pending_draft_picks", str(raised.exception))
+
+        self.db.submit_draft_live_pick(
+            self.first_pick,
+            {
+                "option_value": first_request["option_value"],
+                "custom_text": first_request["custom_text"] or first_request["selection_text"],
+                "advance": True,
+            },
+            {"email": first_request["requester_email"], "name": first_request["requester_name"], "role": "gm"},
+            is_admin=True,
+        )
+        self.db.mark_gm_draft_pick_request_decided(
+            first_request["id"],
+            "approved",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+        live_after_approval = self.db.list_draft_live(2026)
+
+        self.assertEqual(self.second_pick, live_after_approval["current_pick_id"])
+        self.assertEqual(1, live_after_approval["pending_request_count"])
+        self.assertEqual([self.third_pick], live_after_approval["requestable_pick_ids"])
 
 
 if __name__ == "__main__":

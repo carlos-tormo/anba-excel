@@ -65,6 +65,8 @@ try:
         parse_int,
         public_settings_payload,
         row_salary_num,
+        salary_floor_for_season,
+        apply_salary_floor,
         season_label,
         settings_int,
     )
@@ -115,6 +117,8 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         parse_int,
         public_settings_payload,
         row_salary_num,
+        salary_floor_for_season,
+        apply_salary_floor,
         season_label,
         settings_int,
     )
@@ -134,6 +138,7 @@ DISCORD_CUSTOM_IMAGE_ALLOWED_MIME_TYPES = {
 }
 MULTIPART_UPLOAD_MAX_OVERHEAD_BYTES = 16_384
 DEFAULT_ENV_FILE = ROOT / ".env"
+DRAFT_LIVE_MAX_PENDING_REQUESTS = 2
 OWNER_SEASON_OBJECTIVES = [
     "Campeones",
     "Finalistas",
@@ -828,6 +833,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """
                 INSERT OR IGNORE INTO app_settings (key, value, updated_at)
                 VALUES ('salary_cap_2025', '154647000', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('salary_floor_2025', '139182300', ?)
                 """,
                 (now_iso(),),
             )
@@ -2672,8 +2684,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
             state_row = self._draft_live_state_row(conn, int(pick["draft_year"]))
             if not parse_bool((state_row or {}).get("enabled")):
                 raise ValueError("draft_mode_inactive")
+            rows = self._draft_live_order_rows(conn, int(pick["draft_year"]))
             current_pick_id = parse_int((state_row or {}).get("current_draft_order_id"))
-            if current_pick_id != int(draft_order_id):
+            row_ids = {parse_int(row.get("id")) for row in rows}
+            if current_pick_id not in row_ids:
+                current_pick_id = self._draft_live_first_open_pick_id(rows)
+            requestable_pick_ids = self._draft_live_requestable_pick_ids(rows, current_pick_id)
+            if int(draft_order_id) not in requestable_pick_ids:
+                if self._draft_live_pending_request_count(rows) >= DRAFT_LIVE_MAX_PENDING_REQUESTS:
+                    raise ValueError("too_many_pending_draft_picks")
                 raise ValueError("not_current_pick")
             existing_selection = conn.execute(
                 """
@@ -3143,6 +3162,32 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 return int(parsed)
         return parse_int(rows[0].get("id")) if rows else None
 
+    def _draft_live_pending_request_count(self, rows: List[Dict[str, Any]]) -> int:
+        return sum(1 for row in rows if parse_int(row.get("pending_request_id")) is not None)
+
+    def _draft_live_requestable_pick_ids(
+        self,
+        rows: List[Dict[str, Any]],
+        current_pick_id: Optional[int],
+    ) -> List[int]:
+        if self._draft_live_pending_request_count(rows) >= DRAFT_LIVE_MAX_PENDING_REQUESTS:
+            return []
+        start_index = 0
+        if current_pick_id is not None:
+            for idx, row in enumerate(rows):
+                if parse_int(row.get("id")) == int(current_pick_id):
+                    start_index = idx
+                    break
+        for row in rows[start_index:]:
+            if str(row.get("selection_text") or "").strip() or parse_bool(row.get("skipped")):
+                continue
+            if parse_int(row.get("pending_request_id")) is not None:
+                continue
+            parsed = parse_int(row.get("id"))
+            if parsed is not None:
+                return [int(parsed)]
+        return []
+
     def _draft_live_adjacent_pick_id(
         self,
         rows: List[Dict[str, Any]],
@@ -3197,10 +3242,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
             current_pick_id = self._draft_live_first_open_pick_id(rows)
         started_at = str((state_row or {}).get("started_at") or "").strip() or None
         options_text = str((state_row or {}).get("options_text") or "")
+        pending_request_count = self._draft_live_pending_request_count(rows)
+        requestable_pick_ids = self._draft_live_requestable_pick_ids(rows, current_pick_id) if enabled else []
         return {
             "draft_year": int(draft_year),
             "enabled": bool(enabled),
             "current_pick_id": current_pick_id,
+            "requestable_pick_ids": requestable_pick_ids,
+            "pending_request_count": pending_request_count,
+            "max_pending_requests": DRAFT_LIVE_MAX_PENDING_REQUESTS,
             "duration_seconds": duration_seconds,
             "started_at": started_at,
             "remaining_seconds": self._draft_live_remaining_seconds(started_at, duration_seconds) if enabled else duration_seconds,
@@ -6506,6 +6556,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             or parse_float(settings.get("salary_cap_2025"))
             or team["salary_cap"]
         )
+        salary_floor = salary_floor_for_season(settings, current_year, salary_cap)
 
         def player_salary_for_gasto(player: Dict[str, Any]) -> float:
             if is_exhibit10_player(player):
@@ -6562,7 +6613,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
         open_roster_hold_amount = float(open_roster_hold.get("amount") or 0.0)
         exceptions = sum((a.get("amount_num") or 0.0) for a in assets if a.get("asset_type") == "exception")
 
-        cap_figure = cap_figure_players + dead_cap_normal + open_roster_hold_amount
+        cap_figure_before_floor = cap_figure_players + dead_cap_normal + open_roster_hold_amount
+        cap_figure = apply_salary_floor(settings, current_year, salary_cap, cap_figure_before_floor)
+        salary_floor_adjustment = max(0.0, cap_figure - cap_figure_before_floor)
         apron_figure = apron_figure_players + dead_cap_normal
         payroll = player_payroll + dead_gasto_normal + dead_gasto_two_way
 
@@ -6594,6 +6647,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "open_roster_spot_roster_count": int(open_roster_hold.get("roster_count") or 0),
             "open_roster_spot_minimum_salary": float(open_roster_hold.get("minimum_salary") or 0.0),
             "exceptions_total": exceptions,
+            "salary_floor": salary_floor,
+            "cap_figure_before_floor": cap_figure_before_floor,
+            "salary_floor_adjustment": salary_floor_adjustment,
             "cap_figure": cap_figure,
             "apron_account": apron_figure,
             "payroll": payroll,
@@ -8183,6 +8239,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         )
         return {
             "salaryCap": salary_cap,
+            "salaryFloor": salary_floor_for_season(settings, season, salary_cap),
             "luxuryCap": luxury_cap,
             "firstApron": first_apron,
             "secondApron": second_apron,
@@ -8243,8 +8300,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             and not dead_contract_excluded_from_cap(d)
         )
         open_roster_hold = open_roster_spot_cap_hold(players, season, settings, salary_cap)
+        cap_total_before_floor = sum(player_cap_value(p) for p in players) + dead_cap_normal + float(open_roster_hold.get("amount") or 0.0)
+        cap_total = apply_salary_floor(settings, season, salary_cap, cap_total_before_floor)
         return {
-            "cap_total": sum(player_cap_value(p) for p in players) + dead_cap_normal + float(open_roster_hold.get("amount") or 0.0),
+            "cap_total": cap_total,
+            "cap_total_before_floor": cap_total_before_floor,
+            "salary_floor_adjustment": max(0.0, cap_total - cap_total_before_floor),
             "apron_account": sum(player_apron_value(p) for p in players) + dead_cap_normal,
             "open_roster_spot_cap_hold": float(open_roster_hold.get("amount") or 0.0),
             "open_roster_spot_count": float(open_roster_hold.get("open_spots") or 0.0),
@@ -8265,10 +8326,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
         standard_count = sum(1 for p in players if not is_two_way_player(p))
         two_way_count = len(players) - standard_count
         before_cap = float(balances["cap_total"])
+        before_raw_cap = float(balances.get("cap_total_before_floor") or before_cap)
         before_apron = float(balances["apron_account"])
         return {
             "code": code,
             "beforeCap": before_cap,
+            "beforeRawCap": before_raw_cap,
+            "beforeSalaryFloorAdjustment": float(balances.get("salary_floor_adjustment") or 0.0),
             "beforeApronAccount": before_apron,
             "incomingSalary": 0.0,
             "outgoingSalary": 0.0,
@@ -8279,6 +8343,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "incomingAssets": [],
             "outgoingAssets": [],
             "postCap": before_cap,
+            "postRawCap": before_raw_cap,
+            "postSalaryFloorAdjustment": float(balances.get("salary_floor_adjustment") or 0.0),
             "postApronAccount": before_apron,
             "beforeRosterStandard": standard_count,
             "beforeRosterTwoWay": two_way_count,
@@ -8859,7 +8925,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
             flow["postOpenRosterSpotCount"] = post_open_spots
             flow["postOpenRosterSpotCapHold"] = post_open_hold
             open_hold_delta = post_open_hold - float(flow.get("beforeOpenRosterSpotCapHold") or 0.0)
-            flow["postCap"] = flow["beforeCap"] + flow["incomingCapSalary"] - flow["outgoingCapSalary"] + open_hold_delta
+            post_raw_cap = float(flow.get("beforeRawCap") or flow.get("beforeCap") or 0.0) + flow["incomingCapSalary"] - flow["outgoingCapSalary"] + open_hold_delta
+            flow["postRawCap"] = post_raw_cap
+            flow["postCap"] = apply_salary_floor(settings, season, thresholds["salaryCap"], post_raw_cap)
+            flow["postSalaryFloorAdjustment"] = max(0.0, flow["postCap"] - post_raw_cap)
             flow["postApronAccount"] = flow["beforeApronAccount"] + flow["incomingApronSalary"] - flow["outgoingApronSalary"]
             flow["afterBalances"] = self._trade_machine_balance_snapshot(thresholds, flow["postCap"], flow["postApronAccount"])
 
@@ -12198,7 +12267,7 @@ QUALITY REQUIREMENTS
                     )
                 except ValueError as err:
                     message = str(err) or "invalid_draft_selection"
-                    status = 409 if message in {"not_current_pick", "draft_mode_inactive", "pick_already_selected"} else 400
+                    status = 409 if message in {"not_current_pick", "draft_mode_inactive", "pick_already_selected", "too_many_pending_draft_picks"} else 400
                     self._json(status, {"error": message})
                     return
                 if not request:
@@ -13212,6 +13281,7 @@ QUALITY REQUIREMENTS
             if not updated:
                 self._json(409, {"error": "request_already_decided"})
                 return
+            live = self.db.list_draft_live(parse_int(request.get("draft_year")))
             self._log_admin_action(
                 "approve",
                 "gm_draft_pick_request",
@@ -13490,7 +13560,7 @@ QUALITY REQUIREMENTS
                 next_free_agency_mode = parse_bool(payload.get("free_agency_mode"))
 
             for field, raw_value in payload.items():
-                match = re.fullmatch(r"(salary_cap|first_apron|second_apron|average_salary)_(\d{4})", str(field))
+                match = re.fullmatch(r"(salary_cap|salary_floor|first_apron|second_apron|average_salary)_(\d{4})", str(field))
                 if not match:
                     continue
                 if field == "salary_cap_2025":

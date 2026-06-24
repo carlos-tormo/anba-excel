@@ -106,6 +106,54 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(round(float(summary["luxury_tax"])), round(float(tracker_row["luxury_tax"])))
         self.assertIn("apron_hard_cap", tracker_row)
 
+    def test_salary_floor_lifts_cap_total_when_free_agency_mode_is_off(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("free_agency_mode", "0")
+        self.db.update_setting("salary_cap_2025", "100000000")
+        self.db.update_setting("salary_floor_2025", "90000000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Below Floor Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2025_text": "50000000",
+            },
+        )
+
+        team = self.db.get_team("ATL")
+        tracker = self.db.list_tracker(2025)
+        tracker_row = next(row for row in tracker["rows"] if row["team_code"] == "ATL")
+        summary = team["summary"]
+
+        self.assertEqual(50_000_000, round(float(summary["cap_figure_before_floor"])))
+        self.assertEqual(40_000_000, round(float(summary["salary_floor_adjustment"])))
+        self.assertEqual(90_000_000, round(float(summary["cap_figure"])))
+        self.assertEqual(50_000_000, round(float(summary["payroll"])))
+        self.assertEqual(50_000_000, round(float(summary["apron_account"])))
+        self.assertEqual(90_000_000, round(float(tracker_row["cap_total"])))
+
+    def test_salary_floor_does_not_apply_in_free_agency_mode(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("free_agency_mode", "1")
+        self.db.update_setting("salary_cap_2025", "100000000")
+        self.db.update_setting("salary_floor_2025", "90000000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Free Agency Floor Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2025_text": "50000000",
+            },
+        )
+
+        team = self.db.get_team("ATL")
+        summary = team["season_summaries"]["2025"]
+
+        self.assertLess(float(summary["cap_figure"]), 90_000_000)
+        self.assertEqual(0, round(float(summary["salary_floor_adjustment"])))
+
     def test_tracker_uses_free_agency_default_season(self) -> None:
         self.db.update_setting("current_year", "2025")
         self.db.update_setting("free_agency_mode", "1")

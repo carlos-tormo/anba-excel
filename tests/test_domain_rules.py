@@ -8,6 +8,7 @@ from app.domain_rules import (
     parse_amount_like,
     parse_float,
     public_settings_payload,
+    apply_salary_floor,
 )
 
 
@@ -23,6 +24,14 @@ class DomainRulesTests(unittest.TestCase):
         self.assertEqual(2025, payload["current_year"])
         self.assertEqual(ROSTER_STANDARD_MAX_DEFAULT, payload["roster_standard_max"])
         self.assertEqual("pre30", payload["trade_move_phase"])
+        self.assertEqual(139_182_300, payload["salary_floor_2025"])
+
+    def test_salary_floor_applies_only_outside_free_agency_mode(self) -> None:
+        settings = {"salary_floor_2025": "90000000", "free_agency_mode": "0"}
+        self.assertEqual(90_000_000, apply_salary_floor(settings, 2025, 100_000_000, 50_000_000))
+
+        settings["free_agency_mode"] = "1"
+        self.assertEqual(50_000_000, apply_salary_floor(settings, 2025, 100_000_000, 50_000_000))
 
     def test_cap_hold_amount_uses_early_bird_multiplier(self) -> None:
         row = {

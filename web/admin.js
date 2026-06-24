@@ -33,6 +33,7 @@ const state = {
   csrfToken: null,
   settings: {
     salary_cap_2025: 154647000,
+    salary_floor_2025: 139182300,
     current_year: 2025,
     first_apron: 195945000,
     second_apron: 207824000,
@@ -1059,7 +1060,7 @@ function isExhibit10Player(player) {
 }
 
 function capTotalTooltipText() {
-  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
+  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Cuando el modo agencia libre está desactivado, si el equipo queda por debajo del Salary Floor, el CAP TOTAL sube hasta ese mínimo. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
 }
 
 function apronTooltipText() {
@@ -1249,8 +1250,12 @@ function serverSeasonSummary(data, season) {
 
 function teamSeasonBalances(data, season) {
   const serverSummary = serverSeasonSummary(data, season);
+  const capFigure = Number(serverSummary?.cap_figure || 0);
+  const rawCapFigure = Number(serverSummary?.cap_figure_before_floor ?? capFigure);
   return {
-    cap_total: Number(serverSummary?.cap_figure || 0),
+    cap_total: capFigure,
+    cap_total_before_floor: rawCapFigure,
+    salary_floor_adjustment: Number(serverSummary?.salary_floor_adjustment || 0),
     gasto_total: Number(serverSummary?.payroll || 0),
     apron_account: Number(serverSummary?.apron_account || 0),
     luxury_tax: Number(serverSummary?.luxury_tax || 0),
@@ -1312,6 +1317,18 @@ function capForSeason(season) {
   const direct = Number(state.settings[`salary_cap_${season}`]);
   if (Number.isFinite(direct) && direct > 0) return direct;
   return Number(state.settings.salary_cap_2025 || 0);
+}
+
+function salaryFloorForSeason(season) {
+  const direct = Number(state.settings[`salary_floor_${season}`]);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  return capForSeason(season) * 0.9;
+}
+
+function applySalaryFloorForSeason(season, amount) {
+  const raw = Number(amount || 0);
+  if (isFreeAgencyMode()) return raw;
+  return Math.max(raw, salaryFloorForSeason(season));
 }
 
 function firstApronForSeason(season) {
@@ -1410,6 +1427,7 @@ function exceptionRows() {
 function capLimitRows() {
   return [
     { label: 'Salary cap', value: capForSeason },
+    { label: 'Salary floor', value: salaryFloorForSeason },
     { label: 'Luxury cap', value: luxuryCapForSeason },
     { label: '1er Apron', value: firstApronForSeason },
     { label: '2do Apron', value: secondApronForSeason },
@@ -2648,10 +2666,13 @@ function tradeLocalFlowSkeleton(code) {
   const balances = teamSeasonBalances(data, season);
   const rosterCounts = rosterCountFromPlayers(data.players || []);
   const beforeCap = Number(balances.cap_total || 0);
+  const beforeRawCap = Number(balances.cap_total_before_floor ?? beforeCap);
   const beforeApronAccount = Number(balances.apron_account || beforeCap);
   return {
     code,
     beforeCap,
+    beforeRawCap,
+    beforeSalaryFloorAdjustment: Number(balances.salary_floor_adjustment || 0),
     beforeApronAccount,
     incomingSalary: 0,
     outgoingSalary: 0,
@@ -2662,6 +2683,8 @@ function tradeLocalFlowSkeleton(code) {
     incomingAssets: [],
     outgoingAssets: [],
     postCap: beforeCap,
+    postRawCap: beforeRawCap,
+    postSalaryFloorAdjustment: Number(balances.salary_floor_adjustment || 0),
     postApronAccount: beforeApronAccount,
     beforeRosterStandard: rosterCounts.standard,
     beforeRosterTwoWay: rosterCounts.twoWay,
@@ -2703,7 +2726,9 @@ function tradeLocalFlows() {
     }
   });
   Object.values(flows).forEach((flow) => {
-    flow.postCap = flow.beforeCap + flow.incomingCapSalary - flow.outgoingCapSalary;
+    flow.postRawCap = flow.beforeRawCap + flow.incomingCapSalary - flow.outgoingCapSalary;
+    flow.postCap = applySalaryFloorForSeason(tradeSeasonStart(), flow.postRawCap);
+    flow.postSalaryFloorAdjustment = Math.max(0, flow.postCap - flow.postRawCap);
     flow.postApronAccount = flow.beforeApronAccount + flow.incomingApronSalary - flow.outgoingApronSalary;
     flow.afterBalances = tradeLocalBalanceSnapshot(flow.postCap, flow.postApronAccount);
   });
@@ -5557,14 +5582,14 @@ function renderImportantFigures() {
   const luxuryCap = luxuryCapForSeason(selectedYear);
   const firstApron = firstApronForSeason(selectedYear);
   const secondApron = secondApronForSeason(selectedYear);
-  const minCap = Number(state.settings.minimum_cap_allowed || salaryCap * 0.9);
+  const salaryFloor = salaryFloorForSeason(selectedYear);
   const appendixRows = [
     ['Temporada seleccionada', seasonLabel(selectedYear)],
     ['Salary cap', formatDots(salaryCap)],
+    ['Salary floor', formatDots(salaryFloor)],
     ['Luxury cap', formatDots(luxuryCap)],
     ['1er Apron', formatDots(firstApron)],
     ['2do Apron', formatDots(secondApron)],
-    ['Mínimo cap permitido', formatDots(minCap)],
   ];
   appendix.innerHTML = `
     <div class="important-figures-appendix-title">Cifras importantes</div>
@@ -9341,6 +9366,7 @@ function capForecastInputValue(kind, season) {
   const direct = Number(state.settings[`${kind}_${season}`]);
   if (Number.isFinite(direct) && direct > 0) return direct;
   if (kind === 'salary_cap') return Number(state.settings.salary_cap_2025 || 0);
+  if (kind === 'salary_floor') return capForecastInputValue('salary_cap', season) * 0.9;
   if (kind === 'first_apron') return Number(state.settings.first_apron || 0);
   if (kind === 'second_apron') return Number(state.settings.second_apron || 0);
   return null;
@@ -9358,6 +9384,7 @@ function renderSeasonCapSettingsGrid(startYear = currentSeasonStart()) {
   const currentYear = currentSeasonStart();
   const rows = [
     { kind: 'salary_cap', label: 'Salary cap' },
+    { kind: 'salary_floor', label: 'Salary floor' },
     { kind: 'first_apron', label: '1er Apron' },
     { kind: 'second_apron', label: '2do Apron' },
     { kind: 'average_salary', label: 'Average salary', optional: true },
