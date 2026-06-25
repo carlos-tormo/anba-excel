@@ -195,6 +195,108 @@ class DraftLiveTests(unittest.TestCase):
         self.assertEqual(1, live_after_approval["pending_request_count"])
         self.assertEqual([self.third_pick], live_after_approval["requestable_pick_ids"])
 
+    def test_process_draft_creates_first_round_cap_hold(self) -> None:
+        self.db.update_setting("rookie_scale_2026_1", "10000000")
+        self.db.submit_draft_live_pick(
+            self.first_pick,
+            {"option_value": "Rookie One", "advance": False},
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            is_admin=True,
+        )
+
+        result = self.db.process_draft_results(2026)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(result["created_cap_holds"]))
+        self.assertEqual(0, len(result["created_player_rights"]))
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT d.dead_type, d.label, d.salary_2026_num, d.salary_2025_num,
+                       d.exclude_from_gasto, d.exclude_from_cap, t.code
+                FROM dead_contracts d
+                JOIN teams t ON t.id = d.team_id
+                WHERE d.id = ?
+                """,
+                (result["created_cap_holds"][0]["dead_contract_id"],),
+            ).fetchone()
+            selection = conn.execute(
+                "SELECT processed_type, processed_dead_contract_id, processed_at FROM draft_live_selections WHERE draft_order_id = ?",
+                (self.first_pick,),
+            ).fetchone()
+
+        self.assertEqual("ATL", row["code"])
+        self.assertEqual("draft_hold", row["dead_type"])
+        self.assertEqual("Rookie One", row["label"])
+        self.assertEqual(10_000_000, int(row["salary_2026_num"]))
+        self.assertIsNone(row["salary_2025_num"])
+        self.assertEqual(1, row["exclude_from_gasto"])
+        self.assertEqual(0, row["exclude_from_cap"])
+        self.assertEqual("draft_cap_hold", selection["processed_type"])
+        self.assertEqual(result["created_cap_holds"][0]["dead_contract_id"], selection["processed_dead_contract_id"])
+        self.assertTrue(selection["processed_at"])
+
+    def test_process_draft_creates_second_round_player_right_and_is_idempotent(self) -> None:
+        second_round_pick = self.db.create_draft_order_entry(
+            {
+                "draft_year": 2026,
+                "draft_round": "2nd",
+                "pick_number": 31,
+                "owner_team_code": "BKN",
+                "original_team_code": "ATL",
+            }
+        )
+        self.db.submit_draft_live_pick(
+            second_round_pick,
+            {"option_value": "Second Rounder", "advance": False},
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            is_admin=True,
+        )
+
+        result = self.db.process_draft_results(2026)
+        result_again = self.db.process_draft_results(2026)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(0, len(result["created_cap_holds"]))
+        self.assertEqual(1, len(result["created_player_rights"]))
+        self.assertEqual(0, len(result_again["created_player_rights"]))
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rights_count = conn.execute(
+                "SELECT COUNT(*) FROM assets WHERE asset_type = 'player_right' AND label = 'Second Rounder'"
+            ).fetchone()[0]
+            row = conn.execute(
+                """
+                SELECT a.asset_type, a.label, a.detail, a.year, t.code
+                FROM assets a
+                JOIN teams t ON t.id = a.team_id
+                WHERE a.id = ?
+                """,
+                (result["created_player_rights"][0]["asset_id"],),
+            ).fetchone()
+
+        self.assertEqual(1, rights_count)
+        self.assertEqual("BKN", row["code"])
+        self.assertEqual("player_right", row["asset_type"])
+        self.assertEqual("Second Rounder", row["label"])
+        self.assertEqual(2026, int(row["year"]))
+        self.assertIn("Pick #31", row["detail"])
+
+    def test_process_draft_reports_missing_rookie_scale_salary(self) -> None:
+        self.db.submit_draft_live_pick(
+            self.first_pick,
+            {"option_value": "Rookie One", "advance": False},
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            is_admin=True,
+        )
+
+        result = self.db.process_draft_results(2026)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual([], result["created_cap_holds"])
+        self.assertEqual("missing_rookie_scale_salary", result["errors"][0]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

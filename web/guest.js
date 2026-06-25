@@ -66,6 +66,7 @@ const state = {
     selectedTeams: [],
     teamDataByCode: {},
     selections: {},
+    cashTransfers: {},
     seasonStart: null,
     loading: false,
     validationResult: null,
@@ -2136,6 +2137,11 @@ function pruneTradeMachineSelections() {
       delete state.tradeMachine.selections[key];
     }
   });
+  Object.entries(state.tradeMachine.cashTransfers || {}).forEach(([fromTeam, transfer]) => {
+    if (!teams.has(fromTeam) || !teams.has(transfer?.toTeam) || fromTeam === transfer?.toTeam) {
+      delete state.tradeMachine.cashTransfers[fromTeam];
+    }
+  });
 }
 
 async function ensureTradeMachineTeamData(codes) {
@@ -2222,6 +2228,8 @@ function tradeMachineFlowSkeleton(code) {
     beforeApronAccount,
     incomingSalary: 0,
     outgoingSalary: 0,
+    incomingCash: 0,
+    outgoingCash: 0,
     incomingCapSalary: 0,
     outgoingCapSalary: 0,
     incomingApronSalary: 0,
@@ -2239,6 +2247,42 @@ function tradeMachineFlowSkeleton(code) {
     beforeBalances: tradeMachineBalanceSnapshot(beforeCap, beforeApronAccount),
     afterBalances: tradeMachineBalanceSnapshot(beforeCap, beforeApronAccount),
   };
+}
+
+function tradeMachineCashTransfersForPayload() {
+  return Object.entries(state.tradeMachine.cashTransfers || {}).map(([fromTeam, transfer]) => {
+    const amount = parseAmountLike(transfer?.amountText ?? transfer?.amount);
+    const toTeam = String(transfer?.toTeam || tradeMachineDefaultRecipient(fromTeam) || '').trim().toUpperCase();
+    if (!Number.isFinite(amount) || amount <= 0 || !fromTeam || !toTeam || fromTeam === toTeam) return null;
+    return {
+      from_team: fromTeam,
+      to_team: toTeam,
+      amount,
+    };
+  }).filter(Boolean);
+}
+
+function tradeMachineApplyCashTransfersToFlows(flows) {
+  tradeMachineCashTransfersForPayload().forEach((transfer, index) => {
+    const fromTeam = transfer.from_team;
+    const toTeam = transfer.to_team;
+    const amount = Number(transfer.amount || 0);
+    if (!flows[fromTeam] || !flows[toTeam] || amount <= 0) return;
+    const asset = {
+      key: `cash:${fromTeam}:${toTeam}:${index}`,
+      type: 'cash',
+      label: 'Cash considerations',
+      detail: formatBalanceMoney(amount),
+      salary: 0,
+      cashAmount: amount,
+      fromTeam,
+      toTeam,
+    };
+    flows[fromTeam].outgoingCash = Number(flows[fromTeam].outgoingCash || 0) + amount;
+    flows[fromTeam].outgoingAssets.push(asset);
+    flows[toTeam].incomingCash = Number(flows[toTeam].incomingCash || 0) + amount;
+    flows[toTeam].incomingAssets.push(asset);
+  });
 }
 
 function tradeMachineFlows() {
@@ -2271,6 +2315,7 @@ function tradeMachineFlows() {
       }
     }
   });
+  tradeMachineApplyCashTransfersToFlows(flows);
   Object.values(flows).forEach((flow) => {
     flow.postRawCap = flow.beforeRawCap + flow.incomingCapSalary - flow.outgoingCapSalary;
     flow.postCap = applySalaryFloorForSeason(tradeMachineSeasonStart(), flow.postRawCap);
@@ -2300,6 +2345,7 @@ function tradeMachineValidationPayload() {
     teams: state.tradeMachine.selectedTeams || [],
     season: tradeMachineSeasonStart(),
     selections,
+    cash: tradeMachineCashTransfersForPayload(),
   };
 }
 
@@ -2322,7 +2368,7 @@ async function refreshTradeMachineValidation() {
     state.tradeMachine.validationResult = result;
     state.tradeMachine.validationErrorSignature = null;
     state.tradeMachine.validationError = null;
-    renderTradeMachine();
+    renderTradeMachineDynamicSections();
   } catch (err) {
     console.warn('Trade validation failed', err);
     if (state.tradeMachine.validationLoadingSignature === signature) {
@@ -2336,7 +2382,7 @@ async function refreshTradeMachineValidation() {
       state.tradeMachine.validationLoadingSignature = null;
     }
     if (state.tradeMachine.validationErrorSignature === signature) {
-      renderTradeMachine();
+      renderTradeMachineDynamicSections();
     }
   }
 }
@@ -2371,7 +2417,7 @@ function tradeMachineAssetRowHtml({ key, type, label, detail, mobileDetail, sala
     `
     : '';
   return `
-    <div class="trade-machine-asset-row ${disabled ? 'is-disabled' : ''}">
+    <div class="trade-machine-asset-row ${selected ? 'is-selected' : ''} ${disabled ? 'is-disabled' : ''}" data-trade-asset-row="${escapeHtml(key)}">
       <label>
         <input type="checkbox" data-trade-asset-key="${key}" data-trade-asset-type="${type}" ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
         <span class="trade-machine-asset-main">
@@ -2457,6 +2503,30 @@ function tradeMachineRightsRowsHtml(data, code) {
   })).join('');
 }
 
+function tradeMachineCashHtml(code) {
+  const transfer = state.tradeMachine.cashTransfers?.[code] || {};
+  const selectedTo = transfer.toTeam || tradeMachineDefaultRecipient(code);
+  const amountText = transfer.amountText ?? '';
+  return `
+    <section class="trade-machine-cash-panel">
+      <h3>Cash considerations</h3>
+      <div class="trade-machine-cash-row">
+        <input
+          type="text"
+          inputmode="numeric"
+          data-trade-cash-amount="${escapeHtml(code)}"
+          value="${escapeHtml(amountText)}"
+          placeholder="0"
+          aria-label="Cash enviado por ${escapeHtml(code)}"
+        >
+        <select data-trade-cash-recipient="${escapeHtml(code)}" aria-label="Destino del cash de ${escapeHtml(code)}">
+          ${tradeMachineRecipientOptions(code, selectedTo)}
+        </select>
+      </div>
+    </section>
+  `;
+}
+
 function tradeMachineLedgerHtml(flow) {
   const net = flow.incomingSalary - flow.outgoingSalary;
   return `
@@ -2488,6 +2558,31 @@ function tradeMachineRosterHtml(flow) {
   `;
 }
 
+function tradeMachinePreviewChipControlsHtml(asset, direction) {
+  if (direction !== 'outgoing' || !asset?.key) return '';
+  const selected = tradeMachineSelectedAsset(asset.key);
+  if (!selected) return '';
+  const meta = tradeMachineAssetMeta(asset.key);
+  const fromTeam = selected.fromTeam || meta?.fromTeam || asset.fromTeam;
+  const toTeam = selected.toTeam || asset.toTeam || tradeMachineDefaultRecipient(fromTeam);
+  const recipientHtml = fromTeam
+    ? `
+      <select class="trade-machine-chip-select" data-trade-recipient="${escapeHtml(asset.key)}" aria-label="Destino de ${escapeHtml(asset.label)}">
+        ${tradeMachineRecipientOptions(fromTeam, toTeam)}
+      </select>
+    `
+    : '';
+  const pickActionHtml = meta?.type === 'pick'
+    ? `
+      <select class="trade-machine-chip-select trade-machine-chip-select--pick" data-trade-pick-action="${escapeHtml(asset.key)}" aria-label="Acción para ${escapeHtml(asset.label)}">
+        ${tradeMachinePickActionOptions(tradeMachinePickAction(selected.pickAction), Boolean(meta.stepienRestricted))}
+      </select>
+    `
+    : '';
+  if (!recipientHtml && !pickActionHtml) return '';
+  return `<span class="trade-machine-preview-chip-controls">${pickActionHtml}${recipientHtml}</span>`;
+}
+
 function tradeMachinePreviewChipHtml(asset, direction) {
   const partner = direction === 'incoming' ? asset.fromTeam : asset.toTeam;
   const partnerLabel = partner ? `${direction === 'incoming' ? 'desde' : 'a'} ${partner}` : '';
@@ -2498,6 +2593,7 @@ function tradeMachinePreviewChipHtml(asset, direction) {
         <strong>${escapeHtml(asset.label)}</strong>
         <small>${escapeHtml([partnerLabel, salaryLabel].filter(Boolean).join(' · '))}</small>
       </span>
+      ${tradeMachinePreviewChipControlsHtml(asset, direction)}
       <button type="button" data-trade-remove-asset="${asset.key}" aria-label="Quitar ${escapeHtml(asset.label)}">&times;</button>
     </span>
   `;
@@ -2537,6 +2633,7 @@ function tradeMachineAssetTypeLabel(type) {
   if (type === 'pick') return 'Ronda';
   if (type === 'swap_right') return 'Derecho swap';
   if (type === 'right') return 'Derecho';
+  if (type === 'cash') return 'Cash';
   return 'Activo';
 }
 
@@ -2545,6 +2642,9 @@ function tradeMachineAssetSummaryHtml(asset, direction) {
   const typeClass = `trade-machine-summary-asset--${asset.type || 'asset'}`;
   const partnerLogo = tradeMachineSummaryLogoHtml(partner);
   const salaryHtml = asset.salary > 0 ? `<span class="trade-machine-summary-asset-money">${formatBalanceMoney(asset.salary)}</span>` : '';
+  const cashHtml = asset.type === 'cash' && Number(asset.cashAmount || 0) > 0
+    ? `<span class="trade-machine-summary-asset-money">${formatBalanceMoney(asset.cashAmount)}</span>`
+    : '';
   return `
     <li class="trade-machine-summary-asset ${typeClass}">
       <div class="trade-machine-summary-asset-head">
@@ -2552,7 +2652,7 @@ function tradeMachineAssetSummaryHtml(asset, direction) {
         ${partnerLogo}
       </div>
       ${asset.detail ? `<small>${escapeHtml(asset.detail)}</small>` : ''}
-      ${salaryHtml}
+      ${salaryHtml || cashHtml}
     </li>
   `;
 }
@@ -2721,7 +2821,7 @@ function renderTradeMachineTeamCard(code, index, flow) {
   const canRemove = (state.tradeMachine.selectedTeams || []).length > TRADE_MACHINE_MIN_TEAMS;
   if (!data) {
     return `
-      <article class="trade-machine-team-card">
+      <article class="trade-machine-team-card" data-trade-team-card="${escapeHtml(code)}">
         <div class="trade-machine-team-top">
           <div class="trade-machine-team-select">
             <span class="trade-machine-team-kicker">
@@ -2737,7 +2837,7 @@ function renderTradeMachineTeamCard(code, index, flow) {
     `;
   }
   return `
-    <article class="trade-machine-team-card">
+    <article class="trade-machine-team-card" data-trade-team-card="${escapeHtml(code)}">
       <div class="trade-machine-team-top">
         <div class="trade-machine-team-select">
           <span class="trade-machine-team-kicker">
@@ -2750,6 +2850,7 @@ function renderTradeMachineTeamCard(code, index, flow) {
       </div>
       ${tradeMachineLedgerHtml(flow)}
       ${tradeMachineRosterHtml(flow)}
+      ${tradeMachineCashHtml(code)}
       ${tradeMachineTeamPreviewHtml(flow)}
       <div class="trade-machine-assets">
         <section>
@@ -2802,12 +2903,7 @@ function renderTradeMachineResults(result) {
   `;
 }
 
-function renderTradeMachine() {
-  renderTradeMachineSeasonControl();
-  const grid = document.getElementById('tradeMachineTeams');
-  const status = document.getElementById('tradeMachineStatus');
-  const addBtn = document.getElementById('tradeMachineAddTeamBtn');
-  if (!grid) return;
+function tradeMachineRenderContext() {
   const codes = state.tradeMachine.selectedTeams || [];
   pruneTradeMachineSelections();
   const previewFlows = tradeMachineFlows();
@@ -2820,12 +2916,70 @@ function renderTradeMachine() {
     ? state.tradeMachine.validationError
     : null;
   const result = serverResult || tradeMachineServerValidationPlaceholder(previewFlows, validationError ? 'error' : 'loading');
+  return { codes, result, validationSignature, serverResult, validationError };
+}
+
+function syncTradeMachineAssetRows() {
+  document.querySelectorAll('[data-trade-asset-row]').forEach((row) => {
+    const key = row.dataset.tradeAssetRow;
+    const selected = key ? tradeMachineSelectedAsset(key) : null;
+    row.classList.toggle('is-selected', Boolean(selected));
+    const checkbox = row.querySelector('[data-trade-asset-key]');
+    if (checkbox) checkbox.checked = Boolean(selected);
+    const recipient = row.querySelector('[data-trade-recipient]');
+    if (recipient) {
+      recipient.disabled = !selected;
+      if (selected?.toTeam) recipient.value = selected.toTeam;
+    }
+  });
+}
+
+function renderTradeMachineDynamicSections() {
+  const grid = document.getElementById('tradeMachineTeams');
+  const status = document.getElementById('tradeMachineStatus');
+  const addBtn = document.getElementById('tradeMachineAddTeamBtn');
+  if (!grid) return null;
+  const context = tradeMachineRenderContext();
+  const { codes, result, validationSignature, serverResult, validationError } = context;
+  if (status) status.textContent = `${seasonLabel(tradeMachineSeasonStart())} · ${codes.length} equipos`;
+  if (addBtn) addBtn.disabled = codes.length >= TRADE_MACHINE_MAX_TEAMS;
+  codes.forEach((code) => {
+    const card = Array.from(grid.querySelectorAll('[data-trade-team-card]'))
+      .find((item) => item.dataset.tradeTeamCard === code);
+    const flow = result.flows[code] || tradeMachineFlowSkeleton(code);
+    const ledger = card?.querySelector('.trade-machine-ledger');
+    if (ledger) ledger.outerHTML = tradeMachineLedgerHtml(flow);
+    const roster = card?.querySelector('.trade-machine-roster-counts');
+    if (roster) roster.outerHTML = tradeMachineRosterHtml(flow);
+    const preview = card?.querySelector('.trade-machine-team-preview');
+    if (preview) preview.outerHTML = tradeMachineTeamPreviewHtml(flow);
+  });
+  renderTradeMachineResults(result);
+  syncTradeMachineAssetRows();
+  if (
+    !serverResult
+    && !validationError
+    && state.tradeMachine.validationLoadingSignature !== validationSignature
+  ) {
+    void refreshTradeMachineValidation();
+  }
+  return context;
+}
+
+function renderTradeMachine() {
+  renderTradeMachineSeasonControl();
+  const grid = document.getElementById('tradeMachineTeams');
+  const status = document.getElementById('tradeMachineStatus');
+  const addBtn = document.getElementById('tradeMachineAddTeamBtn');
+  if (!grid) return;
+  const { codes, result, validationSignature, serverResult, validationError } = tradeMachineRenderContext();
   if (status) status.textContent = `${seasonLabel(tradeMachineSeasonStart())} · ${codes.length} equipos`;
   if (addBtn) addBtn.disabled = codes.length >= TRADE_MACHINE_MAX_TEAMS;
   grid.innerHTML = codes
     .map((code, index) => renderTradeMachineTeamCard(code, index, result.flows[code] || tradeMachineFlowSkeleton(code)))
     .join('');
   renderTradeMachineResults(result);
+  syncTradeMachineAssetRows();
   if (
     !serverResult
     && !validationError
@@ -2944,14 +3098,14 @@ function setupTradeMachineControls() {
         } else {
           delete state.tradeMachine.selections[key];
         }
-        renderTradeMachine();
+        renderTradeMachineDynamicSections();
         return;
       }
       if (target.matches('[data-trade-recipient]')) {
         const key = target.dataset.tradeRecipient;
         if (key && state.tradeMachine.selections[key]) {
           state.tradeMachine.selections[key].toTeam = target.value;
-          renderTradeMachine();
+          renderTradeMachineDynamicSections();
         }
         return;
       }
@@ -2959,7 +3113,7 @@ function setupTradeMachineControls() {
         const key = target.dataset.tradePickAction;
         if (key && state.tradeMachine.selections[key]) {
           state.tradeMachine.selections[key].pickAction = tradeMachinePickAction(target.value);
-          renderTradeMachine();
+          renderTradeMachineDynamicSections();
         }
       }
     });
@@ -2971,7 +3125,7 @@ function setupTradeMachineControls() {
         const key = removeAssetBtn.dataset.tradeRemoveAsset;
         if (key) {
           delete state.tradeMachine.selections[key];
-          renderTradeMachine();
+          renderTradeMachineDynamicSections();
         }
         return;
       }

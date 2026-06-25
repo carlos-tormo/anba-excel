@@ -218,6 +218,9 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
         payload[f"average_salary_{season}"] = (
             season_average_salary if season_average_salary and season_average_salary > 0 else 0.0
         )
+        for pick_number in range(1, 31):
+            key = f"rookie_scale_{season}_{pick_number}"
+            payload[key] = parse_float(settings.get(key)) or 0.0
     return payload
 
 

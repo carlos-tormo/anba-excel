@@ -1811,6 +1811,19 @@ h1 {
   background: #eff6ff;
   color: #1d4ed8;
 }
+.draft-live-processed {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid #ddd6fe;
+  border-radius: 999px;
+  background: #f5f3ff;
+  color: #6d28d9;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
 .draft-live-admin-selection-cell {
   display: flex;
   flex-wrap: wrap;
@@ -2144,6 +2157,9 @@ h1 {
 .trade-machine-asset-row.is-disabled {
   opacity: 0.56;
 }
+.trade-machine-asset-row.is-selected {
+  display: none;
+}
 .trade-machine-asset-row label {
   display: inline-flex;
   align-items: center;
@@ -2189,6 +2205,9 @@ h1 {
 }
 .trade-machine-asset-route--pick.has-pick-action {
   grid-template-columns: minmax(116px, 134px) minmax(82px, 108px);
+}
+.trade-machine-asset-route.has-no-count {
+  grid-template-columns: auto minmax(82px, 108px) auto;
 }
 .trade-machine-asset-salary {
   color: #334155;
@@ -2295,6 +2314,39 @@ h1 {
 .trade-machine-preview-chip-main {
   display: grid;
   min-width: 0;
+}
+.trade-machine-preview-chip-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.trade-machine-chip-select {
+  width: auto;
+  min-width: 62px;
+  max-width: 92px;
+  min-height: 28px;
+  padding: 3px 22px 3px 8px;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+.trade-machine-chip-select--pick {
+  min-width: 104px;
+  max-width: 124px;
+  border-color: #bfdbfe;
+  background-color: #eff6ff;
+  color: #1d4ed8;
+}
+.trade-no-count-toggle--chip {
+  padding: 4px 7px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+}
+.trade-no-count-toggle--chip input {
+  width: 13px;
+  height: 13px;
 }
 .trade-machine-preview-chip strong {
   overflow: hidden;
@@ -6144,6 +6196,12 @@ td.salary-option--nb .salary-pct {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+.rookie-scale-table-wrap {
+  max-height: 540px;
+}
+.rookie-scale-table {
+  min-width: 980px;
+}
 .settings-economy-table {
   width: 100%;
   min-width: 760px;
@@ -8860,10 +8918,19 @@ select[data-new-field="years_left"],
   }
   .trade-machine-preview-chip {
     border-radius: 8px;
+    flex-wrap: wrap;
   }
   .trade-machine-preview-chip strong,
   .trade-machine-preview-chip small {
     max-width: 210px;
+  }
+  .trade-machine-preview-chip-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .trade-machine-chip-select {
+    flex: 1 1 72px;
+    max-width: none;
   }
   .trade-machine-result-head {
     align-items: flex-start;

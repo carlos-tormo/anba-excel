@@ -399,6 +399,8 @@ def normalize_dead_type(value: Any) -> str:
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if raw in {"two_way", "tw"}:
         return "two_way"
+    if raw in {"draft_hold", "draft_cap_hold", "rookie_hold"}:
+        return "draft_hold"
     return "normal"
 
 
@@ -1101,6 +1103,18 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 )
                 """
             )
+            draft_live_selection_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(draft_live_selections)").fetchall()
+            }
+            if "processed_type" not in draft_live_selection_cols:
+                conn.execute("ALTER TABLE draft_live_selections ADD COLUMN processed_type TEXT")
+            if "processed_dead_contract_id" not in draft_live_selection_cols:
+                conn.execute("ALTER TABLE draft_live_selections ADD COLUMN processed_dead_contract_id INTEGER")
+            if "processed_asset_id" not in draft_live_selection_cols:
+                conn.execute("ALTER TABLE draft_live_selections ADD COLUMN processed_asset_id INTEGER")
+            if "processed_at" not in draft_live_selection_cols:
+                conn.execute("ALTER TABLE draft_live_selections ADD COLUMN processed_at TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS team_economy (
@@ -3110,6 +3124,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 s.selected_by_role,
                 s.selected_at,
                 s.updated_at AS selection_updated_at,
+                s.processed_type,
+                s.processed_dead_contract_id,
+                s.processed_asset_id,
+                s.processed_at,
                 pr.id AS pending_request_id,
                 pr.selection_text AS pending_selection_text,
                 pr.option_value AS pending_option_value,
@@ -3489,6 +3507,259 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 )
             conn.commit()
             return self._draft_live_payload(conn, draft_year)
+
+    def process_draft_results(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
+        year = parse_int(str(draft_year)) if draft_year is not None else self.current_draft_year()
+        if year is None or year < 2025 or year > 2030:
+            raise ValueError("unsupported_draft_year")
+        settings = self.get_settings()
+        timestamp = now_iso()
+        supported_salary_seasons = [2025, 2026, 2027, 2028, 2029, 2030]
+        created_holds: List[Dict[str, Any]] = []
+        created_rights: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    d.id AS draft_order_id,
+                    d.draft_year,
+                    d.draft_round,
+                    d.pick_number,
+                    d.owner_team_code,
+                    d.original_team_code,
+                    t.id AS team_id,
+                    COALESCE(t.name, d.owner_team_code) AS team_name,
+                    s.selection_text,
+                    COALESCE(s.skipped, 0) AS skipped,
+                    s.processed_type,
+                    s.processed_dead_contract_id,
+                    s.processed_asset_id,
+                    s.processed_at
+                FROM draft_order d
+                JOIN teams t ON t.code = d.owner_team_code
+                LEFT JOIN draft_live_selections s ON s.draft_order_id = d.id
+                WHERE d.draft_year = ?
+                ORDER BY
+                    CASE d.draft_round WHEN '1st' THEN 1 WHEN '2nd' THEN 2 ELSE 3 END,
+                    d.pick_number,
+                    d.id
+                """,
+                (int(year),),
+            )
+            rows = [row_to_dict(cur, row) for row in cur.fetchall()]
+            for row in rows:
+                draft_order_id = parse_int(row.get("draft_order_id"))
+                pick_number = parse_int(row.get("pick_number"))
+                draft_round = normalize_pick_round(row.get("draft_round"))
+                selection_text = str(row.get("selection_text") or "").strip()
+                team_code = normalize_team_code(row.get("owner_team_code")) or ""
+                team_id = parse_int(row.get("team_id"))
+                if not draft_order_id or not team_id or not team_code:
+                    continue
+                if parse_bool(row.get("processed_at")) or str(row.get("processed_type") or "").strip():
+                    skipped.append({
+                        "draft_order_id": draft_order_id,
+                        "team_code": team_code,
+                        "pick_number": pick_number,
+                        "draft_round": draft_round,
+                        "reason": "already_processed",
+                    })
+                    continue
+                if parse_bool(row.get("skipped")):
+                    skipped.append({
+                        "draft_order_id": draft_order_id,
+                        "team_code": team_code,
+                        "pick_number": pick_number,
+                        "draft_round": draft_round,
+                        "reason": "pick_skipped",
+                    })
+                    continue
+                if not selection_text:
+                    skipped.append({
+                        "draft_order_id": draft_order_id,
+                        "team_code": team_code,
+                        "pick_number": pick_number,
+                        "draft_round": draft_round,
+                        "reason": "no_selection",
+                    })
+                    continue
+                if draft_round == "1st":
+                    if pick_number is None or pick_number < 1 or pick_number > 30:
+                        errors.append({
+                            "draft_order_id": draft_order_id,
+                            "team_code": team_code,
+                            "pick_number": pick_number,
+                            "draft_round": draft_round,
+                            "selection": selection_text,
+                            "error": "rookie_scale_pick_out_of_range",
+                        })
+                        continue
+                    projected_salary = parse_float(settings.get(f"rookie_scale_{int(year)}_{int(pick_number)}"))
+                    if projected_salary is None or projected_salary <= 0:
+                        errors.append({
+                            "draft_order_id": draft_order_id,
+                            "team_code": team_code,
+                            "pick_number": pick_number,
+                            "draft_round": draft_round,
+                            "selection": selection_text,
+                            "error": "missing_rookie_scale_salary",
+                        })
+                        continue
+                    salary_texts = {season: None for season in supported_salary_seasons}
+                    salary_texts[int(year)] = str(int(round(projected_salary)))
+                    max_order = conn.execute(
+                        "SELECT COALESCE(MAX(row_order), 0) AS mx FROM dead_contracts WHERE team_id = ?",
+                        (team_id,),
+                    ).fetchone()["mx"]
+                    profile_id = self._resolve_profile_for_new_row(
+                        conn,
+                        {"name": selection_text},
+                        name=selection_text,
+                        timestamp=timestamp,
+                    )
+                    dead_cur = conn.execute(
+                        """
+                        INSERT INTO dead_contracts (
+                            team_id, profile_id, row_order, dead_type, label, amount_text, amount_num,
+                            exclude_from_gasto, exclude_from_cap,
+                            salary_2025_text, salary_2025_num,
+                            salary_2026_text, salary_2026_num,
+                            salary_2027_text, salary_2027_num,
+                            salary_2028_text, salary_2028_num,
+                            salary_2029_text, salary_2029_num,
+                            salary_2030_text, salary_2030_num,
+                            created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, 'draft_hold', ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            team_id,
+                            profile_id,
+                            int(max_order) + 1,
+                            selection_text,
+                            salary_texts[2025],
+                            parse_float(salary_texts[2025]),
+                            salary_texts[2025],
+                            parse_float(salary_texts[2025]),
+                            salary_texts[2026],
+                            parse_float(salary_texts[2026]),
+                            salary_texts[2027],
+                            parse_float(salary_texts[2027]),
+                            salary_texts[2028],
+                            parse_float(salary_texts[2028]),
+                            salary_texts[2029],
+                            parse_float(salary_texts[2029]),
+                            salary_texts[2030],
+                            parse_float(salary_texts[2030]),
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    dead_contract_id = int(dead_cur.lastrowid)
+                    if profile_id is not None:
+                        self._record_player_transaction(
+                            conn,
+                            profile_id=int(profile_id),
+                            dead_contract_id=dead_contract_id,
+                            action="draft_cap_hold",
+                            team_code=team_code,
+                            summary=f"{team_code} añade el cap hold de draft de {selection_text}",
+                            details={
+                                "draft_year": int(year),
+                                "draft_round": draft_round,
+                                "pick_number": pick_number,
+                                "projected_salary": int(round(projected_salary)),
+                            },
+                            created_at=timestamp,
+                        )
+                    conn.execute(
+                        """
+                        UPDATE draft_live_selections
+                        SET processed_type = 'draft_cap_hold',
+                            processed_dead_contract_id = ?,
+                            processed_asset_id = NULL,
+                            processed_at = ?,
+                            updated_at = ?
+                        WHERE draft_order_id = ?
+                        """,
+                        (dead_contract_id, timestamp, timestamp, draft_order_id),
+                    )
+                    created_holds.append({
+                        "draft_order_id": draft_order_id,
+                        "dead_contract_id": dead_contract_id,
+                        "team_code": team_code,
+                        "pick_number": pick_number,
+                        "selection": selection_text,
+                        "projected_salary": int(round(projected_salary)),
+                    })
+                    continue
+                if draft_round == "2nd":
+                    max_order = conn.execute(
+                        "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                        (team_id,),
+                    ).fetchone()["mx"]
+                    asset_cur = conn.execute(
+                        """
+                        INSERT INTO assets (
+                            team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
+                            draft_pick_type, draft_round, original_owner, exception_type,
+                            draft_pick_restricted, draft_pick_stepien_restricted, draft_pick_protected,
+                            draft_pick_sold_to, draft_pick_conditional_teams, draft_pick_frozen,
+                            created_at, updated_at
+                        )
+                        VALUES (?, ?, 'player_right', ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 0, ?, ?)
+                        """,
+                        (
+                            team_id,
+                            int(max_order) + 1,
+                            str(int(year)),
+                            selection_text,
+                            f"Draft {int(year)} · Pick #{pick_number} · 2ª ronda",
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    asset_id = int(asset_cur.lastrowid)
+                    conn.execute(
+                        """
+                        UPDATE draft_live_selections
+                        SET processed_type = 'player_right',
+                            processed_dead_contract_id = NULL,
+                            processed_asset_id = ?,
+                            processed_at = ?,
+                            updated_at = ?
+                        WHERE draft_order_id = ?
+                        """,
+                        (asset_id, timestamp, timestamp, draft_order_id),
+                    )
+                    created_rights.append({
+                        "draft_order_id": draft_order_id,
+                        "asset_id": asset_id,
+                        "team_code": team_code,
+                        "pick_number": pick_number,
+                        "selection": selection_text,
+                    })
+                    continue
+                skipped.append({
+                    "draft_order_id": draft_order_id,
+                    "team_code": team_code,
+                    "pick_number": pick_number,
+                    "draft_round": draft_round,
+                    "reason": "unsupported_round",
+                })
+            conn.commit()
+            return {
+                "ok": not errors,
+                "draft_year": int(year),
+                "created_cap_holds": created_holds,
+                "created_player_rights": created_rights,
+                "skipped": skipped,
+                "errors": errors,
+                "draft_live": self._draft_live_payload(conn, int(year)),
+            }
 
     def _attach_option_decisions(self, conn: sqlite3.Connection, players: List[Dict[str, Any]], team_id: int) -> None:
         if not players:
@@ -6591,10 +6862,22 @@ class LeagueDB(DatabaseMaintenanceMixin):
         )
         roster_two_way_count = len(players) - roster_standard_count
 
-        dead_cap_normal = sum(
+        dead_cap_team_salary = sum(
+            dead_contract_salary_num(d, current_year)
+            for d in dead_contracts
+            if normalize_dead_type(d.get("dead_type")) in {"normal", "draft_hold"}
+            and not dead_contract_excluded_from_cap(d)
+        )
+        dead_cap_apron = sum(
             dead_contract_salary_num(d, current_year)
             for d in dead_contracts
             if normalize_dead_type(d.get("dead_type")) == "normal"
+            and not dead_contract_excluded_from_cap(d)
+        )
+        dead_cap_draft_hold = sum(
+            dead_contract_salary_num(d, current_year)
+            for d in dead_contracts
+            if normalize_dead_type(d.get("dead_type")) == "draft_hold"
             and not dead_contract_excluded_from_cap(d)
         )
         dead_gasto_normal = sum(
@@ -6613,10 +6896,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
         open_roster_hold_amount = float(open_roster_hold.get("amount") or 0.0)
         exceptions = sum((a.get("amount_num") or 0.0) for a in assets if a.get("asset_type") == "exception")
 
-        cap_figure_before_floor = cap_figure_players + dead_cap_normal + open_roster_hold_amount
+        cap_figure_before_floor = cap_figure_players + dead_cap_team_salary + open_roster_hold_amount
         cap_figure = apply_salary_floor(settings, current_year, salary_cap, cap_figure_before_floor)
         salary_floor_adjustment = max(0.0, cap_figure - cap_figure_before_floor)
-        apron_figure = apron_figure_players + dead_cap_normal
+        apron_figure = apron_figure_players + dead_cap_apron
         payroll = player_payroll + dead_gasto_normal + dead_gasto_two_way
 
         luxury = salary_cap * 1.215
@@ -6638,7 +6921,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
         return {
             "player_payroll": player_payroll,
             "dead_cap": dead_gasto_normal + dead_gasto_two_way,
-            "dead_cap_normal": dead_cap_normal,
+            "dead_cap_normal": dead_cap_apron,
+            "dead_cap_draft_hold": dead_cap_draft_hold,
+            "dead_cap_team_salary": dead_cap_team_salary,
             "dead_cap_two_way": dead_gasto_two_way,
             "dead_gasto_normal": dead_gasto_normal,
             "dead_gasto_two_way": dead_gasto_two_way,
@@ -8293,20 +8578,26 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 return 0.0
             return row_salary_num(player, season) + apron_yos_adjustment(player, season, salary_cap)
 
-        dead_cap_normal = sum(
+        dead_cap_team_salary = sum(
+            dead_contract_salary_num(d, season)
+            for d in dead_contracts
+            if normalize_dead_type(d.get("dead_type")) in {"normal", "draft_hold"}
+            and not dead_contract_excluded_from_cap(d)
+        )
+        dead_cap_apron = sum(
             dead_contract_salary_num(d, season)
             for d in dead_contracts
             if normalize_dead_type(d.get("dead_type")) == "normal"
             and not dead_contract_excluded_from_cap(d)
         )
         open_roster_hold = open_roster_spot_cap_hold(players, season, settings, salary_cap)
-        cap_total_before_floor = sum(player_cap_value(p) for p in players) + dead_cap_normal + float(open_roster_hold.get("amount") or 0.0)
+        cap_total_before_floor = sum(player_cap_value(p) for p in players) + dead_cap_team_salary + float(open_roster_hold.get("amount") or 0.0)
         cap_total = apply_salary_floor(settings, season, salary_cap, cap_total_before_floor)
         return {
             "cap_total": cap_total,
             "cap_total_before_floor": cap_total_before_floor,
             "salary_floor_adjustment": max(0.0, cap_total - cap_total_before_floor),
-            "apron_account": sum(player_apron_value(p) for p in players) + dead_cap_normal,
+            "apron_account": sum(player_apron_value(p) for p in players) + dead_cap_apron,
             "open_roster_spot_cap_hold": float(open_roster_hold.get("amount") or 0.0),
             "open_roster_spot_count": float(open_roster_hold.get("open_spots") or 0.0),
             "open_roster_spot_roster_count": float(open_roster_hold.get("roster_count") or 0.0),
@@ -8336,6 +8627,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "beforeApronAccount": before_apron,
             "incomingSalary": 0.0,
             "outgoingSalary": 0.0,
+            "incomingCash": 0.0,
+            "outgoingCash": 0.0,
             "incomingCapSalary": 0.0,
             "outgoingCapSalary": 0.0,
             "incomingApronSalary": 0.0,
@@ -8360,6 +8653,22 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "beforeBalances": self._trade_machine_balance_snapshot(thresholds, before_cap, before_apron),
             "afterBalances": self._trade_machine_balance_snapshot(thresholds, before_cap, before_apron),
         }
+
+    def _trade_machine_hard_cap_for_season(self, team_data: Dict[str, Any], season: int) -> str:
+        season_key = str(int(season))
+        summaries = team_data.get("season_summaries") or {}
+        if isinstance(summaries, dict):
+            summary = summaries.get(season_key) or {}
+            hard_cap = normalize_apron_hard_cap(summary.get("apron_hard_cap"))
+            if hard_cap:
+                return hard_cap
+        for row in team_data.get("apron_hard_caps") or []:
+            if parse_int(row.get("season_year")) == int(season):
+                return normalize_apron_hard_cap(row.get("hard_cap")) or ""
+        summary = team_data.get("summary") or {}
+        if parse_int(summary.get("current_year")) == int(season):
+            return normalize_apron_hard_cap(summary.get("apron_hard_cap")) or ""
+        return ""
 
     def _trade_machine_pick_owner(self, asset: Dict[str, Any], team_code: str) -> str:
         if normalize_pick_type(asset.get("draft_pick_type")) == "conditional":
@@ -8590,7 +8899,40 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if to_team and to_team not in seen:
                 seen.add(to_team)
                 teams.append(to_team)
-        return {"teams": teams, "selections": selections}
+        cash_transfers: List[Dict[str, Any]] = []
+        raw_cash = payload.get("cash")
+        if raw_cash is None:
+            raw_cash = payload.get("cash_considerations") or payload.get("cashConsiderations")
+        if isinstance(raw_cash, dict):
+            cash_iterable = raw_cash.values()
+        elif isinstance(raw_cash, list):
+            cash_iterable = raw_cash
+        else:
+            cash_iterable = []
+        for item in cash_iterable:
+            if not isinstance(item, dict):
+                continue
+            from_team = normalize_team_code(item.get("from_team") or item.get("fromTeam"))
+            to_team = normalize_team_code(item.get("to_team") or item.get("toTeam"))
+            amount = parse_float(item.get("amount"))
+            if amount is None:
+                amount = parse_float(item.get("cash_amount") or item.get("cashAmount"))
+            if amount is None or amount <= 0:
+                continue
+            cash_transfers.append(
+                {
+                    "fromTeam": from_team,
+                    "toTeam": to_team,
+                    "amount": float(amount),
+                }
+            )
+            if from_team and from_team not in seen:
+                seen.add(from_team)
+                teams.append(from_team)
+            if to_team and to_team not in seen:
+                seen.add(to_team)
+                teams.append(to_team)
+        return {"teams": teams, "selections": selections, "cash": cash_transfers}
 
     def _trade_machine_expanded_buffer(self, salary_cap: float) -> float:
         calculated = round(float(salary_cap or 0.0) * TRADE_MATCH_EXPANDED_BUFFER_RATIO)
@@ -8764,6 +9106,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "messages": ["Añade activos para evaluar los movimientos disponibles."] if not selected_count else messages("moves", ["Todos los equipos tienen movimientos suficientes para los activos que envían."]),
             },
             {
+                "key": "cash",
+                "label": "Cash disponible",
+                "status": "fail" if has("cash", "illegal") else "warning" if has("cash", "warning") else "pass",
+                "messages": messages("cash", ["El cash incluido queda dentro de los límites disponibles."]),
+            },
+            {
                 "key": "multi_team",
                 "label": "Traspaso multi-equipo",
                 "status": "fail" if has("multi_team") else "pass",
@@ -8827,12 +9175,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
         normalized = self._trade_machine_normalized_request(payload)
         teams = normalized["teams"]
         selections = normalized["selections"]
+        cash_transfers = normalized.get("cash") or []
         issues: List[Dict[str, Any]] = []
         if len(teams) < TRADE_MACHINE_MIN_TEAMS:
             issues.append({"severity": "illegal", "rule": "setup", "message": "Selecciona al menos dos equipos."})
         if len(teams) > TRADE_MACHINE_MAX_TEAMS:
             issues.append({"severity": "illegal", "rule": "setup", "message": "Selecciona seis equipos o menos."})
-        if not selections:
+        if not selections and not cash_transfers:
             issues.append({"severity": "warning", "rule": "setup", "message": "Selecciona al menos un activo."})
 
         team_data_by_code: Dict[str, Dict[str, Any]] = {}
@@ -8918,6 +9267,38 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     from_flow["postOpenRosterSpotRosterCount"] -= 1
                     to_flow["postOpenRosterSpotRosterCount"] += 1
 
+        for idx, transfer in enumerate(cash_transfers):
+            from_team = transfer.get("fromTeam")
+            to_team = transfer.get("toTeam")
+            amount = float(transfer.get("amount") or 0.0)
+            if not from_team or from_team not in team_data_by_code:
+                issues.append({"severity": "illegal", "rule": "cash", "message": "Una cantidad de cash no tiene equipo origen válido."})
+                continue
+            if not to_team or to_team not in team_data_by_code or to_team == from_team:
+                issues.append({"severity": "illegal", "rule": "cash", "teamCode": from_team, "message": "Una cantidad de cash necesita un equipo de destino válido."})
+                continue
+            if amount <= 0:
+                issues.append({"severity": "illegal", "rule": "cash", "teamCode": from_team, "message": "La cantidad de cash debe ser mayor que cero."})
+                continue
+            selected_count += 1
+            asset = {
+                "key": f"cash:{from_team}:{to_team}:{idx}",
+                "type": "cash",
+                "fromTeam": from_team,
+                "toTeam": to_team,
+                "label": "Cash considerations",
+                "detail": format_trade_money(amount),
+                "salary": 0.0,
+                "capSalary": 0.0,
+                "apronSalary": 0.0,
+                "cashAmount": amount,
+                "countsMove": False,
+            }
+            flows[from_team]["outgoingCash"] += amount
+            flows[from_team]["outgoingAssets"].append(dict(asset))
+            flows[to_team]["incomingCash"] += amount
+            flows[to_team]["incomingAssets"].append(dict(asset))
+
         for flow in flows.values():
             post_open_roster_count = int(flow.get("postOpenRosterSpotRosterCount") or 0)
             post_open_spots = max(0, OPEN_ROSTER_SPOT_MINIMUM - post_open_roster_count)
@@ -8960,7 +9341,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             elif not flow.get("incomingAssets") and not flow.get("outgoingAssets"):
                 issues.append({"severity": "warning", "rule": "setup", "teamCode": code, "message": "Seleccionado, pero todavía no participa."})
 
-            hard_cap = normalize_apron_hard_cap((data.get("summary") or {}).get("apron_hard_cap"))
+            hard_cap = self._trade_machine_hard_cap_for_season(data, season)
             if hard_cap == "first" and thresholds["firstApron"] > 0 and flow["postApronAccount"] > thresholds["firstApron"]:
                 issues.append({"severity": "illegal", "rule": "hard_cap", "teamCode": code, "message": "Tiene límite duro en el 1er apron y acabaría por encima."})
             if hard_cap == "second" and thresholds["secondApron"] > 0 and flow["postApronAccount"] > thresholds["secondApron"]:
@@ -9000,6 +9381,27 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     issues.append({"severity": "illegal", "rule": "moves", "teamCode": code, "message": f"Necesita {move_count} movimiento(s) y solo tiene {remaining} disponible(s) en {availability.get('label') or bucket}."})
                 elif bucket == "post30" and availability.get("pre_remaining"):
                     issues.append({"severity": "warning", "rule": "moves", "teamCode": code, "message": f"Cuenta como post-30, pero primero consumirá {min(move_count, int(availability.get('pre_remaining') or 0))} movimiento(s) pre-30 disponible(s)."})
+
+            summary = data.get("summary") or {}
+            cash_limit = parse_float(summary.get("cash_limit_total")) or parse_float(settings.get("cash_limit_total")) or 0.0
+            before_cash_sent = parse_float(summary.get("cash_sent")) or 0.0
+            before_cash_received = parse_float(summary.get("cash_received")) or 0.0
+            outgoing_cash = float(flow.get("outgoingCash") or 0.0)
+            incoming_cash = float(flow.get("incomingCash") or 0.0)
+            if cash_limit > 0 and outgoing_cash > 0 and before_cash_sent + outgoing_cash > cash_limit:
+                issues.append({
+                    "severity": "illegal",
+                    "rule": "cash",
+                    "teamCode": code,
+                    "message": f"Envía {format_trade_money(outgoing_cash)} en cash y superaría su límite disponible.",
+                })
+            if cash_limit > 0 and incoming_cash > 0 and before_cash_received + incoming_cash > cash_limit:
+                issues.append({
+                    "severity": "illegal",
+                    "rule": "cash",
+                    "teamCode": code,
+                    "message": f"Recibe {format_trade_money(incoming_cash)} en cash y superaría su límite disponible.",
+                })
 
             if self._trade_machine_second_apron_limited(flow, thresholds):
                 outgoing_players = [a for a in flow.get("outgoingAssets") or [] if a.get("type") == "player"]
@@ -9088,7 +9490,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         normalized = self._trade_machine_normalized_request(payload)
         teams = normalized.get("teams") or []
         selections = normalized.get("selections") or []
-        if len(teams) < 2 or not selections:
+        cash_transfers = normalized.get("cash") or []
+        if len(teams) < 2 or (not selections and not cash_transfers):
             return None
 
         with self.connect() as conn:
@@ -9110,8 +9513,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 code: {
                     "code": code,
                     "move_count": 0,
-                    "sent": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": []},
-                    "received": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": []},
+                    "sent": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": [], "cash": [], "cash_amount": 0.0},
+                    "received": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": [], "cash": [], "cash_amount": 0.0},
                 }
                 for code in teams
             }
@@ -9358,6 +9761,26 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
                 return None
 
+            for transfer in cash_transfers:
+                from_team = normalize_team_code(transfer.get("fromTeam")) or ""
+                to_team = normalize_team_code(transfer.get("toTeam")) or ""
+                amount = float(transfer.get("amount") or 0.0)
+                if not from_team or not to_team or from_team == to_team or from_team not in team_rows or to_team not in team_rows or amount <= 0:
+                    return None
+                conn.execute(
+                    "UPDATE teams SET cash_sent = COALESCE(cash_sent, 0) + ?, updated_at = ? WHERE id = ?",
+                    (amount, timestamp, team_rows[from_team]["id"]),
+                )
+                conn.execute(
+                    "UPDATE teams SET cash_received = COALESCE(cash_received, 0) + ?, updated_at = ? WHERE id = ?",
+                    (amount, timestamp, team_rows[to_team]["id"]),
+                )
+                cash_ref = {"team": to_team, "amount": amount}
+                summaries[from_team]["sent"]["cash"].append(cash_ref)
+                summaries[from_team]["sent"]["cash_amount"] += amount
+                summaries[to_team]["received"]["cash"].append({"team": from_team, "amount": amount})
+                summaries[to_team]["received"]["cash_amount"] += amount
+
             for code, summary in summaries.items():
                 move_count = int(summary.get("move_count") or 0)
                 if not move_count:
@@ -9388,6 +9811,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "swap_count": sent.get("swap_count") or 0,
                         "swap_refs": sent.get("swaps") or [],
                         "rights": sent.get("rights") or [],
+                        "cash": sent.get("cash") or [],
+                        "cash_amount": sent.get("cash_amount") or 0.0,
                     },
                     settings=settings,
                 )
@@ -9421,6 +9846,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "swap_refs_b": summaries[team_b]["sent"]["swaps"],
                     "right_count_a": summaries[team_a]["sent"]["right_count"],
                     "right_count_b": summaries[team_b]["sent"]["right_count"],
+                    "cash_a": summaries[team_a]["sent"]["cash_amount"],
+                    "cash_b": summaries[team_b]["sent"]["cash_amount"],
                 }
             )
         return result
@@ -11476,11 +11903,13 @@ QUALITY REQUIREMENTS
         swap_count: Any = 0,
         pick_refs: Optional[List[Any]] = None,
         swap_refs: Optional[List[Any]] = None,
+        cash_amount: Any = 0,
     ) -> str:
         items = [str(name) for name in players or [] if str(name or "").strip()]
         picks = parse_int(str(pick_count))
         rights = parse_int(str(right_count))
         swaps = parse_int(str(swap_count))
+        cash = parse_float(cash_amount) or 0.0
         pick_labels = [self._trade_pick_ref_for_discord(ref) for ref in pick_refs or []]
         pick_labels = [label for label in pick_labels if label]
         swap_labels = [self._trade_pick_ref_for_discord(ref) for ref in swap_refs or []]
@@ -11495,6 +11924,8 @@ QUALITY REQUIREMENTS
             items.append(f"{swaps} derecho(s) de swap")
         if rights and rights > 0:
             items.append(f"{rights} derecho(s) de jugador")
+        if cash > 0:
+            items.append(f"Cash: {format_trade_money(cash)}")
         if not items:
             return "Sin activos registrados"
         return "\n".join(f"- {item}" for item in items)
@@ -11527,6 +11958,7 @@ QUALITY REQUIREMENTS
                     received.get("swap_count"),
                     received.get("picks") or [],
                     received.get("swaps") or [],
+                    received.get("cash_amount") or 0,
                 )
                 fields.append({"name": f"{code} recibe", "value": receives_text, "inline": False})
                 player_names.extend(str(name) for name in (sent.get("players") or []) if str(name or "").strip())
@@ -11561,6 +11993,7 @@ QUALITY REQUIREMENTS
             result.get("swap_count_b"),
             result.get("pick_refs_b") or [],
             result.get("swap_refs_b") or [],
+            result.get("cash_b") or 0,
         )
         team_b_receives = self._trade_asset_summary(
             result.get("players_a") or [],
@@ -11569,6 +12002,7 @@ QUALITY REQUIREMENTS
             result.get("swap_count_a"),
             result.get("pick_refs_a") or [],
             result.get("swap_refs_a") or [],
+            result.get("cash_a") or 0,
         )
         player_names = [
             str(name)
@@ -12241,6 +12675,31 @@ QUALITY REQUIREMENTS
             self._json(200, result)
             return
 
+        if parsed.path == "/api/draft-live/process":
+            if not self._require_admin():
+                return
+            if not self._require_csrf():
+                return
+            draft_year = parse_int(str(payload.get("draft_year") or "")) or None
+            try:
+                result = self.db.process_draft_results(draft_year)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_draft_processing"})
+                return
+            self._log_admin_action(
+                "process",
+                "draft_live",
+                str(result.get("draft_year") or ""),
+                None,
+                {
+                    "created_cap_holds": len(result.get("created_cap_holds") or []),
+                    "created_player_rights": len(result.get("created_player_rights") or []),
+                    "errors": result.get("errors") or [],
+                },
+            )
+            self._json(200, result)
+            return
+
         if parsed.path.startswith("/api/draft-live/picks/"):
             if not self._require_authenticated():
                 return
@@ -12322,6 +12781,7 @@ QUALITY REQUIREMENTS
                         **payload,
                         "teams": normalized.get("teams") or [],
                         "selections": normalized.get("selections") or [],
+                        "cash": normalized.get("cash") or [],
                     }
                 )
                 self._json(200, {"ok": True, "validation": validation})
@@ -12866,6 +13326,7 @@ QUALITY REQUIREMENTS
                         **payload,
                         "teams": teams,
                         "selections": normalized.get("selections") or [],
+                        "cash": normalized.get("cash") or [],
                     }
                 )
                 illegal_validation_issues = [
@@ -12891,6 +13352,7 @@ QUALITY REQUIREMENTS
                         **payload,
                         "teams": teams,
                         "selections": normalized.get("selections") or [],
+                        "cash": normalized.get("cash") or [],
                     }
                 )
                 if result:
@@ -13502,6 +13964,7 @@ QUALITY REQUIREMENTS
             next_roster_two_way_min: Optional[int] = None
             next_roster_two_way_max: Optional[int] = None
             season_cap_updates: Dict[str, Optional[float]] = {}
+            rookie_scale_updates: Dict[str, Optional[float]] = {}
 
             if "salary_cap_2025" in payload:
                 cap = payload.get("salary_cap_2025")
@@ -13579,6 +14042,23 @@ QUALITY REQUIREMENTS
                     return
                 season_cap_updates[str(field)] = parsed_value
 
+            for field, raw_value in payload.items():
+                match = re.fullmatch(r"rookie_scale_(\d{4})_([1-9]|[12]\d|30)", str(field))
+                if not match:
+                    continue
+                season_year = parse_int(match.group(1))
+                if season_year is None or season_year < CAP_FORECAST_MIN_YEAR or season_year > CAP_FORECAST_MAX_YEAR:
+                    self._json(400, {"error": f"invalid_{field}"})
+                    return
+                if raw_value is None or str(raw_value).strip() == "":
+                    rookie_scale_updates[str(field)] = None
+                    continue
+                parsed_value = parse_float(str(raw_value))
+                if parsed_value is None or parsed_value <= 0:
+                    self._json(400, {"error": f"invalid_{field}"})
+                    return
+                rookie_scale_updates[str(field)] = parsed_value
+
             roster_int_fields = {
                 "roster_standard_min": "invalid_roster_standard_min",
                 "roster_standard_max": "invalid_roster_standard_max",
@@ -13634,6 +14114,7 @@ QUALITY REQUIREMENTS
                 and next_trade_move_phase is None
                 and next_free_agency_mode is None
                 and not season_cap_updates
+                and not rookie_scale_updates
                 and next_roster_standard_min is None
                 and next_roster_standard_max is None
                 and next_roster_standard_offseason_max is None
@@ -13664,6 +14145,8 @@ QUALITY REQUIREMENTS
                 self.db.update_setting("free_agency_mode", "1" if next_free_agency_mode else "0")
             for key, value in season_cap_updates.items():
                 self.db.update_setting(key, "" if value is None else str(int(value)))
+            for key, value in rookie_scale_updates.items():
+                self.db.update_setting(key, "" if value is None else str(int(value)))
             if next_roster_standard_min is not None:
                 self.db.update_setting("roster_standard_min", str(next_roster_standard_min))
             if next_roster_standard_max is not None:
@@ -13691,6 +14174,7 @@ QUALITY REQUIREMENTS
                     "trade_move_phase": next_trade_move_phase,
                     "free_agency_mode": next_free_agency_mode,
                     "season_cap_updates": season_cap_updates,
+                    "rookie_scale_updates": rookie_scale_updates,
                     "roster_standard_min": next_roster_standard_min,
                     "roster_standard_max": next_roster_standard_max,
                     "roster_standard_offseason_max": next_roster_standard_offseason_max,

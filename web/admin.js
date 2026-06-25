@@ -2826,6 +2826,39 @@ function tradeAssetTypeLabel(type) {
   return 'Activo';
 }
 
+function tradePreviewChipControlsHtml(asset, direction) {
+  if (direction !== 'outgoing' || !asset?.key) return '';
+  const selected = tradeSelectedAsset(asset.key);
+  if (!selected) return '';
+  const meta = tradeAssetMeta(asset.key);
+  const fromTeam = selected.fromTeam || meta?.fromTeam || asset.fromTeam;
+  const toTeam = selected.toTeam || asset.toTeam || tradeDefaultRecipient(fromTeam);
+  const recipientHtml = fromTeam
+    ? `
+      <select class="trade-machine-chip-select" data-official-trade-recipient="${escapeHtml(asset.key)}" aria-label="Destino de ${escapeHtml(asset.label)}">
+        ${tradeRecipientOptions(fromTeam, toTeam)}
+      </select>
+    `
+    : '';
+  const pickActionHtml = meta?.type === 'pick'
+    ? `
+      <select class="trade-machine-chip-select trade-machine-chip-select--pick" data-official-trade-pick-action="${escapeHtml(asset.key)}" aria-label="Acción para ${escapeHtml(asset.label)}">
+        ${tradePickActionOptions(tradePickAction(selected.pickAction), Boolean(meta.stepienRestricted))}
+      </select>
+    `
+    : '';
+  const noCountHtml = meta?.type === 'player'
+    ? `
+      <label class="trade-no-count-toggle trade-no-count-toggle--chip" title="No consumir movimiento de traspaso">
+        <input type="checkbox" data-official-trade-no-count="${escapeHtml(asset.key)}" ${selected.countsMove === false ? 'checked' : ''}>
+        <span>No count</span>
+      </label>
+    `
+    : '';
+  if (!recipientHtml && !pickActionHtml && !noCountHtml) return '';
+  return `<span class="trade-machine-preview-chip-controls">${pickActionHtml}${recipientHtml}${noCountHtml}</span>`;
+}
+
 function tradePreviewChipHtml(asset, direction) {
   const partner = direction === 'incoming' ? asset.fromTeam : asset.toTeam;
   const partnerLabel = partner ? `${direction === 'incoming' ? 'desde' : 'a'} ${partner}` : '';
@@ -2836,6 +2869,7 @@ function tradePreviewChipHtml(asset, direction) {
         <strong>${escapeHtml(asset.label)}</strong>
         <small>${escapeHtml([partnerLabel, salaryLabel].filter(Boolean).join(' · '))}</small>
       </span>
+      ${tradePreviewChipControlsHtml(asset, direction)}
       <button type="button" data-official-trade-remove-asset="${asset.key}" aria-label="Quitar ${escapeHtml(asset.label)}">&times;</button>
     </span>
   `;
@@ -2906,7 +2940,7 @@ function tradeAssetRowHtml({ key, type, label, detail, salary = 0, badges = '', 
     ? `<select class="trade-machine-pick-action-select" data-official-trade-pick-action="${key}" aria-label="Acción para ${escapeHtml(label)}">${tradePickActionOptions(tradePickAction(selected?.pickAction), stepienRestricted)}</select>`
     : '';
   return `
-    <div class="trade-machine-asset-row ${disabled ? 'is-disabled' : ''}">
+    <div class="trade-machine-asset-row ${selected ? 'is-selected' : ''} ${disabled ? 'is-disabled' : ''}" data-official-trade-asset-row="${escapeHtml(key)}">
       <label>
         <input type="checkbox" data-official-trade-asset-key="${key}" data-official-trade-asset-type="${type}" ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
         <span class="trade-machine-asset-main">
@@ -2915,7 +2949,7 @@ function tradeAssetRowHtml({ key, type, label, detail, salary = 0, badges = '', 
           ${badges ? `<span class="trade-machine-tags">${badges}</span>` : ''}
         </span>
       </label>
-      <div class="trade-machine-asset-route trade-machine-asset-route--${type} ${hasPickAction ? 'has-pick-action' : ''}">
+      <div class="trade-machine-asset-route trade-machine-asset-route--${type} ${hasPickAction ? 'has-pick-action' : ''} ${selected && type === 'player' ? 'has-no-count' : ''}">
         ${type === 'pick' ? pickActionHtml : salaryHtml}
         <select class="trade-machine-recipient-select" data-official-trade-recipient="${key}" ${selected ? '' : 'disabled'} aria-label="Destino de ${escapeHtml(label)}">
           ${tradeRecipientOptions(fromTeam, selectedTo)}
@@ -2992,7 +3026,7 @@ function renderTradeTeamCard(code, index, flow) {
   const canRemove = (state.trade.selectedTeams || []).length > TRADE_MACHINE_MIN_TEAMS;
   if (!data) {
     return `
-      <article class="trade-machine-team-card">
+      <article class="trade-machine-team-card" data-official-trade-team-card="${escapeHtml(code)}">
         <div class="trade-machine-team-top">
           <div class="trade-machine-team-select">
             <span class="trade-machine-team-kicker">Equipo ${index + 1} ${tradeTeamLogoHtml(code)}</span>
@@ -3005,7 +3039,7 @@ function renderTradeTeamCard(code, index, flow) {
     `;
   }
   return `
-    <article class="trade-machine-team-card">
+    <article class="trade-machine-team-card" data-official-trade-team-card="${escapeHtml(code)}">
       <div class="trade-machine-team-top">
         <div class="trade-machine-team-select">
           <span class="trade-machine-team-kicker">Equipo ${index + 1} ${tradeTeamLogoHtml(code)}</span>
@@ -3171,7 +3205,7 @@ async function validateTradeModal({ silent = false } = {}) {
   } finally {
     state.trade.validationLoading = false;
     renderTradeValidation();
-    renderTradeTeams();
+    renderTradeDynamicSections();
   }
 }
 
@@ -3179,7 +3213,7 @@ function scheduleTradeValidation() {
   const modal = document.getElementById('tradeModal');
   if (!modal || modal.classList.contains('section-hidden')) return;
   if (tradeValidationTimer) window.clearTimeout(tradeValidationTimer);
-  renderTradeTeams();
+  renderTradeDynamicSections();
   tradeValidationTimer = window.setTimeout(() => {
     void validateTradeModal({ silent: true });
   }, 300);
@@ -3200,12 +3234,7 @@ function renderTradeSeasonControl() {
   if (select) select.innerHTML = tradeSeasonOptionsHtml();
 }
 
-function renderTradeTeams() {
-  renderTradeSeasonControl();
-  const grid = document.getElementById('tradeTeamsGrid');
-  const status = document.getElementById('tradeOfficialStatus');
-  const addBtn = document.getElementById('addTradeTeamBtn');
-  if (!grid) return;
+function tradeRenderContext() {
   pruneTradeSelections();
   const localFlows = tradeLocalFlows();
   const payload = buildTradeProcessPayload();
@@ -3213,9 +3242,61 @@ function renderTradeTeams() {
   const serverFlows = state.trade.validationSignature === signature ? state.trade.validation?.flows : null;
   const flows = serverFlows || localFlows;
   const codes = state.trade.selectedTeams || [];
+  return { codes, flows, localFlows, signature };
+}
+
+function syncTradeAssetRows() {
+  document.querySelectorAll('[data-official-trade-asset-row]').forEach((row) => {
+    const key = row.dataset.officialTradeAssetRow;
+    const selected = key ? tradeSelectedAsset(key) : null;
+    row.classList.toggle('is-selected', Boolean(selected));
+    const checkbox = row.querySelector('[data-official-trade-asset-key]');
+    if (checkbox) checkbox.checked = Boolean(selected);
+    const recipient = row.querySelector('[data-official-trade-recipient]');
+    if (recipient) {
+      recipient.disabled = !selected;
+      if (selected?.toTeam) recipient.value = selected.toTeam;
+    }
+    const noCount = row.querySelector('[data-official-trade-no-count]');
+    if (noCount) noCount.checked = selected?.countsMove === false;
+  });
+}
+
+function renderTradeDynamicSections() {
+  const grid = document.getElementById('tradeTeamsGrid');
+  const status = document.getElementById('tradeOfficialStatus');
+  const addBtn = document.getElementById('addTradeTeamBtn');
+  if (!grid) return null;
+  const { codes, flows, localFlows } = tradeRenderContext();
+  if (status) status.textContent = `${seasonLabel(tradeSeasonStart())} · ${codes.length} equipos`;
+  if (addBtn) addBtn.disabled = codes.length >= TRADE_MACHINE_MAX_TEAMS;
+  codes.forEach((code) => {
+    const card = Array.from(grid.querySelectorAll('[data-official-trade-team-card]'))
+      .find((item) => item.dataset.officialTradeTeamCard === code);
+    const flow = flows?.[code] || localFlows[code] || tradeLocalFlowSkeleton(code);
+    const ledger = card?.querySelector('.trade-machine-ledger');
+    if (ledger) ledger.outerHTML = tradeLedgerHtml(flow);
+    const roster = card?.querySelector('.trade-machine-roster-counts');
+    if (roster) roster.outerHTML = tradeRosterHtml(flow);
+    const preview = card?.querySelector('.trade-machine-team-preview');
+    if (preview) preview.outerHTML = tradeTeamPreviewHtml(flow);
+  });
+  syncTradeAssetRows();
+  renderTradeValidation();
+  return { codes, flows, localFlows };
+}
+
+function renderTradeTeams() {
+  renderTradeSeasonControl();
+  const grid = document.getElementById('tradeTeamsGrid');
+  const status = document.getElementById('tradeOfficialStatus');
+  const addBtn = document.getElementById('addTradeTeamBtn');
+  if (!grid) return;
+  const { codes, flows, localFlows } = tradeRenderContext();
   if (status) status.textContent = `${seasonLabel(tradeSeasonStart())} · ${codes.length} equipos`;
   if (addBtn) addBtn.disabled = codes.length >= TRADE_MACHINE_MAX_TEAMS;
   grid.innerHTML = codes.map((code, index) => renderTradeTeamCard(code, index, flows?.[code] || localFlows[code] || tradeLocalFlowSkeleton(code))).join('');
+  syncTradeAssetRows();
 }
 
 async function updateOfficialTradeTeam(index, code) {
@@ -5049,10 +5130,14 @@ function draftLiveSelectionHtml(row) {
   const selection = String(row?.selection_text || '').trim();
   const skipped = Number(row?.skipped || 0) !== 0;
   const pendingSelection = String(row?.pending_selection_text || '').trim();
+  const processedType = String(row?.processed_type || '').trim();
+  const processedTag = processedType
+    ? `<span class="draft-live-processed">Procesado: ${processedType === 'draft_cap_hold' ? 'cap hold' : 'derechos'}</span>`
+    : '';
   if (!selection && pendingSelection) return '<span class="draft-live-pending draft-live-pending--request">Solicitud GM</span>';
   if (!selection) return '<span class="draft-live-pending">Pendiente</span>';
   const cls = skipped ? 'draft-live-selection draft-live-selection--skipped' : 'draft-live-selection';
-  return `<span class="${cls}">${escapeHtml(selection)}</span>`;
+  return `<span class="${cls}">${escapeHtml(selection)}</span>${processedTag}`;
 }
 
 function draftLiveChoiceOptionsHtml(selected = '') {
@@ -9427,6 +9512,54 @@ function renderSeasonCapSettingsGrid(startYear = currentSeasonStart()) {
   `;
 }
 
+function rookieScaleInputText(season, pickNumber) {
+  const value = Number(state.settings[`rookie_scale_${season}_${pickNumber}`]);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  return formatDots(value);
+}
+
+function renderRookieScaleSettingsGrid(startYear = currentSeasonStart()) {
+  const wrap = document.getElementById('rookieScaleSettingsGrid');
+  if (!wrap) return;
+  const currentYear = currentSeasonStart();
+  const seasons = settingsForecastYears(startYear);
+  wrap.innerHTML = `
+    <div class="table-wrap settings-cap-table-wrap rookie-scale-table-wrap">
+      <table class="settings-cap-table rookie-scale-table">
+        <thead>
+          <tr>
+            <th>Pick</th>
+            ${seasons.map((season) => `
+              <th class="${season === currentYear ? 'is-current-year' : ''}">
+                ${seasonSlashLabel(season)}
+                ${season === currentYear ? '<span>actual</span>' : ''}
+              </th>
+            `).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${Array.from({ length: 30 }, (_, idx) => idx + 1).map((pickNumber) => `
+            <tr>
+              <th>#${pickNumber}</th>
+              ${seasons.map((season) => `
+                <td>
+                  <input
+                    type="text"
+                    inputmode="numeric"
+                    data-rookie-scale-setting="rookie_scale_${season}_${pickNumber}"
+                    aria-label="${escapeHtml(`Rookie scale ${seasonSlashLabel(season)} pick ${pickNumber}`)}"
+                    value="${escapeHtml(rookieScaleInputText(season, pickNumber))}"
+                  >
+                </td>
+              `).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function collectSeasonCapSettingsPayload(selectedYear) {
   const payload = {};
   const inputs = document.querySelectorAll('[data-season-cap-setting]');
@@ -9454,6 +9587,25 @@ function collectSeasonCapSettingsPayload(selectedYear) {
   payload.salary_cap_2025 = currentSalaryCap;
   payload.first_apron = currentFirstApron;
   payload.second_apron = currentSecondApron;
+  return payload;
+}
+
+function collectRookieScaleSettingsPayload() {
+  const payload = {};
+  document.querySelectorAll('[data-rookie-scale-setting]').forEach((input) => {
+    const key = input.dataset.rookieScaleSetting;
+    if (!key) return;
+    const rawValue = String(input.value || '').trim();
+    if (!rawValue) {
+      payload[key] = null;
+      return;
+    }
+    const parsed = parseAmount(input.value);
+    if (parsed == null || parsed <= 0) {
+      throw new Error(`Invalid rookie scale value for ${key.replaceAll('_', ' ')}.`);
+    }
+    payload[key] = parsed;
+  });
   return payload;
 }
 
@@ -10009,8 +10161,10 @@ async function init() {
   currentYearSelect.value = String(state.settings.current_year || 2025);
   if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
   renderSeasonCapSettingsGrid(Number(currentYearSelect.value || state.settings.current_year || 2025));
+  renderRookieScaleSettingsGrid(Number(currentYearSelect.value || state.settings.current_year || 2025));
   currentYearSelect.addEventListener('change', () => {
     renderSeasonCapSettingsGrid(Number(currentYearSelect.value || state.settings.current_year || 2025));
+    renderRookieScaleSettingsGrid(Number(currentYearSelect.value || state.settings.current_year || 2025));
   });
 
   const teamsRes = await api('/api/teams');
@@ -10132,6 +10286,29 @@ async function init() {
     state.ui.addingDraftOrderRound = '2nd';
     renderDraftOrder();
   });
+  document.getElementById('processDraftBtn')?.addEventListener('click', async () => {
+    const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart() + 1);
+    if (!confirm(`¿Procesar el Draft ${draftYear}?\n\nLas primeras rondas elegidas se convertirán en cap holds y las segundas rondas en derechos de jugador. Esta acción no duplicará picks ya procesados.`)) return;
+    try {
+      const result = await api('/api/draft-live/process', {
+        method: 'POST',
+        body: JSON.stringify({ draft_year: draftYear }),
+      });
+      setDraftLiveState(result.draft_live || result);
+      renderDraftOrder();
+      const holds = (result.created_cap_holds || []).length;
+      const rights = (result.created_player_rights || []).length;
+      const errors = result.errors || [];
+      const skipped = (result.skipped || []).length;
+      if (errors.length) {
+        alert(`Draft procesado con errores.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}\nErrores: ${errors.map((err) => `#${err.pick_number || '?'} ${err.team_code || ''}: ${err.error}`).join('\n')}`);
+      } else {
+        alert(`Draft procesado.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}`);
+      }
+    } catch (err) {
+      alert(`Draft processing failed: ${err.message}`);
+    }
+  });
   document.getElementById('addFreeAgentBtn').addEventListener('click', () => {
     state.ui.addingFreeAgent = true;
     renderFreeAgents();
@@ -10196,8 +10373,10 @@ async function init() {
       return;
     }
     let capForecastPayload = {};
+    let rookieScalePayload = {};
     try {
       capForecastPayload = collectSeasonCapSettingsPayload(selectedYear);
+      rookieScalePayload = collectRookieScaleSettingsPayload();
     } catch (err) {
       alert(err.message || String(err));
       return;
@@ -10220,6 +10399,7 @@ async function init() {
       method: 'PATCH',
       body: JSON.stringify({
         ...capForecastPayload,
+        ...rookieScalePayload,
         current_year: selectedYear,
         cash_limit_total: parsedCashLimitTotal,
         trade_move_limit_pre30: parsedTradeMoveLimitPre30,
@@ -10239,6 +10419,7 @@ async function init() {
       cash_limit_total: result.settings?.cash_limit_total ?? parsedCashLimitTotal,
     };
     renderSeasonCapSettingsGrid(Number(state.settings.current_year || selectedYear));
+    renderRookieScaleSettingsGrid(Number(state.settings.current_year || selectedYear));
     cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
     tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
     tradeMoveLimitPost30Input.value = formatDots(state.settings.trade_move_limit_post30);
