@@ -2998,6 +2998,24 @@ h1 {
 #freeAgentsTable td:has([data-action="offer-free-agent"]) button {
   margin-right: 6px;
 }
+.free-agent-type-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid #b8d9f5;
+  border-radius: 999px;
+  background: #eef7ff;
+  color: #1261a6;
+  font-size: 0.86rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.free-agent-type-pill--restricted {
+  border-color: #ff9cc7;
+  background: #fff0f7;
+  color: #ad1457;
+}
 .bulk-inline-check {
   display: inline-flex;
   align-items: center;

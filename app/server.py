@@ -50,6 +50,7 @@ try:
         apron_yos_adjustment,
         cap_hold_amount,
         format_trade_money,
+        has_standard_cap_hold_marker,
         increment_bird_years_value,
         is_exhibit10_player,
         is_two_way_player,
@@ -102,6 +103,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         apron_yos_adjustment,
         cap_hold_amount,
         format_trade_money,
+        has_standard_cap_hold_marker,
         increment_bird_years_value,
         is_exhibit10_player,
         is_two_way_player,
@@ -141,6 +143,9 @@ DISCORD_CUSTOM_IMAGE_ALLOWED_MIME_TYPES = {
 MULTIPART_UPLOAD_MAX_OVERHEAD_BYTES = 16_384
 DEFAULT_ENV_FILE = ROOT / ".env"
 DRAFT_LIVE_MAX_PENDING_REQUESTS = 2
+FREE_AGENT_TYPE_UNRESTRICTED = "No restringido"
+FREE_AGENT_TYPE_RESTRICTED = "Restringido"
+FREE_AGENT_SOURCE_CAP_HOLD = "cap_hold"
 OWNER_SEASON_OBJECTIVES = [
     "Campeones",
     "Finalistas",
@@ -404,6 +409,26 @@ def normalize_dead_type(value: Any) -> str:
     if raw in {"draft_hold", "draft_cap_hold", "rookie_hold"}:
         return "draft_hold"
     return "normal"
+
+
+def normalize_free_agent_type(value: Any) -> str:
+    raw = str(value or "").strip()
+    normalized = (
+        raw.lower()
+        .replace("-", " ")
+        .replace("_", " ")
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if normalized in {"restringido", "restricted", "rfa"}:
+        return FREE_AGENT_TYPE_RESTRICTED
+    if normalized in {"no restringido", "unrestricted", "ufa"}:
+        return FREE_AGENT_TYPE_UNRESTRICTED
+    return FREE_AGENT_TYPE_UNRESTRICTED
 
 
 def dead_contract_salary_num(dead_contract: Dict[str, Any], season: int) -> float:
@@ -1123,6 +1148,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     bird_rights TEXT,
                     rating TEXT,
                     years_left REAL,
+                    free_agent_type TEXT NOT NULL DEFAULT 'No restringido',
+                    source TEXT,
                     agent TEXT,
                     notes TEXT,
                     created_at TEXT NOT NULL,
@@ -1576,6 +1603,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE free_agents ADD COLUMN profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL")
             if "agent" not in free_agent_cols:
                 conn.execute("ALTER TABLE free_agents ADD COLUMN agent TEXT")
+            if "free_agent_type" not in free_agent_cols:
+                conn.execute("ALTER TABLE free_agents ADD COLUMN free_agent_type TEXT NOT NULL DEFAULT 'No restringido'")
+            if "source" not in free_agent_cols:
+                conn.execute("ALTER TABLE free_agents ADD COLUMN source TEXT")
             self._backfill_player_profiles(conn)
             profile_cols = {
                 row["name"]
@@ -1603,6 +1634,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if not duplicate_active_profile:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_unique_active_profile ON players(profile_id) WHERE profile_id IS NOT NULL")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_profile_id ON free_agents(profile_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_source ON free_agents(source)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_profiles_name ON player_profiles(name)")
             asset_cols = {
                 row["name"]
@@ -5095,6 +5127,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 FROM players p
                 JOIN free_agents f ON f.profile_id = p.profile_id
                 WHERE p.profile_id IS NOT NULL
+                    AND COALESCE(f.source, '') != 'cap_hold'
                 ORDER BY p.profile_id
                 """,
             ),
@@ -5694,7 +5727,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for gm in payload.get("gm_history") or []:
                 gm_history_rows.append([code, name, gm.get("gm_name"), gm.get("start_date"), gm.get("color")])
 
-        free_agent_header = ["Agente libre ID", "Profile ID", "Jugador", "Posición", "Rating", "Agente", "Tipo", "Birds", "YOS", "Detalles"]
+        free_agent_header = ["Agente libre ID", "Profile ID", "Jugador", "Posición", "Rating", "Tipo FA", "Agente", "Tipo", "Birds", "YOS", "Detalles"]
         free_agent_rows = [free_agent_header] + [
             [
                 item.get("id"),
@@ -5702,6 +5735,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 item.get("name"),
                 item.get("position"),
                 item.get("rating"),
+                item.get("free_agent_type") or FREE_AGENT_TYPE_UNRESTRICTED,
                 item.get("agent"),
                 item.get("bird_rights"),
                 item.get("years_left"),
@@ -8724,8 +8758,143 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return cur.rowcount > 0
 
+    def _cap_hold_free_agent_type(self, player: Dict[str, Any], season: int) -> str:
+        decision = (player.get("option_decisions") or {}).get(f"option_{int(season)}") or {}
+        option_value = str(decision.get("option_value") or "").strip().upper()
+        option_action = str(decision.get("action") or "").strip().lower()
+        salary_text_code = str(player.get(f"salary_{int(season)}_text") or "").strip().upper()
+        option_code = str(player.get(f"option_{int(season)}") or "").strip().upper()
+        if salary_text_code == "QO" or option_code == "QO":
+            return FREE_AGENT_TYPE_RESTRICTED
+        if option_action == "accepted" and option_value in {"QO", "GAP"}:
+            return FREE_AGENT_TYPE_RESTRICTED
+        return FREE_AGENT_TYPE_UNRESTRICTED
+
+    def _sync_cap_hold_free_agents(self, conn: sqlite3.Connection, settings: Dict[str, str]) -> int:
+        timestamp = now_iso()
+        if not parse_bool(settings.get("free_agency_mode")):
+            cur = conn.execute("DELETE FROM free_agents WHERE source = ?", (FREE_AGENT_SOURCE_CAP_HOLD,))
+            return int(cur.rowcount or 0)
+
+        current_year = parse_int(settings.get("current_year")) or 2025
+        season = int(current_year) + 1
+        salary_cap = (
+            parse_float(settings.get(f"salary_cap_{season}"))
+            or parse_float(settings.get("salary_cap_2025"))
+            or 0.0
+        )
+        valid_profile_ids: List[int] = []
+        changed = 0
+        teams_cur = conn.execute("SELECT id, code FROM teams ORDER BY code")
+        for team in teams_cur.fetchall():
+            team_id = int(team["id"])
+            team_code = str(team["code"] or "").strip().upper()
+            players = self._select_team_players(conn, team_id)
+            self._attach_option_decisions(conn, players, team_id)
+            for player in players:
+                fa_type = self._cap_hold_free_agent_type(player, season)
+                has_restricted_option = fa_type == FREE_AGENT_TYPE_RESTRICTED
+                hold_amount = cap_hold_amount(player, season, settings, salary_cap)
+                has_hold_marker = has_standard_cap_hold_marker(player, season)
+                if not has_restricted_option and hold_amount <= 0 and not has_hold_marker:
+                    continue
+
+                player_id = parse_int(player.get("id"))
+                if player_id is None:
+                    continue
+                profile_id = parse_int(player.get("profile_id"))
+                if profile_id is None:
+                    profile_id = self._ensure_profile_for_player(conn, player_id, timestamp)
+                if profile_id is None:
+                    continue
+                valid_profile_ids.append(int(profile_id))
+                name = str(player.get("name") or player.get("profile_name") or "Agente libre").strip() or "Agente libre"
+                default_notes = f"Cap hold retenido por {team_code} para {season_label(season)}"
+                existing = conn.execute(
+                    "SELECT id, notes FROM free_agents WHERE profile_id = ? LIMIT 1",
+                    (int(profile_id),),
+                ).fetchone()
+                if existing:
+                    cur = conn.execute(
+                        """
+                        UPDATE free_agents
+                        SET name = ?,
+                            position = ?,
+                            bird_rights = ?,
+                            rating = ?,
+                            years_left = ?,
+                            free_agent_type = ?,
+                            source = ?,
+                            notes = CASE
+                                WHEN notes IS NULL OR TRIM(notes) = '' OR notes LIKE 'Cap hold retenido por %'
+                                THEN ?
+                                ELSE notes
+                            END,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            name,
+                            str(player.get("position") or "").strip() or None,
+                            str(player.get("bird_rights") or "").strip() or None,
+                            str(player.get("rating") or "").strip() or None,
+                            normalize_bird_years(player.get("years_left")),
+                            fa_type,
+                            FREE_AGENT_SOURCE_CAP_HOLD,
+                            default_notes,
+                            timestamp,
+                            int(existing["id"]),
+                        ),
+                    )
+                    changed += int(cur.rowcount or 0)
+                    continue
+                cur = conn.execute(
+                    """
+                    INSERT INTO free_agents (
+                        profile_id, name, position, bird_rights, rating, years_left,
+                        free_agent_type, source, notes, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(profile_id),
+                        name,
+                        str(player.get("position") or "").strip() or None,
+                        str(player.get("bird_rights") or "").strip() or None,
+                        str(player.get("rating") or "").strip() or None,
+                        normalize_bird_years(player.get("years_left")),
+                        fa_type,
+                        FREE_AGENT_SOURCE_CAP_HOLD,
+                        default_notes,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                changed += int(cur.rowcount or 0)
+
+        if valid_profile_ids:
+            placeholders = ",".join("?" for _ in valid_profile_ids)
+            cur = conn.execute(
+                f"""
+                DELETE FROM free_agents
+                WHERE source = ?
+                    AND (
+                        profile_id IS NULL
+                        OR profile_id NOT IN ({placeholders})
+                    )
+                """,
+                (FREE_AGENT_SOURCE_CAP_HOLD, *valid_profile_ids),
+            )
+        else:
+            cur = conn.execute("DELETE FROM free_agents WHERE source = ?", (FREE_AGENT_SOURCE_CAP_HOLD,))
+        changed += int(cur.rowcount or 0)
+        return changed
+
     def list_free_agents(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            if self._sync_cap_hold_free_agents(conn, settings):
+                conn.commit()
             cur = conn.execute(
                 """
                 SELECT
@@ -8783,8 +8952,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             cur = conn.execute(
                 """
                 INSERT INTO free_agents (
-                    profile_id, name, position, bird_rights, rating, years_left, agent, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    profile_id, name, position, bird_rights, rating, years_left, free_agent_type, agent, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     profile_id,
@@ -8793,6 +8962,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     str(payload.get("bird_rights") or "").strip() or None,
                     str(payload.get("rating") or "").strip() or None,
                     normalize_bird_years(payload.get("years_left")),
+                    normalize_free_agent_type(payload.get("free_agent_type")),
                     str(payload.get("agent") or "").strip() or None,
                     str(payload.get("notes") or "").strip() or None,
                     now,
@@ -8812,7 +8982,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return int(cur.lastrowid)
 
     def update_free_agent(self, free_agent_id: int, payload: Dict[str, Any]) -> bool:
-        fields = ["name", "position", "bird_rights", "rating", "years_left", "agent", "notes"]
+        fields = ["name", "position", "bird_rights", "rating", "years_left", "free_agent_type", "agent", "notes"]
         assigns = []
         vals: List[Any] = []
         for field in fields:
@@ -8827,6 +8997,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
             elif field == "years_left":
                 assigns.append("years_left = ?")
                 vals.append(normalize_bird_years(payload.get(field)))
+            elif field == "free_agent_type":
+                assigns.append("free_agent_type = ?")
+                vals.append(normalize_free_agent_type(payload.get(field)))
             else:
                 assigns.append(f"{field} = ?")
                 vals.append(str(payload.get(field) or "").strip() or None)

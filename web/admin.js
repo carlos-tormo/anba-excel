@@ -4714,6 +4714,17 @@ function freeAgentPayloadFromRow(row, attrName) {
   return payload;
 }
 
+function normalizeFreeAgentType(value = '') {
+  return String(value || '').trim().toLowerCase() === 'restringido' ? 'Restringido' : 'No restringido';
+}
+
+function freeAgentTypeOptions(selected = '') {
+  const normalized = normalizeFreeAgentType(selected);
+  return ['No restringido', 'Restringido']
+    .map((value) => `<option value="${escapeHtml(value)}"${value === normalized ? ' selected' : ''}>${escapeHtml(value)}</option>`)
+    .join('');
+}
+
 function freeAgentRepValues() {
   const reps = Array.isArray(state.settings.free_agent_reps) ? state.settings.free_agent_reps : [];
   const seen = new Set();
@@ -4741,12 +4752,16 @@ function renderFreeAgentBulkControls() {
   const fieldSelect = document.getElementById('bulkFreeAgentField');
   const valueInput = document.getElementById('bulkFreeAgentValue');
   const agentSelect = document.getElementById('bulkFreeAgentAgentSelect');
-  if (!fieldSelect || !valueInput || !agentSelect) return;
+  const typeSelect = document.getElementById('bulkFreeAgentTypeSelect');
+  if (!fieldSelect || !valueInput || !agentSelect || !typeSelect) return;
   const field = String(fieldSelect.value || '');
   const useAgentSelect = field === 'agent';
+  const useTypeSelect = field === 'free_agent_type';
   agentSelect.innerHTML = freeAgentAgentOptions(agentSelect.value || '');
+  typeSelect.innerHTML = freeAgentTypeOptions(typeSelect.value || '');
   agentSelect.classList.toggle('section-hidden', !useAgentSelect);
-  valueInput.classList.toggle('section-hidden', useAgentSelect);
+  typeSelect.classList.toggle('section-hidden', !useTypeSelect);
+  valueInput.classList.toggle('section-hidden', useAgentSelect || useTypeSelect);
   valueInput.placeholder = field === 'notes' ? 'Detalles' : 'Nuevo valor';
 }
 
@@ -4769,6 +4784,7 @@ function renderFreeAgents() {
       <td><input data-field="name" value="${escapeHtml(agent.name || '')}"></td>
       <td><input data-field="position" value="${escapeHtml(agent.position || '')}"></td>
       <td><input data-field="rating" value="${escapeHtml(agent.rating || '')}"></td>
+      <td><select data-field="free_agent_type">${freeAgentTypeOptions(agent.free_agent_type || '')}</select></td>
       <td><select data-field="agent">${freeAgentAgentOptions(agent.agent || '')}</select></td>
       <td>
         <button data-action="offer-free-agent" type="button">Ofertar</button>
@@ -4815,6 +4831,7 @@ function renderFreeAgents() {
       <td><input data-new-field="name" data-autofocus placeholder="Player name"></td>
       <td><input data-new-field="position" placeholder="PG"></td>
       <td><input data-new-field="rating" placeholder="Rating"></td>
+      <td><select data-new-field="free_agent_type">${freeAgentTypeOptions('')}</select></td>
       <td><select data-new-field="agent">${freeAgentAgentOptions('')}</select></td>
       <td class="table-add-actions-cell">
         <button type="button" class="inline-save" data-action="save-draft">✓</button>
@@ -4846,7 +4863,7 @@ function renderFreeAgents() {
     });
   } else if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="7">No hay agentes libres registrados.</td>';
+    tr.innerHTML = '<td colspan="8">No hay agentes libres registrados.</td>';
     tbody.appendChild(tr);
   }
 }
@@ -4858,13 +4875,15 @@ async function applyFreeAgentBulkUpdate() {
     return;
   }
   const field = String(document.getElementById('bulkFreeAgentField')?.value || '').trim();
-  if (!['position', 'rating', 'agent', 'notes'].includes(field)) {
+  if (!['position', 'rating', 'free_agent_type', 'agent', 'notes'].includes(field)) {
     alert('Selecciona un campo para modificar.');
     return;
   }
   const rawValue = field === 'agent'
     ? document.getElementById('bulkFreeAgentAgentSelect')?.value
-    : document.getElementById('bulkFreeAgentValue')?.value;
+    : field === 'free_agent_type'
+      ? document.getElementById('bulkFreeAgentTypeSelect')?.value
+      : document.getElementById('bulkFreeAgentValue')?.value;
   const value = String(rawValue || '').trim();
   if (!confirm(`Aplicar este cambio a ${ids.length} agente(s) libre(s)?`)) return;
   for (const id of ids) {
@@ -4877,6 +4896,7 @@ async function applyFreeAgentBulkUpdate() {
   document.getElementById('bulkFreeAgentField').value = '';
   document.getElementById('bulkFreeAgentValue').value = '';
   document.getElementById('bulkFreeAgentAgentSelect').value = '';
+  document.getElementById('bulkFreeAgentTypeSelect').value = '';
   await loadFreeAgents();
 }
 

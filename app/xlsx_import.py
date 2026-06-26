@@ -233,6 +233,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
             bird_rights TEXT,
             rating TEXT,
             years_left REAL,
+            free_agent_type TEXT NOT NULL DEFAULT 'No restringido',
+            source TEXT,
             agent TEXT,
             notes TEXT,
             created_at TEXT NOT NULL,

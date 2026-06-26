@@ -4165,16 +4165,18 @@ function renderFreeAgents() {
   const rows = sortedRows(state.freeAgents || [], state.sort.free_agents);
   if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="6">No hay agentes libres registrados.</td>';
+    tr.innerHTML = '<td colspan="7">No hay agentes libres registrados.</td>';
     tbody.appendChild(tr);
     return;
   }
   rows.forEach((agent) => {
+    const freeAgentType = String(agent.free_agent_type || 'No restringido').trim() === 'Restringido' ? 'Restringido' : 'No restringido';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${escapeHtml(agent.name || '')}</td>
       <td>${escapeHtml(agent.position || '')}</td>
       <td>${escapeHtml(agent.rating || '')}</td>
+      <td><span class="free-agent-type-pill ${freeAgentType === 'Restringido' ? 'free-agent-type-pill--restricted' : ''}">${escapeHtml(freeAgentType)}</span></td>
       <td>${escapeHtml(agent.agent || '')}</td>
       <td class="free-agent-actions-cell">
         <button type="button">Ofertar</button>
