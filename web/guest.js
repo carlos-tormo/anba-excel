@@ -55,6 +55,7 @@ const state = {
     ownerOfficeSeason: null,
     trackerSeason: null,
     trackerEconomySeason: null,
+    freeAgentSearch: '',
     statusPills: [],
     mobileSidebarOpen: false,
     mobileInfoOpen: false,
@@ -4162,7 +4163,15 @@ function renderFreeAgents() {
   const tbody = document.querySelector('#freeAgentsTable tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
-  const rows = sortedRows(state.freeAgents || [], state.sort.free_agents);
+  const searchInput = document.getElementById('freeAgentSearchInput');
+  if (searchInput && searchInput.value !== String(state.ui.freeAgentSearch || '')) {
+    searchInput.value = state.ui.freeAgentSearch || '';
+  }
+  const query = String(state.ui.freeAgentSearch || '').trim().toLowerCase();
+  const filteredRows = query
+    ? (state.freeAgents || []).filter((agent) => String(agent.name || '').toLowerCase().includes(query))
+    : (state.freeAgents || []);
+  const rows = sortedRows(filteredRows, state.sort.free_agents);
   if (!rows.length) {
     const tr = document.createElement('tr');
     tr.innerHTML = '<td colspan="7">No hay agentes libres registrados.</td>';
@@ -6929,6 +6938,10 @@ async function init() {
   });
   document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
     await loadFreeAgents();
+  });
+  document.getElementById('freeAgentSearchInput')?.addEventListener('input', (event) => {
+    state.ui.freeAgentSearch = String(event.target.value || '');
+    renderFreeAgents();
   });
 
   const teamsRes = await api('/api/teams');

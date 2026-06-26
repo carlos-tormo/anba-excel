@@ -87,6 +87,7 @@ const state = {
     addingDraftOrderRound: null,
     addingPlayerRight: false,
     addingFreeAgent: false,
+    freeAgentSearch: '',
     signingFreeAgentId: null,
     gmTimelineEntries: [],
     gmTimelineSvg: '',
@@ -4725,6 +4726,13 @@ function freeAgentTypeOptions(selected = '') {
     .join('');
 }
 
+function filteredFreeAgents() {
+  const query = String(state.ui.freeAgentSearch || '').trim().toLowerCase();
+  const rows = state.freeAgents || [];
+  if (!query) return rows;
+  return rows.filter((agent) => String(agent.name || '').toLowerCase().includes(query));
+}
+
 function freeAgentRepValues() {
   const reps = Array.isArray(state.settings.free_agent_reps) ? state.settings.free_agent_reps : [];
   const seen = new Set();
@@ -4770,7 +4778,11 @@ function renderFreeAgents() {
   if (!tbody) return;
   tbody.innerHTML = '';
   renderFreeAgentBulkControls();
-  const rows = sortedRows(state.freeAgents || [], state.sort.free_agents);
+  const searchInput = document.getElementById('freeAgentSearchInput');
+  if (searchInput && searchInput.value !== String(state.ui.freeAgentSearch || '')) {
+    searchInput.value = state.ui.freeAgentSearch || '';
+  }
+  const rows = sortedRows(filteredFreeAgents(), state.sort.free_agents);
   const selectAll = document.getElementById('selectAllFreeAgents');
   if (selectAll) {
     selectAll.checked = Boolean(rows.length) && rows.every((agent) => state.selectedFreeAgentIds.has(Number(agent.id)));
@@ -4799,7 +4811,7 @@ function renderFreeAgents() {
       renderFreeAgentBulkControls();
       const selectAllControl = document.getElementById('selectAllFreeAgents');
       if (selectAllControl) {
-        const visibleRows = sortedRows(state.freeAgents || [], state.sort.free_agents);
+        const visibleRows = sortedRows(filteredFreeAgents(), state.sort.free_agents);
         selectAllControl.checked = Boolean(visibleRows.length) && visibleRows.every((row) => state.selectedFreeAgentIds.has(Number(row.id)));
         selectAllControl.indeterminate = visibleRows.some((row) => state.selectedFreeAgentIds.has(Number(row.id))) && !selectAllControl.checked;
       }
@@ -4898,6 +4910,39 @@ async function applyFreeAgentBulkUpdate() {
   document.getElementById('bulkFreeAgentAgentSelect').value = '';
   document.getElementById('bulkFreeAgentTypeSelect').value = '';
   await loadFreeAgents();
+}
+
+async function bulkAddFreeAgentsFromTool() {
+  const input = document.getElementById('bulkFreeAgentNamesInput');
+  const resultEl = document.getElementById('bulkFreeAgentImportResult');
+  const button = document.getElementById('bulkAddFreeAgentsBtn');
+  const names = String(input?.value || '').trim();
+  if (!names) {
+    if (resultEl) resultEl.textContent = 'Pega al menos un nombre.';
+    input?.focus();
+    return;
+  }
+  if (button) button.disabled = true;
+  if (resultEl) resultEl.textContent = 'Añadiendo...';
+  try {
+    const result = await api('/api/free-agents/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ names }),
+    });
+    if (input && Number(result.created_count || 0) > 0) input.value = '';
+    const skipped = result.skipped || [];
+    const skippedPreview = skipped.slice(0, 5).map((item) => `${item.name}: ${item.reason}`).join(' · ');
+    if (resultEl) {
+      resultEl.textContent = `Añadidos: ${result.created_count || 0}. Omitidos: ${result.skipped_count || 0}${skippedPreview ? ` (${skippedPreview}${skipped.length > 5 ? '...' : ''})` : ''}.`;
+    }
+    const refreshed = await api('/api/free-agents');
+    state.freeAgents = refreshed.free_agents || [];
+    if (state.ui.viewMode === 'free-agents') renderFreeAgents();
+  } catch (err) {
+    if (resultEl) resultEl.textContent = `Error: ${err.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function shortDateTime(value) {
@@ -10477,15 +10522,22 @@ async function init() {
     const checked = Boolean(event.target.checked);
     state.selectedFreeAgentIds.clear();
     if (checked) {
-      sortedRows(state.freeAgents || [], state.sort.free_agents).forEach((agent) => {
+      sortedRows(filteredFreeAgents(), state.sort.free_agents).forEach((agent) => {
         state.selectedFreeAgentIds.add(Number(agent.id));
       });
     }
     renderFreeAgents();
   });
   document.getElementById('bulkFreeAgentField')?.addEventListener('change', renderFreeAgentBulkControls);
+  document.getElementById('freeAgentSearchInput')?.addEventListener('input', (event) => {
+    state.ui.freeAgentSearch = String(event.target.value || '');
+    renderFreeAgents();
+  });
   document.getElementById('applyFreeAgentBulkBtn')?.addEventListener('click', async () => {
     await applyFreeAgentBulkUpdate();
+  });
+  document.getElementById('bulkAddFreeAgentsBtn')?.addEventListener('click', async () => {
+    await bulkAddFreeAgentsFromTool();
   });
   document.getElementById('closeSignFreeAgentModalBtn').addEventListener('click', () => {
     closeSignFreeAgentModal();

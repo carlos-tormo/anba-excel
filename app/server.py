@@ -8981,6 +8981,92 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return int(cur.lastrowid)
 
+    def bulk_create_free_agents(self, raw_names: Any) -> Dict[str, Any]:
+        if isinstance(raw_names, list):
+            lines = [str(item or "").strip() for item in raw_names]
+        else:
+            lines = str(raw_names or "").splitlines()
+        cleaned: List[Dict[str, Any]] = []
+        seen_input: set[str] = set()
+        skipped: List[Dict[str, Any]] = []
+        for line_number, raw in enumerate(lines, start=1):
+            name = re.sub(r"\s+", " ", str(raw or "").strip())
+            if not name:
+                continue
+            key = name.casefold()
+            if key in seen_input:
+                skipped.append({"line": line_number, "name": name, "reason": "duplicado en el texto"})
+                continue
+            seen_input.add(key)
+            cleaned.append({"line": line_number, "name": name})
+        if len(cleaned) > 1000:
+            raise ValueError("too_many_names")
+
+        timestamp = now_iso()
+        created: List[Dict[str, Any]] = []
+        with self.connect() as conn:
+            for item in cleaned:
+                name = item["name"]
+                existing_free_agent = conn.execute(
+                    """
+                    SELECT f.id
+                    FROM free_agents f
+                    LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                    WHERE lower(trim(COALESCE(pp.name, f.name))) = lower(trim(?))
+                        OR lower(trim(f.name)) = lower(trim(?))
+                    LIMIT 1
+                    """,
+                    (name, name),
+                ).fetchone()
+                if existing_free_agent:
+                    skipped.append({"line": item["line"], "name": name, "reason": "ya existe en agentes libres"})
+                    continue
+                active_player = conn.execute(
+                    """
+                    SELECT p.id
+                    FROM players p
+                    LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                    WHERE lower(trim(COALESCE(pp.name, p.name))) = lower(trim(?))
+                        OR lower(trim(p.name)) = lower(trim(?))
+                    LIMIT 1
+                    """,
+                    (name, name),
+                ).fetchone()
+                if active_player:
+                    skipped.append({"line": item["line"], "name": name, "reason": "ya tiene contrato activo"})
+                    continue
+
+                profile_id = self._find_profile_id(conn, name=name)
+                if profile_id is None:
+                    profile_id = self._create_player_profile(conn, name, timestamp=timestamp)
+                cur = conn.execute(
+                    """
+                    INSERT INTO free_agents (
+                        profile_id, name, position, bird_rights, rating, years_left,
+                        free_agent_type, source, agent, notes, created_at, updated_at
+                    ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL, ?, ?)
+                    """,
+                    (profile_id, name, FREE_AGENT_TYPE_UNRESTRICTED, timestamp, timestamp),
+                )
+                free_agent_id = int(cur.lastrowid)
+                created.append({"id": free_agent_id, "name": name, "line": item["line"]})
+                self._record_player_transaction(
+                    conn,
+                    profile_id,
+                    "free_agent",
+                    "Añadido a agentes libres",
+                    free_agent_id=free_agent_id,
+                    details={"player_name": name, "bulk_import": True},
+                    created_at=timestamp,
+                )
+            conn.commit()
+        return {
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "created": created,
+            "skipped": skipped,
+        }
+
     def update_free_agent(self, free_agent_id: int, payload: Dict[str, Any]) -> bool:
         fields = ["name", "position", "bird_rights", "rating", "years_left", "free_agent_type", "agent", "notes"]
         assigns = []
@@ -14408,6 +14494,28 @@ QUALITY REQUIREMENTS
                     "X-Content-Type-Options": "nosniff",
                 },
             )
+            return
+
+        if parsed.path == "/api/free-agents/bulk":
+            try:
+                result = self.db.bulk_create_free_agents(payload.get("names") or payload.get("text") or "")
+            except ValueError as err:
+                if str(err) == "too_many_names":
+                    self._json(400, {"error": "too_many_names"})
+                    return
+                raise
+            self._log_admin_action(
+                "bulk_create",
+                "free_agent",
+                None,
+                None,
+                {
+                    "created_count": result.get("created_count"),
+                    "skipped_count": result.get("skipped_count"),
+                    "created_names": [item.get("name") for item in (result.get("created") or [])[:25]],
+                },
+            )
+            self._json(201, result)
             return
 
         if parsed.path == "/api/free-agents":

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260626e">
+  <link rel="stylesheet" href="/styles.css?v=20260626f">
 </head>
 <body class="app-layout">
   <header>
@@ -224,6 +224,17 @@
         </article>
         <article class="admin-tool-card admin-tool-card-wide">
           <div>
+            <h3>Añadir agentes libres</h3>
+            <p>Pega un nombre por línea para crear agentes libres no restringidos, sin equipo asignado.</p>
+          </div>
+          <textarea id="bulkFreeAgentNamesInput" class="admin-tool-textarea" rows="8" placeholder="Nombre Apellido&#10;Otro Jugador&#10;..."></textarea>
+          <div class="admin-tool-inline">
+            <button id="bulkAddFreeAgentsBtn" type="button">Añadir agentes libres</button>
+            <span id="bulkFreeAgentImportResult" class="admin-tool-result muted-text"></span>
+          </div>
+        </article>
+        <article class="admin-tool-card admin-tool-card-wide">
+          <div>
             <h3>Excepciones offseason</h3>
             <p>Previsualiza las excepciones proyectadas por temporada y genera las oficiales para los equipos sin decisión pendiente.</p>
           </div>
@@ -324,6 +335,10 @@
       <h2>Agentes libres</h2>
       <div class="bulk-bar">
         <button id="addFreeAgentBtn" type="button">Añadir agente libre</button>
+        <label class="free-agent-search-control">
+          <span>Buscar</span>
+          <input id="freeAgentSearchInput" type="search" placeholder="Filtrar por nombre">
+        </label>
         <label class="bulk-inline-check">
           <input id="selectAllFreeAgents" type="checkbox">
           <span>Seleccionar todos</span>
@@ -1106,6 +1121,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260626e" defer></script>
+  <script src="/admin.js?v=20260626f" defer></script>
 </body>
 </html>

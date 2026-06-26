@@ -1389,6 +1389,21 @@ h1 {
   flex-wrap: wrap;
   gap: 12px;
 }
+.admin-tool-textarea {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  color: #172033;
+  font: inherit;
+  line-height: 1.45;
+}
+.admin-tool-result {
+  align-self: center;
+  font-weight: 800;
+}
 .offseason-exceptions-preview {
   margin-top: 12px;
 }
@@ -7238,6 +7253,23 @@ td.salary-option--nb .salary-pct {
   flex-wrap: wrap;
   margin: 0 0 10px;
 }
+.free-agent-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+.free-agent-search-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-weight: 900;
+}
+.free-agent-search-control input {
+  width: min(280px, 70vw);
+}
 .selected-actions-label {
   font-weight: 700;
   color: #334e68;
@@ -7245,6 +7277,10 @@ td.salary-option--nb .salary-pct {
 .bulk-bar input,
 .bulk-bar select {
   max-width: 140px;
+}
+.bulk-bar .free-agent-search-control input,
+.free-agent-toolbar .free-agent-search-control input {
+  max-width: 280px;
 }
 #salaryCap2025Input {
   width: 180px;
