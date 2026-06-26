@@ -2461,7 +2461,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         teams_cur = conn.execute("SELECT * FROM teams ORDER BY code")
         teams = [row_to_dict(teams_cur, row) for row in teams_cur.fetchall()]
         for penalty_year in range(int(previous_year), int(next_year)):
-            frozen_draft_year = int(penalty_year) + 7
+            frozen_draft_year = int(penalty_year) + 8
             for team in teams:
                 team_id = int(team["id"])
                 players = self._select_team_players(conn, team_id)
@@ -2504,6 +2504,116 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 )
         return frozen_rows
 
+    def _create_missing_future_draft_assets_conn(
+        self,
+        conn: sqlite3.Connection,
+        draft_year: int,
+        timestamp: str,
+    ) -> List[Dict[str, Any]]:
+        created: List[Dict[str, Any]] = []
+        teams_cur = conn.execute("SELECT id, code FROM teams ORDER BY code")
+        teams = [row_to_dict(teams_cur, row) for row in teams_cur.fetchall()]
+        for team in teams:
+            team_id = int(team["id"])
+            team_code = str(team["code"])
+            max_order = int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                    (team_id,),
+                ).fetchone()["mx"]
+                or 0
+            )
+            for draft_round in ("1st", "2nd"):
+                existing = conn.execute(
+                    """
+                    SELECT 1
+                    FROM assets
+                    WHERE team_id = ?
+                      AND asset_type = 'draft_pick'
+                      AND CAST(COALESCE(year, '') AS INTEGER) = ?
+                      AND COALESCE(draft_round, '1st') = ?
+                      AND COALESCE(LOWER(draft_pick_type), 'own') IN ('own', 'sold')
+                    LIMIT 1
+                    """,
+                    (team_id, int(draft_year), draft_round),
+                ).fetchone()
+                if existing:
+                    continue
+                max_order += 1
+                cur = conn.execute(
+                    """
+                    INSERT INTO assets (
+                        team_id, row_order, asset_type, year, label, detail, amount_text, amount_num,
+                        draft_pick_type, draft_round, original_owner, exception_type,
+                        draft_pick_restricted, draft_pick_stepien_restricted, draft_pick_protected,
+                        draft_pick_sold_to, draft_pick_conditional_teams, draft_pick_frozen,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, 'draft_pick', ?, ?, '', NULL, NULL, 'own', ?, NULL, NULL, 0, 0, 0, NULL, NULL, 0, ?, ?)
+                    """,
+                    (
+                        team_id,
+                        max_order,
+                        int(draft_year),
+                        f"{draft_round} pick",
+                        draft_round,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                created.append(
+                    {
+                        "id": int(cur.lastrowid),
+                        "team_code": team_code,
+                        "year": int(draft_year),
+                        "draft_round": draft_round,
+                    }
+                )
+        return created
+
+    def _rollover_draft_assets_conn(
+        self,
+        conn: sqlite3.Connection,
+        previous_year: int,
+        next_year: int,
+        timestamp: str,
+    ) -> Dict[str, Any]:
+        if int(next_year) <= int(previous_year):
+            return {
+                "deleted_draft_assets": 0,
+                "deleted_draft_asset_years": [],
+                "future_draft_asset_years": [],
+                "created_future_draft_assets": [],
+            }
+
+        deleted_total = 0
+        deleted_years: List[Dict[str, int]] = []
+        for season_year in range(int(previous_year), int(next_year)):
+            expiring_asset_year = int(season_year) + 1
+            deleted = (
+                conn.execute(
+                    "DELETE FROM assets WHERE asset_type = 'draft_pick' AND CAST(COALESCE(year, '') AS INTEGER) = ?",
+                    (expiring_asset_year,),
+                ).rowcount
+                or 0
+            )
+            deleted_total += int(deleted)
+            deleted_years.append({"year": expiring_asset_year, "count": int(deleted)})
+
+        created: List[Dict[str, Any]] = []
+        future_years: List[int] = []
+        for season_year in range(int(previous_year) + 1, int(next_year) + 1):
+            future_draft_year = int(season_year) + 7
+            future_years.append(future_draft_year)
+            created.extend(self._create_missing_future_draft_assets_conn(conn, future_draft_year, timestamp))
+
+        return {
+            "deleted_draft_assets": deleted_total,
+            "deleted_draft_asset_years": deleted_years,
+            "future_draft_asset_years": future_years,
+            "created_future_draft_assets": created,
+        }
+
     def update_current_year(self, next_year: int) -> Dict[str, Any]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
@@ -2524,6 +2634,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             updated_bird_years = self._increment_player_bird_years(conn, delta, timestamp)
             frozen_picks = self._freeze_second_apron_pick_rollover(conn, previous_year, int(next_year), settings, timestamp)
+            draft_rollover = self._rollover_draft_assets_conn(conn, previous_year, int(next_year), timestamp)
             moved_free_agents = (
                 self._move_expired_players_to_free_agents(conn, int(next_year), timestamp)
                 if delta > 0
@@ -2536,6 +2647,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "bird_year_steps": delta,
                 "bird_year_players_updated": updated_bird_years,
                 "players_moved_to_free_agents": moved_free_agents,
+                "deleted_draft_assets": int(draft_rollover["deleted_draft_assets"]),
+                "deleted_draft_asset_years": draft_rollover["deleted_draft_asset_years"],
+                "future_draft_asset_years": draft_rollover["future_draft_asset_years"],
+                "created_future_draft_assets": len(draft_rollover["created_future_draft_assets"]),
+                "future_draft_assets": draft_rollover["created_future_draft_assets"],
                 "frozen_picks_created": len(frozen_picks),
                 "frozen_picks": frozen_picks,
             }
@@ -2556,11 +2672,6 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 (current_year, json.dumps(snapshot_payload), now_iso()),
             )
 
-            deleted_draft_assets = conn.execute(
-                "DELETE FROM assets WHERE asset_type = 'draft_pick' AND CAST(COALESCE(year, '') AS INTEGER) = ?",
-                (current_year,),
-            ).rowcount or 0
-
             next_year = current_year + 1
             timestamp = now_iso()
             conn.execute(
@@ -2572,27 +2683,19 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
                 (str(next_year), timestamp),
             )
-            conn.execute(
-                """
-                INSERT INTO app_settings (key, value, updated_at)
-                VALUES ('trade_move_phase', 'pre30', ?)
-                ON CONFLICT(key)
-                DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-                """,
-                (timestamp,),
-            )
-            conn.execute(
-                "UPDATE teams SET cash_received = 0, cash_sent = 0, updated_at = ?",
-                (timestamp,),
-            )
             updated_bird_years = self._increment_player_bird_years(conn, 1, timestamp)
             frozen_picks = self._freeze_second_apron_pick_rollover(conn, current_year, next_year, settings, timestamp)
+            draft_rollover = self._rollover_draft_assets_conn(conn, current_year, next_year, timestamp)
             moved_free_agents = self._move_expired_players_to_free_agents(conn, next_year, timestamp)
             conn.commit()
             return {
                 "previous_year": current_year,
                 "current_year": next_year,
-                "deleted_draft_assets": int(deleted_draft_assets),
+                "deleted_draft_assets": int(draft_rollover["deleted_draft_assets"]),
+                "deleted_draft_asset_years": draft_rollover["deleted_draft_asset_years"],
+                "future_draft_asset_years": draft_rollover["future_draft_asset_years"],
+                "created_future_draft_assets": len(draft_rollover["created_future_draft_assets"]),
+                "future_draft_assets": draft_rollover["created_future_draft_assets"],
                 "bird_year_steps": 1,
                 "bird_year_players_updated": updated_bird_years,
                 "players_moved_to_free_agents": moved_free_agents,

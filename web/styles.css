@@ -4122,6 +4122,24 @@ th {
   margin-left: 0;
   padding-right: 0;
 }
+.guest-roster-section #playersTable tbody tr:has(.gm-option-request-actions) {
+  position: relative;
+  z-index: 210;
+}
+.guest-roster-section #playersTable tbody td:has(.gm-option-request-actions) {
+  position: relative;
+  z-index: 260;
+  overflow: visible;
+}
+.guest-roster-section #playersTable .salary-cell-with-side:has(.gm-option-request-actions),
+.guest-roster-section #playersTable .salary-cap-hold-cell:has(.gm-option-request-actions) {
+  z-index: 300;
+}
+.guest-roster-section #playersTable .salary-cell-side:has(.gm-option-request-actions),
+.guest-roster-section #playersTable .salary-cap-hold-side:has(.gm-option-request-actions) {
+  z-index: 320;
+  pointer-events: auto;
+}
 .guest-roster-section #playersTable tbody td:has(.salary-cell-with-side) {
   position: relative;
   overflow: visible;
@@ -5970,6 +5988,9 @@ th {
   gap: 4px;
   margin-left: 6px;
   flex: 0 0 auto;
+  position: relative;
+  z-index: 400;
+  pointer-events: auto;
 }
 .salary-chip .gm-option-request-actions,
 .salary-empty-wrap .gm-option-request-actions {
@@ -5980,6 +6001,10 @@ th {
   margin-left: 2px;
 }
 .gm-option-request-actions button {
+  position: relative;
+  z-index: 410;
+  min-height: 30px;
+  min-width: 42px;
   border-radius: 999px;
   padding: 3px 7px;
   border-color: #cbd5e1;
@@ -5988,6 +6013,10 @@ th {
   font-size: 0.68rem;
   font-weight: 900;
   line-height: 1.1;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+  user-select: none;
 }
 .gm-option-request-actions button[data-gm-option-action="accepted"] {
   border-color: #86efac;

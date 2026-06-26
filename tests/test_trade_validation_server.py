@@ -294,7 +294,7 @@ class TradeValidationServerTests(unittest.TestCase):
                 asset
                 for asset in team["assets"]
                 if asset["asset_type"] == "draft_pick"
-                and int(asset["year"]) == 2032
+                and int(asset["year"]) == 2033
                 and asset["draft_round"] == "1st"
             ),
             None,
@@ -303,7 +303,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual(1, result["frozen_picks_created"])
         self.assertEqual(1, len(frozen_rows))
         self.assertEqual(2025, int(frozen_rows[0]["penalty_season_year"]))
-        self.assertEqual(2032, int(frozen_rows[0]["draft_year"]))
+        self.assertEqual(2033, int(frozen_rows[0]["draft_year"]))
         self.assertIsNotNone(frozen_pick)
         self.assertEqual(1, int(frozen_pick["draft_pick_frozen"]))
 

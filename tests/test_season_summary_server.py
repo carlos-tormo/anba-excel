@@ -330,6 +330,95 @@ class SeasonSummaryServerTests(unittest.TestCase):
         free_agents = self.db.list_free_agents()
         self.assertTrue(any(agent["name"] == "Expired Player" for agent in free_agents))
 
+    def test_progress_to_next_year_preserves_season_dependent_cash_and_move_phase(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("trade_move_phase", "post30")
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE teams SET cash_received = ?, cash_sent = ? WHERE code = ?",
+                (123_456, 654_321, "ATL"),
+            )
+            conn.commit()
+
+        result = self.db.progress_to_next_year()
+        settings = self.db.get_settings()
+        team = self.db.get_team("ATL")
+
+        self.assertEqual(2026, result["current_year"])
+        self.assertEqual("post30", settings["trade_move_phase"])
+        self.assertIsNotNone(team)
+        self.assertEqual(123_456, round(float(team["team"]["cash_received"])))
+        self.assertEqual(654_321, round(float(team["team"]["cash_sent"])))
+
+    def test_progress_to_next_year_rolls_draft_assets_by_later_season_year(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.assertIsNotNone(
+            self.db.create_asset(
+                "ATL",
+                {
+                    "asset_type": "draft_pick",
+                    "year": 2025,
+                    "label": "Legacy 2025 1st",
+                    "draft_pick_type": "own",
+                    "draft_round": "1st",
+                },
+            )
+        )
+        self.assertIsNotNone(
+            self.db.create_asset(
+                "ATL",
+                {
+                    "asset_type": "draft_pick",
+                    "year": 2026,
+                    "label": "Current 2026 1st",
+                    "draft_pick_type": "own",
+                    "draft_round": "1st",
+                },
+            )
+        )
+        self.assertIsNotNone(
+            self.db.create_asset(
+                "ATL",
+                {
+                    "asset_type": "draft_pick",
+                    "year": 2026,
+                    "label": "Current 2026 2nd",
+                    "draft_pick_type": "own",
+                    "draft_round": "2nd",
+                },
+            )
+        )
+        self.assertIsNotNone(
+            self.db.create_asset(
+                "ATL",
+                {
+                    "asset_type": "draft_pick",
+                    "year": 2033,
+                    "label": "Manual 2033 1st sold",
+                    "draft_pick_type": "sold",
+                    "draft_round": "1st",
+                    "draft_pick_sold_to": ["BOS"],
+                },
+            )
+        )
+
+        result = self.db.progress_to_next_year()
+        team = self.db.get_team("ATL")
+        assets = [asset for asset in team["assets"] if asset["asset_type"] == "draft_pick"]
+        picks_2033 = [asset for asset in assets if int(asset["year"]) == 2033]
+
+        self.assertEqual(2026, result["current_year"])
+        self.assertEqual(2, result["deleted_draft_assets"])
+        self.assertEqual([{"year": 2026, "count": 2}], result["deleted_draft_asset_years"])
+        self.assertEqual([2033], result["future_draft_asset_years"])
+        self.assertEqual(1, result["created_future_draft_assets"])
+        self.assertTrue(any(int(asset["year"]) == 2025 for asset in assets))
+        self.assertFalse(any(int(asset["year"]) == 2026 for asset in assets))
+        self.assertEqual(1, sum(1 for asset in picks_2033 if asset["draft_round"] == "1st"))
+        self.assertEqual(1, sum(1 for asset in picks_2033 if asset["draft_round"] == "2nd"))
+        self.assertTrue(any(asset["draft_round"] == "1st" and asset["draft_pick_type"] == "sold" for asset in picks_2033))
+        self.assertTrue(any(asset["draft_round"] == "2nd" and asset["draft_pick_type"] == "own" for asset in picks_2033))
+
     def test_offseason_exception_estimate_over_cap_below_first_apron(self) -> None:
         self.db.update_setting("current_year", "2025")
         self.db.update_setting("salary_cap_2025", "154647000")

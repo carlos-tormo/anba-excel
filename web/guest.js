@@ -1153,6 +1153,7 @@ function gmBirdRightsRenounceRequestHtml(row, season, rightsCode) {
 async function submitGmOptionRequest(button) {
   const wrap = button.closest('.gm-option-request-actions');
   if (!wrap) return;
+  if (button.dataset.gmSubmitting === '1') return;
   const action = String(button.dataset.gmOptionAction || '').trim();
   const playerId = Number(wrap.dataset.playerId);
   const optionField = String(wrap.dataset.optionField || '').trim();
@@ -1161,6 +1162,7 @@ async function submitGmOptionRequest(button) {
   const actionText = action === 'accepted' ? 'aceptar' : 'rechazar';
   const confirmed = window.confirm(`¿Seguro que quieres ${actionText} esta opción ${optionValue}?`);
   if (!confirmed) return;
+  button.dataset.gmSubmitting = '1';
   const buttons = Array.from(wrap.querySelectorAll('button'));
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
@@ -1177,6 +1179,7 @@ async function submitGmOptionRequest(button) {
     alert('Tu petición ha sido enviada a la administración. Será procesada pronto.');
   } catch (err) {
     alert(`No se pudo enviar la solicitud: ${err.message || err}`);
+    delete button.dataset.gmSubmitting;
     buttons.forEach((btn) => { btn.disabled = false; });
   }
 }
@@ -1184,12 +1187,14 @@ async function submitGmOptionRequest(button) {
 async function submitGmBirdRightsRenounceRequest(button) {
   const wrap = button.closest('.gm-option-request-actions--renounce');
   if (!wrap) return;
+  if (button.dataset.gmSubmitting === '1') return;
   const playerId = Number(wrap.dataset.playerId);
   const seasonYear = Number(wrap.dataset.seasonYear);
   const rightsValue = String(wrap.dataset.rightsValue || '').trim().toUpperCase();
   if (!Number.isInteger(playerId) || playerId <= 0 || !Number.isInteger(seasonYear) || !rightsValue) return;
   const confirmed = window.confirm(`¿Seguro que quieres solicitar la renuncia a los derechos ${rightsValue}? Si la administración lo aprueba, desaparecerá el cap hold.`);
   if (!confirmed) return;
+  button.dataset.gmSubmitting = '1';
   const buttons = Array.from(wrap.querySelectorAll('button'));
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
@@ -1205,6 +1210,7 @@ async function submitGmBirdRightsRenounceRequest(button) {
     alert('Tu petición ha sido enviada a la administración. Será procesada pronto.');
   } catch (err) {
     alert(`No se pudo enviar la solicitud: ${err.message || err}`);
+    delete button.dataset.gmSubmitting;
     buttons.forEach((btn) => { btn.disabled = false; });
   }
 }
@@ -1214,16 +1220,40 @@ function bindGmOptionRequestButtons(root) {
   root.querySelectorAll('[data-gm-option-action]').forEach((button) => {
     if (button.dataset.gmOptionBound === '1') return;
     button.dataset.gmOptionBound = '1';
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       void submitGmOptionRequest(button);
     });
   });
   root.querySelectorAll('[data-gm-bird-renounce]').forEach((button) => {
     if (button.dataset.gmBirdRenounceBound === '1') return;
     button.dataset.gmBirdRenounceBound = '1';
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       void submitGmBirdRightsRenounceRequest(button);
     });
+  });
+}
+
+function setupGmOptionRequestDelegation() {
+  if (state.ui.gmOptionDelegationBound) return;
+  state.ui.gmOptionDelegationBound = true;
+  document.addEventListener('click', (event) => {
+    const optionButton = event.target.closest('[data-gm-option-action]');
+    if (optionButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      void submitGmOptionRequest(optionButton);
+      return;
+    }
+    const renounceButton = event.target.closest('[data-gm-bird-renounce]');
+    if (renounceButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      void submitGmBirdRightsRenounceRequest(renounceButton);
+    }
   });
 }
 
@@ -6907,6 +6937,7 @@ async function init() {
   setupTeamTabs();
   setupTeamNavControls();
   setupRosterViewControl();
+  setupGmOptionRequestDelegation();
   setupSeasonViewControl();
   setupOwnerOfficeControls();
   setupFiguresSeasonControl();

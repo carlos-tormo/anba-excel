@@ -10517,8 +10517,9 @@ async function init() {
     }
     const fromLabel = seasonLabel(previousYear);
     const toLabel = seasonLabel(previousYear + 1);
+    const newDraftAssetYear = previousYear + 8;
     const confirmed = confirm(
-      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- add +1 to every player bird-year counter\n- reset cash balances\n- delete ${fromLabel} draft assets\n- hide ${fromLabel} salary columns across the site`
+      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- add +1 to every player bird-year counter\n- delete ${previousYear + 1} draft assets\n- add missing ${newDraftAssetYear} 1st/2nd round draft assets\n- hide ${fromLabel} salary columns across the site`
     );
     if (!confirmed) return;
 
