@@ -1327,7 +1327,7 @@ function salaryFloorForSeason(season) {
 
 function applySalaryFloorForSeason(season, amount) {
   const raw = Number(amount || 0);
-  if (isFreeAgencyMode()) return raw;
+  if (freeAgencyModeActive()) return raw;
   return Math.max(raw, salaryFloorForSeason(season));
 }
 
@@ -1677,6 +1677,13 @@ function setPageHeading(title, subtitle = '') {
   const value = String(subtitle || '').trim();
   subtitleEl.textContent = value;
   subtitleEl.classList.toggle('section-hidden', !value);
+}
+
+async function loadCurrentTeamHome() {
+  const currentCode = String(state.teamCode || state.teamData?.team?.code || '').trim().toUpperCase();
+  const fallbackCode = String((state.teams || [])[0]?.code || '').trim().toUpperCase();
+  const code = currentCode || fallbackCode;
+  if (code) await loadTeam(code);
 }
 
 function parseAmount(raw) {
@@ -3910,6 +3917,17 @@ function setupTeamTabs() {
   syncTeamTabs();
 }
 
+function syncMainNavState() {
+  const mode = String(state.ui.viewMode || '');
+  document.querySelectorAll('[data-nav-view]').forEach((el) => {
+    const modes = String(el.dataset.navView || '').split(/\s+/).filter(Boolean);
+    const isActive = modes.includes(mode);
+    el.classList.toggle('is-active', isActive);
+    if (isActive) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
+  });
+}
+
 function activeTrackerTab() {
   return ['general', 'economy'].includes(state.ui.activeTrackerTab)
     ? state.ui.activeTrackerTab
@@ -3999,6 +4017,7 @@ function setViewMode(mode) {
   toggleSection('importantFiguresSection', !showTeam);
   syncTrackerTabs();
   syncTeamTabs();
+  syncMainNavState();
   syncAdminMobileInfoButton();
 
   const teamControls = [
@@ -4468,6 +4487,7 @@ function setupAdminMobileNav() {
   const menuBtn = document.getElementById('mobileMenuBtn');
   const closeBtn = document.getElementById('adminMobileSidebarCloseBtn');
   const backdrop = document.getElementById('adminMobileSidebarBackdrop');
+  const teamHomeBtn = document.getElementById('adminMobileTeamHomeBtn');
   const trackerBtn = document.getElementById('adminMobileTrackerBtn');
   const figuresBtn = document.getElementById('adminMobileFiguresBtn');
   const draftBtn = document.getElementById('adminMobileDraftBtn');
@@ -4488,6 +4508,12 @@ function setupAdminMobileNav() {
   if (backdrop) {
     backdrop.addEventListener('click', (e) => {
       if (e.target === backdrop) closeAdminMobileSidebar();
+    });
+  }
+  if (teamHomeBtn) {
+    teamHomeBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      await loadCurrentTeamHome();
     });
   }
   if (trackerBtn) {
@@ -10287,6 +10313,9 @@ async function init() {
   document.getElementById('logoutBtn').addEventListener('click', async () => {
     await api('/api/auth/logout', { method: 'POST', body: '{}' });
     window.location.href = '/login';
+  });
+  document.getElementById('teamHomeBtn').addEventListener('click', async () => {
+    await loadCurrentTeamHome();
   });
   document.getElementById('trackerHomeBtn').addEventListener('click', async () => {
     await loadTracker();

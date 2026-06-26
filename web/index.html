@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260625a">
+  <link rel="stylesheet" href="/styles.css?v=20260626b">
 </head>
 <body class="app-layout">
   <header>
@@ -19,21 +19,38 @@
       <button id="mobileNextTeamBtn" class="team-nav-btn mobile-team-nav-btn" type="button" aria-label="Next team" title="Next team" hidden>&rsaquo;</button>
     </div>
     <button id="mobileInfoBtn" class="mobile-icon-btn" type="button" aria-label="Team status information" title="Info" hidden>i</button>
-    <div class="controls">
+    <nav class="controls sidebar-nav" aria-label="Main navigation">
       <div id="capStatusPills" class="top-status-wrap"></div>
-      <button id="openLocatorBtn" class="sidebar-icon-btn" type="button" aria-label="Search players and draft picks" title="Search">⌕</button>
-      <a id="downloadLeagueExportBtn" class="sidebar-icon-btn" href="/api/export/league.xlsx" aria-label="Export league spreadsheet" title="Export league spreadsheet" download>⇩</a>
-      <button id="trackerHomeBtn" type="button">Tracker</button>
-      <button id="figuresHomeBtn" type="button">Cifras</button>
-      <button id="draftHomeBtn" type="button">Draft</button>
-      <button id="leaguePlayersHomeBtn" type="button">Jugadores</button>
-      <button id="freeAgentsHomeBtn" type="button">Free agents</button>
-      <button id="tradeMachineHomeBtn" type="button">Máquina de traspasos</button>
-      <span id="authBadge"></span>
-      <a id="adminLink" href="/admin" class="ghost-link">Admin</a>
-      <a id="loginLink" href="/login" class="ghost-link">Login</a>
-      <button id="logoutBtn" class="danger" hidden>Logout</button>
-    </div>
+      <div class="sidebar-section sidebar-quick-section">
+        <div class="sidebar-section-label">Acciones</div>
+        <div class="sidebar-quick-actions">
+          <button id="openLocatorBtn" class="sidebar-icon-btn" type="button" aria-label="Search players and draft picks" title="Search">⌕</button>
+          <a id="downloadLeagueExportBtn" class="sidebar-icon-btn" href="/api/export/league.xlsx" aria-label="Export league spreadsheet" title="Export league spreadsheet" download>⇩</a>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Liga</div>
+        <button id="teamHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="team">Equipo</button>
+        <button id="trackerHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="tracker">Tracker</button>
+        <button id="figuresHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="figures">Cifras</button>
+        <button id="draftHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="draft-order">Draft</button>
+        <button id="leaguePlayersHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="league-players">Jugadores</button>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Mercado</div>
+        <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="free-agents">Free agents</button>
+        <button id="tradeMachineHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-machine">Máquina de traspasos</button>
+      </div>
+      <div class="sidebar-section sidebar-account-section">
+        <div class="sidebar-section-label">Cuenta</div>
+        <a id="adminLink" href="/admin" class="ghost-link sidebar-nav-item">Admin</a>
+        <a id="loginLink" href="/login" class="ghost-link sidebar-nav-item">Login</a>
+      </div>
+      <div class="sidebar-footer">
+        <span id="authBadge"></span>
+        <button id="logoutBtn" class="danger sidebar-nav-item" hidden>Logout</button>
+      </div>
+    </nav>
   </header>
   <div id="mobileSidebarBackdrop" class="mobile-sidebar-backdrop section-hidden" aria-hidden="true">
     <aside id="mobileSidebar" class="mobile-sidebar" aria-label="Navigation menu">
@@ -48,12 +65,13 @@
         <button id="mobileSidebarCloseBtn" class="mobile-icon-btn" type="button" aria-label="Close menu" title="Close">✕</button>
       </div>
       <div class="mobile-sidebar-links">
-        <button id="mobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥">Tracker</button>
-        <button id="mobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦">Cifras</button>
-        <button id="mobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈">Draft</button>
-        <button id="mobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎">Jugadores</button>
-        <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
-        <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄">Máquina de traspasos</button>
+        <button id="mobileTeamHomeBtn" type="button" class="mobile-nav-btn" data-icon="⌂" data-nav-view="team">Equipo</button>
+        <button id="mobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥" data-nav-view="tracker">Tracker</button>
+        <button id="mobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦" data-nav-view="figures">Cifras</button>
+        <button id="mobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈" data-nav-view="draft-order">Draft</button>
+        <button id="mobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
+        <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Free agents</button>
+        <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-machine">Máquina de traspasos</button>
         <button id="mobileLocatorBtn" type="button" class="mobile-nav-btn" data-icon="⌕">Buscar</button>
         <a id="mobileExportLink" href="/api/export/league.xlsx" class="mobile-nav-link" data-icon="⇩" download>Exportar datos</a>
         <a id="mobileAdminLink" href="/admin" class="mobile-nav-link" data-icon="⚙">Admin</a>
@@ -494,6 +512,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260623e" defer></script>
+  <script src="/guest.js?v=20260626c" defer></script>
 </body>
 </html>
