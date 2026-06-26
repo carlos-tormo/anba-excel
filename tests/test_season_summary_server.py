@@ -1,7 +1,9 @@
+import io
 import os
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 
 from app.server import LeagueDB
 from app.domain_rules import minimum_salary_for_season
@@ -249,6 +251,85 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual("accepted", decision["action"])
         self.assertEqual("approved", decision["status"])
 
+    def test_gm_can_request_bird_rights_renounce_in_free_agency_mode(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("free_agency_mode", "1")
+        self.db.update_setting("salary_cap_2026", "154647000")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Bird Hold Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2025_text": "10000000",
+                "salary_2026_text": "FB",
+            },
+        )
+        self.assertIsNotNone(player_id)
+
+        request = self.db.create_gm_bird_rights_renounce_request(
+            int(player_id),
+            2026,
+            "FB",
+            {"email": "gm@example.com", "name": "GM"},
+        )
+
+        self.assertIsNotNone(request)
+        self.assertEqual("bird_rights_renounce", request["request_type"])
+        self.assertEqual("renounced", request["action"])
+        self.assertEqual("salary_2026_text", request["option_field"])
+        self.assertEqual("FB", request["option_value"])
+
+        team_before = self.db.get_team("ATL")
+        summary_before = team_before["season_summaries"]["2026"]
+        self.assertGreater(round(float(summary_before["cap_figure"])), 0)
+
+        self.assertTrue(self.db.update_player(int(player_id), {"salary_2026_text": None}))
+        self.assertIsNotNone(
+            self.db.mark_gm_option_request_decided(
+                int(request["id"]),
+                "approved",
+                {"email": "admin@example.com", "name": "Admin"},
+            )
+        )
+        player_after = self.db.get_player_record(int(player_id))
+        self.assertIsNotNone(player_after)
+        self.assertIsNone(player_after["salary_2026_text"])
+        self.assertIsNone(player_after["salary_2026_num"])
+
+    def test_progress_to_next_year_moves_players_without_new_year_contract_to_free_agents(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        expired_player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Expired Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2025_text": "10000000",
+            },
+        )
+        hold_player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Held Player",
+                "bird_rights": "Reg",
+                "position": "SF",
+                "salary_2025_text": "5000000",
+                "salary_2026_text": "NB",
+            },
+        )
+        self.assertIsNotNone(expired_player_id)
+        self.assertIsNotNone(hold_player_id)
+
+        result = self.db.progress_to_next_year()
+
+        self.assertEqual(2026, result["current_year"])
+        self.assertEqual(1, result["players_moved_to_free_agents"])
+        self.assertIsNone(self.db.get_player_record(int(expired_player_id)))
+        self.assertIsNotNone(self.db.get_player_record(int(hold_player_id)))
+        free_agents = self.db.list_free_agents()
+        self.assertTrue(any(agent["name"] == "Expired Player" for agent in free_agents))
+
     def test_offseason_exception_estimate_over_cap_below_first_apron(self) -> None:
         self.db.update_setting("current_year", "2025")
         self.db.update_setting("salary_cap_2025", "154647000")
@@ -340,6 +421,34 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(1, len(skipped["skipped"]))
         self.assertEqual(1, sum(len(row["created"]) for row in chosen["generated"]))
         self.assertEqual(["room_mle"], [asset["generated_exception_key"] for asset in generated])
+
+    def test_league_export_workbook_contains_public_league_sheets(self) -> None:
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Export Test Player",
+                "bird_rights": "Reg",
+                "position": "PG",
+                "salary_2025_text": "1234567",
+            },
+        )
+
+        workbook = self.db.export_league_workbook()
+
+        with zipfile.ZipFile(io.BytesIO(workbook)) as archive:
+            names = set(archive.namelist())
+            self.assertIn("[Content_Types].xml", names)
+            self.assertIn("xl/workbook.xml", names)
+            workbook_xml = archive.read("xl/workbook.xml").decode("utf-8")
+            self.assertIn('name="Resumen"', workbook_xml)
+            self.assertIn('name="Roster"', workbook_xml)
+            worksheets = "\n".join(
+                archive.read(name).decode("utf-8")
+                for name in sorted(names)
+                if name.startswith("xl/worksheets/")
+            )
+            self.assertIn("Export Test Player", worksheets)
+            self.assertIn("Atlanta Hawks", worksheets)
 
 
 if __name__ == "__main__":

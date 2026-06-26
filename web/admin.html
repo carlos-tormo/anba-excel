@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260623f">
+  <link rel="stylesheet" href="/styles.css?v=20260625a">
 </head>
 <body class="app-layout">
   <header>
@@ -24,6 +24,7 @@
         <button id="leaguePlayersHomeBtn" class="sidebar-nav-item" type="button">Jugadores</button>
         <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button">Free agents</button>
       </div>
+      <a id="downloadLeagueExportBtn" class="sidebar-icon-btn" href="/api/export/league.xlsx" aria-label="Export league spreadsheet" title="Export league spreadsheet" download>⇩</a>
       <button id="reloadBtn" class="sidebar-icon-btn" type="button" aria-label="Reload" title="Reload">↻</button>
       <div class="admin-nav-group admin-nav-bottom">
         <a href="/" class="ghost-link sidebar-nav-item">Guest View</a>
@@ -66,6 +67,7 @@
         <button id="adminMobileGmOptionRequestsBtn" type="button" class="mobile-nav-btn" data-icon="!">GM Requests <span id="mobileGmOptionRequestsBadge" class="nav-badge" hidden>0</span></button>
         <button id="adminMobileToolsBtn" type="button" class="mobile-nav-btn" data-icon="⇄">Admin Tools</button>
         <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙">League Settings</button>
+        <a href="/api/export/league.xlsx" class="mobile-nav-link" data-icon="⇩" download>Exportar datos</a>
         <a href="/" class="mobile-nav-link" data-icon="↗">Guest View</a>
         <button id="adminMobileLogoutBtn" type="button" class="danger mobile-nav-btn" data-icon="↗">Logout</button>
       </div>

@@ -3678,11 +3678,14 @@ async function loadAdminUsers() {
 
 function optionRequestActionLabel(action) {
   if (action === 'selected') return 'Elegir jugador';
+  if (action === 'renounced') return 'Renunciar derechos';
   return action === 'accepted' ? 'Aceptar opción' : 'Rechazar opción';
 }
 
 function gmRequestTypeLabel(request) {
-  return request?.request_type === 'draft_pick' ? 'Draft' : 'Opción';
+  if (request?.request_type === 'draft_pick') return 'Draft';
+  if (request?.request_type === 'bird_rights_renounce') return 'Derechos';
+  return 'Opción';
 }
 
 function gmDraftPickLabel(request) {
@@ -3716,6 +3719,7 @@ function renderGmOptionRequests() {
     const requestId = Number(request.id);
     const requestType = String(request.request_type || 'option');
     const isDraftRequest = requestType === 'draft_pick';
+    const isBirdRenounceRequest = requestType === 'bird_rights_renounce';
     const created = request.created_at ? new Date(request.created_at).toLocaleString() : '';
     const submittedBy = request.requester_name || request.requester_email || 'GM';
     const actionClass = request.action === 'accepted' || isDraftRequest ? 'gm-request-action--accept' : 'gm-request-action--reject';
@@ -3725,6 +3729,8 @@ function renderGmOptionRequests() {
       : escapeHtml(request.season_label || '');
     const typeCell = isDraftRequest
       ? '<span class="contract-opt-pill">DRAFT</span>'
+      : isBirdRenounceRequest
+        ? `<span class="contract-opt-pill salary-chip-text ${salaryTextTagClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span>`
       : `<span class="contract-opt-pill ${contractOptionClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span>`;
     const tr = document.createElement('tr');
     tr.dataset.gmOptionRequestId = String(requestId);
@@ -3771,9 +3777,12 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
   let payload = { decision };
   if (decision === 'approved' && request) {
     const isDraftRequest = normalizedType === 'draft_pick';
+    const isBirdRenounceRequest = normalizedType === 'bird_rights_renounce';
     const message = isDraftRequest
       ? `${request.team_code} selecciona a ${request.selection_text} con el pick ${gmDraftPickLabel(request)}.\n\nAl aprobarla, la elección quedará registrada y el reloj avanzará al siguiente pick.`
-      : `${contractOptionActionMessage(
+      : isBirdRenounceRequest
+        ? `${request.team_code} renuncia a los derechos ${String(request.option_value || '').toUpperCase()} de ${request.player_name} para ${request.season_label}.\n\nAl aprobarla, se borrará la marca ${String(request.option_value || '').toUpperCase()} de la celda y desaparecerá el cap hold.`
+        : `${contractOptionActionMessage(
           request.team_code,
           request.player_name,
           Number(request.season_year),
@@ -3785,8 +3794,8 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
       message,
       confirmLabel: 'Aprobar y aplicar',
       defaultNotify: true,
-      defaultGenerateImage: true,
-      danger: request.action === 'rejected',
+      defaultGenerateImage: !isBirdRenounceRequest,
+      danger: request.action === 'rejected' || isBirdRenounceRequest,
     });
     if (!result.confirmed) return;
     payload = {
@@ -3813,6 +3822,9 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
     await loadGmOptionRequests();
     if (normalizedType === 'draft_pick' && state.ui.viewMode === 'draft-order') {
       await loadDraftOrder();
+    }
+    if (request?.team_code && state.teamCode && String(request.team_code).toUpperCase() === String(state.teamCode).toUpperCase()) {
+      await loadTeam(state.teamCode);
     }
   } catch (err) {
     alert(`GM request update failed: ${err.message || err}`);
@@ -5532,6 +5544,14 @@ async function confirmSignFreeAgent() {
     alert('Player name is required.');
     return;
   }
+  const decision = await confirmWithDiscordNotification({
+    title: 'Confirmar firma',
+    message: `${payload.team_code} firma a ${payload.name} desde la agencia libre.`,
+    confirmLabel: 'Firmar jugador',
+    defaultNotify: true,
+    defaultGenerateImage: true,
+  });
+  if (!decision.confirmed) return;
   const btn = document.getElementById('confirmSignFreeAgentBtn');
   const oldText = btn.textContent;
   btn.disabled = true;
@@ -5539,7 +5559,12 @@ async function confirmSignFreeAgent() {
   try {
     await api(`/api/free-agents/${freeAgentId}/sign`, {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        notify_discord: decision.notifyDiscord,
+        generate_discord_image: decision.generateDiscordImage,
+        discord_custom_image: decision.customDiscordImage,
+      }),
     });
     closeSignFreeAgentModal();
     await loadFreeAgents();

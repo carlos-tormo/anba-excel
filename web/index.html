@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260623f">
+  <link rel="stylesheet" href="/styles.css?v=20260625a">
 </head>
 <body class="app-layout">
   <header>
@@ -21,7 +21,8 @@
     <button id="mobileInfoBtn" class="mobile-icon-btn" type="button" aria-label="Team status information" title="Info" hidden>i</button>
     <div class="controls">
       <div id="capStatusPills" class="top-status-wrap"></div>
-      <button id="openLocatorBtn" class="icon-only-btn" type="button" aria-label="Search players and draft picks" title="Search">Search</button>
+      <button id="openLocatorBtn" class="sidebar-icon-btn" type="button" aria-label="Search players and draft picks" title="Search">⌕</button>
+      <a id="downloadLeagueExportBtn" class="sidebar-icon-btn" href="/api/export/league.xlsx" aria-label="Export league spreadsheet" title="Export league spreadsheet" download>⇩</a>
       <button id="trackerHomeBtn" type="button">Tracker</button>
       <button id="figuresHomeBtn" type="button">Cifras</button>
       <button id="draftHomeBtn" type="button">Draft</button>
@@ -54,6 +55,7 @@
         <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○">Free agents</button>
         <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄">Máquina de traspasos</button>
         <button id="mobileLocatorBtn" type="button" class="mobile-nav-btn" data-icon="⌕">Buscar</button>
+        <a id="mobileExportLink" href="/api/export/league.xlsx" class="mobile-nav-link" data-icon="⇩" download>Exportar datos</a>
         <a id="mobileAdminLink" href="/admin" class="mobile-nav-link" data-icon="⚙">Admin</a>
       </div>
       <div class="mobile-sidebar-team-title">Equipos</div>

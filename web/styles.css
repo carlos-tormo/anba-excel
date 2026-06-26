@@ -527,6 +527,7 @@ h1 {
 
   .controls > button,
   .controls > .ghost-link,
+  .controls > .sidebar-icon-btn,
   .admin-nav-group > .sidebar-nav-item {
     display: inline-flex;
     align-items: center;
@@ -569,7 +570,7 @@ h1 {
     line-height: 1;
   }
 
-  #openLocatorBtn::before {
+  #openLocatorBtn:not(.sidebar-icon-btn)::before {
     content: "⌕";
     font-size: 1.22rem;
   }
@@ -5907,6 +5908,11 @@ th {
   border-color: #fca5a5;
   background: #fee2e2;
   color: #991b1b;
+}
+.gm-option-request-actions button[data-gm-bird-renounce] {
+  border-color: #c4b5fd;
+  background: #f3e8ff;
+  color: #6d28d9;
 }
 .gm-option-request-sent {
   display: inline-flex;

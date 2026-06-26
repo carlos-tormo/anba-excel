@@ -11,6 +11,7 @@ import re
 import secrets
 import sqlite3
 import unicodedata
+import zipfile
 from datetime import UTC, datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
+from xml.sax.saxutils import escape as xml_escape
 
 try:
     from .domain_rules import (
@@ -638,6 +640,160 @@ def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
     if "years_left" in item:
         item["years_left"] = normalize_bird_years(item.get("years_left"))
     return item
+
+
+def _xlsx_clean_text(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return "".join(ch if ch in "\t\n\r" or ord(ch) >= 32 else " " for ch in text)
+
+
+def _xlsx_attr(value: Any) -> str:
+    return xml_escape(_xlsx_clean_text(value), {'"': "&quot;", "'": "&apos;"})
+
+
+def _xlsx_col_name(index: int) -> str:
+    name = ""
+    value = int(index)
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _xlsx_cell_ref(row_index: int, col_index: int) -> str:
+    return f"{_xlsx_col_name(col_index)}{row_index}"
+
+
+def _xlsx_cell(row_index: int, col_index: int, value: Any) -> str:
+    ref = _xlsx_cell_ref(row_index, col_index)
+    if isinstance(value, bool):
+        value = "Sí" if value else "No"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        numeric = float(value)
+        if math.isfinite(numeric):
+            rendered = str(int(numeric)) if numeric.is_integer() else repr(numeric)
+            return f'<c r="{ref}"><v>{rendered}</v></c>'
+    text = xml_escape(_xlsx_clean_text(value))
+    return f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>'
+
+
+def _xlsx_sheet_xml(rows: List[List[Any]]) -> str:
+    sheet_rows: List[str] = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = "".join(_xlsx_cell(row_index, col_index, value) for col_index, value in enumerate(row, start=1))
+        sheet_rows.append(f'<row r="{row_index}">{cells}</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f"<sheetData>{''.join(sheet_rows)}</sheetData>"
+        "</worksheet>"
+    )
+
+
+def _xlsx_sheet_name(name: str, used_names: set[str]) -> str:
+    clean = re.sub(r"[\[\]:*?/\\]", " ", str(name or "Sheet")).strip() or "Sheet"
+    clean = clean[:31]
+    candidate = clean
+    suffix = 1
+    while candidate in used_names:
+        suffix_text = f" {suffix}"
+        candidate = f"{clean[:31 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def _xlsx_workbook_bytes(sheets: List[Dict[str, Any]]) -> bytes:
+    used_names: set[str] = set()
+    normalized_sheets = [
+        {
+            "name": _xlsx_sheet_name(str(sheet.get("name") or f"Sheet {idx}"), used_names),
+            "rows": sheet.get("rows") or [],
+        }
+        for idx, sheet in enumerate(sheets, start=1)
+    ]
+    worksheet_overrides = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{idx}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for idx, _ in enumerate(normalized_sheets, start=1)
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/docProps/core.xml" '
+        'ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+        '<Override PartName="/docProps/app.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+        f"{worksheet_overrides}"
+        "</Types>"
+    )
+    workbook_sheets = "".join(
+        f'<sheet name="{_xlsx_attr(sheet["name"])}" sheetId="{idx}" r:id="rId{idx}"/>'
+        for idx, sheet in enumerate(normalized_sheets, start=1)
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f"<sheets>{workbook_sheets}</sheets>"
+        "</workbook>"
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + "".join(
+            f'<Relationship Id="rId{idx}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            f'Target="worksheets/sheet{idx}.xml"/>'
+            for idx, _ in enumerate(normalized_sheets, start=1)
+        )
+        + "</Relationships>"
+    )
+    package_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
+        "</Relationships>"
+    )
+    created = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    core = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:dcterms="http://purl.org/dc/terms/" '
+        'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        "<dc:creator>ANBA2K</dc:creator>"
+        "<cp:lastModifiedBy>ANBA2K</cp:lastModifiedBy>"
+        f'<dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>'
+        f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>'
+        "</cp:coreProperties>"
+    )
+    app = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
+        'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+        "<Application>ANBA2K</Application>"
+        "</Properties>"
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", package_rels)
+        archive.writestr("docProps/core.xml", core)
+        archive.writestr("docProps/app.xml", app)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        for idx, sheet in enumerate(normalized_sheets, start=1):
+            archive.writestr(f"xl/worksheets/sheet{idx}.xml", _xlsx_sheet_xml(sheet["rows"]))
+    return output.getvalue()
 
 
 def normalize_import_text(value: Any) -> str:
@@ -2181,6 +2337,116 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
         return len(updates)
 
+    def _move_expired_players_to_free_agents(
+        self,
+        conn: sqlite3.Connection,
+        season_year: int,
+        timestamp: str,
+    ) -> int:
+        season = parse_int(season_year)
+        if season is None or season < 2025 or season > 2030:
+            return 0
+        salary_text_field = f"salary_{season}_text"
+        salary_num_field = f"salary_{season}_num"
+        option_field = f"option_{season}"
+        cur = conn.execute(
+            f"""
+            SELECT
+                p.id,
+                p.profile_id,
+                COALESCE(pp.name, p.name) AS name,
+                p.position,
+                p.bird_rights,
+                p.rating,
+                p.years_left,
+                p.notes,
+                p.{salary_text_field} AS season_salary_text,
+                p.{salary_num_field} AS season_salary_num,
+                p.{option_field} AS season_option,
+                t.code AS team_code
+            FROM players p
+            LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+            JOIN teams t ON t.id = p.team_id
+            ORDER BY p.id
+            """
+        )
+        moved = 0
+        for row in cur.fetchall():
+            salary_text = str(row["season_salary_text"] or "").strip()
+            salary_num = parse_float(row["season_salary_num"])
+            option_value = str(row["season_option"] or "").strip()
+            if salary_text or salary_num is not None or option_value:
+                continue
+            player_id = int(row["id"])
+            profile_id = parse_int(row["profile_id"])
+            if profile_id is None:
+                profile_id = self._ensure_profile_for_player(conn, player_id, timestamp)
+            active_elsewhere = None
+            if profile_id is not None:
+                active_elsewhere = conn.execute(
+                    f"""
+                    SELECT id
+                    FROM players
+                    WHERE profile_id = ?
+                        AND id != ?
+                        AND (
+                            COALESCE(TRIM({salary_text_field}), '') != ''
+                            OR {salary_num_field} IS NOT NULL
+                            OR COALESCE(TRIM({option_field}), '') != ''
+                        )
+                    LIMIT 1
+                    """,
+                    (profile_id, player_id),
+                ).fetchone()
+            if active_elsewhere:
+                conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+                moved += 1
+                continue
+
+            free_agent_id: Optional[int] = None
+            if profile_id is not None:
+                existing_free_agent = conn.execute(
+                    "SELECT id FROM free_agents WHERE profile_id = ? LIMIT 1",
+                    (profile_id,),
+                ).fetchone()
+                if existing_free_agent:
+                    free_agent_id = int(existing_free_agent["id"])
+            if free_agent_id is None:
+                free_cur = conn.execute(
+                    """
+                    INSERT INTO free_agents (
+                        profile_id, name, position, bird_rights, rating, years_left, notes, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        profile_id,
+                        row["name"] or "Free Agent",
+                        row["position"],
+                        row["bird_rights"],
+                        row["rating"],
+                        row["years_left"],
+                        row["notes"],
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                free_agent_id = int(free_cur.lastrowid)
+            self._record_player_transaction(
+                conn,
+                profile_id,
+                "free_agent",
+                f"Pasa a agentes libres al avanzar a {season}-{(season + 1) % 100:02d}",
+                player_id=player_id,
+                free_agent_id=free_agent_id,
+                team_code=row["team_code"],
+                from_team_code=row["team_code"],
+                details={"player_name": row["name"], "season_year": season},
+                created_at=timestamp,
+            )
+            conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+            moved += 1
+        return moved
+
     def _freeze_second_apron_pick_rollover(
         self,
         conn: sqlite3.Connection,
@@ -2258,12 +2524,18 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             updated_bird_years = self._increment_player_bird_years(conn, delta, timestamp)
             frozen_picks = self._freeze_second_apron_pick_rollover(conn, previous_year, int(next_year), settings, timestamp)
+            moved_free_agents = (
+                self._move_expired_players_to_free_agents(conn, int(next_year), timestamp)
+                if delta > 0
+                else 0
+            )
             conn.commit()
             return {
                 "previous_year": previous_year,
                 "current_year": int(next_year),
                 "bird_year_steps": delta,
                 "bird_year_players_updated": updated_bird_years,
+                "players_moved_to_free_agents": moved_free_agents,
                 "frozen_picks_created": len(frozen_picks),
                 "frozen_picks": frozen_picks,
             }
@@ -2315,6 +2587,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             updated_bird_years = self._increment_player_bird_years(conn, 1, timestamp)
             frozen_picks = self._freeze_second_apron_pick_rollover(conn, current_year, next_year, settings, timestamp)
+            moved_free_agents = self._move_expired_players_to_free_agents(conn, next_year, timestamp)
             conn.commit()
             return {
                 "previous_year": current_year,
@@ -2322,6 +2595,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "deleted_draft_assets": int(deleted_draft_assets),
                 "bird_year_steps": 1,
                 "bird_year_players_updated": updated_bird_years,
+                "players_moved_to_free_agents": moved_free_agents,
                 "frozen_picks_created": len(frozen_picks),
                 "frozen_picks": frozen_picks,
             }
@@ -2431,6 +2705,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
         item = row_to_dict(cursor, row)
         item["request_type"] = "option"
         raw_field = str(item.get("option_field") or "")
+        salary_text_match = re.fullmatch(r"salary_(20\d{2})_text", raw_field)
+        if salary_text_match and str(item.get("action") or "").strip().lower() == "renounced":
+            item["request_type"] = "bird_rights_renounce"
+            season_year = parse_int(salary_text_match.group(1))
+            item["season_year"] = season_year
+            item["season_label"] = f"{season_year}-{(season_year + 1) % 100:02d}" if season_year else ""
+            return item
         match = re.fullmatch(r"option_(20\d{2})", raw_field)
         season_year = parse_int(match.group(1)) if match else None
         item["season_year"] = season_year
@@ -2650,6 +2931,116 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         field,
                         option,
                         normalized_action,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                request_id = int(req_cur.lastrowid)
+            conn.commit()
+
+        return self.get_gm_option_request(request_id) if request_id is not None else None
+
+    def create_gm_bird_rights_renounce_request(
+        self,
+        player_id: int,
+        season_year: int,
+        rights_value: str,
+        requester: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        season = parse_int(season_year)
+        if season is None or season < 2025 or season > 2030:
+            raise ValueError("invalid_renounce_season")
+        field = f"salary_{season}_text"
+        rights = str(rights_value or "").strip().upper()
+        if rights not in {"FB", "EB", "NB"}:
+            raise ValueError("invalid_bird_rights_value")
+
+        timestamp = now_iso()
+        request_id: Optional[int] = None
+        with self.connect() as conn:
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            if not parse_bool(settings.get("free_agency_mode")):
+                raise ValueError("free_agency_mode_required")
+            if season != int(current_year) + 1:
+                raise ValueError("invalid_renounce_season")
+
+            cur = conn.execute(
+                f"""
+                SELECT p.id, COALESCE(pp.name, p.name) AS name, p.team_id, p.{field} AS current_rights, t.code AS team_code
+                FROM players p
+                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.id = ?
+                """,
+                (int(player_id),),
+            )
+            player = cur.fetchone()
+            if not player:
+                return None
+            current_rights = str(player["current_rights"] or "").strip().upper()
+            if current_rights != rights:
+                raise ValueError("bird_rights_mismatch")
+
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM gm_option_requests
+                WHERE player_id = ? AND option_field = ? AND status = 'pending'
+                """,
+                (int(player_id), field),
+            ).fetchone()
+            requester_user_id = parse_int(str(requester.get("user_id") or "")) if requester else None
+            if existing:
+                request_id = int(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE gm_option_requests
+                    SET
+                        requester_user_id = ?,
+                        requester_email = ?,
+                        requester_name = ?,
+                        option_value = ?,
+                        action = 'renounced',
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        requester_user_id,
+                        str(requester.get("email") or "").strip() if requester else None,
+                        str(requester.get("name") or "").strip() if requester else None,
+                        rights,
+                        timestamp,
+                        request_id,
+                    ),
+                )
+            else:
+                req_cur = conn.execute(
+                    """
+                    INSERT INTO gm_option_requests (
+                        player_id,
+                        team_id,
+                        requester_user_id,
+                        requester_email,
+                        requester_name,
+                        option_field,
+                        option_value,
+                        action,
+                        status,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'renounced', 'pending', ?, ?)
+                    """,
+                    (
+                        int(player_id),
+                        int(player["team_id"]),
+                        requester_user_id,
+                        str(requester.get("email") or "").strip() if requester else None,
+                        str(requester.get("name") or "").strip() if requester else None,
+                        field,
+                        rights,
                         timestamp,
                         timestamp,
                     ),
@@ -4899,6 +5290,439 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "seasons": sorted(seasons),
                 "rows": rows,
             }
+
+    def export_league_workbook(self) -> bytes:
+        settings = self.get_settings()
+        teams = self.list_teams()
+        tracker = self.list_tracker()
+        players_catalog = self.list_players()
+        free_agents = self.list_free_agents()
+        seasons = list(range(CAP_FORECAST_MIN_YEAR, CAP_FORECAST_MAX_YEAR + 1))
+        team_payloads = [
+            data
+            for data in (self.get_team(str(team.get("code") or "")) for team in teams)
+            if data
+        ]
+
+        def yn(value: Any) -> str:
+            return "Sí" if parse_bool(value) else "No"
+
+        def codes(value: Any) -> str:
+            return ", ".join(normalize_team_codes(value))
+
+        def text(value: Any) -> str:
+            return "" if value is None else str(value)
+
+        summary_rows: List[List[Any]] = [
+            [
+                "Equipo",
+                "Nombre",
+                "Temporada",
+                "CAP TOTAL",
+                "GASTO TOTAL",
+                "Espacio CAP",
+                "Espacio luxury",
+                "Luxury tax",
+                "Espacio 1er apron",
+                "Espacio 2do apron",
+                "Hard cap apron",
+                "Contratos STD",
+                "Contratos TW",
+                "1as rondas",
+                "2as rondas",
+            ]
+        ]
+        for row in tracker.get("rows") or []:
+            summary_rows.append(
+                [
+                    row.get("team_code"),
+                    row.get("team_name"),
+                    tracker.get("season_year"),
+                    row.get("cap_total"),
+                    row.get("gasto_total"),
+                    row.get("espacio_cap"),
+                    row.get("espacio_luxury"),
+                    row.get("luxury_tax"),
+                    row.get("espacio_1er_apron"),
+                    row.get("espacio_2do_apron"),
+                    row.get("apron_hard_cap"),
+                    row.get("roster_standard_count"),
+                    row.get("roster_two_way_count"),
+                    row.get("draft_first_count"),
+                    row.get("draft_second_count"),
+                ]
+            )
+
+        team_rows: List[List[Any]] = [["Equipo", "Nombre", "GM", "Cash recibido", "Cash enviado"]]
+        balance_rows: List[List[Any]] = [
+            [
+                "Equipo",
+                "Nombre",
+                "Temporada",
+                "CAP TOTAL",
+                "GASTO TOTAL",
+                "Cuenta apron",
+                "Espacio CAP",
+                "Espacio luxury",
+                "Luxury tax",
+                "Espacio 1er apron",
+                "Espacio 2do apron",
+                "Salary cap",
+                "Salary floor",
+                "Luxury cap",
+                "1er apron",
+                "2do apron",
+                "Open roster spot hold",
+                "Hard cap apron",
+            ]
+        ]
+        move_rows: List[List[Any]] = [
+            [
+                "Equipo",
+                "Nombre",
+                "Temporada",
+                "Límite pre-30",
+                "Usado pre-30",
+                "Disponible pre-30",
+                "Límite post-30",
+                "Usado post-30",
+                "Disponible post-30",
+            ]
+        ]
+        hard_cap_rows: List[List[Any]] = [["Equipo", "Nombre", "Temporada", "Hard cap apron"]]
+        roster_header = [
+            "Equipo",
+            "Nombre equipo",
+            "Contract ID",
+            "Profile ID",
+            "Jugador",
+            "Posición",
+            "Tipo",
+            "Rating",
+            "Birds",
+            "YOS",
+            "Two-way",
+            "Exhibit 10",
+            "Firmado FA",
+        ]
+        for season in seasons:
+            roster_header.extend([season_label(season), f"Opción {season_label(season)}"])
+        roster_rows: List[List[Any]] = [roster_header]
+
+        dead_header = [
+            "Equipo",
+            "Nombre equipo",
+            "Dead contract ID",
+            "Profile ID",
+            "Nombre",
+            "Tipo",
+            "Exclude from Gasto",
+            "Exclude from CAP",
+        ]
+        for season in seasons:
+            dead_header.append(season_label(season))
+        dead_rows: List[List[Any]] = [dead_header]
+
+        exception_rows: List[List[Any]] = [["Equipo", "Nombre equipo", "Asset ID", "Nombre", "Tipo", "Valor", "Detalles"]]
+        draft_rows: List[List[Any]] = [
+            [
+                "Equipo",
+                "Nombre equipo",
+                "Asset ID",
+                "Año",
+                "Ronda",
+                "Tipo",
+                "Owner original",
+                "Vendido a",
+                "Equipos condicionales",
+                "Restricted",
+                "Stepien restricted",
+                "Protected",
+                "Frozen",
+                "Label",
+                "Detalles",
+            ]
+        ]
+        rights_rows: List[List[Any]] = [["Equipo", "Nombre equipo", "Asset ID", "Nombre", "Detalles"]]
+        frozen_rows: List[List[Any]] = [["Equipo", "Nombre equipo", "Penalty season", "Draft year", "Ronda", "Motivo", "Notas"]]
+        gm_history_rows: List[List[Any]] = [["Equipo", "Nombre equipo", "GM", "Fecha inicio", "Color"]]
+
+        for payload in team_payloads:
+            team = payload.get("team") or {}
+            code = team.get("code")
+            name = team.get("name")
+            team_rows.append([code, name, team.get("gm"), team.get("cash_received"), team.get("cash_sent")])
+            season_summaries = payload.get("season_summaries") if isinstance(payload.get("season_summaries"), dict) else {}
+            for season_key, summary in season_summaries.items():
+                if not isinstance(summary, dict):
+                    continue
+                balance_rows.append(
+                    [
+                        code,
+                        name,
+                        summary.get("current_year") or season_key,
+                        summary.get("cap_figure"),
+                        summary.get("payroll"),
+                        summary.get("apron_account"),
+                        summary.get("room_to_cap"),
+                        summary.get("room_to_luxury"),
+                        summary.get("luxury_tax"),
+                        summary.get("room_to_first_apron"),
+                        summary.get("room_to_second_apron"),
+                        summary.get("salary_cap"),
+                        summary.get("salary_floor"),
+                        summary.get("luxury_cap"),
+                        summary.get("first_apron"),
+                        summary.get("second_apron"),
+                        summary.get("open_roster_spot_cap_hold"),
+                        summary.get("apron_hard_cap"),
+                    ]
+                )
+            move_summaries = payload.get("move_summaries") if isinstance(payload.get("move_summaries"), dict) else {}
+            for season_key, move in move_summaries.items():
+                if not isinstance(move, dict):
+                    continue
+                move_rows.append(
+                    [
+                        code,
+                        name,
+                        move.get("season_year") or season_key,
+                        move.get("limit_pre30"),
+                        move.get("used_pre30"),
+                        move.get("remaining_pre30"),
+                        move.get("limit_post30"),
+                        move.get("used_post30"),
+                        move.get("remaining_post30"),
+                    ]
+                )
+            for hard_cap in payload.get("apron_hard_caps") or []:
+                hard_cap_rows.append([code, name, hard_cap.get("season_year"), hard_cap.get("hard_cap")])
+            for player in payload.get("players") or []:
+                row = [
+                    code,
+                    name,
+                    player.get("id"),
+                    player.get("profile_id"),
+                    player.get("name"),
+                    player.get("position"),
+                    player.get("bird_rights"),
+                    player.get("rating"),
+                    player.get("years_left"),
+                    player.get("experience_years"),
+                    yn(player.get("is_two_way")),
+                    yn(player.get("is_exhibit10")),
+                    yn(player.get("signed_as_free_agent")),
+                ]
+                for season in seasons:
+                    row.extend([player.get(f"salary_{season}_text"), player.get(f"option_{season}")])
+                roster_rows.append(row)
+            for dead in payload.get("dead_contracts") or []:
+                row = [
+                    code,
+                    name,
+                    dead.get("id"),
+                    dead.get("profile_id"),
+                    dead.get("label"),
+                    dead.get("dead_type"),
+                    yn(dead.get("exclude_from_gasto")),
+                    yn(dead.get("exclude_from_cap")),
+                ]
+                for season in seasons:
+                    row.append(dead.get(f"salary_{season}_text"))
+                dead_rows.append(row)
+            for asset in payload.get("assets") or []:
+                asset_type = str(asset.get("asset_type") or "").strip()
+                if asset_type == "exception":
+                    exception_rows.append(
+                        [
+                            code,
+                            name,
+                            asset.get("id"),
+                            asset.get("label"),
+                            asset.get("exception_type"),
+                            asset.get("amount_text"),
+                            asset.get("detail"),
+                        ]
+                    )
+                elif asset_type == "draft_pick":
+                    draft_rows.append(
+                        [
+                            code,
+                            name,
+                            asset.get("id"),
+                            asset.get("year"),
+                            asset.get("draft_round"),
+                            asset.get("draft_pick_type"),
+                            asset.get("original_owner"),
+                            codes(asset.get("draft_pick_sold_to")),
+                            codes(asset.get("draft_pick_conditional_teams")),
+                            yn(asset.get("draft_pick_restricted")),
+                            yn(asset.get("draft_pick_stepien_restricted")),
+                            yn(asset.get("draft_pick_protected")),
+                            yn(asset.get("draft_pick_frozen")),
+                            asset.get("label"),
+                            asset.get("detail"),
+                        ]
+                    )
+                elif asset_type == "player_right":
+                    rights_rows.append([code, name, asset.get("id"), asset.get("label"), asset.get("detail")])
+            for frozen in payload.get("frozen_draft_picks") or []:
+                frozen_rows.append(
+                    [
+                        code,
+                        name,
+                        frozen.get("penalty_season_year"),
+                        frozen.get("draft_year"),
+                        frozen.get("draft_round"),
+                        frozen.get("reason"),
+                        frozen.get("notes"),
+                    ]
+                )
+            for gm in payload.get("gm_history") or []:
+                gm_history_rows.append([code, name, gm.get("gm_name"), gm.get("start_date"), gm.get("color")])
+
+        free_agent_header = ["Free agent ID", "Profile ID", "Jugador", "Posición", "Tipo", "Rating", "Birds", "YOS", "Notas"]
+        free_agent_rows = [free_agent_header] + [
+            [
+                item.get("id"),
+                item.get("profile_id"),
+                item.get("name"),
+                item.get("position"),
+                item.get("bird_rights"),
+                item.get("rating"),
+                item.get("years_left"),
+                item.get("experience_years"),
+                item.get("notes"),
+            ]
+            for item in free_agents
+        ]
+
+        profile_rows: List[List[Any]] = [
+            [
+                "Profile ID",
+                "Jugador",
+                "Estado",
+                "Equipo",
+                "YOS",
+                "DOB",
+                "Nacionalidad",
+                "Fuente YOS",
+                "Contrato activo",
+                "Dead contracts",
+                "Últimos movimientos",
+            ]
+        ]
+        tx_rows: List[List[Any]] = [["Profile ID", "Jugador", "Fecha", "Acción", "Equipo", "Desde", "A", "Resumen"]]
+        for item in players_catalog:
+            logs = item.get("transaction_logs") if isinstance(item.get("transaction_logs"), list) else []
+            profile_rows.append(
+                [
+                    item.get("profile_id") or item.get("id"),
+                    item.get("name"),
+                    item.get("status_label"),
+                    item.get("team_code"),
+                    item.get("experience_years"),
+                    item.get("date_of_birth"),
+                    item.get("nationality"),
+                    item.get("yos_source"),
+                    item.get("active_contract_summary"),
+                    item.get("dead_contract_summary"),
+                    " | ".join(str(log.get("summary") or "") for log in logs[:3]),
+                ]
+            )
+            for log in logs:
+                tx_rows.append(
+                    [
+                        item.get("profile_id") or item.get("id"),
+                        item.get("name"),
+                        log.get("created_at"),
+                        log.get("action"),
+                        log.get("team_code"),
+                        log.get("from_team_code"),
+                        log.get("to_team_code"),
+                        log.get("summary"),
+                    ]
+                )
+
+        with self.connect() as conn:
+            economy_cur = conn.execute(
+                """
+                SELECT t.code AS team_code, t.name AS team_name, e.season_year, e.balance, e.revenue, e.expenses
+                FROM team_economy e
+                JOIN teams t ON t.id = e.team_id
+                ORDER BY e.season_year, t.code
+                """
+            )
+            economy_rows = [["Equipo", "Nombre", "Temporada", "Balance", "Ingresos", "Gastos"]] + [
+                [
+                    row["team_code"],
+                    row["team_name"],
+                    row["season_year"],
+                    row["balance"],
+                    row["revenue"],
+                    row["expenses"],
+                ]
+                for row in economy_cur.fetchall()
+            ]
+            draft_cur = conn.execute(
+                """
+                SELECT
+                    d.*,
+                    COALESCE(owner.name, d.owner_team_code) AS owner_team_name,
+                    COALESCE(original.name, d.original_team_code) AS original_team_name,
+                    s.selection_text,
+                    COALESCE(s.skipped, 0) AS skipped
+                FROM draft_order d
+                LEFT JOIN teams owner ON owner.code = d.owner_team_code
+                LEFT JOIN teams original ON original.code = d.original_team_code
+                LEFT JOIN draft_live_selections s ON s.draft_order_id = d.id
+                ORDER BY d.draft_year,
+                    CASE d.draft_round WHEN '1st' THEN 1 WHEN '2nd' THEN 2 ELSE 3 END,
+                    d.pick_number,
+                    d.id
+                """
+            )
+            draft_order_rows = [
+                ["Draft year", "Ronda", "#", "Equipo dueño", "Nombre dueño", "Vía", "Nombre original", "Selección"]
+            ] + [
+                [
+                    row["draft_year"],
+                    row["draft_round"],
+                    row["pick_number"],
+                    row["owner_team_code"],
+                    row["owner_team_name"],
+                    "" if row["owner_team_code"] == row["original_team_code"] else row["original_team_code"],
+                    "" if row["owner_team_code"] == row["original_team_code"] else row["original_team_name"],
+                    "Saltado" if parse_bool(row["skipped"]) else row["selection_text"],
+                ]
+                for row in draft_cur.fetchall()
+            ]
+
+        public_settings = public_settings_payload(settings)
+        settings_rows = [["Clave", "Valor"]] + [[key, text(public_settings.get(key))] for key in sorted(public_settings.keys())]
+
+        return _xlsx_workbook_bytes(
+            [
+                {"name": "Resumen", "rows": summary_rows},
+                {"name": "Equipos", "rows": team_rows},
+                {"name": "Balances", "rows": balance_rows},
+                {"name": "Movimientos", "rows": move_rows},
+                {"name": "Hard caps", "rows": hard_cap_rows},
+                {"name": "Roster", "rows": roster_rows},
+                {"name": "Dead contracts", "rows": dead_rows},
+                {"name": "Exceptions", "rows": exception_rows},
+                {"name": "Draft assets", "rows": draft_rows},
+                {"name": "Player rights", "rows": rights_rows},
+                {"name": "Frozen picks", "rows": frozen_rows},
+                {"name": "Draft order", "rows": draft_order_rows},
+                {"name": "Free agents", "rows": free_agent_rows},
+                {"name": "Jugadores", "rows": profile_rows},
+                {"name": "Movimientos jugadores", "rows": tx_rows},
+                {"name": "Economía", "rows": economy_rows},
+                {"name": "Cifras", "rows": settings_rows},
+                {"name": "GM history", "rows": gm_history_rows},
+            ]
+        )
 
     def _owner_office_rows_from_json(self, value: Any, section: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
@@ -11879,6 +12703,71 @@ QUALITY REQUIREMENTS
             custom_image=custom_image,
         )
 
+    def _notify_free_agent_signed(
+        self,
+        player: Dict[str, Any],
+        *,
+        generate_image: bool = True,
+        custom_image: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        team_code = str(player.get("team_code") or "").upper()
+        team_name = str(player.get("team_name") or team_code)
+        player_name = str(player.get("name") or "Jugador")
+        reference_url = str(player.get("reference_image_url") or "").strip()
+        contract_type = str(player.get("bird_rights") or "").strip()
+        position = str(player.get("position") or "").strip()
+        salary_lines: List[str] = []
+        for season in range(CAP_FORECAST_MIN_YEAR, CAP_FORECAST_MAX_YEAR + 1):
+            salary_text = str(player.get(f"salary_{season}_text") or "").strip()
+            if salary_text:
+                salary_lines.append(f"{season_label(season)}: {salary_text}")
+        salary_summary = "\n".join(salary_lines[:3]) or "Sin salario registrado"
+        details = " · ".join(part for part in [position, contract_type] if part)
+        headline = f"{team_code} firma a {player_name}"
+        description = "El jugador llega desde la agencia libre."
+        if details:
+            description = f"{description} {details}."
+        generic_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            context=f"Free agency signing: {team_code} signs {player_name}. Contract details: {details or 'not specified'}.",
+        )
+        reference_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            team_name=team_name,
+            team_code=team_code,
+            player_name=player_name,
+            secondary_headline=description,
+            additional_details=f"Contrato: {details or 'sin detalles'}. Salario: {salary_summary.replace(chr(10), '; ')}.",
+            transaction_type="Free Agency Signing",
+            use_player_reference=bool(reference_url),
+        )
+        fields = [
+            {"name": "Equipo", "value": team_code, "inline": True},
+            {"name": "Jugador", "value": player_name, "inline": True},
+        ]
+        if position:
+            fields.append({"name": "Posición", "value": position, "inline": True})
+        if contract_type:
+            fields.append({"name": "Contrato", "value": contract_type, "inline": True})
+        fields.append({"name": "Salario", "value": salary_summary, "inline": False})
+        self._notify_discord(
+            headline,
+            description,
+            fields=fields,
+            color=0x0F766E,
+            image_prompt=reference_prompt,
+            image_reference_url=reference_url,
+            image_fallback_prompt=generic_prompt,
+            generate_image=generate_image,
+            custom_image=custom_image,
+        )
+
     def _trade_pick_ref_for_discord(self, value: Any) -> str:
         text = str(value or "").strip()
         if not text:
@@ -12162,6 +13051,65 @@ QUALITY REQUIREMENTS
             custom_image=custom_image,
         )
 
+    def _notify_bird_rights_renounced(
+        self,
+        player: Dict[str, Any],
+        season: int,
+        rights_value: str,
+        *,
+        generate_image: bool = False,
+        custom_image: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        team_code = str(player.get("team_code") or "").upper()
+        team_name = str(player.get("team_name") or team_code)
+        player_name = str(player.get("name") or "Jugador")
+        reference_url = str(player.get("reference_image_url") or "").strip()
+        rights = rights_value.strip().upper()
+        rights_label = {
+            "FB": "Full Bird",
+            "EB": "Early Bird",
+            "NB": "Non-Bird",
+        }.get(rights, rights)
+        season_text = f"{season}-{(season + 1) % 100:02d}"
+        headline = f"{team_code} renuncia a los derechos {rights_label} de {player_name}"
+        description = f"El cap hold queda eliminado para la temporada {season_text}."
+        generic_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            context=f"Transaction: {team_code} renounces {rights_label} rights for {player_name}, removing the cap hold for {season_text}.",
+        )
+        reference_prompt = self._news_image_prompt(
+            headline,
+            description,
+            teams=[team_code],
+            players=[player_name],
+            team_name=team_name,
+            team_code=team_code,
+            player_name=player_name,
+            secondary_headline=description,
+            additional_details=f"Temporada {season_text}. Derechos: {rights_label}.",
+            transaction_type="Rights Renounced",
+            use_player_reference=bool(reference_url),
+        )
+        self._notify_discord(
+            headline,
+            description,
+            fields=[
+                {"name": "Equipo", "value": team_code, "inline": True},
+                {"name": "Jugador", "value": player_name, "inline": True},
+                {"name": "Temporada", "value": season_text, "inline": True},
+                {"name": "Derechos", "value": rights_label, "inline": True},
+            ],
+            color=0xB91C1C,
+            image_prompt=reference_prompt,
+            image_reference_url=reference_url,
+            image_fallback_prompt=generic_prompt,
+            generate_image=generate_image,
+            custom_image=custom_image,
+        )
+
     def _exchange_google_code(self, code: str) -> Dict[str, Any]:
         payload = urlencode(
             {
@@ -12364,6 +13312,20 @@ QUALITY REQUIREMENTS
 
         if parsed.path == "/api/teams":
             self._json(200, {"teams": self.db.list_teams()})
+            return
+
+        if parsed.path == "/api/export/league.xlsx":
+            workbook = self.db.export_league_workbook()
+            filename = f"anba-league-export-{datetime.now(UTC).strftime('%Y%m%d')}.xlsx"
+            self._bytes_response(
+                200,
+                workbook,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Cache-Control": "no-store",
+                },
+            )
             return
 
         if parsed.path == "/api/players":
@@ -12851,6 +13813,58 @@ QUALITY REQUIREMENTS
             self._json(201, {"ok": True, "request": request})
             return
 
+        if parsed.path == "/api/gm/bird-rights-renounce-requests":
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            player_id = parse_int(payload.get("player_id"))
+            season_year = parse_int(payload.get("season_year"))
+            rights_value = str(payload.get("rights_value") or "").strip().upper()
+            if player_id is None:
+                self._json(400, {"error": "invalid_player_id"})
+                return
+            if season_year is None:
+                self._json(400, {"error": "invalid_renounce_season"})
+                return
+            player = self.db.get_player_record(player_id)
+            if not player:
+                self._json(404, {"error": "player_not_found"})
+                return
+            if not self._can_manage_team(player.get("team_code")):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                request = self.db.create_gm_bird_rights_renounce_request(
+                    player_id,
+                    season_year,
+                    rights_value,
+                    self._current_session() or {},
+                )
+            except ValueError as err:
+                message = str(err)
+                if message == "free_agency_mode_required":
+                    self._json(409, {"error": "free_agency_mode_required"})
+                    return
+                if message == "invalid_renounce_season":
+                    self._json(400, {"error": "invalid_renounce_season"})
+                    return
+                if message == "invalid_bird_rights_value":
+                    self._json(400, {"error": "invalid_bird_rights_value"})
+                    return
+                if message == "bird_rights_mismatch":
+                    self._json(409, {"error": "bird_rights_changed"})
+                    return
+                raise
+            if not request:
+                self._json(404, {"error": "player_not_found"})
+                return
+            self._json(201, {"ok": True, "request": request})
+            return
+
         if parsed.path.startswith("/api/teams/") and "/owner-exit-interview/" in parsed.path:
             parts = parsed.path.split("/")
             if len(parts) < 6:
@@ -13173,6 +14187,12 @@ QUALITY REQUIREMENTS
                 {"player_id": player_id, "name": payload.get("name")},
                 after=player_after,
             )
+            if player_after and self._discord_notify_requested(payload):
+                self._notify_free_agent_signed(
+                    player_after,
+                    generate_image=self._discord_image_requested(payload),
+                    custom_image=payload.get("discord_custom_image"),
+                )
             self._json(200, {"ok": True, "player_id": player_id})
             return
 
@@ -13786,6 +14806,7 @@ QUALITY REQUIREMENTS
             if str(request.get("status") or "").lower() != "pending":
                 self._json(409, {"error": "request_already_decided", "request": request})
                 return
+            request_type = str(request.get("request_type") or "option")
 
             if admin_decision == "rejected":
                 updated = self.db.mark_gm_option_request_decided(
@@ -13799,7 +14820,7 @@ QUALITY REQUIREMENTS
                     return
                 self._log_admin_action(
                     "reject",
-                    "gm_option_request",
+                    "gm_bird_rights_renounce_request" if request_type == "bird_rights_renounce" else "gm_option_request",
                     str(request_id),
                     request.get("team_code"),
                     {
@@ -13818,6 +14839,88 @@ QUALITY REQUIREMENTS
             option_field = str(request.get("option_field") or "").strip()
             option_value = str(request.get("option_value") or "").strip().upper()
             option_action = str(request.get("action") or "").strip().lower()
+            if request_type == "bird_rights_renounce":
+                match = re.fullmatch(r"salary_(20\d{2})_text", option_field)
+                action_season = parse_int(match.group(1)) if match else None
+                if action_season is None:
+                    self._json(400, {"error": "invalid_bird_rights_field"})
+                    return
+                if option_value not in {"FB", "EB", "NB"}:
+                    self._json(400, {"error": "invalid_bird_rights_value"})
+                    return
+                if option_action != "renounced":
+                    self._json(400, {"error": "invalid_bird_rights_action"})
+                    return
+                player_id = parse_int(str(request.get("player_id") or ""))
+                if player_id is None:
+                    self._json(400, {"error": "invalid_player_id"})
+                    return
+                player_before = self.db.get_player_record(player_id)
+                if not player_before:
+                    self._json(404, {"error": "player_not_found"})
+                    return
+                current_team_code = normalize_team_code(player_before.get("team_code"))
+                request_team_code = normalize_team_code(request.get("team_code"))
+                if request_team_code and current_team_code != request_team_code:
+                    self._json(
+                        409,
+                        {
+                            "error": "player_team_changed",
+                            "current_team_code": current_team_code,
+                            "request_team_code": request_team_code,
+                        },
+                    )
+                    return
+                if not self._require_team_write_access(current_team_code):
+                    return
+                current_rights = str(player_before.get(option_field) or "").strip().upper()
+                if current_rights != option_value:
+                    self._json(409, {"error": "bird_rights_changed", "current_rights": current_rights})
+                    return
+
+                player_payload = {option_field: None}
+                ok = self.db.update_player(player_id, player_payload)
+                if not ok:
+                    self._json(404, {"error": "player_not_found"})
+                    return
+                player_after = self.db.get_player_record(player_id)
+                updated = self.db.mark_gm_option_request_decided(
+                    request_id,
+                    "approved",
+                    self._current_session() or {},
+                    str(payload.get("note") or "").strip() or None,
+                )
+                if not updated:
+                    self._json(409, {"error": "request_already_decided"})
+                    return
+                self._log_admin_action(
+                    "approve",
+                    "gm_bird_rights_renounce_request",
+                    str(request_id),
+                    request.get("team_code"),
+                    {
+                        "player_id": player_id,
+                        "player_name": request.get("player_name"),
+                        "rights_action": option_action,
+                        "rights_field": option_field,
+                        "rights_value": option_value,
+                        "rights_season": action_season,
+                        "applied_fields": sorted(player_payload.keys()),
+                    },
+                    before={"request": request, "player": player_before},
+                    after={"request": updated, "player": player_after},
+                )
+                if self._discord_notify_requested(payload):
+                    self._notify_bird_rights_renounced(
+                        player_before,
+                        action_season,
+                        option_value,
+                        generate_image=self._discord_image_requested(payload),
+                        custom_image=payload.get("discord_custom_image"),
+                    )
+                self._json(200, {"ok": True, "request": updated})
+                return
+
             match = re.fullmatch(r"option_(20\d{2})", option_field)
             option_action_season = parse_int(match.group(1)) if match else None
             if option_action_season is None:

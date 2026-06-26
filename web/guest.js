@@ -892,6 +892,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
   const capHold = capHoldInfo(obj, season);
   if (capHold.displayable) {
     const gmActions = gmOptionRequestActionsHtml(obj, season, seasonOptionCode(obj, season));
+    const birdRightsActions = gmBirdRightsRenounceRequestHtml(obj, season, seasonSalaryTextCode(obj, season));
     const qoAcceptedHtml = qoAcceptedIndicatorHtml(obj, season);
     const seasonCap = capForSeason(season);
     const capHoldAmount = Number(capHold.amount || 0);
@@ -916,6 +917,7 @@ function salaryCellHtml(obj, season, showEmptyYears = true) {
           ${qoValueHtml}
           ${qoAcceptedHtml}
           ${gmActions}
+          ${birdRightsActions}
         </div>
       </div>
     `;
@@ -1125,6 +1127,29 @@ function gmOptionRequestActionsHtml(row, season, optionCode) {
   `;
 }
 
+function canSubmitGmBirdRightsRenounceRequest(row, season, rightsCode) {
+  if (!row?.id) return false;
+  if (!freeAgencyModeActive() || Number(season) !== capHoldTargetSeason()) return false;
+  const rights = String(rightsCode || '').trim().toUpperCase();
+  if (!['FB', 'EB', 'NB'].includes(rights)) return false;
+  const auth = state.auth || {};
+  if (!auth.authenticated || auth.role !== 'gm') return false;
+  const teamCodes = Array.isArray(auth.team_codes)
+    ? auth.team_codes.map((code) => String(code || '').toUpperCase()).filter(Boolean)
+    : [];
+  return teamCodes.includes(String(state.teamCode || '').toUpperCase());
+}
+
+function gmBirdRightsRenounceRequestHtml(row, season, rightsCode) {
+  const rights = String(rightsCode || '').trim().toUpperCase();
+  if (!canSubmitGmBirdRightsRenounceRequest(row, season, rights)) return '';
+  return `
+    <span class="gm-option-request-actions gm-option-request-actions--renounce" data-player-id="${escapeHtml(row.id)}" data-season-year="${escapeHtml(season)}" data-rights-value="${escapeHtml(rights)}">
+      <button type="button" data-gm-bird-renounce="1">Renunciar derechos</button>
+    </span>
+  `;
+}
+
 async function submitGmOptionRequest(button) {
   const wrap = button.closest('.gm-option-request-actions');
   if (!wrap) return;
@@ -1156,6 +1181,34 @@ async function submitGmOptionRequest(button) {
   }
 }
 
+async function submitGmBirdRightsRenounceRequest(button) {
+  const wrap = button.closest('.gm-option-request-actions--renounce');
+  if (!wrap) return;
+  const playerId = Number(wrap.dataset.playerId);
+  const seasonYear = Number(wrap.dataset.seasonYear);
+  const rightsValue = String(wrap.dataset.rightsValue || '').trim().toUpperCase();
+  if (!Number.isInteger(playerId) || playerId <= 0 || !Number.isInteger(seasonYear) || !rightsValue) return;
+  const confirmed = window.confirm(`¿Seguro que quieres solicitar la renuncia a los derechos ${rightsValue}? Si la administración lo aprueba, desaparecerá el cap hold.`);
+  if (!confirmed) return;
+  const buttons = Array.from(wrap.querySelectorAll('button'));
+  buttons.forEach((btn) => { btn.disabled = true; });
+  try {
+    await api('/api/gm/bird-rights-renounce-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        player_id: playerId,
+        season_year: seasonYear,
+        rights_value: rightsValue,
+      }),
+    });
+    wrap.innerHTML = '<span class="gm-option-request-sent">Solicitud enviada</span>';
+    alert('Tu petición ha sido enviada a la administración. Será procesada pronto.');
+  } catch (err) {
+    alert(`No se pudo enviar la solicitud: ${err.message || err}`);
+    buttons.forEach((btn) => { btn.disabled = false; });
+  }
+}
+
 function bindGmOptionRequestButtons(root) {
   if (!root) return;
   root.querySelectorAll('[data-gm-option-action]').forEach((button) => {
@@ -1163,6 +1216,13 @@ function bindGmOptionRequestButtons(root) {
     button.dataset.gmOptionBound = '1';
     button.addEventListener('click', () => {
       void submitGmOptionRequest(button);
+    });
+  });
+  root.querySelectorAll('[data-gm-bird-renounce]').forEach((button) => {
+    if (button.dataset.gmBirdRenounceBound === '1') return;
+    button.dataset.gmBirdRenounceBound = '1';
+    button.addEventListener('click', () => {
+      void submitGmBirdRightsRenounceRequest(button);
     });
   });
 }
