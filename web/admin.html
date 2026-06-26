@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260626c">
+  <link rel="stylesheet" href="/styles.css?v=20260626d">
 </head>
 <body class="app-layout">
   <header>
@@ -27,7 +27,7 @@
       </div>
       <div class="sidebar-section">
         <div class="sidebar-section-label">Mercado</div>
-        <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="free-agents">Free agents</button>
+        <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="free-agents">Agentes libres</button>
       </div>
       <div class="sidebar-section sidebar-quick-section">
         <div class="sidebar-section-label">Acciones</div>
@@ -74,7 +74,7 @@
         <button id="adminMobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦" data-nav-view="figures">Cifras</button>
         <button id="adminMobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈" data-nav-view="draft-order">Draft</button>
         <button id="adminMobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
-        <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Free agents</button>
+        <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Agentes libres</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡" data-nav-view="admin-log">Admin Log</button>
         <button id="adminMobileUsersBtn" type="button" class="mobile-nav-btn" data-icon="☉" data-nav-view="admin-users">Users</button>
         <button id="adminMobileGmOptionRequestsBtn" type="button" class="mobile-nav-btn" data-icon="!" data-nav-view="gm-option-requests">GM Requests <span id="mobileGmOptionRequestsBadge" class="nav-badge" hidden>0</span></button>
@@ -321,21 +321,35 @@
     </section>
 
     <section id="freeAgentsSection" class="section-hidden">
-      <h2>Free agents</h2>
+      <h2>Agentes libres</h2>
       <div class="bulk-bar">
-        <button id="addFreeAgentBtn" type="button">Add free agent</button>
+        <button id="addFreeAgentBtn" type="button">Añadir agente libre</button>
+        <label class="bulk-inline-check">
+          <input id="selectAllFreeAgents" type="checkbox">
+          <span>Seleccionar todos</span>
+        </label>
+        <select id="bulkFreeAgentField">
+          <option value="">Campo a cambiar</option>
+          <option value="position">Posición</option>
+          <option value="rating">Rating</option>
+          <option value="agent">Agente</option>
+          <option value="notes">Detalles</option>
+        </select>
+        <input id="bulkFreeAgentValue" placeholder="Nuevo valor">
+        <select id="bulkFreeAgentAgentSelect" class="section-hidden"></select>
+        <button id="applyFreeAgentBulkBtn" type="button">Aplicar a seleccionados</button>
       </div>
       <div class="table-wrap">
         <table id="freeAgentsTable">
           <thead>
             <tr>
-              <th data-sort="name">Name</th>
-              <th data-sort="position">Pos</th>
-              <th data-sort="bird_rights">Type</th>
+              <th></th>
+              <th data-sort="name">Nombre</th>
+              <th data-sort="position">Posición</th>
               <th data-sort="rating">Rating</th>
-              <th data-sort="years_left">Birds</th>
-              <th data-sort="notes">Notes</th>
-              <th>Actions</th>
+              <th data-sort="agent">Agente</th>
+              <th>Acciones</th>
+              <th data-sort="notes">Detalles</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -550,6 +564,8 @@
           <input id="freeAgencyModeInput" type="checkbox">
           <span>Free agency mode</span>
         </label>
+        <label for="freeAgentRepsInput">Agentes de jugadores</label>
+        <textarea id="freeAgentRepsInput" rows="4" placeholder="Un agente por línea"></textarea>
         <button id="saveSettingsBtn">Save Settings</button>
         <button id="progressYearBtn" type="button">Progress to next year</button>
         <button id="downloadBackupBtn" type="button">Download backup</button>
@@ -1015,10 +1031,10 @@
     </div>
   </div>
 
-  <div id="signFreeAgentModal" class="modal-backdrop section-hidden" role="dialog" aria-label="Sign free agent">
+  <div id="signFreeAgentModal" class="modal-backdrop section-hidden" role="dialog" aria-label="Firmar agente libre">
     <div class="modal-card sign-free-agent-modal">
       <div class="modal-header">
-        <h2>Sign free agent</h2>
+        <h2>Firmar agente libre</h2>
         <button id="closeSignFreeAgentModalBtn" type="button" class="danger">Close</button>
       </div>
       <div class="sign-free-agent-grid">
@@ -1087,6 +1103,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260626c" defer></script>
+  <script src="/admin.js?v=20260626d" defer></script>
 </body>
 </html>

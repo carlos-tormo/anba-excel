@@ -33,6 +33,7 @@ const state = {
     roster_two_way_min: 0,
     roster_two_way_max: 3,
     free_agency_mode: false,
+    free_agent_reps: [],
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
@@ -4164,7 +4165,7 @@ function renderFreeAgents() {
   const rows = sortedRows(state.freeAgents || [], state.sort.free_agents);
   if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="6">No free agents listed.</td>';
+    tr.innerHTML = '<td colspan="6">No hay agentes libres registrados.</td>';
     tbody.appendChild(tr);
     return;
   }
@@ -4173,9 +4174,12 @@ function renderFreeAgents() {
     tr.innerHTML = `
       <td>${escapeHtml(agent.name || '')}</td>
       <td>${escapeHtml(agent.position || '')}</td>
-      <td>${escapeHtml(agent.bird_rights || '')}</td>
       <td>${escapeHtml(agent.rating || '')}</td>
-      <td class="bird-years-cell">${birdYearsCellHtml(agent.years_left)}</td>
+      <td>${escapeHtml(agent.agent || '')}</td>
+      <td class="free-agent-actions-cell">
+        <button type="button">Ofertar</button>
+        <button type="button" class="ghost">Negociar</button>
+      </td>
       <td class="details-cell">${escapeHtml(agent.notes || '')}</td>
     `;
     tbody.appendChild(tr);
@@ -6390,7 +6394,7 @@ async function loadFreeAgents() {
   }
   applyTeamTheme('');
   setViewMode('free-agents');
-  setPageHeading('Free agents', '');
+  setPageHeading('Agentes libres', '');
   renderCapStatusPills({});
   renderTeamStrip();
   renderMobileTeamGrid();
@@ -6638,8 +6642,8 @@ async function ensureLocatorIndex() {
         id: `free-agent-${agent.id}`,
         name: agent.name,
         team_code: '',
-        team_name: 'Free agents',
-        source: 'Free agent',
+        team_name: 'Agentes libres',
+        source: 'Agente libre',
         section_id: 'freeAgentsSection',
         view_mode: 'free-agents',
       });

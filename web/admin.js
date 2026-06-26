@@ -49,8 +49,10 @@ const state = {
     roster_two_way_min: 0,
     roster_two_way_max: 3,
     free_agency_mode: false,
+    free_agent_reps: [],
   },
   selectedPlayerIds: new Set(),
+  selectedFreeAgentIds: new Set(),
   trade: {
     teamA: null,
     teamB: null,
@@ -2210,7 +2212,7 @@ function renderTeamPicker() {
   picker.appendChild(draftOpt);
   const freeAgentsOpt = document.createElement('option');
   freeAgentsOpt.value = '__free_agents';
-  freeAgentsOpt.textContent = 'Free agents';
+  freeAgentsOpt.textContent = 'Agentes libres';
   picker.appendChild(freeAgentsOpt);
 
   state.teams.forEach((t) => {
@@ -4712,26 +4714,80 @@ function freeAgentPayloadFromRow(row, attrName) {
   return payload;
 }
 
+function freeAgentRepValues() {
+  const reps = Array.isArray(state.settings.free_agent_reps) ? state.settings.free_agent_reps : [];
+  const seen = new Set();
+  return reps
+    .map((rep) => String(rep || '').trim())
+    .filter((rep) => {
+      if (!rep) return false;
+      const key = rep.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function freeAgentAgentOptions(selected = '') {
+  const normalized = String(selected || '').trim();
+  const values = ['', ...freeAgentRepValues()];
+  if (normalized && !values.some((value) => value.toLowerCase() === normalized.toLowerCase())) values.push(normalized);
+  return values
+    .map((value) => `<option value="${escapeHtml(value)}"${value === normalized ? ' selected' : ''}>${escapeHtml(value || '-')}</option>`)
+    .join('');
+}
+
+function renderFreeAgentBulkControls() {
+  const fieldSelect = document.getElementById('bulkFreeAgentField');
+  const valueInput = document.getElementById('bulkFreeAgentValue');
+  const agentSelect = document.getElementById('bulkFreeAgentAgentSelect');
+  if (!fieldSelect || !valueInput || !agentSelect) return;
+  const field = String(fieldSelect.value || '');
+  const useAgentSelect = field === 'agent';
+  agentSelect.innerHTML = freeAgentAgentOptions(agentSelect.value || '');
+  agentSelect.classList.toggle('section-hidden', !useAgentSelect);
+  valueInput.classList.toggle('section-hidden', useAgentSelect);
+  valueInput.placeholder = field === 'notes' ? 'Detalles' : 'Nuevo valor';
+}
+
 function renderFreeAgents() {
   const tbody = document.querySelector('#freeAgentsTable tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
+  renderFreeAgentBulkControls();
   const rows = sortedRows(state.freeAgents || [], state.sort.free_agents);
+  const selectAll = document.getElementById('selectAllFreeAgents');
+  if (selectAll) {
+    selectAll.checked = Boolean(rows.length) && rows.every((agent) => state.selectedFreeAgentIds.has(Number(agent.id)));
+    selectAll.indeterminate = rows.some((agent) => state.selectedFreeAgentIds.has(Number(agent.id))) && !selectAll.checked;
+  }
   rows.forEach((agent) => {
     const tr = document.createElement('tr');
     tr.dataset.id = agent.id;
     tr.innerHTML = `
+      <td><input data-free-agent-select type="checkbox" ${state.selectedFreeAgentIds.has(Number(agent.id)) ? 'checked' : ''} aria-label="Seleccionar ${escapeHtml(agent.name || 'agente libre')}"></td>
       <td><input data-field="name" value="${escapeHtml(agent.name || '')}"></td>
       <td><input data-field="position" value="${escapeHtml(agent.position || '')}"></td>
-      <td><select data-field="bird_rights">${birdRightsOptions(agent.bird_rights || '')}</select></td>
       <td><input data-field="rating" value="${escapeHtml(agent.rating || '')}"></td>
-      <td><select data-field="years_left">${birdYearsOptions(agent.years_left || '')}</select></td>
-      <td><input data-field="notes" value="${escapeHtml(agent.notes || '')}"></td>
+      <td><select data-field="agent">${freeAgentAgentOptions(agent.agent || '')}</select></td>
       <td>
-        <button data-action="sign-free-agent" type="button">Sign</button>
-        <button data-action="delete-free-agent" type="button" class="danger">Delete</button>
+        <button data-action="offer-free-agent" type="button">Ofertar</button>
+        <button data-action="negotiate-free-agent" type="button" class="ghost">Negociar</button>
       </td>
+      <td class="details-cell"><input data-field="notes" value="${escapeHtml(agent.notes || '')}"></td>
     `;
+    tr.querySelector('[data-free-agent-select]').addEventListener('change', (event) => {
+      const id = Number(agent.id);
+      if (event.target.checked) state.selectedFreeAgentIds.add(id);
+      else state.selectedFreeAgentIds.delete(id);
+      renderFreeAgentBulkControls();
+      const selectAllControl = document.getElementById('selectAllFreeAgents');
+      if (selectAllControl) {
+        const visibleRows = sortedRows(state.freeAgents || [], state.sort.free_agents);
+        selectAllControl.checked = Boolean(visibleRows.length) && visibleRows.every((row) => state.selectedFreeAgentIds.has(Number(row.id)));
+        selectAllControl.indeterminate = visibleRows.some((row) => state.selectedFreeAgentIds.has(Number(row.id))) && !selectAllControl.checked;
+      }
+    });
     tr.querySelectorAll('[data-field]').forEach((el) => {
       const key = el.dataset.field;
       attachInlineEditor(el, async (value) => {
@@ -4742,13 +4798,11 @@ function renderFreeAgents() {
         agent[key] = value || null;
       });
     });
-    tr.querySelector('[data-action="sign-free-agent"]').addEventListener('click', () => {
+    tr.querySelector('[data-action="offer-free-agent"]').addEventListener('click', () => {
       openSignFreeAgentModal(agent);
     });
-    tr.querySelector('[data-action="delete-free-agent"]').addEventListener('click', async () => {
-      if (!confirm(`Delete ${agent.name || 'this free agent'}?`)) return;
-      await api(`/api/free-agents/${agent.id}`, { method: 'DELETE' });
-      await loadFreeAgents();
+    tr.querySelector('[data-action="negotiate-free-agent"]').addEventListener('click', () => {
+      alert('La negociación se construirá en una próxima iteración.');
     });
     tbody.appendChild(tr);
   });
@@ -4757,16 +4811,16 @@ function renderFreeAgents() {
     const tr = document.createElement('tr');
     tr.className = 'table-add-editor-row';
     tr.innerHTML = `
+      <td></td>
       <td><input data-new-field="name" data-autofocus placeholder="Player name"></td>
       <td><input data-new-field="position" placeholder="PG"></td>
-      <td><select data-new-field="bird_rights">${birdRightsOptions('')}</select></td>
       <td><input data-new-field="rating" placeholder="Rating"></td>
-      <td><select data-new-field="years_left">${birdYearsOptions('')}</select></td>
-      <td><input data-new-field="notes" placeholder="Notes"></td>
+      <td><select data-new-field="agent">${freeAgentAgentOptions('')}</select></td>
       <td class="table-add-actions-cell">
         <button type="button" class="inline-save" data-action="save-draft">✓</button>
         <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
       </td>
+      <td class="details-cell"><input data-new-field="notes" placeholder="Detalles"></td>
     `;
     const discard = () => {
       state.ui.addingFreeAgent = false;
@@ -4792,9 +4846,38 @@ function renderFreeAgents() {
     });
   } else if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="7">No free agents listed.</td>';
+    tr.innerHTML = '<td colspan="7">No hay agentes libres registrados.</td>';
     tbody.appendChild(tr);
   }
+}
+
+async function applyFreeAgentBulkUpdate() {
+  const ids = Array.from(state.selectedFreeAgentIds).filter((id) => Number.isInteger(Number(id)));
+  if (!ids.length) {
+    alert('Selecciona al menos un agente libre.');
+    return;
+  }
+  const field = String(document.getElementById('bulkFreeAgentField')?.value || '').trim();
+  if (!['position', 'rating', 'agent', 'notes'].includes(field)) {
+    alert('Selecciona un campo para modificar.');
+    return;
+  }
+  const rawValue = field === 'agent'
+    ? document.getElementById('bulkFreeAgentAgentSelect')?.value
+    : document.getElementById('bulkFreeAgentValue')?.value;
+  const value = String(rawValue || '').trim();
+  if (!confirm(`Aplicar este cambio a ${ids.length} agente(s) libre(s)?`)) return;
+  for (const id of ids) {
+    await api(`/api/free-agents/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ [field]: value || null }),
+    });
+  }
+  state.selectedFreeAgentIds.clear();
+  document.getElementById('bulkFreeAgentField').value = '';
+  document.getElementById('bulkFreeAgentValue').value = '';
+  document.getElementById('bulkFreeAgentAgentSelect').value = '';
+  await loadFreeAgents();
 }
 
 function shortDateTime(value) {
@@ -5596,7 +5679,7 @@ async function confirmSignFreeAgent() {
     await loadFreeAgents();
     await refreshAdminLogsSafe();
   } catch (err) {
-    alert(`Free agent sign failed: ${err.message}`);
+    alert(`No se pudo firmar al agente libre: ${err.message}`);
   } finally {
     btn.disabled = false;
     btn.textContent = oldText;
@@ -7319,7 +7402,7 @@ function renderPlayers() {
     tr.querySelector('[data-action="cut"]').addEventListener('click', async () => {
       const decision = await confirmWithDiscordNotification({
         title: 'Cortar jugador',
-        message: `Cut ${p.name || 'this player'}? This creates a dead contract and adds him to Free agents.`,
+        message: `Cortar a ${p.name || 'este jugador'}? Esto crea un dead contract y lo añade a Agentes libres.`,
         confirmLabel: 'Cut',
         danger: true,
         defaultNotify: true,
@@ -7528,7 +7611,7 @@ async function cutSelectedPlayersAction() {
   }
   const decision = await confirmWithDiscordNotification({
     title: 'Cortar jugadores',
-    message: `Cut ${players.length} selected player(s)? This creates dead contracts, adds them to Free agents, and removes them from the roster.`,
+    message: `Cortar ${players.length} jugador(es) seleccionado(s)? Esto crea dead contracts, los añade a Agentes libres y los elimina del roster.`,
     confirmLabel: 'Cut selected',
     danger: true,
     defaultNotify: true,
@@ -8766,9 +8849,10 @@ async function loadFreeAgents() {
   state.teamCode = null;
   state.teamData = null;
   state.selectedPlayerIds.clear();
+  state.selectedFreeAgentIds.clear();
   applyTeamTheme('');
   setViewMode('free-agents');
-  setPageHeading('ANBA Free Agents', '');
+  setPageHeading('Agentes libres', '');
   renderCapStatusPills({});
   renderTeamStrip();
   renderTeamPicker();
@@ -10200,6 +10284,7 @@ async function init() {
   const tradeMovePhaseSelect = document.getElementById('tradeMovePhaseSelect');
   const currentYearSelect = document.getElementById('currentYearSelect');
   const freeAgencyModeInput = document.getElementById('freeAgencyModeInput');
+  const freeAgentRepsInput = document.getElementById('freeAgentRepsInput');
   cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
   tradeMoveLimitPre30Input.value = formatDots(state.settings.trade_move_limit_pre30);
   tradeMoveLimitPost30Input.value = formatDots(state.settings.trade_move_limit_post30);
@@ -10211,6 +10296,7 @@ async function init() {
   tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
   currentYearSelect.value = String(state.settings.current_year || 2025);
   if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
+  if (freeAgentRepsInput) freeAgentRepsInput.value = (state.settings.free_agent_reps || []).join('\n');
   renderSeasonCapSettingsGrid(Number(currentYearSelect.value || state.settings.current_year || 2025));
   renderRookieScaleSettingsGrid(Number(currentYearSelect.value || state.settings.current_year || 2025));
   currentYearSelect.addEventListener('change', () => {
@@ -10367,6 +10453,20 @@ async function init() {
     state.ui.addingFreeAgent = true;
     renderFreeAgents();
   });
+  document.getElementById('selectAllFreeAgents')?.addEventListener('change', (event) => {
+    const checked = Boolean(event.target.checked);
+    state.selectedFreeAgentIds.clear();
+    if (checked) {
+      sortedRows(state.freeAgents || [], state.sort.free_agents).forEach((agent) => {
+        state.selectedFreeAgentIds.add(Number(agent.id));
+      });
+    }
+    renderFreeAgents();
+  });
+  document.getElementById('bulkFreeAgentField')?.addEventListener('change', renderFreeAgentBulkControls);
+  document.getElementById('applyFreeAgentBulkBtn')?.addEventListener('click', async () => {
+    await applyFreeAgentBulkUpdate();
+  });
   document.getElementById('closeSignFreeAgentModalBtn').addEventListener('click', () => {
     closeSignFreeAgentModal();
   });
@@ -10460,6 +10560,10 @@ async function init() {
         trade_move_limit_post30: parsedTradeMoveLimitPost30,
         trade_move_phase: selectedTradeMovePhase,
         free_agency_mode: Boolean(freeAgencyModeInput?.checked),
+        free_agent_reps: String(freeAgentRepsInput?.value || '')
+          .split(/\r?\n/)
+          .map((value) => value.trim())
+          .filter(Boolean),
         roster_standard_min: parsedRosterStandardMin,
         roster_standard_max: parsedRosterStandardMax,
         roster_standard_offseason_max: parsedRosterStandardOffseasonMax,
@@ -10485,6 +10589,8 @@ async function init() {
     tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
+    if (freeAgentRepsInput) freeAgentRepsInput.value = (state.settings.free_agent_reps || []).join('\n');
+    renderFreeAgentBulkControls();
     if (selectedYear !== previousYear || freeAgencyModeActive() !== previousFreeAgencyMode) {
       state.ui.seasonViewStart = normalizeSeasonViewStart(null);
       renderSeasonViewControl();

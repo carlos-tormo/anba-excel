@@ -1,3 +1,4 @@
+import json
 import math
 import re
 from typing import Any, Dict, List, Optional
@@ -182,6 +183,24 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
     salary_floor = salary_floor_for_season(settings, current_year, salary_cap)
     first_apron = parse_float(settings.get("first_apron")) or 195945000.0
     second_apron = parse_float(settings.get("second_apron")) or 207824000.0
+    raw_free_agent_reps = str(settings.get("free_agent_reps") or "").strip()
+    free_agent_reps: List[str] = []
+    if raw_free_agent_reps:
+        try:
+            parsed_reps = json.loads(raw_free_agent_reps)
+            if isinstance(parsed_reps, list):
+                free_agent_reps = [
+                    str(item).strip()
+                    for item in parsed_reps
+                    if str(item).strip()
+                ]
+        except (TypeError, ValueError):
+            free_agent_reps = [
+                item.strip()
+                for item in raw_free_agent_reps.splitlines()
+                if item.strip()
+            ]
+
     payload = {
         "salary_cap_2025": salary_cap,
         "salary_floor_2025": parse_float(settings.get("salary_floor_2025")) or salary_cap * 0.9,
@@ -204,6 +223,7 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
         "roster_two_way_max": settings_int(settings, "roster_two_way_max", ROSTER_TWO_WAY_MAX_DEFAULT),
         "luxury_cap": salary_cap * 1.215,
         "minimum_cap_allowed": salary_floor,
+        "free_agent_reps": free_agent_reps,
     }
     for season in range(current_year, current_year + CAP_FORECAST_WINDOW):
         season_cap = parse_float(settings.get(f"salary_cap_{season}")) or salary_cap

@@ -233,6 +233,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             bird_rights TEXT,
             rating TEXT,
             years_left REAL,
+            agent TEXT,
             notes TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL

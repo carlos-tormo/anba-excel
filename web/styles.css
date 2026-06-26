@@ -2982,10 +2982,31 @@ h1 {
 .sign-free-agent-years-wrap {
   max-width: 100%;
 }
-#freeAgentsTable .details-cell,
-#freeAgentsTable td:nth-child(6) {
+#freeAgentsTable .details-cell {
   white-space: normal;
   min-width: 220px;
+}
+#freeAgentsTable .details-cell input {
+  min-width: 220px;
+}
+.free-agent-actions-cell,
+#freeAgentsTable td:has([data-action="offer-free-agent"]) {
+  min-width: 170px;
+  white-space: nowrap;
+}
+.free-agent-actions-cell button,
+#freeAgentsTable td:has([data-action="offer-free-agent"]) button {
+  margin-right: 6px;
+}
+.bulk-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 800;
+}
+#freeAgentRepsInput {
+  min-width: 260px;
+  resize: vertical;
 }
 .draft-assets-board {
   display: grid;

@@ -1073,6 +1073,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
                 (now_iso(),),
             )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('free_agent_reps', '[]', ?)
+                """,
+                (now_iso(),),
+            )
             roster_defaults = {
                 "roster_standard_min": ROSTER_STANDARD_MIN_DEFAULT,
                 "roster_standard_max": ROSTER_STANDARD_MAX_DEFAULT,
@@ -1116,6 +1123,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     bird_rights TEXT,
                     rating TEXT,
                     years_left REAL,
+                    agent TEXT,
                     notes TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -1566,6 +1574,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             }
             if "profile_id" not in free_agent_cols:
                 conn.execute("ALTER TABLE free_agents ADD COLUMN profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL")
+            if "agent" not in free_agent_cols:
+                conn.execute("ALTER TABLE free_agents ADD COLUMN agent TEXT")
             self._backfill_player_profiles(conn)
             profile_cols = {
                 row["name"]
@@ -5684,15 +5694,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for gm in payload.get("gm_history") or []:
                 gm_history_rows.append([code, name, gm.get("gm_name"), gm.get("start_date"), gm.get("color")])
 
-        free_agent_header = ["Free agent ID", "Profile ID", "Jugador", "Posición", "Tipo", "Rating", "Birds", "YOS", "Notas"]
+        free_agent_header = ["Agente libre ID", "Profile ID", "Jugador", "Posición", "Rating", "Agente", "Tipo", "Birds", "YOS", "Detalles"]
         free_agent_rows = [free_agent_header] + [
             [
                 item.get("id"),
                 item.get("profile_id"),
                 item.get("name"),
                 item.get("position"),
-                item.get("bird_rights"),
                 item.get("rating"),
+                item.get("agent"),
+                item.get("bird_rights"),
                 item.get("years_left"),
                 item.get("experience_years"),
                 item.get("notes"),
@@ -5818,7 +5829,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 {"name": "Player rights", "rows": rights_rows},
                 {"name": "Frozen picks", "rows": frozen_rows},
                 {"name": "Draft order", "rows": draft_order_rows},
-                {"name": "Free agents", "rows": free_agent_rows},
+                {"name": "Agentes libres", "rows": free_agent_rows},
                 {"name": "Jugadores", "rows": profile_rows},
                 {"name": "Movimientos jugadores", "rows": tx_rows},
                 {"name": "Economía", "rows": economy_rows},
@@ -8772,8 +8783,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             cur = conn.execute(
                 """
                 INSERT INTO free_agents (
-                    profile_id, name, position, bird_rights, rating, years_left, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    profile_id, name, position, bird_rights, rating, years_left, agent, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     profile_id,
@@ -8782,6 +8793,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     str(payload.get("bird_rights") or "").strip() or None,
                     str(payload.get("rating") or "").strip() or None,
                     normalize_bird_years(payload.get("years_left")),
+                    str(payload.get("agent") or "").strip() or None,
                     str(payload.get("notes") or "").strip() or None,
                     now,
                     now,
@@ -8800,7 +8812,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return int(cur.lastrowid)
 
     def update_free_agent(self, free_agent_id: int, payload: Dict[str, Any]) -> bool:
-        fields = ["name", "position", "bird_rights", "rating", "years_left", "notes"]
+        fields = ["name", "position", "bird_rights", "rating", "years_left", "agent", "notes"]
         assigns = []
         vals: List[Any] = []
         for field in fields:
@@ -15169,6 +15181,7 @@ QUALITY REQUIREMENTS
             next_roster_standard_offseason_max: Optional[int] = None
             next_roster_two_way_min: Optional[int] = None
             next_roster_two_way_max: Optional[int] = None
+            next_free_agent_reps: Optional[List[str]] = None
             season_cap_updates: Dict[str, Optional[float]] = {}
             rookie_scale_updates: Dict[str, Optional[float]] = {}
 
@@ -15227,6 +15240,30 @@ QUALITY REQUIREMENTS
 
             if "free_agency_mode" in payload:
                 next_free_agency_mode = parse_bool(payload.get("free_agency_mode"))
+
+            if "free_agent_reps" in payload:
+                raw_reps = payload.get("free_agent_reps")
+                if isinstance(raw_reps, list):
+                    rep_values = raw_reps
+                else:
+                    rep_values = str(raw_reps or "").splitlines()
+                seen_reps = set()
+                next_free_agent_reps = []
+                for rep in rep_values:
+                    value = str(rep or "").strip()
+                    if not value:
+                        continue
+                    key = value.casefold()
+                    if key in seen_reps:
+                        continue
+                    if len(value) > 80:
+                        self._json(400, {"error": "invalid_free_agent_reps"})
+                        return
+                    seen_reps.add(key)
+                    next_free_agent_reps.append(value)
+                if len(next_free_agent_reps) > 100:
+                    self._json(400, {"error": "invalid_free_agent_reps"})
+                    return
 
             for field, raw_value in payload.items():
                 match = re.fullmatch(r"(salary_cap|salary_floor|first_apron|second_apron|average_salary)_(\d{4})", str(field))
@@ -15326,6 +15363,7 @@ QUALITY REQUIREMENTS
                 and next_roster_standard_offseason_max is None
                 and next_roster_two_way_min is None
                 and next_roster_two_way_max is None
+                and next_free_agent_reps is None
             ):
                 self._json(400, {"error": "settings_payload_required"})
                 return
@@ -15363,6 +15401,8 @@ QUALITY REQUIREMENTS
                 self.db.update_setting("roster_two_way_min", str(next_roster_two_way_min))
             if next_roster_two_way_max is not None:
                 self.db.update_setting("roster_two_way_max", str(next_roster_two_way_max))
+            if next_free_agent_reps is not None:
+                self.db.update_setting("free_agent_reps", json.dumps(next_free_agent_reps, ensure_ascii=False))
             self._log_admin_action(
                 "update",
                 "settings",
@@ -15386,6 +15426,7 @@ QUALITY REQUIREMENTS
                     "roster_standard_offseason_max": next_roster_standard_offseason_max,
                     "roster_two_way_min": next_roster_two_way_min,
                     "roster_two_way_max": next_roster_two_way_max,
+                    "free_agent_reps": next_free_agent_reps,
                 },
             )
 

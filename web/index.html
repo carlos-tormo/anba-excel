@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260626c">
+  <link rel="stylesheet" href="/styles.css?v=20260626d">
 </head>
 <body class="app-layout">
   <header>
@@ -38,7 +38,7 @@
       </div>
       <div class="sidebar-section">
         <div class="sidebar-section-label">Mercado</div>
-        <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="free-agents">Free agents</button>
+        <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="free-agents">Agentes libres</button>
         <button id="tradeMachineHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-machine">Máquina de traspasos</button>
       </div>
       <div class="sidebar-section sidebar-account-section">
@@ -70,7 +70,7 @@
         <button id="mobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦" data-nav-view="figures">Cifras</button>
         <button id="mobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈" data-nav-view="draft-order">Draft</button>
         <button id="mobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
-        <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Free agents</button>
+        <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Agentes libres</button>
         <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-machine">Máquina de traspasos</button>
         <button id="mobileLocatorBtn" type="button" class="mobile-nav-btn" data-icon="⌕">Buscar</button>
         <a id="mobileExportLink" href="/api/export/league.xlsx" class="mobile-nav-link" data-icon="⇩" download>Exportar datos</a>
@@ -233,17 +233,17 @@
     </section>
 
     <section id="freeAgentsSection" class="section-hidden">
-      <h2>Free agents</h2>
+      <h2>Agentes libres</h2>
       <div class="table-wrap">
         <table id="freeAgentsTable">
           <thead>
             <tr>
-              <th data-sort="name">Name</th>
-              <th data-sort="position">Pos</th>
-              <th data-sort="bird_rights">Type</th>
+              <th data-sort="name">Nombre</th>
+              <th data-sort="position">Posición</th>
               <th data-sort="rating">Rating</th>
-              <th data-sort="years_left">Birds</th>
-              <th data-sort="notes">Notes</th>
+              <th data-sort="agent">Agente</th>
+              <th>Acciones</th>
+              <th data-sort="notes">Detalles</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -512,6 +512,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260626d" defer></script>
+  <script src="/guest.js?v=20260626e" defer></script>
 </body>
 </html>
