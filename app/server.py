@@ -12982,13 +12982,10 @@ QUALITY REQUIREMENTS
         self,
         webhook_url: str,
         *,
-        thread_name: Optional[str] = None,
         thread_id: Optional[str] = None,
         wait: bool = False,
     ) -> str:
         query: Dict[str, str] = {}
-        if thread_name:
-            query["thread_name"] = self._discord_text(thread_name, 100)
         if thread_id:
             query["thread_id"] = re.sub(r"\D+", "", str(thread_id))
         if wait:
@@ -13007,11 +13004,13 @@ QUALITY REQUIREMENTS
         thread_id: Optional[str] = None,
         wait: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        body_payload = dict(payload)
+        if thread_name and not thread_id:
+            body_payload["thread_name"] = self._discord_text(thread_name, 100)
+        data = json.dumps(body_payload, ensure_ascii=True).encode("utf-8")
         req = Request(
             self._discord_webhook_url(
                 webhook_url or self.discord_webhook_url,
-                thread_name=thread_name,
                 thread_id=thread_id,
                 wait=wait,
             ),
