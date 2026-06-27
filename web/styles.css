@@ -998,6 +998,24 @@ h1 {
   color: #334155;
   font-weight: 800;
 }
+.free-agent-offer-kind {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.78rem;
+  font-weight: 900;
+  vertical-align: middle;
+}
+.free-agent-offer-kind--renewal {
+  border-color: #bbf7d0;
+  background: #ecfdf5;
+  color: #047857;
+}
 .free-agent-action-notes {
   display: grid;
   gap: 6px;

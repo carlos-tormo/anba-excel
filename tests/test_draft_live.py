@@ -237,6 +237,39 @@ class DraftLiveTests(unittest.TestCase):
         self.assertEqual(result["created_cap_holds"][0]["dead_contract_id"], selection["processed_dead_contract_id"])
         self.assertTrue(selection["processed_at"])
 
+    def test_process_draft_accepts_dotted_rookie_scale_setting(self) -> None:
+        self.db.update_setting("rookie_scale_2026_1", "10.000.000")
+        self.db.submit_draft_live_pick(
+            self.first_pick,
+            {"option_value": "Rookie One", "advance": False},
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            is_admin=True,
+        )
+
+        result = self.db.process_draft_results(2026)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(10_000_000, result["created_cap_holds"][0]["projected_salary"])
+        self.assertEqual("configured", result["created_cap_holds"][0]["projected_salary_source"])
+
+    def test_process_draft_scales_future_rookie_salary_from_2025_scale(self) -> None:
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.update_setting("salary_cap_2026", "165000000")
+        self.db.update_setting("rookie_scale_2025_1", "13825920")
+        self.db.submit_draft_live_pick(
+            self.first_pick,
+            {"option_value": "Rookie One", "advance": False},
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            is_admin=True,
+        )
+
+        result = self.db.process_draft_results(2026)
+
+        expected_salary = round(13_825_920 * (165_000_000 / 154_647_000))
+        self.assertTrue(result["ok"])
+        self.assertEqual(expected_salary, result["created_cap_holds"][0]["projected_salary"])
+        self.assertEqual("salary_cap_scaled_from_2025", result["created_cap_holds"][0]["projected_salary_source"])
+
     def test_process_draft_creates_second_round_player_right_and_is_idempotent(self) -> None:
         second_round_pick = self.db.create_draft_order_entry(
             {

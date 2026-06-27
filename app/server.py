@@ -1159,6 +1159,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     years_left REAL,
                     free_agent_type TEXT NOT NULL DEFAULT 'No restringido',
                     source TEXT,
+                    rights_team_code TEXT,
                     agent TEXT,
                     notes TEXT,
                     created_at TEXT NOT NULL,
@@ -1644,6 +1645,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE free_agents ADD COLUMN free_agent_type TEXT NOT NULL DEFAULT 'No restringido'")
             if "source" not in free_agent_cols:
                 conn.execute("ALTER TABLE free_agents ADD COLUMN source TEXT")
+            if "rights_team_code" not in free_agent_cols:
+                conn.execute("ALTER TABLE free_agents ADD COLUMN rights_team_code TEXT")
             self._backfill_player_profiles(conn)
             profile_cols = {
                 row["name"]
@@ -3805,6 +3808,58 @@ class LeagueDB(DatabaseMaintenanceMixin):
         )
         return [row_to_dict(cur, row) for row in cur.fetchall()]
 
+    def _rookie_scale_salary_for_pick(
+        self,
+        settings: Dict[str, str],
+        salary_season: int,
+        pick_number: int,
+    ) -> Dict[str, Any]:
+        checked_keys: List[str] = []
+
+        def setting_amount(key: str) -> Optional[float]:
+            checked_keys.append(key)
+            parsed = parse_amount_like(settings.get(key))
+            if parsed is not None and parsed > 0:
+                return parsed
+            return None
+
+        exact_key = f"rookie_scale_{int(salary_season)}_{int(pick_number)}"
+        exact_amount = setting_amount(exact_key)
+        if exact_amount is not None:
+            return {
+                "salary": exact_amount,
+                "salary_season": int(salary_season),
+                "setting_key": exact_key,
+                "source": "configured",
+                "checked_keys": checked_keys,
+            }
+
+        base_key = f"rookie_scale_2025_{int(pick_number)}"
+        base_amount = setting_amount(base_key) if int(salary_season) != 2025 else None
+        if base_amount is not None:
+            base_cap = parse_amount_like(settings.get("salary_cap_2025")) or 154_647_000.0
+            season_cap = (
+                parse_amount_like(settings.get(f"salary_cap_{int(salary_season)}"))
+                or parse_amount_like(settings.get("salary_cap_2025"))
+                or base_cap
+            )
+            if base_cap > 0 and season_cap > 0:
+                return {
+                    "salary": base_amount * (season_cap / base_cap),
+                    "salary_season": int(salary_season),
+                    "setting_key": base_key,
+                    "source": "salary_cap_scaled_from_2025",
+                    "checked_keys": checked_keys,
+                }
+
+        return {
+            "salary": None,
+            "salary_season": int(salary_season),
+            "setting_key": exact_key,
+            "source": "missing",
+            "checked_keys": checked_keys,
+        }
+
     def _draft_live_state_row(self, conn: sqlite3.Connection, draft_year: int) -> Optional[Dict[str, Any]]:
         cur = conn.execute("SELECT * FROM draft_live_state WHERE draft_year = ?", (int(draft_year),))
         row = cur.fetchone()
@@ -4250,7 +4305,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             "error": "rookie_scale_pick_out_of_range",
                         })
                         continue
-                    projected_salary = parse_float(settings.get(f"rookie_scale_{int(year)}_{int(pick_number)}"))
+                    scale = self._rookie_scale_salary_for_pick(settings, int(year), int(pick_number))
+                    projected_salary = scale.get("salary")
                     if projected_salary is None or projected_salary <= 0:
                         errors.append({
                             "draft_order_id": draft_order_id,
@@ -4259,10 +4315,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             "draft_round": draft_round,
                             "selection": selection_text,
                             "error": "missing_rookie_scale_salary",
+                            "salary_season": scale.get("salary_season"),
+                            "setting_key": scale.get("setting_key"),
+                            "checked_keys": scale.get("checked_keys") or [],
                         })
                         continue
                     salary_texts = {season: None for season in supported_salary_seasons}
-                    salary_texts[int(year)] = str(int(round(projected_salary)))
+                    salary_season = parse_int(scale.get("salary_season")) or int(year)
+                    salary_texts[salary_season] = str(int(round(projected_salary)))
                     max_order = conn.execute(
                         "SELECT COALESCE(MAX(row_order), 0) AS mx FROM dead_contracts WHERE team_id = ?",
                         (team_id,),
@@ -4322,9 +4382,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             summary=f"{team_code} añade el cap hold de draft de {selection_text}",
                             details={
                                 "draft_year": int(year),
+                                "salary_season": salary_season,
                                 "draft_round": draft_round,
                                 "pick_number": pick_number,
                                 "projected_salary": int(round(projected_salary)),
+                                "projected_salary_source": scale.get("source"),
+                                "rookie_scale_setting_key": scale.get("setting_key"),
                             },
                             created_at=timestamp,
                         )
@@ -4347,6 +4410,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "pick_number": pick_number,
                         "selection": selection_text,
                         "projected_salary": int(round(projected_salary)),
+                        "salary_season": salary_season,
+                        "projected_salary_source": scale.get("source"),
+                        "rookie_scale_setting_key": scale.get("setting_key"),
                     })
                     continue
                 if draft_round == "2nd":
@@ -8942,6 +9008,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             years_left = ?,
                             free_agent_type = ?,
                             source = ?,
+                            rights_team_code = ?,
                             notes = CASE
                                 WHEN notes IS NULL OR TRIM(notes) = '' OR notes LIKE 'Cap hold retenido por %'
                                 THEN ?
@@ -8958,6 +9025,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             normalize_bird_years(player.get("years_left")),
                             fa_type,
                             FREE_AGENT_SOURCE_CAP_HOLD,
+                            team_code,
                             default_notes,
                             timestamp,
                             int(existing["id"]),
@@ -8969,8 +9037,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     """
                     INSERT INTO free_agents (
                         profile_id, name, position, bird_rights, rating, years_left,
-                        free_agent_type, source, notes, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        free_agent_type, source, rights_team_code, notes, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(profile_id),
@@ -8981,6 +9049,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         normalize_bird_years(player.get("years_left")),
                         fa_type,
                         FREE_AGENT_SOURCE_CAP_HOLD,
+                        team_code,
                         default_notes,
                         timestamp,
                         timestamp,
@@ -13321,6 +13390,18 @@ QUALITY REQUIREMENTS
                 lines.append(f"{season_label(season)}: {value}")
         return "\n".join(lines[:8]) or "Sin importes detallados"
 
+    def _free_agent_offer_is_renewal(self, free_agent: Dict[str, Any], team_code: str) -> bool:
+        if str(free_agent.get("source") or "").strip() != FREE_AGENT_SOURCE_CAP_HOLD:
+            return False
+        team = normalize_team_code(team_code)
+        rights_team = normalize_team_code(free_agent.get("rights_team_code"))
+        if not rights_team:
+            notes = str(free_agent.get("notes") or "")
+            match = re.search(r"Cap hold retenido por\s+([A-Z]{2,4})", notes, flags=re.IGNORECASE)
+            if match:
+                rights_team = normalize_team_code(match.group(1))
+        return bool(team and rights_team and team == rights_team)
+
     def _notify_free_agent_offer(
         self,
         free_agent: Dict[str, Any],
@@ -13338,13 +13419,25 @@ QUALITY REQUIREMENTS
         salary_lines = self._contract_offer_salary_lines(payload)
         notes = str(payload.get("notes") or "").strip()
         thread_name = self._discord_text(player_name, 100) or "Jugador"
+        is_renewal = self._free_agent_offer_is_renewal(free_agent, team)
+        offer_label = "Oferta de renovación" if is_renewal else "Oferta"
         embed: Dict[str, Any] = {
-            "title": self._discord_text(f"{team} presenta una oferta a {player_name}", 256),
-            "description": "Oferta contractual registrada desde la agencia libre.",
+            "title": self._discord_text(
+                f"{team} presenta una oferta de renovación a {player_name}"
+                if is_renewal
+                else f"{team} presenta una oferta a {player_name}",
+                256,
+            ),
+            "description": (
+                "Oferta de renovación registrada desde la agencia libre."
+                if is_renewal
+                else "Oferta contractual registrada desde la agencia libre."
+            ),
             "color": 0x0F766E,
             "fields": [
                 {"name": "Equipo", "value": team, "inline": True},
                 {"name": "Jugador", "value": self._discord_text(player_name, 1024), "inline": True},
+                {"name": "Modalidad", "value": offer_label, "inline": True},
                 {"name": "Tipo", "value": self._discord_text(contract_type, 1024), "inline": True},
                 {"name": "Duración", "value": years_text, "inline": True},
                 {"name": "Importes", "value": self._discord_text(salary_lines, 1024), "inline": False},
@@ -14588,6 +14681,7 @@ QUALITY REQUIREMENTS
                 return
             if action == "offer":
                 sent = self._notify_free_agent_offer(free_agent, team_code, payload)
+                is_renewal = self._free_agent_offer_is_renewal(free_agent, team_code)
                 self._log_admin_action(
                     "offer",
                     "free_agent",
@@ -14595,12 +14689,13 @@ QUALITY REQUIREMENTS
                     team_code,
                     {
                         "player_name": free_agent.get("name"),
+                        "offer_type": "renewal" if is_renewal else "free_agent_offer",
                         "contract_type": payload.get("contract_type"),
                         "years": payload.get("years"),
                         "sent_to_discord": sent,
                     },
                 )
-                self._json(200, {"ok": True, "discord_sent": sent})
+                self._json(200, {"ok": True, "discord_sent": sent, "offer_type": "renewal" if is_renewal else "free_agent_offer"})
                 return
             if action == "negotiate":
                 settings_payload = public_settings_payload(self.db.get_settings())

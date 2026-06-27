@@ -4823,6 +4823,28 @@ function freeAgentActionSummary(agent, includeAgent = false) {
   return parts.join(' · ');
 }
 
+function freeAgentOfferIsRenewal(agent, teamCode) {
+  const team = String(teamCode || '').trim().toUpperCase();
+  if (!team || String(agent?.source || '').trim() !== 'cap_hold') return false;
+  let rightsTeam = String(agent?.rights_team_code || '').trim().toUpperCase();
+  if (!rightsTeam) {
+    const match = String(agent?.notes || '').match(/Cap hold retenido por\s+([A-Z]{2,4})/i);
+    rightsTeam = match ? String(match[1] || '').trim().toUpperCase() : '';
+  }
+  return Boolean(rightsTeam && rightsTeam === team);
+}
+
+function updateFreeAgentOfferSummary() {
+  const agent = freeAgentById(state.ui.freeAgentActionId);
+  const summary = document.getElementById('freeAgentOfferSummary');
+  if (!agent || !summary) return;
+  const teamCode = document.getElementById('freeAgentOfferTeam')?.value || '';
+  const renewalBadge = freeAgentOfferIsRenewal(agent, teamCode)
+    ? ' · <span class="free-agent-offer-kind free-agent-offer-kind--renewal">Oferta de renovación</span>'
+    : ' · <span class="free-agent-offer-kind">Oferta FA</span>';
+  summary.innerHTML = `${freeAgentActionSummary(agent)}${renewalBadge}`;
+}
+
 function renderFreeAgentOfferYearsTable() {
   const tbody = document.querySelector('#freeAgentOfferYearsTable tbody');
   const yearsSelect = document.getElementById('freeAgentOfferYears');
@@ -4852,8 +4874,8 @@ function renderFreeAgentOfferYearsTable() {
 function openFreeAgentOfferModal(agent) {
   if (!agent) return;
   state.ui.freeAgentActionId = Number(agent.id);
-  document.getElementById('freeAgentOfferSummary').innerHTML = freeAgentActionSummary(agent);
   populateFreeAgentActionTeams('freeAgentOfferTeam');
+  updateFreeAgentOfferSummary();
   document.getElementById('freeAgentOfferType').value = 'Reg';
   document.getElementById('freeAgentOfferYears').value = '1';
   document.getElementById('freeAgentOfferNotes').value = '';
@@ -10725,7 +10747,11 @@ async function init() {
       const errors = result.errors || [];
       const skipped = (result.skipped || []).length;
       if (errors.length) {
-        alert(`Draft procesado con errores.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}\nErrores: ${errors.map((err) => `#${err.pick_number || '?'} ${err.team_code || ''}: ${err.error}`).join('\n')}`);
+        const errorLines = errors.map((err) => {
+          const detail = err.setting_key ? ` (${err.setting_key})` : '';
+          return `#${err.pick_number || '?'} ${err.team_code || ''}: ${err.error}${detail}`;
+        });
+        alert(`Draft procesado con errores.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}\nErrores: ${errorLines.join('\n')}`);
       } else {
         alert(`Draft procesado.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}`);
       }
@@ -10768,6 +10794,7 @@ async function init() {
     if (e.target === e.currentTarget) closeSignFreeAgentModal();
   });
   document.getElementById('freeAgentOfferYears')?.addEventListener('change', renderFreeAgentOfferYearsTable);
+  document.getElementById('freeAgentOfferTeam')?.addEventListener('change', updateFreeAgentOfferSummary);
   document.getElementById('freeAgentOfferCloseBtn')?.addEventListener('click', closeFreeAgentOfferModal);
   document.getElementById('freeAgentOfferSubmitBtn')?.addEventListener('click', () => { void submitFreeAgentOffer(); });
   document.getElementById('freeAgentOfferModal')?.addEventListener('click', (e) => {
