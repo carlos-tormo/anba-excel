@@ -985,6 +985,42 @@ h1 {
   margin: 0;
   color: #102a43;
 }
+.free-agent-action-modal {
+  width: min(760px, 96vw);
+  display: grid;
+  gap: 12px;
+}
+.free-agent-action-summary {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #334155;
+  font-weight: 800;
+}
+.free-agent-action-notes {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 800;
+}
+.free-agent-action-notes textarea {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #0f172a;
+  font: inherit;
+}
+.free-agent-actions-cell button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+.error-text {
+  color: #b91c1c;
+}
 .trade-modal {
   width: min(1480px, 98vw);
 }

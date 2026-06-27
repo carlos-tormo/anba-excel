@@ -175,6 +175,47 @@ def normalize_trade_bucket(value: Any) -> str:
     return "pre30"
 
 
+def parse_free_agent_rep_discord_ids(raw_value: Any) -> Dict[str, str]:
+    if isinstance(raw_value, dict):
+        items = raw_value.items()
+    else:
+        text = str(raw_value or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            items = parsed.items()
+        else:
+            pairs = []
+            for line in text.splitlines():
+                value = str(line or "").strip()
+                if not value:
+                    continue
+                for delimiter in ["=", "|", ":"]:
+                    if delimiter in value:
+                        name, discord_id = value.split(delimiter, 1)
+                        pairs.append((name, discord_id))
+                        break
+            items = pairs
+
+    mapping: Dict[str, str] = {}
+    seen: set[str] = set()
+    for name, discord_id in items:
+        clean_name = re.sub(r"\s+", " ", str(name or "").strip())
+        clean_id = re.sub(r"\D+", "", str(discord_id or "").strip())
+        if not clean_name or not re.fullmatch(r"\d{5,25}", clean_id):
+            continue
+        key = clean_name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        mapping[clean_name] = clean_id
+    return mapping
+
+
 def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
     current_year = parse_int(settings.get("current_year")) or 2025
     if current_year < 2025 or current_year > 2030:
@@ -224,6 +265,9 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
         "luxury_cap": salary_cap * 1.215,
         "minimum_cap_allowed": salary_floor,
         "free_agent_reps": free_agent_reps,
+        "free_agent_rep_discord_ids": parse_free_agent_rep_discord_ids(
+            settings.get("free_agent_rep_discord_ids")
+        ),
     }
     for season in range(current_year, current_year + CAP_FORECAST_WINDOW):
         season_cap = parse_float(settings.get(f"salary_cap_{season}")) or salary_cap

@@ -34,6 +34,7 @@ const state = {
     roster_two_way_max: 3,
     free_agency_mode: false,
     free_agent_reps: [],
+    free_agent_rep_discord_ids: {},
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
@@ -56,6 +57,7 @@ const state = {
     trackerSeason: null,
     trackerEconomySeason: null,
     freeAgentSearch: '',
+    freeAgentActionId: null,
     statusPills: [],
     mobileSidebarOpen: false,
     mobileInfoOpen: false,
@@ -4159,6 +4161,217 @@ function renderTrackerEconomy() {
   }
 }
 
+function freeAgentById(id) {
+  const parsed = Number(id);
+  return (state.freeAgents || []).find((agent) => Number(agent.id) === parsed) || null;
+}
+
+function freeAgentActionTeamCodes() {
+  const auth = state.auth || {};
+  if (auth.role === 'admin') {
+    return (state.teams || []).map((team) => team.code).filter(Boolean);
+  }
+  if (auth.role !== 'gm') return [];
+  return Array.isArray(auth.team_codes)
+    ? auth.team_codes.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean)
+    : [];
+}
+
+function canSubmitFreeAgentAction() {
+  const auth = state.auth || {};
+  return Boolean(auth.authenticated && ['gm', 'admin'].includes(auth.role) && freeAgentActionTeamCodes().length);
+}
+
+function populateFreeAgentActionTeams(selectId, selected = '') {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+  const codes = freeAgentActionTeamCodes();
+  const preferred = String(selected || state.teamCode || codes[0] || '').toUpperCase();
+  select.innerHTML = codes
+    .map((code) => {
+      const team = (state.teams || []).find((item) => item.code === code);
+      const label = team ? `${team.code} - ${team.name}` : code;
+      return `<option value="${escapeHtml(code)}"${code === preferred ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    })
+    .join('');
+  if (preferred && codes.includes(preferred)) select.value = preferred;
+}
+
+function setFreeAgentActionStatus(kind, message = '', isError = false) {
+  const el = document.getElementById(kind === 'offer' ? 'freeAgentOfferStatus' : 'freeAgentNegotiateStatus');
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle('error-text', Boolean(isError));
+}
+
+function freeAgentActionSummary(agent, includeAgent = false) {
+  const parts = [
+    `<strong>${escapeHtml(agent?.name || 'Agente libre')}</strong>`,
+    agent?.position ? escapeHtml(agent.position) : '',
+    agent?.rating ? `Rating ${escapeHtml(agent.rating)}` : '',
+    includeAgent && agent?.agent ? `Agente: ${escapeHtml(agent.agent)}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+function renderFreeAgentOfferYearsTable() {
+  const tbody = document.querySelector('#freeAgentOfferYearsTable tbody');
+  const yearsSelect = document.getElementById('freeAgentOfferYears');
+  if (!tbody || !yearsSelect) return;
+  const years = Math.max(1, Math.min(5, Number(yearsSelect.value || 1)));
+  const start = defaultSeasonViewStart();
+  tbody.innerHTML = Array.from({ length: years }, (_, idx) => {
+    const season = start + idx;
+    return `
+      <tr>
+        <td>${seasonLabel(season)}</td>
+        <td><input data-offer-salary-season="${season}" type="text" inputmode="numeric" placeholder="Importe"></td>
+        <td>
+          <select data-offer-option-season="${season}">
+            <option value=""></option>
+            <option value="TO">TO</option>
+            <option value="PO">PO</option>
+            <option value="QO">QO</option>
+            <option value="GAP">GAP</option>
+          </select>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function openFreeAgentOfferModal(agent) {
+  if (!canSubmitFreeAgentAction()) {
+    alert('Inicia sesión como GM para enviar ofertas.');
+    return;
+  }
+  if (!agent) return;
+  state.ui.freeAgentActionId = Number(agent.id);
+  document.getElementById('freeAgentOfferSummary').innerHTML = freeAgentActionSummary(agent);
+  populateFreeAgentActionTeams('freeAgentOfferTeam');
+  document.getElementById('freeAgentOfferType').value = 'Reg';
+  document.getElementById('freeAgentOfferYears').value = '1';
+  document.getElementById('freeAgentOfferNotes').value = '';
+  renderFreeAgentOfferYearsTable();
+  setFreeAgentActionStatus('offer');
+  document.getElementById('freeAgentOfferModal')?.classList.remove('section-hidden');
+}
+
+function closeFreeAgentOfferModal() {
+  state.ui.freeAgentActionId = null;
+  document.getElementById('freeAgentOfferModal')?.classList.add('section-hidden');
+}
+
+function freeAgentOfferPayload() {
+  const salaryBySeason = {};
+  const optionBySeason = {};
+  document.querySelectorAll('[data-offer-salary-season]').forEach((input) => {
+    const season = input.dataset.offerSalarySeason;
+    const value = String(input.value || '').trim();
+    if (value) salaryBySeason[season] = value;
+  });
+  document.querySelectorAll('[data-offer-option-season]').forEach((select) => {
+    const season = select.dataset.offerOptionSeason;
+    const value = String(select.value || '').trim();
+    if (value) optionBySeason[season] = value;
+  });
+  return {
+    team_code: document.getElementById('freeAgentOfferTeam')?.value || '',
+    contract_type: document.getElementById('freeAgentOfferType')?.value || '',
+    years: Number(document.getElementById('freeAgentOfferYears')?.value || 1),
+    salary_by_season: salaryBySeason,
+    option_by_season: optionBySeason,
+    notes: document.getElementById('freeAgentOfferNotes')?.value.trim() || '',
+  };
+}
+
+async function submitFreeAgentOffer() {
+  const agent = freeAgentById(state.ui.freeAgentActionId);
+  if (!agent) return;
+  const payload = freeAgentOfferPayload();
+  if (!payload.team_code) {
+    setFreeAgentActionStatus('offer', 'Selecciona un equipo.', true);
+    return;
+  }
+  const btn = document.getElementById('freeAgentOfferSubmitBtn');
+  const oldText = btn?.textContent || '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Enviando...';
+  }
+  try {
+    const result = await api(`/api/free-agents/${agent.id}/offer`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    setFreeAgentActionStatus('offer', result.discord_sent ? 'Oferta enviada a Discord.' : 'Oferta registrada, pero Discord no está configurado o falló.');
+  } catch (err) {
+    setFreeAgentActionStatus('offer', `No se pudo enviar la oferta: ${err.message}`, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
+}
+
+function openFreeAgentNegotiateModal(agent) {
+  if (!canSubmitFreeAgentAction()) {
+    alert('Inicia sesión como GM para negociar con agentes.');
+    return;
+  }
+  if (!agent) return;
+  state.ui.freeAgentActionId = Number(agent.id);
+  document.getElementById('freeAgentNegotiateSummary').innerHTML = freeAgentActionSummary(agent, true);
+  populateFreeAgentActionTeams('freeAgentNegotiateTeam');
+  document.getElementById('freeAgentNegotiateEconomic').value = '';
+  document.getElementById('freeAgentNegotiateRole').value = '';
+  document.getElementById('freeAgentNegotiateComments').value = '';
+  setFreeAgentActionStatus('negotiate');
+  document.getElementById('freeAgentNegotiateModal')?.classList.remove('section-hidden');
+}
+
+function closeFreeAgentNegotiateModal() {
+  state.ui.freeAgentActionId = null;
+  document.getElementById('freeAgentNegotiateModal')?.classList.add('section-hidden');
+}
+
+async function submitFreeAgentNegotiation() {
+  const agent = freeAgentById(state.ui.freeAgentActionId);
+  if (!agent) return;
+  const payload = {
+    team_code: document.getElementById('freeAgentNegotiateTeam')?.value || '',
+    economic_offer: document.getElementById('freeAgentNegotiateEconomic')?.value.trim() || '',
+    role_offer: document.getElementById('freeAgentNegotiateRole')?.value.trim() || '',
+    comments: document.getElementById('freeAgentNegotiateComments')?.value.trim() || '',
+  };
+  if (!payload.team_code) {
+    setFreeAgentActionStatus('negotiate', 'Selecciona un equipo.', true);
+    return;
+  }
+  const btn = document.getElementById('freeAgentNegotiateSubmitBtn');
+  const oldText = btn?.textContent || '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Enviando...';
+  }
+  try {
+    const result = await api(`/api/free-agents/${agent.id}/negotiate`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    const suffix = result.agent_discord_configured ? '' : ' No hay Discord ID configurado para este agente.';
+    setFreeAgentActionStatus('negotiate', `Negociación enviada a Discord.${suffix}`);
+  } catch (err) {
+    setFreeAgentActionStatus('negotiate', `No se pudo enviar la negociación: ${err.message}`, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
+}
+
 function renderFreeAgents() {
   const tbody = document.querySelector('#freeAgentsTable tbody');
   if (!tbody) return;
@@ -4180,6 +4393,7 @@ function renderFreeAgents() {
   }
   rows.forEach((agent) => {
     const freeAgentType = String(agent.free_agent_type || 'No restringido').trim() === 'Restringido' ? 'Restringido' : 'No restringido';
+    const canAct = canSubmitFreeAgentAction();
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${escapeHtml(agent.name || '')}</td>
@@ -4188,11 +4402,17 @@ function renderFreeAgents() {
       <td><span class="free-agent-type-pill ${freeAgentType === 'Restringido' ? 'free-agent-type-pill--restricted' : ''}">${escapeHtml(freeAgentType)}</span></td>
       <td>${escapeHtml(agent.agent || '')}</td>
       <td class="free-agent-actions-cell">
-        <button type="button">Ofertar</button>
-        <button type="button" class="ghost">Negociar</button>
+        <button data-action="offer-free-agent" type="button" ${canAct ? '' : 'disabled'}>Ofertar</button>
+        <button data-action="negotiate-free-agent" type="button" class="ghost" ${canAct ? '' : 'disabled'}>Negociar</button>
       </td>
       <td class="details-cell">${escapeHtml(agent.notes || '')}</td>
     `;
+    tr.querySelector('[data-action="offer-free-agent"]')?.addEventListener('click', () => {
+      openFreeAgentOfferModal(agent);
+    });
+    tr.querySelector('[data-action="negotiate-free-agent"]')?.addEventListener('click', () => {
+      openFreeAgentNegotiateModal(agent);
+    });
     tbody.appendChild(tr);
   });
 }
@@ -6942,6 +7162,17 @@ async function init() {
   document.getElementById('freeAgentSearchInput')?.addEventListener('input', (event) => {
     state.ui.freeAgentSearch = String(event.target.value || '');
     renderFreeAgents();
+  });
+  document.getElementById('freeAgentOfferYears')?.addEventListener('change', renderFreeAgentOfferYearsTable);
+  document.getElementById('freeAgentOfferCloseBtn')?.addEventListener('click', closeFreeAgentOfferModal);
+  document.getElementById('freeAgentOfferSubmitBtn')?.addEventListener('click', () => { void submitFreeAgentOffer(); });
+  document.getElementById('freeAgentOfferModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeFreeAgentOfferModal();
+  });
+  document.getElementById('freeAgentNegotiateCloseBtn')?.addEventListener('click', closeFreeAgentNegotiateModal);
+  document.getElementById('freeAgentNegotiateSubmitBtn')?.addEventListener('click', () => { void submitFreeAgentNegotiation(); });
+  document.getElementById('freeAgentNegotiateModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeFreeAgentNegotiateModal();
   });
 
   const teamsRes = await api('/api/teams');

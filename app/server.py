@@ -65,6 +65,7 @@ try:
         parse_amount_like,
         parse_bool,
         parse_float,
+        parse_free_agent_rep_discord_ids,
         parse_int,
         public_settings_payload,
         row_salary_num,
@@ -118,6 +119,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         parse_amount_like,
         parse_bool,
         parse_float,
+        parse_free_agent_rep_discord_ids,
         parse_int,
         public_settings_payload,
         row_salary_num,
@@ -1102,6 +1104,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """
                 INSERT OR IGNORE INTO app_settings (key, value, updated_at)
                 VALUES ('free_agent_reps', '[]', ?)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('free_agent_rep_discord_ids', '{}', ?)
                 """,
                 (now_iso(),),
             )
@@ -11627,6 +11636,7 @@ class Handler(SimpleHTTPRequestHandler):
     google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
     google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/auth/google/callback")
     discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    discord_free_agent_offers_webhook_url = os.getenv("DISCORD_FREE_AGENT_OFFERS_WEBHOOK_URL", "").strip()
     discord_role_id = os.getenv("DISCORD_NOTIFY_ROLE_ID", "486604867293544458").strip()
     discord_notifications_enabled = str(os.getenv("DISCORD_NOTIFICATIONS_ENABLED", "true")).strip().lower() not in {
         "0",
@@ -12855,10 +12865,22 @@ QUALITY REQUIREMENTS
         generated = self._openai_text_response(system_prompt, user_prompt, max_output_tokens=900)
         return self._owner_interview_parse_final(generated, gm_response)
 
-    def _post_discord_json(self, payload: Dict[str, Any]) -> None:
+    def _discord_webhook_with_thread_name(self, webhook_url: str, thread_name: Optional[str] = None) -> str:
+        if not thread_name:
+            return webhook_url
+        separator = "&" if "?" in webhook_url else "?"
+        return f"{webhook_url}{separator}{urlencode({'thread_name': self._discord_text(thread_name, 100)})}"
+
+    def _post_discord_json(
+        self,
+        payload: Dict[str, Any],
+        *,
+        webhook_url: Optional[str] = None,
+        thread_name: Optional[str] = None,
+    ) -> None:
         data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
         req = Request(
-            self.discord_webhook_url,
+            self._discord_webhook_with_thread_name(webhook_url or self.discord_webhook_url, thread_name),
             data=data,
             headers={
                 "Content-Type": "application/json",
@@ -13141,6 +13163,124 @@ QUALITY REQUIREMENTS
             generate_image=generate_image,
             custom_image=custom_image,
         )
+
+    def _contract_offer_salary_lines(self, payload: Dict[str, Any]) -> str:
+        raw_by_season = payload.get("salary_by_season")
+        lines: List[str] = []
+        if isinstance(raw_by_season, dict):
+            for season_key in sorted(raw_by_season.keys(), key=lambda value: parse_int(str(value)) or 9999):
+                season = parse_int(str(season_key))
+                if season is None:
+                    continue
+                value = str(raw_by_season.get(season_key) or "").strip()
+                if value:
+                    lines.append(f"{season_label(season)}: {value}")
+        for season in range(CAP_FORECAST_MIN_YEAR, CAP_FORECAST_MAX_YEAR + 1):
+            value = str(payload.get(f"salary_{season}") or "").strip()
+            if value and not any(line.startswith(season_label(season)) for line in lines):
+                lines.append(f"{season_label(season)}: {value}")
+        return "\n".join(lines[:8]) or "Sin importes detallados"
+
+    def _notify_free_agent_offer(
+        self,
+        free_agent: Dict[str, Any],
+        team_code: str,
+        payload: Dict[str, Any],
+    ) -> bool:
+        webhook_url = self.discord_free_agent_offers_webhook_url or self.discord_webhook_url
+        if not self.discord_notifications_enabled or not webhook_url:
+            return False
+        player_name = str(free_agent.get("name") or "Jugador")
+        team = normalize_team_code(team_code) or str(team_code or "").upper()
+        contract_type = str(payload.get("contract_type") or "").strip() or "Sin tipo definido"
+        years = parse_int(payload.get("years"))
+        years_text = f"{years} año(s)" if years is not None and years > 0 else "Sin duración definida"
+        salary_lines = self._contract_offer_salary_lines(payload)
+        notes = str(payload.get("notes") or "").strip()
+        thread_name = f"{team} oferta a {player_name}"[:100]
+        embed: Dict[str, Any] = {
+            "title": self._discord_text(f"{team} presenta una oferta a {player_name}", 256),
+            "description": "Oferta contractual registrada desde la agencia libre.",
+            "color": 0x0F766E,
+            "fields": [
+                {"name": "Equipo", "value": team, "inline": True},
+                {"name": "Jugador", "value": self._discord_text(player_name, 1024), "inline": True},
+                {"name": "Tipo", "value": self._discord_text(contract_type, 1024), "inline": True},
+                {"name": "Duración", "value": years_text, "inline": True},
+                {"name": "Importes", "value": self._discord_text(salary_lines, 1024), "inline": False},
+            ],
+        }
+        if notes:
+            embed["fields"].append({"name": "Comentarios", "value": self._discord_text(notes, 1024), "inline": False})
+        payload_json = {
+            "embeds": [embed],
+            "allowed_mentions": {"parse": []},
+        }
+        try:
+            try:
+                self._post_discord_json(payload_json, webhook_url=webhook_url, thread_name=thread_name)
+            except HTTPError as err:
+                if err.code not in {400, 404, 405}:
+                    raise
+                self.log_error("Discord offer thread creation failed; posting without thread: %s", err)
+                self._post_discord_json(payload_json, webhook_url=webhook_url)
+            return True
+        except (HTTPError, URLError, TimeoutError, OSError) as err:
+            self.log_error("Discord free-agent offer notification failed: %s", err)
+            return False
+
+    def _notify_free_agent_negotiation(
+        self,
+        free_agent: Dict[str, Any],
+        team_code: str,
+        payload: Dict[str, Any],
+        agent_discord_id: Optional[str],
+    ) -> bool:
+        if not self.discord_notifications_enabled or not self.discord_webhook_url:
+            return False
+        player_name = str(free_agent.get("name") or "Jugador")
+        agent_name = str(free_agent.get("agent") or payload.get("agent") or "").strip() or "Agente sin asignar"
+        team = normalize_team_code(team_code) or str(team_code or "").upper()
+        economic_offer = str(payload.get("economic_offer") or "").strip() or "Sin oferta económica detallada"
+        role_offer = str(payload.get("role_offer") or "").strip() or "Sin rol detallado"
+        comments = str(payload.get("comments") or "").strip() or "Sin comentarios adicionales"
+        content = f"<@{agent_discord_id}>" if agent_discord_id else None
+        fields = [
+            {"name": "Equipo", "value": team, "inline": True},
+            {"name": "Jugador", "value": self._discord_text(player_name, 1024), "inline": True},
+            {"name": "Agente", "value": self._discord_text(agent_name, 1024), "inline": True},
+            {"name": "Oferta económica", "value": self._discord_text(economic_offer, 1024), "inline": False},
+            {"name": "Rol ofrecido", "value": self._discord_text(role_offer, 1024), "inline": False},
+            {"name": "Comentario del GM", "value": self._discord_text(comments, 1024), "inline": False},
+        ]
+        if not agent_discord_id:
+            fields.append(
+                {
+                    "name": "Aviso",
+                    "value": "Este agente no tiene Discord ID configurado en League Settings.",
+                    "inline": False,
+                }
+            )
+        payload_json: Dict[str, Any] = {
+            "embeds": [
+                {
+                    "title": self._discord_text(f"{team} inicia negociación por {player_name}", 256),
+                    "description": "Solicitud de negociación enviada desde agentes libres.",
+                    "fields": fields,
+                    "color": 0x2563EB,
+                }
+            ],
+            "allowed_mentions": {"parse": []},
+        }
+        if agent_discord_id:
+            payload_json["content"] = content
+            payload_json["allowed_mentions"]["users"] = [agent_discord_id]
+        try:
+            self._post_discord_json(payload_json)
+            return True
+        except (HTTPError, URLError, TimeoutError, OSError) as err:
+            self.log_error("Discord free-agent negotiation notification failed: %s", err)
+            return False
 
     def _trade_pick_ref_for_discord(self, value: Any) -> str:
         text = str(value or "").strip()
@@ -14238,6 +14378,85 @@ QUALITY REQUIREMENTS
                 return
             self._json(201, {"ok": True, "request": request})
             return
+
+        if parsed.path.startswith("/api/free-agents/") and (
+            parsed.path.endswith("/offer") or parsed.path.endswith("/negotiate")
+        ):
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            if not self._require_sensitive_rate_limit("free_agent_action"):
+                return
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                free_agent_id = int(parts[2])
+            except ValueError:
+                self._json(400, {"error": "invalid_free_agent_id"})
+                return
+            action = parts[3]
+            free_agent = self.db.get_free_agent(free_agent_id)
+            if not free_agent:
+                self._json(404, {"error": "free_agent_not_found"})
+                return
+            team_code = normalize_team_code(payload.get("team_code"))
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            if not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            if action == "offer":
+                sent = self._notify_free_agent_offer(free_agent, team_code, payload)
+                self._log_admin_action(
+                    "offer",
+                    "free_agent",
+                    str(free_agent_id),
+                    team_code,
+                    {
+                        "player_name": free_agent.get("name"),
+                        "contract_type": payload.get("contract_type"),
+                        "years": payload.get("years"),
+                        "sent_to_discord": sent,
+                    },
+                )
+                self._json(200, {"ok": True, "discord_sent": sent})
+                return
+            if action == "negotiate":
+                settings_payload = public_settings_payload(self.db.get_settings())
+                rep_map = settings_payload.get("free_agent_rep_discord_ids")
+                agent_name = str(free_agent.get("agent") or "").strip()
+                agent_discord_id = None
+                if isinstance(rep_map, dict) and agent_name:
+                    for configured_name, configured_id in rep_map.items():
+                        if str(configured_name).strip().casefold() == agent_name.casefold():
+                            agent_discord_id = str(configured_id)
+                            break
+                sent = self._notify_free_agent_negotiation(free_agent, team_code, payload, agent_discord_id)
+                self._log_admin_action(
+                    "negotiate",
+                    "free_agent",
+                    str(free_agent_id),
+                    team_code,
+                    {
+                        "player_name": free_agent.get("name"),
+                        "agent": agent_name,
+                        "agent_discord_configured": bool(agent_discord_id),
+                        "sent_to_discord": sent,
+                    },
+                )
+                self._json(200, {"ok": True, "discord_sent": sent, "agent_discord_configured": bool(agent_discord_id)})
+                return
 
         if parsed.path.startswith("/api/teams/") and "/owner-exit-interview/" in parsed.path:
             parts = parsed.path.split("/")
@@ -15463,6 +15682,7 @@ QUALITY REQUIREMENTS
             next_roster_two_way_min: Optional[int] = None
             next_roster_two_way_max: Optional[int] = None
             next_free_agent_reps: Optional[List[str]] = None
+            next_free_agent_rep_discord_ids: Optional[Dict[str, str]] = None
             season_cap_updates: Dict[str, Optional[float]] = {}
             rookie_scale_updates: Dict[str, Optional[float]] = {}
 
@@ -15544,6 +15764,13 @@ QUALITY REQUIREMENTS
                     next_free_agent_reps.append(value)
                 if len(next_free_agent_reps) > 100:
                     self._json(400, {"error": "invalid_free_agent_reps"})
+                    return
+
+            if "free_agent_rep_discord_ids" in payload:
+                raw_map = payload.get("free_agent_rep_discord_ids")
+                next_free_agent_rep_discord_ids = parse_free_agent_rep_discord_ids(raw_map)
+                if len(next_free_agent_rep_discord_ids) > 100:
+                    self._json(400, {"error": "invalid_free_agent_rep_discord_ids"})
                     return
 
             for field, raw_value in payload.items():
@@ -15645,6 +15872,7 @@ QUALITY REQUIREMENTS
                 and next_roster_two_way_min is None
                 and next_roster_two_way_max is None
                 and next_free_agent_reps is None
+                and next_free_agent_rep_discord_ids is None
             ):
                 self._json(400, {"error": "settings_payload_required"})
                 return
@@ -15684,6 +15912,11 @@ QUALITY REQUIREMENTS
                 self.db.update_setting("roster_two_way_max", str(next_roster_two_way_max))
             if next_free_agent_reps is not None:
                 self.db.update_setting("free_agent_reps", json.dumps(next_free_agent_reps, ensure_ascii=False))
+            if next_free_agent_rep_discord_ids is not None:
+                self.db.update_setting(
+                    "free_agent_rep_discord_ids",
+                    json.dumps(next_free_agent_rep_discord_ids, ensure_ascii=False),
+                )
             self._log_admin_action(
                 "update",
                 "settings",
@@ -15708,6 +15941,7 @@ QUALITY REQUIREMENTS
                     "roster_two_way_min": next_roster_two_way_min,
                     "roster_two_way_max": next_roster_two_way_max,
                     "free_agent_reps": next_free_agent_reps,
+                    "free_agent_rep_discord_ids": next_free_agent_rep_discord_ids,
                 },
             )
 

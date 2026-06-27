@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260626f">
+  <link rel="stylesheet" href="/styles.css?v=20260626g">
 </head>
 <body class="app-layout">
   <header>
@@ -584,6 +584,8 @@
         </label>
         <label for="freeAgentRepsInput">Agentes de jugadores</label>
         <textarea id="freeAgentRepsInput" rows="4" placeholder="Un agente por línea"></textarea>
+        <label for="freeAgentRepDiscordIdsInput">Discord IDs de agentes</label>
+        <textarea id="freeAgentRepDiscordIdsInput" rows="4" placeholder="Agente = Discord user ID"></textarea>
         <button id="saveSettingsBtn">Save Settings</button>
         <button id="progressYearBtn" type="button">Progress to next year</button>
         <button id="downloadBackupBtn" type="button">Download backup</button>
@@ -1120,7 +1122,91 @@
       </div>
     </div>
   </div>
+  <div id="freeAgentOfferModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="freeAgentOfferTitle">
+    <div class="modal-card free-agent-action-modal">
+      <div class="modal-header">
+        <h2 id="freeAgentOfferTitle">Enviar oferta</h2>
+        <button id="freeAgentOfferCloseBtn" type="button" class="danger">Cerrar</button>
+      </div>
+      <div class="free-agent-action-summary" id="freeAgentOfferSummary"></div>
+      <div class="sign-free-agent-grid">
+        <label for="freeAgentOfferTeam">Equipo</label>
+        <select id="freeAgentOfferTeam"></select>
+        <label for="freeAgentOfferType">Tipo de contrato</label>
+        <select id="freeAgentOfferType">
+          <option value="Reg">Reg</option>
+          <option value="Min">Min</option>
+          <option value="Max">Max</option>
+          <option value="Mid">Mid</option>
+          <option value="TMid">TMid</option>
+          <option value="Bi">Bi</option>
+          <option value="Room">Room</option>
+          <option value="TW">TW</option>
+          <option value="R">R</option>
+          <option value="R(2)">R(2)</option>
+          <option value="E10">E10</option>
+        </select>
+        <label for="freeAgentOfferYears">Duración</label>
+        <select id="freeAgentOfferYears">
+          <option value="1">1 año</option>
+          <option value="2">2 años</option>
+          <option value="3">3 años</option>
+          <option value="4">4 años</option>
+          <option value="5">5 años</option>
+        </select>
+      </div>
+      <div class="table-wrap sign-free-agent-years-wrap">
+        <table id="freeAgentOfferYearsTable">
+          <thead>
+            <tr>
+              <th>Temporada</th>
+              <th>Importe</th>
+              <th>Opción</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <label class="free-agent-action-notes" for="freeAgentOfferNotes">
+        <span>Comentarios</span>
+        <textarea id="freeAgentOfferNotes" rows="3" placeholder="Detalles adicionales de la oferta"></textarea>
+      </label>
+      <div id="freeAgentOfferStatus" class="locator-status" aria-live="polite"></div>
+      <div class="trade-actions">
+        <button id="freeAgentOfferSubmitBtn" type="button">Enviar oferta</button>
+      </div>
+    </div>
+  </div>
+  <div id="freeAgentNegotiateModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="freeAgentNegotiateTitle">
+    <div class="modal-card free-agent-action-modal">
+      <div class="modal-header">
+        <h2 id="freeAgentNegotiateTitle">Negociar</h2>
+        <button id="freeAgentNegotiateCloseBtn" type="button" class="danger">Cerrar</button>
+      </div>
+      <div class="free-agent-action-summary" id="freeAgentNegotiateSummary"></div>
+      <div class="sign-free-agent-grid">
+        <label for="freeAgentNegotiateTeam">Equipo</label>
+        <select id="freeAgentNegotiateTeam"></select>
+      </div>
+      <label class="free-agent-action-notes" for="freeAgentNegotiateEconomic">
+        <span>Cuál es tu oferta económica?</span>
+        <textarea id="freeAgentNegotiateEconomic" rows="2"></textarea>
+      </label>
+      <label class="free-agent-action-notes" for="freeAgentNegotiateRole">
+        <span>Qué rol le quieres ofrecer?</span>
+        <textarea id="freeAgentNegotiateRole" rows="2"></textarea>
+      </label>
+      <label class="free-agent-action-notes" for="freeAgentNegotiateComments">
+        <span>¿Algún otro comentario antes de empezar la negociación?</span>
+        <textarea id="freeAgentNegotiateComments" rows="3"></textarea>
+      </label>
+      <div id="freeAgentNegotiateStatus" class="locator-status" aria-live="polite"></div>
+      <div class="trade-actions">
+        <button id="freeAgentNegotiateSubmitBtn" type="button">Enviar negociación</button>
+      </div>
+    </div>
+  </div>
 
-  <script src="/admin.js?v=20260626f" defer></script>
+  <script src="/admin.js?v=20260626g" defer></script>
 </body>
 </html>

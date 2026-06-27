@@ -7,6 +7,7 @@ from app.domain_rules import (
     open_roster_spot_cap_hold,
     parse_amount_like,
     parse_float,
+    parse_free_agent_rep_discord_ids,
     public_settings_payload,
     apply_salary_floor,
 )
@@ -32,6 +33,22 @@ class DomainRulesTests(unittest.TestCase):
 
         settings["free_agency_mode"] = "1"
         self.assertEqual(50_000_000, apply_salary_floor(settings, 2025, 100_000_000, 50_000_000))
+
+    def test_free_agent_rep_discord_ids_accept_admin_text_format(self) -> None:
+        result = parse_free_agent_rep_discord_ids(
+            "Agente Uno = <@123456789012345678>\n"
+            "Agente Dos: 987654321098765432\n"
+            "sin delimitador\n"
+            "Agente Malo = abc"
+        )
+
+        self.assertEqual(
+            {
+                "Agente Uno": "123456789012345678",
+                "Agente Dos": "987654321098765432",
+            },
+            result,
+        )
 
     def test_cap_hold_amount_uses_early_bird_multiplier(self) -> None:
         row = {
