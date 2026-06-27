@@ -11745,6 +11745,11 @@ class Handler(SimpleHTTPRequestHandler):
     google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/auth/google/callback")
     discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     discord_free_agent_offers_webhook_url = os.getenv("DISCORD_FREE_AGENT_OFFERS_WEBHOOK_URL", "").strip()
+    discord_free_agent_offers_forum_tag_ids = [
+        re.sub(r"\D+", "", value)
+        for value in os.getenv("DISCORD_FREE_AGENT_OFFERS_FORUM_TAG_IDS", "").split(",")
+        if re.sub(r"\D+", "", value)
+    ][:5]
     discord_role_id = os.getenv("DISCORD_NOTIFY_ROLE_ID", "486604867293544458").strip()
     discord_notifications_enabled = str(os.getenv("DISCORD_NOTIFICATIONS_ENABLED", "true")).strip().lower() not in {
         "0",
@@ -13352,6 +13357,8 @@ QUALITY REQUIREMENTS
             "embeds": [embed],
             "allowed_mentions": {"parse": []},
         }
+        if self.discord_free_agent_offers_forum_tag_ids:
+            payload_json["applied_tags"] = self.discord_free_agent_offers_forum_tag_ids
         try:
             existing_thread = self.db.get_free_agent_offer_thread(free_agent)
             if existing_thread and existing_thread.get("thread_id"):
@@ -13365,7 +13372,10 @@ QUALITY REQUIREMENTS
                 except HTTPError as err:
                     if err.code not in {400, 404, 405}:
                         raise
-                    self.log_error("Discord offer thread reuse failed; creating new thread: %s", err)
+                    self.log_error(
+                        "Discord offer thread reuse failed; creating new thread: %s",
+                        self._http_error_excerpt(err),
+                    )
             try:
                 response = self._post_discord_json(
                     payload_json,
@@ -13380,11 +13390,14 @@ QUALITY REQUIREMENTS
             except HTTPError as err:
                 if err.code not in {400, 404, 405}:
                     raise
-                self.log_error("Discord offer thread creation failed; posting without thread: %s", err)
-                self._post_discord_json(payload_json, webhook_url=webhook_url)
+                self.log_error("Discord offer thread creation failed: %s", self._http_error_excerpt(err))
+                return False
             return True
         except (HTTPError, URLError, TimeoutError, OSError) as err:
-            self.log_error("Discord free-agent offer notification failed: %s", err)
+            if isinstance(err, HTTPError):
+                self.log_error("Discord free-agent offer notification failed: %s", self._http_error_excerpt(err))
+            else:
+                self.log_error("Discord free-agent offer notification failed: %s", err)
             return False
 
     def _notify_free_agent_negotiation(
