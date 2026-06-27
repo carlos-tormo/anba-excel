@@ -1168,6 +1168,34 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS discord_free_agent_offer_threads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER,
+                    player_name_key TEXT NOT NULL,
+                    player_name TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    thread_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_discord_fa_offer_threads_profile
+                ON discord_free_agent_offer_threads (profile_id)
+                WHERE profile_id IS NOT NULL
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_discord_fa_offer_threads_name_key
+                ON discord_free_agent_offer_threads (player_name_key)
+                WHERE profile_id IS NULL
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS admin_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -2368,6 +2396,86 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
                 (key, value, now_iso()),
             )
+            conn.commit()
+
+    def _free_agent_offer_thread_key(self, free_agent: Dict[str, Any]) -> tuple[Optional[int], str, str]:
+        profile_id = parse_int(free_agent.get("profile_id"))
+        player_name = str(free_agent.get("name") or free_agent.get("profile_name") or "Jugador").strip() or "Jugador"
+        normalized_name = unicodedata.normalize("NFKD", player_name)
+        name_key = re.sub(r"[^a-z0-9]+", "-", normalized_name.encode("ascii", "ignore").decode("ascii").lower())
+        name_key = name_key.strip("-") or re.sub(r"\W+", "-", player_name.lower()).strip("-") or "jugador"
+        return profile_id, name_key[:160], player_name
+
+    def get_free_agent_offer_thread(self, free_agent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        profile_id, name_key, _player_name = self._free_agent_offer_thread_key(free_agent)
+        with self.connect() as conn:
+            if profile_id is not None:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM discord_free_agent_offer_threads
+                    WHERE profile_id = ?
+                    LIMIT 1
+                    """,
+                    (profile_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM discord_free_agent_offer_threads
+                    WHERE profile_id IS NULL AND player_name_key = ?
+                    LIMIT 1
+                    """,
+                    (name_key,),
+                ).fetchone()
+            return dict(row) if row else None
+
+    def upsert_free_agent_offer_thread(
+        self,
+        free_agent: Dict[str, Any],
+        thread_id: str,
+        thread_name: str,
+    ) -> None:
+        clean_thread_id = re.sub(r"\D+", "", str(thread_id or ""))
+        if not clean_thread_id:
+            return
+        profile_id, name_key, player_name = self._free_agent_offer_thread_key(free_agent)
+        timestamp = now_iso()
+        with self.connect() as conn:
+            if profile_id is not None:
+                conn.execute(
+                    """
+                    INSERT INTO discord_free_agent_offer_threads (
+                        profile_id, player_name_key, player_name, thread_id, thread_name, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(profile_id) WHERE profile_id IS NOT NULL
+                    DO UPDATE SET
+                        player_name_key = excluded.player_name_key,
+                        player_name = excluded.player_name,
+                        thread_id = excluded.thread_id,
+                        thread_name = excluded.thread_name,
+                        updated_at = excluded.updated_at
+                    """,
+                    (profile_id, name_key, player_name, clean_thread_id, thread_name, timestamp, timestamp),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO discord_free_agent_offer_threads (
+                        profile_id, player_name_key, player_name, thread_id, thread_name, created_at, updated_at
+                    )
+                    VALUES (NULL, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(player_name_key) WHERE profile_id IS NULL
+                    DO UPDATE SET
+                        player_name = excluded.player_name,
+                        thread_id = excluded.thread_id,
+                        thread_name = excluded.thread_name,
+                        updated_at = excluded.updated_at
+                    """,
+                    (name_key, player_name, clean_thread_id, thread_name, timestamp, timestamp),
+                )
             conn.commit()
 
     def _increment_player_bird_years(self, conn: sqlite3.Connection, seasons: int, timestamp: str) -> int:
@@ -12865,11 +12973,25 @@ QUALITY REQUIREMENTS
         generated = self._openai_text_response(system_prompt, user_prompt, max_output_tokens=900)
         return self._owner_interview_parse_final(generated, gm_response)
 
-    def _discord_webhook_with_thread_name(self, webhook_url: str, thread_name: Optional[str] = None) -> str:
-        if not thread_name:
+    def _discord_webhook_url(
+        self,
+        webhook_url: str,
+        *,
+        thread_name: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        wait: bool = False,
+    ) -> str:
+        query: Dict[str, str] = {}
+        if thread_name:
+            query["thread_name"] = self._discord_text(thread_name, 100)
+        if thread_id:
+            query["thread_id"] = re.sub(r"\D+", "", str(thread_id))
+        if wait:
+            query["wait"] = "true"
+        if not query:
             return webhook_url
         separator = "&" if "?" in webhook_url else "?"
-        return f"{webhook_url}{separator}{urlencode({'thread_name': self._discord_text(thread_name, 100)})}"
+        return f"{webhook_url}{separator}{urlencode(query)}"
 
     def _post_discord_json(
         self,
@@ -12877,10 +12999,17 @@ QUALITY REQUIREMENTS
         *,
         webhook_url: Optional[str] = None,
         thread_name: Optional[str] = None,
-    ) -> None:
+        thread_id: Optional[str] = None,
+        wait: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
         req = Request(
-            self._discord_webhook_with_thread_name(webhook_url or self.discord_webhook_url, thread_name),
+            self._discord_webhook_url(
+                webhook_url or self.discord_webhook_url,
+                thread_name=thread_name,
+                thread_id=thread_id,
+                wait=wait,
+            ),
             data=data,
             headers={
                 "Content-Type": "application/json",
@@ -12889,7 +13018,14 @@ QUALITY REQUIREMENTS
             method="POST",
         )
         with urlopen(req, timeout=self.discord_timeout_seconds) as resp:
-            resp.read()
+            raw = resp.read()
+        if wait and raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
 
     def _post_discord_multipart(
         self,
@@ -13197,7 +13333,7 @@ QUALITY REQUIREMENTS
         years_text = f"{years} año(s)" if years is not None and years > 0 else "Sin duración definida"
         salary_lines = self._contract_offer_salary_lines(payload)
         notes = str(payload.get("notes") or "").strip()
-        thread_name = f"{team} oferta a {player_name}"[:100]
+        thread_name = self._discord_text(player_name, 100) or "Jugador"
         embed: Dict[str, Any] = {
             "title": self._discord_text(f"{team} presenta una oferta a {player_name}", 256),
             "description": "Oferta contractual registrada desde la agencia libre.",
@@ -13217,8 +13353,30 @@ QUALITY REQUIREMENTS
             "allowed_mentions": {"parse": []},
         }
         try:
+            existing_thread = self.db.get_free_agent_offer_thread(free_agent)
+            if existing_thread and existing_thread.get("thread_id"):
+                try:
+                    self._post_discord_json(
+                        payload_json,
+                        webhook_url=webhook_url,
+                        thread_id=str(existing_thread.get("thread_id")),
+                    )
+                    return True
+                except HTTPError as err:
+                    if err.code not in {400, 404, 405}:
+                        raise
+                    self.log_error("Discord offer thread reuse failed; creating new thread: %s", err)
             try:
-                self._post_discord_json(payload_json, webhook_url=webhook_url, thread_name=thread_name)
+                response = self._post_discord_json(
+                    payload_json,
+                    webhook_url=webhook_url,
+                    thread_name=thread_name,
+                    wait=True,
+                )
+                if isinstance(response, dict):
+                    thread_id = response.get("channel_id")
+                    if thread_id:
+                        self.db.upsert_free_agent_offer_thread(free_agent, str(thread_id), thread_name)
             except HTTPError as err:
                 if err.code not in {400, 404, 405}:
                     raise
