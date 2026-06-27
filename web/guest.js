@@ -4326,7 +4326,8 @@ async function submitFreeAgentOffer() {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    setFreeAgentActionStatus('offer', result.discord_sent ? 'Oferta enviada a Discord.' : 'Oferta registrada, pero Discord no está configurado o falló.');
+    const requestKind = result.offer_type === 'renewal' ? 'Oferta de renovación' : 'Oferta';
+    setFreeAgentActionStatus('offer', `${requestKind} enviada a la administración. Quedará pendiente de aprobación.`);
   } catch (err) {
     setFreeAgentActionStatus('offer', `No se pudo enviar la oferta: ${err.message}`, true);
   } finally {

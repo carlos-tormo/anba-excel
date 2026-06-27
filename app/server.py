@@ -1007,6 +1007,40 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS gm_free_agent_offer_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    free_agent_id INTEGER NOT NULL REFERENCES free_agents(id) ON DELETE CASCADE,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    requester_email TEXT,
+                    requester_name TEXT,
+                    offer_payload_json TEXT NOT NULL DEFAULT '{}',
+                    offer_type TEXT NOT NULL DEFAULT 'free_agent_offer',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    admin_email TEXT,
+                    admin_name TEXT,
+                    admin_decision_note TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    decided_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_gm_free_agent_offer_requests_status
+                ON gm_free_agent_offer_requests (status, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_gm_free_agent_offer_requests_pending_unique
+                ON gm_free_agent_offer_requests (free_agent_id, team_id)
+                WHERE status = 'pending'
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -2994,6 +3028,29 @@ class LeagueDB(DatabaseMaintenanceMixin):
         item["season_label"] = f"Draft {draft_year}" if draft_year else "Draft"
         return item
 
+    def _gm_free_agent_offer_request_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
+        item = row_to_dict(cursor, row)
+        item["request_type"] = "free_agent_offer"
+        item["action"] = "offered"
+        item["option_field"] = "free_agent_offer"
+        offer_type = str(item.get("offer_type") or "free_agent_offer").strip().lower()
+        item["option_value"] = "Renovación" if offer_type == "renewal" else "Oferta FA"
+        raw_payload = str(item.get("offer_payload_json") or "{}")
+        try:
+            offer_payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            offer_payload = {}
+        if not isinstance(offer_payload, dict):
+            offer_payload = {}
+        item["offer_payload"] = offer_payload
+        contract_type = str(offer_payload.get("contract_type") or "").strip() or "Sin tipo"
+        years = parse_int(offer_payload.get("years"))
+        years_text = f"{years} año(s)" if years is not None and years > 0 else "Sin duración"
+        item["season_label"] = f"{contract_type} · {years_text}"
+        item["offer_contract_type"] = contract_type
+        item["offer_years"] = years
+        return item
+
     def get_gm_option_request(self, request_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             cur = conn.execute(
@@ -3066,7 +3123,35 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 params,
             )
             draft_requests = [self._gm_draft_pick_request_from_row(draft_cur, row) for row in draft_cur.fetchall()]
-            requests = [*option_requests, *draft_requests]
+
+            free_agent_cur = conn.execute(
+                f"""
+                SELECT
+                    r.*,
+                    f.name AS player_name,
+                    f.profile_id,
+                    f.position,
+                    f.rating,
+                    f.free_agent_type,
+                    f.rights_team_code,
+                    t.code AS team_code,
+                    t.name AS team_name
+                FROM gm_free_agent_offer_requests r
+                JOIN free_agents f ON f.id = r.free_agent_id
+                JOIN teams t ON t.id = r.team_id
+                {where}
+                ORDER BY
+                    CASE r.status WHEN 'pending' THEN 0 ELSE 1 END,
+                    r.created_at DESC,
+                    r.id DESC
+                """,
+                params,
+            )
+            free_agent_requests = [
+                self._gm_free_agent_offer_request_from_row(free_agent_cur, row)
+                for row in free_agent_cur.fetchall()
+            ]
+            requests = [*option_requests, *draft_requests, *free_agent_requests]
             requests.sort(key=lambda item: (str(item.get("created_at") or ""), int(item.get("id") or 0)), reverse=True)
             requests.sort(key=lambda item: 0 if str(item.get("status") or "") == "pending" else 1)
             return requests
@@ -3095,6 +3180,30 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             row = cur.fetchone()
             return self._gm_draft_pick_request_from_row(cur, row) if row else None
+
+    def get_gm_free_agent_offer_request(self, request_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    r.*,
+                    f.name AS player_name,
+                    f.profile_id,
+                    f.position,
+                    f.rating,
+                    f.free_agent_type,
+                    f.rights_team_code,
+                    t.code AS team_code,
+                    t.name AS team_name
+                FROM gm_free_agent_offer_requests r
+                JOIN free_agents f ON f.id = r.free_agent_id
+                JOIN teams t ON t.id = r.team_id
+                WHERE r.id = ?
+                """,
+                (int(request_id),),
+            )
+            row = cur.fetchone()
+            return self._gm_free_agent_offer_request_from_row(cur, row) if row else None
 
     def create_gm_option_request(
         self,
@@ -3447,6 +3556,104 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         return self.get_gm_draft_pick_request(request_id) if request_id is not None else None
 
+    def create_gm_free_agent_offer_request(
+        self,
+        free_agent_id: int,
+        team_code: str,
+        payload: Dict[str, Any],
+        requester: Dict[str, Any],
+        offer_type: str = "free_agent_offer",
+    ) -> Optional[Dict[str, Any]]:
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            raise ValueError("invalid_team_code")
+        normalized_offer_type = str(offer_type or "free_agent_offer").strip().lower()
+        if normalized_offer_type not in {"free_agent_offer", "renewal"}:
+            normalized_offer_type = "free_agent_offer"
+        offer_payload = payload if isinstance(payload, dict) else {}
+        offer_payload_json = json.dumps(offer_payload, ensure_ascii=False, sort_keys=True)
+        requester_user_id = parse_int(str(requester.get("user_id") or "")) if requester else None
+        timestamp = now_iso()
+        request_id: Optional[int] = None
+        with self.connect() as conn:
+            free_agent = conn.execute(
+                "SELECT id FROM free_agents WHERE id = ?",
+                (int(free_agent_id),),
+            ).fetchone()
+            if not free_agent:
+                return None
+            team = conn.execute(
+                "SELECT id FROM teams WHERE code = ?",
+                (normalized_team,),
+            ).fetchone()
+            if not team:
+                raise ValueError("invalid_team_code")
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM gm_free_agent_offer_requests
+                WHERE free_agent_id = ? AND team_id = ? AND status = 'pending'
+                """,
+                (int(free_agent_id), int(team["id"])),
+            ).fetchone()
+            if existing:
+                request_id = int(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE gm_free_agent_offer_requests
+                    SET
+                        requester_user_id = ?,
+                        requester_email = ?,
+                        requester_name = ?,
+                        offer_payload_json = ?,
+                        offer_type = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        requester_user_id,
+                        str(requester.get("email") or "").strip() if requester else None,
+                        str(requester.get("name") or "").strip() if requester else None,
+                        offer_payload_json,
+                        normalized_offer_type,
+                        timestamp,
+                        request_id,
+                    ),
+                )
+            else:
+                req_cur = conn.execute(
+                    """
+                    INSERT INTO gm_free_agent_offer_requests (
+                        free_agent_id,
+                        team_id,
+                        requester_user_id,
+                        requester_email,
+                        requester_name,
+                        offer_payload_json,
+                        offer_type,
+                        status,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (
+                        int(free_agent_id),
+                        int(team["id"]),
+                        requester_user_id,
+                        str(requester.get("email") or "").strip() if requester else None,
+                        str(requester.get("name") or "").strip() if requester else None,
+                        offer_payload_json,
+                        normalized_offer_type,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                request_id = int(req_cur.lastrowid)
+            conn.commit()
+
+        return self.get_gm_free_agent_offer_request(request_id) if request_id is not None else None
+
     def mark_gm_draft_pick_request_decided(
         self,
         request_id: int,
@@ -3485,6 +3692,45 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if cur.rowcount < 1:
                 return None
         return self.get_gm_draft_pick_request(request_id)
+
+    def mark_gm_free_agent_offer_request_decided(
+        self,
+        request_id: int,
+        status: str,
+        admin: Dict[str, Any],
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"approved", "rejected"}:
+            raise ValueError("invalid_status")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE gm_free_agent_offer_requests
+                SET
+                    status = ?,
+                    admin_email = ?,
+                    admin_name = ?,
+                    admin_decision_note = ?,
+                    updated_at = ?,
+                    decided_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (
+                    normalized_status,
+                    str(admin.get("email") or "").strip() if admin else None,
+                    str(admin.get("name") or "").strip() if admin else None,
+                    note,
+                    timestamp,
+                    timestamp,
+                    int(request_id),
+                ),
+            )
+            conn.commit()
+            if cur.rowcount < 1:
+                return None
+        return self.get_gm_free_agent_offer_request(request_id)
 
     def mark_gm_option_request_decided(
         self,
@@ -13407,6 +13653,7 @@ QUALITY REQUIREMENTS
         free_agent: Dict[str, Any],
         team_code: str,
         payload: Dict[str, Any],
+        offer_type: Optional[str] = None,
     ) -> bool:
         webhook_url = self.discord_free_agent_offers_webhook_url or self.discord_webhook_url
         if not self.discord_notifications_enabled or not webhook_url:
@@ -13419,7 +13666,10 @@ QUALITY REQUIREMENTS
         salary_lines = self._contract_offer_salary_lines(payload)
         notes = str(payload.get("notes") or "").strip()
         thread_name = self._discord_text(player_name, 100) or "Jugador"
-        is_renewal = self._free_agent_offer_is_renewal(free_agent, team)
+        normalized_offer_type = str(offer_type or "").strip().lower()
+        is_renewal = normalized_offer_type == "renewal" or (
+            not normalized_offer_type and self._free_agent_offer_is_renewal(free_agent, team)
+        )
         offer_label = "Oferta de renovación" if is_renewal else "Oferta"
         embed: Dict[str, Any] = {
             "title": self._discord_text(
@@ -14680,22 +14930,24 @@ QUALITY REQUIREMENTS
                 self._json(403, {"error": "team_access_required"})
                 return
             if action == "offer":
-                sent = self._notify_free_agent_offer(free_agent, team_code, payload)
                 is_renewal = self._free_agent_offer_is_renewal(free_agent, team_code)
-                self._log_admin_action(
-                    "offer",
-                    "free_agent",
-                    str(free_agent_id),
-                    team_code,
-                    {
-                        "player_name": free_agent.get("name"),
-                        "offer_type": "renewal" if is_renewal else "free_agent_offer",
-                        "contract_type": payload.get("contract_type"),
-                        "years": payload.get("years"),
-                        "sent_to_discord": sent,
-                    },
-                )
-                self._json(200, {"ok": True, "discord_sent": sent, "offer_type": "renewal" if is_renewal else "free_agent_offer"})
+                offer_type = "renewal" if is_renewal else "free_agent_offer"
+                try:
+                    request = self.db.create_gm_free_agent_offer_request(
+                        free_agent_id,
+                        team_code,
+                        payload,
+                        self._current_session() or {},
+                        offer_type,
+                    )
+                except ValueError as err:
+                    message = str(err) or "invalid_free_agent_offer"
+                    self._json(400, {"error": message})
+                    return
+                if not request:
+                    self._json(404, {"error": "free_agent_not_found"})
+                    return
+                self._json(201, {"ok": True, "request": request, "offer_type": offer_type})
                 return
             if action == "negotiate":
                 settings_payload = public_settings_payload(self.db.get_settings())
@@ -15667,6 +15919,101 @@ QUALITY REQUIREMENTS
                     custom_image=payload.get("discord_custom_image"),
                 )
             self._json(200, {"ok": True, "request": updated, "draft_live": live})
+            return
+
+        if parsed.path.startswith("/api/admin/gm-free-agent-offer-requests/"):
+            try:
+                request_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_request_id"})
+                return
+            admin_decision = str(payload.get("decision") or "").strip().lower()
+            if admin_decision not in {"approved", "rejected"}:
+                self._json(400, {"error": "invalid_decision"})
+                return
+            request = self.db.get_gm_free_agent_offer_request(request_id)
+            if not request:
+                self._json(404, {"error": "request_not_found"})
+                return
+            if str(request.get("status") or "").lower() != "pending":
+                self._json(409, {"error": "request_already_decided", "request": request})
+                return
+            if not self._require_team_write_access(request.get("team_code")):
+                return
+
+            if admin_decision == "rejected":
+                updated = self.db.mark_gm_free_agent_offer_request_decided(
+                    request_id,
+                    "rejected",
+                    self._current_session() or {},
+                    str(payload.get("note") or "").strip() or None,
+                )
+                if not updated:
+                    self._json(409, {"error": "request_already_decided"})
+                    return
+                self._log_admin_action(
+                    "reject",
+                    "gm_free_agent_offer_request",
+                    str(request_id),
+                    request.get("team_code"),
+                    {
+                        "free_agent_id": request.get("free_agent_id"),
+                        "player_name": request.get("player_name"),
+                        "offer_type": request.get("offer_type"),
+                    },
+                    before={"request": request},
+                    after={"request": updated},
+                )
+                self._json(200, {"ok": True, "request": updated})
+                return
+
+            free_agent_id = parse_int(request.get("free_agent_id"))
+            if free_agent_id is None:
+                self._json(400, {"error": "invalid_free_agent_id"})
+                return
+            free_agent = self.db.get_free_agent(free_agent_id)
+            if not free_agent:
+                self._json(404, {"error": "free_agent_not_found"})
+                return
+            updated = self.db.mark_gm_free_agent_offer_request_decided(
+                request_id,
+                "approved",
+                self._current_session() or {},
+                str(payload.get("note") or "").strip() or None,
+            )
+            if not updated:
+                self._json(409, {"error": "request_already_decided"})
+                return
+            discord_sent = False
+            if self._discord_notify_requested(payload):
+                offer_payload = request.get("offer_payload") if isinstance(request.get("offer_payload"), dict) else {}
+                discord_sent = self._notify_free_agent_offer(
+                    free_agent,
+                    str(request.get("team_code") or ""),
+                    offer_payload,
+                    str(request.get("offer_type") or ""),
+                )
+            self._log_admin_action(
+                "approve",
+                "gm_free_agent_offer_request",
+                str(request_id),
+                request.get("team_code"),
+                {
+                    "free_agent_id": free_agent_id,
+                    "player_name": request.get("player_name"),
+                    "offer_type": request.get("offer_type"),
+                    "contract_type": (request.get("offer_payload") or {}).get("contract_type")
+                    if isinstance(request.get("offer_payload"), dict)
+                    else None,
+                    "years": (request.get("offer_payload") or {}).get("years")
+                    if isinstance(request.get("offer_payload"), dict)
+                    else None,
+                    "sent_to_discord": discord_sent,
+                },
+                before={"request": request},
+                after={"request": updated},
+            )
+            self._json(200, {"ok": True, "request": updated, "discord_sent": discord_sent})
             return
 
         if parsed.path.startswith("/api/admin/gm-option-requests/"):

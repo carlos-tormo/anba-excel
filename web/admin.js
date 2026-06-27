@@ -161,6 +161,7 @@ const TEAM_TABS = [
     sections: ['ownerOfficeSection'],
   },
 ];
+const ADMIN_VIEW_MODES = ['gm-option-requests', 'admin-tools', 'admin-users', 'admin-settings', 'admin-log'];
 
 const OWNER_OFFICE_INCOME_ROWS = [
   { key: 'recaudacion', label: 'Recaudación', type: 'category' },
@@ -3689,6 +3690,7 @@ async function loadAdminUsers() {
 }
 
 function optionRequestActionLabel(action) {
+  if (action === 'offered') return 'Oferta enviada';
   if (action === 'selected') return 'Elegir jugador';
   if (action === 'renounced') return 'Renunciar derechos';
   return action === 'accepted' ? 'Aceptar opción' : 'Rechazar opción';
@@ -3697,6 +3699,7 @@ function optionRequestActionLabel(action) {
 function gmRequestTypeLabel(request) {
   if (request?.request_type === 'draft_pick') return 'Draft';
   if (request?.request_type === 'bird_rights_renounce') return 'Derechos';
+  if (request?.request_type === 'free_agent_offer') return 'Oferta FA';
   return 'Opción';
 }
 
@@ -3705,6 +3708,20 @@ function gmDraftPickLabel(request) {
   const round = String(request?.draft_round || '').trim();
   const year = request?.draft_year ? `Draft ${request.draft_year}` : 'Draft';
   return `${pick} · ${round} · ${year}`;
+}
+
+function gmFreeAgentOfferContext(request) {
+  const payload = request?.offer_payload && typeof request.offer_payload === 'object' ? request.offer_payload : {};
+  const contractType = String(request?.offer_contract_type || payload.contract_type || '').trim() || 'Sin tipo';
+  const years = Number(request?.offer_years || payload.years || 0);
+  const yearsText = years > 0 ? `${years} año(s)` : 'Sin duración';
+  const salaryBySeason = payload.salary_by_season && typeof payload.salary_by_season === 'object' ? payload.salary_by_season : {};
+  const firstSalary = Object.keys(salaryBySeason)
+    .sort()
+    .map((year) => String(salaryBySeason[year] || '').trim())
+    .find(Boolean);
+  const salaryLine = firstSalary ? `<div class="muted">Desde ${escapeHtml(firstSalary)}</div>` : '';
+  return `${escapeHtml(contractType)} · ${escapeHtml(yearsText)}${salaryLine}`;
 }
 
 function updateGmOptionRequestBadges() {
@@ -3732,15 +3749,20 @@ function renderGmOptionRequests() {
     const requestType = String(request.request_type || 'option');
     const isDraftRequest = requestType === 'draft_pick';
     const isBirdRenounceRequest = requestType === 'bird_rights_renounce';
+    const isFreeAgentOfferRequest = requestType === 'free_agent_offer';
     const created = request.created_at ? new Date(request.created_at).toLocaleString() : '';
     const submittedBy = request.requester_name || request.requester_email || 'GM';
-    const actionClass = request.action === 'accepted' || isDraftRequest ? 'gm-request-action--accept' : 'gm-request-action--reject';
+    const actionClass = request.action === 'accepted' || isDraftRequest || isFreeAgentOfferRequest ? 'gm-request-action--accept' : 'gm-request-action--reject';
     const mainItem = isDraftRequest ? escapeHtml(request.selection_text || '') : escapeHtml(request.player_name || '');
     const secondaryItem = isDraftRequest
       ? `${escapeHtml(gmDraftPickLabel(request))}<div class="muted">Vía ${escapeHtml(request.original_team_code || '')}</div>`
+      : isFreeAgentOfferRequest
+        ? gmFreeAgentOfferContext(request)
       : escapeHtml(request.season_label || '');
     const typeCell = isDraftRequest
       ? '<span class="contract-opt-pill">DRAFT</span>'
+      : isFreeAgentOfferRequest
+        ? `<span class="contract-opt-pill free-agent-offer-kind">${String(request.offer_type || '').toLowerCase() === 'renewal' ? 'Renovación' : 'Oferta FA'}</span>`
       : isBirdRenounceRequest
         ? `<span class="contract-opt-pill salary-chip-text ${salaryTextTagClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span>`
       : `<span class="contract-opt-pill ${contractOptionClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span>`;
@@ -3790,8 +3812,11 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
   if (decision === 'approved' && request) {
     const isDraftRequest = normalizedType === 'draft_pick';
     const isBirdRenounceRequest = normalizedType === 'bird_rights_renounce';
+    const isFreeAgentOfferRequest = normalizedType === 'free_agent_offer';
     const message = isDraftRequest
       ? `${request.team_code} selecciona a ${request.selection_text} con el pick ${gmDraftPickLabel(request)}.\n\nAl aprobarla, la elección quedará registrada y el reloj avanzará al siguiente pick.`
+      : isFreeAgentOfferRequest
+        ? `${request.team_code} presenta una ${String(request.offer_type || '').toLowerCase() === 'renewal' ? 'oferta de renovación' : 'oferta de agente libre'} a ${request.player_name}.\n\nAl aprobarla, la oferta se publicará en Discord.`
       : isBirdRenounceRequest
         ? `${request.team_code} renuncia a los derechos ${String(request.option_value || '').toUpperCase()} de ${request.player_name} para ${request.season_label}.\n\nAl aprobarla, se borrará la marca ${String(request.option_value || '').toUpperCase()} de la celda y desaparecerá el cap hold.`
         : `${contractOptionActionMessage(
@@ -3806,7 +3831,7 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
       message,
       confirmLabel: 'Aprobar y aplicar',
       defaultNotify: true,
-      defaultGenerateImage: !isBirdRenounceRequest,
+      defaultGenerateImage: !isBirdRenounceRequest && !isFreeAgentOfferRequest,
       danger: request.action === 'rejected' || isBirdRenounceRequest,
     });
     if (!result.confirmed) return;
@@ -3826,7 +3851,9 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
   try {
     const endpoint = normalizedType === 'draft_pick'
       ? `/api/admin/gm-draft-pick-requests/${requestId}`
-      : `/api/admin/gm-option-requests/${requestId}`;
+      : normalizedType === 'free_agent_offer'
+        ? `/api/admin/gm-free-agent-offer-requests/${requestId}`
+        : `/api/admin/gm-option-requests/${requestId}`;
     await api(endpoint, {
       method: 'PATCH',
       body: JSON.stringify(payload),
@@ -3834,6 +3861,9 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
     await loadGmOptionRequests();
     if (normalizedType === 'draft_pick' && state.ui.viewMode === 'draft-order') {
       await loadDraftOrder();
+    }
+    if (normalizedType === 'free_agent_offer' && state.ui.viewMode === 'free-agents') {
+      await loadFreeAgents();
     }
     if (request?.team_code && state.teamCode && String(request.team_code).toUpperCase() === String(state.teamCode).toUpperCase()) {
       await loadTeam(state.teamCode);
@@ -3981,6 +4011,22 @@ function setupTrackerSeasonControl() {
   });
 }
 
+function isAdminViewMode(mode) {
+  return ADMIN_VIEW_MODES.includes(String(mode || ''));
+}
+
+function syncAdminTabs() {
+  const mode = String(state.ui.viewMode || '');
+  const showAdminTabs = isAdminViewMode(mode);
+  const tabs = document.getElementById('adminTabs');
+  if (tabs) tabs.classList.toggle('section-hidden', !showAdminTabs);
+  document.querySelectorAll('[data-admin-tab-view]').forEach((btn) => {
+    const isActive = btn.dataset.adminTabView === mode;
+    btn.classList.toggle('is-active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+}
+
 function setViewMode(mode) {
   state.ui.viewMode = mode;
   const showTeam = mode === 'team';
@@ -4005,6 +4051,7 @@ function setViewMode(mode) {
   toggleSection('draftOrderSection', !showDraftOrder);
   toggleSection('freeAgentsSection', !showFreeAgents);
   toggleSection('leaguePlayersSection', !showLeaguePlayers);
+  toggleSection('adminTabs', !isAdminViewMode(mode));
   toggleSection('teamTabs', !showTeam);
   toggleSection('teamMeta', !showTeam);
   toggleSection('adminTeamControlsSection', !showTeam);
@@ -4020,6 +4067,7 @@ function setViewMode(mode) {
   toggleSection('draftAssetsSection', !showTeam);
   toggleSection('playerRightsSection', !showTeam);
   toggleSection('importantFiguresSection', !showTeam);
+  syncAdminTabs();
   syncTrackerTabs();
   syncTeamTabs();
   syncMainNavState();
@@ -4040,63 +4088,53 @@ function setViewMode(mode) {
   closeAdminMenuPopover();
 }
 
+async function openAdminSection(mode = 'gm-option-requests') {
+  const normalizedMode = isAdminViewMode(mode) ? String(mode) : 'gm-option-requests';
+  setViewMode(normalizedMode);
+  renderCapStatusPills({});
+  if (normalizedMode === 'admin-log') {
+    setPageHeading('ANBA Admin Log', '');
+    await loadAdminLogs();
+    return;
+  }
+  if (normalizedMode === 'admin-users') {
+    setPageHeading('ANBA Users', '');
+    await loadAdminUsers();
+    return;
+  }
+  if (normalizedMode === 'gm-option-requests') {
+    setPageHeading('GM Requests', '');
+    await loadGmOptionRequests();
+    return;
+  }
+  if (normalizedMode === 'admin-tools') {
+    setPageHeading('ANBA Admin Tools', '');
+    renderOffseasonExceptionControls();
+    return;
+  }
+  if (normalizedMode === 'admin-settings') {
+    setPageHeading('ANBA League Settings', '');
+  }
+}
+
+function setupAdminTabs() {
+  document.querySelectorAll('[data-admin-tab-view]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await openAdminSection(btn.dataset.adminTabView);
+    });
+  });
+  syncAdminTabs();
+}
+
 function setupAdminMenu() {
   const menuBtn = document.getElementById('adminMenuBtn');
-  const menu = document.getElementById('adminMenuPopover');
-  const openLogBtn = document.getElementById('openAdminLogPageBtn');
-  const openUsersBtn = document.getElementById('openAdminUsersPageBtn');
-  const openGmRequestsBtn = document.getElementById('openGmOptionRequestsPageBtn');
-  const openToolsBtn = document.getElementById('openAdminToolsPageBtn');
-  const openSettingsBtn = document.getElementById('openLeagueSettingsPageBtn');
   const gmRequestsBtn = document.getElementById('gmOptionRequestsBtn');
 
-  menuBtn.addEventListener('click', () => {
-    const isHidden = menu.classList.contains('section-hidden');
-    if (isHidden) menu.classList.remove('section-hidden');
-    else menu.classList.add('section-hidden');
+  menuBtn?.addEventListener('click', async () => {
+    await openAdminSection(isAdminViewMode(state.ui.viewMode) ? state.ui.viewMode : 'gm-option-requests');
   });
-
-  openLogBtn.addEventListener('click', async () => {
-    setViewMode('admin-log');
-    setPageHeading('ANBA Admin Log', '');
-    renderCapStatusPills({});
-    await loadAdminLogs();
-  });
-
-  openUsersBtn.addEventListener('click', async () => {
-    setViewMode('admin-users');
-    setPageHeading('ANBA Users', '');
-    renderCapStatusPills({});
-    await loadAdminUsers();
-  });
-
-  const openGmRequests = async () => {
-    setViewMode('gm-option-requests');
-    setPageHeading('GM Requests', '');
-    renderCapStatusPills({});
-    await loadGmOptionRequests();
-  };
-
-  openGmRequestsBtn?.addEventListener('click', openGmRequests);
-  gmRequestsBtn?.addEventListener('click', openGmRequests);
-
-  openToolsBtn?.addEventListener('click', () => {
-    setViewMode('admin-tools');
-    setPageHeading('ANBA Admin Tools', '');
-    renderCapStatusPills({});
-    renderOffseasonExceptionControls();
-  });
-
-  openSettingsBtn.addEventListener('click', () => {
-    setViewMode('admin-settings');
-    setPageHeading('ANBA League Settings', '');
-    renderCapStatusPills({});
-  });
-
-  document.addEventListener('click', (e) => {
-    if (menu.classList.contains('section-hidden')) return;
-    if (menu.contains(e.target) || menuBtn.contains(e.target)) return;
-    closeAdminMenuPopover();
+  gmRequestsBtn?.addEventListener('click', async () => {
+    await openAdminSection('gm-option-requests');
   });
 }
 
@@ -4554,44 +4592,31 @@ function setupAdminMobileNav() {
   if (logBtn) {
     logBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
-      setViewMode('admin-log');
-      setPageHeading('ANBA Admin Log', '');
-      renderCapStatusPills({});
-      await loadAdminLogs();
+      await openAdminSection('admin-log');
     });
   }
   if (usersBtn) {
     usersBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
-      setViewMode('admin-users');
-      setPageHeading('ANBA Users', '');
-      renderCapStatusPills({});
-      await loadAdminUsers();
+      await openAdminSection('admin-users');
     });
   }
   if (gmRequestsBtn) {
     gmRequestsBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
-      setViewMode('gm-option-requests');
-      setPageHeading('GM Requests', '');
-      renderCapStatusPills({});
-      await loadGmOptionRequests();
+      await openAdminSection('gm-option-requests');
     });
   }
   if (toolsBtn) {
-    toolsBtn.addEventListener('click', () => {
+    toolsBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
-      setViewMode('admin-tools');
-      setPageHeading('ANBA Admin Tools', '');
-      renderCapStatusPills({});
+      await openAdminSection('admin-tools');
     });
   }
   if (settingsBtn) {
-    settingsBtn.addEventListener('click', () => {
+    settingsBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
-      setViewMode('admin-settings');
-      setPageHeading('ANBA League Settings', '');
-      renderCapStatusPills({});
+      await openAdminSection('admin-settings');
     });
   }
   if (logoutBtn) {
@@ -4765,21 +4790,60 @@ function formatFreeAgentRepDiscordIds(value = state.settings.free_agent_rep_disc
     .join('\n');
 }
 
-function parseFreeAgentRepDiscordIdsInput(raw) {
+function cleanDiscordUserId(value) {
+  const discordId = String(value || '').replace(/\D+/g, '');
+  return /^\d{5,25}$/.test(discordId) ? discordId : '';
+}
+
+function parseFreeAgentRepDiscordIdsInputDetailed(raw, reps = freeAgentRepValues()) {
+  const text = String(raw || '').trim();
   const result = {};
-  String(raw || '').split(/\r?\n/).forEach((line) => {
+  const invalidLines = [];
+  if (!text) return { mapping: result, invalidLines };
+
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      Object.entries(parsed).forEach(([name, discordId], index) => {
+        const cleanName = String(name || '').trim().replace(/\s+/g, ' ');
+        const cleanId = cleanDiscordUserId(discordId);
+        if (cleanName && cleanId) result[cleanName] = cleanId;
+        else invalidLines.push(index + 1);
+      });
+      return { mapping: result, invalidLines };
+    }
+  } catch (err) {
+    // Fall through to the admin-friendly text parser.
+  }
+
+  String(raw || '').split(/\r?\n/).forEach((line, index) => {
     const value = line.trim();
     if (!value) return;
+    let name = '';
+    let discordId = '';
     const delimiter = ['=', '|', ':'].find((item) => value.includes(item));
-    if (!delimiter) return;
-    const [namePart, ...idParts] = value.split(delimiter);
-    const name = namePart.trim().replace(/\s+/g, ' ');
-    const discordId = idParts.join(delimiter).replace(/\D+/g, '');
-    if (name && /^\d{5,25}$/.test(discordId)) {
-      result[name] = discordId;
+    if (delimiter) {
+      const delimiterIndex = value.indexOf(delimiter);
+      name = value.slice(0, delimiterIndex).trim().replace(/\s+/g, ' ');
+      discordId = cleanDiscordUserId(value.slice(delimiterIndex + 1));
+    } else {
+      const inlineMatch = value.match(/^(.+?)\s+(?:<@!?)?(\d{5,25})>?$/);
+      if (inlineMatch) {
+        name = inlineMatch[1].trim().replace(/\s+/g, ' ');
+        discordId = cleanDiscordUserId(inlineMatch[2]);
+      } else if (reps[index]) {
+        name = String(reps[index] || '').trim().replace(/\s+/g, ' ');
+        discordId = cleanDiscordUserId(value);
+      }
     }
+    if (name && discordId) result[name] = discordId;
+    else invalidLines.push(index + 1);
   });
-  return result;
+  return { mapping: result, invalidLines };
+}
+
+function parseFreeAgentRepDiscordIdsInput(raw, reps = freeAgentRepValues()) {
+  return parseFreeAgentRepDiscordIdsInputDetailed(raw, reps).mapping;
 }
 
 function freeAgentById(id) {
@@ -4931,7 +4995,8 @@ async function submitFreeAgentOffer() {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    setFreeAgentActionStatus('offer', result.discord_sent ? 'Oferta enviada a Discord.' : 'Oferta registrada, pero Discord no está configurado o falló.');
+    const requestKind = result.offer_type === 'renewal' ? 'Oferta de renovación' : 'Oferta';
+    setFreeAgentActionStatus('offer', `${requestKind} enviada a GM Requests. Quedará pendiente de aprobación.`);
   } catch (err) {
     setFreeAgentActionStatus('offer', `No se pudo enviar la oferta: ${err.message}`, true);
   } finally {
@@ -10618,6 +10683,7 @@ async function init() {
   renderAdminMobileTeamGrid();
   setupTradeModal();
   setupAdminMenu();
+  setupAdminTabs();
   setupAdminMobileNav();
   setupGmTimelineControls();
   setupFiguresSeasonControl();
@@ -10878,6 +10944,21 @@ async function init() {
         return;
       }
     }
+    const parsedFreeAgentReps = String(freeAgentRepsInput?.value || '')
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const parsedRepDiscordIds = parseFreeAgentRepDiscordIdsInputDetailed(
+      freeAgentRepDiscordIdsInput?.value || '',
+      parsedFreeAgentReps
+    );
+    if (parsedRepDiscordIds.invalidLines.length) {
+      alert(
+        `No se pudieron leer los Discord IDs de agentes en la(s) línea(s): ${parsedRepDiscordIds.invalidLines.join(', ')}.\n\n` +
+        'Usa "Agente = Discord ID" o pega un ID por línea en el mismo orden que la lista de agentes.'
+      );
+      return;
+    }
     const result = await api('/api/settings', {
       method: 'PATCH',
       body: JSON.stringify({
@@ -10889,11 +10970,8 @@ async function init() {
         trade_move_limit_post30: parsedTradeMoveLimitPost30,
         trade_move_phase: selectedTradeMovePhase,
         free_agency_mode: Boolean(freeAgencyModeInput?.checked),
-        free_agent_reps: String(freeAgentRepsInput?.value || '')
-          .split(/\r?\n/)
-          .map((value) => value.trim())
-          .filter(Boolean),
-        free_agent_rep_discord_ids: parseFreeAgentRepDiscordIdsInput(freeAgentRepDiscordIdsInput?.value || ''),
+        free_agent_reps: parsedFreeAgentReps,
+        free_agent_rep_discord_ids: parsedRepDiscordIds.mapping,
         roster_standard_min: parsedRosterStandardMin,
         roster_standard_max: parsedRosterStandardMax,
         roster_standard_offseason_max: parsedRosterStandardOffseasonMax,

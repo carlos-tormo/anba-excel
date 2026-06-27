@@ -42,14 +42,7 @@
         <button id="gmOptionRequestsBtn" class="sidebar-nav-item" type="button" data-nav-view="gm-option-requests">
           GM Requests <span id="gmOptionRequestsBadge" class="nav-badge" hidden>0</span>
         </button>
-        <button id="adminMenuBtn" class="sidebar-nav-item" type="button" data-nav-view="admin-log admin-users admin-tools admin-settings">Admin Menu</button>
-        <div id="adminMenuPopover" class="add-entry-popover section-hidden" role="menu" aria-label="Admin menu">
-          <button id="openAdminLogPageBtn" type="button">Admin Log</button>
-          <button id="openAdminUsersPageBtn" type="button">Users</button>
-          <button id="openGmOptionRequestsPageBtn" type="button">GM Requests</button>
-          <button id="openAdminToolsPageBtn" type="button">Admin Tools</button>
-          <button id="openLeagueSettingsPageBtn" type="button">League Settings</button>
-        </div>
+        <button id="adminMenuBtn" class="sidebar-nav-item" type="button" data-nav-view="gm-option-requests admin-log admin-users admin-tools admin-settings">Admin Menu</button>
       </div>
       <div class="sidebar-footer">
         <button id="logoutBtn" class="danger sidebar-nav-item" type="button">Logout</button>
@@ -105,6 +98,29 @@
     </div>
   </section>
   <main class="page-shell">
+    <nav id="adminTabs" class="team-tabs admin-tabs section-hidden" role="tablist" aria-label="Admin menu sections">
+      <button type="button" class="team-tab-btn admin-tab-btn" data-admin-tab-view="gm-option-requests" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">!</span>
+        <span>Solicitudes</span>
+      </button>
+      <button type="button" class="team-tab-btn admin-tab-btn" data-admin-tab-view="admin-tools" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">⇄</span>
+        <span>Tools</span>
+      </button>
+      <button type="button" class="team-tab-btn admin-tab-btn" data-admin-tab-view="admin-users" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">☉</span>
+        <span>Users</span>
+      </button>
+      <button type="button" class="team-tab-btn admin-tab-btn" data-admin-tab-view="admin-settings" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">⚙</span>
+        <span>League Settings</span>
+      </button>
+      <button type="button" class="team-tab-btn admin-tab-btn" data-admin-tab-view="admin-log" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">≡</span>
+        <span>Log</span>
+      </button>
+    </nav>
+
     <section id="adminLogsSection" class="section-hidden">
       <h2>Admin Log</h2>
       <div class="bulk-bar">
@@ -182,7 +198,7 @@
       <div class="section-head">
         <div>
           <h2>GM Requests</h2>
-          <div class="section-subtitle">Pending option decisions and draft selections submitted by assigned GMs.</div>
+          <div class="section-subtitle">Pending option decisions, draft selections and free-agent offers submitted by assigned GMs.</div>
         </div>
         <div class="section-actions">
           <button id="refreshGmOptionRequestsBtn" type="button">Refresh Requests</button>
@@ -585,8 +601,9 @@
         <label for="freeAgentRepsInput">Agentes de jugadores</label>
         <textarea id="freeAgentRepsInput" rows="4" placeholder="Un agente por línea"></textarea>
         <label for="freeAgentRepDiscordIdsInput">Discord IDs de agentes</label>
-        <textarea id="freeAgentRepDiscordIdsInput" rows="4" placeholder="Agente = Discord user ID"></textarea>
-        <button id="saveSettingsBtn">Save Settings</button>
+        <textarea id="freeAgentRepDiscordIdsInput" rows="4" placeholder="Agente = Discord user ID&#10;o un ID por línea en el mismo orden"></textarea>
+        <p class="settings-help-text">Formato: Agente = 123456789012345678, Agente = &lt;@123456789012345678&gt;, o solo un ID por línea en el mismo orden que los agentes.</p>
+        <button id="saveSettingsBtn" type="button">Save Settings</button>
         <button id="progressYearBtn" type="button">Progress to next year</button>
         <button id="downloadBackupBtn" type="button">Download backup</button>
       </div>
