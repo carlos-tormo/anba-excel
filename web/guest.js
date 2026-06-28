@@ -2270,17 +2270,29 @@ function pruneTradeMachineSelections() {
 
 async function ensureTradeMachineTeamData(codes) {
   const unique = tradeMachineUniqueCodes(codes);
-  const missing = unique.filter((code) => !state.tradeMachine.teamDataByCode[code]);
+  const season = tradeMachineSeasonStart();
+  const missing = unique.filter((code) => {
+    const cached = state.tradeMachine.teamDataByCode[code];
+    return !cached || Number(cached._tradeMachineSeasonStart) !== season;
+  });
   if (!missing.length) return;
   state.tradeMachine.loading = true;
-  renderTradeMachine();
   try {
-    const loaded = await Promise.all(missing.map(async (code) => [code, await api(`/api/teams/${code}`)]));
+    const loaded = await Promise.all(
+      missing.map(async (code) => [
+        code,
+        await api(`/api/teams/${encodeURIComponent(code)}?season=${encodeURIComponent(season)}`),
+      ]),
+    );
     loaded.forEach(([code, data]) => {
+      data._tradeMachineSeasonStart = season;
       state.tradeMachine.teamDataByCode[code] = data;
     });
   } finally {
     state.tradeMachine.loading = false;
+  }
+  if (state.ui.viewMode === 'trade-machine') {
+    renderTradeMachine();
   }
 }
 
@@ -3067,10 +3079,14 @@ function renderTradeMachineDynamicSections() {
   const { codes, result, validationSignature, serverResult, validationError } = context;
   if (status) status.textContent = `${seasonLabel(tradeMachineSeasonStart())} · ${codes.length} equipos`;
   if (addBtn) addBtn.disabled = codes.length >= TRADE_MACHINE_MAX_TEAMS;
-  codes.forEach((code) => {
+  codes.forEach((code, index) => {
     const card = Array.from(grid.querySelectorAll('[data-trade-team-card]'))
       .find((item) => item.dataset.tradeTeamCard === code);
     const flow = result.flows[code] || tradeMachineFlowSkeleton(code);
+    if (card && state.tradeMachine.teamDataByCode[code] && !card.querySelector('.trade-machine-ledger')) {
+      card.outerHTML = renderTradeMachineTeamCard(code, index, flow);
+      return;
+    }
     const ledger = card?.querySelector('.trade-machine-ledger');
     if (ledger) ledger.outerHTML = tradeMachineLedgerHtml(flow);
     const roster = card?.querySelector('.trade-machine-roster-counts');
@@ -3190,8 +3206,11 @@ function setupTradeMachineControls() {
   if (addBtn) addBtn.addEventListener('click', async () => addTradeMachineTeam());
   if (resetBtn) resetBtn.addEventListener('click', () => resetTradeMachine());
   if (seasonSelect) {
-    seasonSelect.addEventListener('change', () => {
+    seasonSelect.addEventListener('change', async () => {
       state.tradeMachine.seasonStart = Number(seasonSelect.value || currentSeasonStart());
+      renderTradeMachine();
+      await ensureTradeMachineTeamData(state.tradeMachine.selectedTeams);
+      pruneTradeMachineSelections();
       renderTradeMachine();
     });
   }
