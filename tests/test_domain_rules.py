@@ -60,6 +60,35 @@ class DomainRulesTests(unittest.TestCase):
 
         self.assertEqual(13_000_000, cap_hold_amount(row, 2026, settings, 154_647_000))
 
+    def test_cap_hold_amount_is_capped_by_low_yos_max_salary(self) -> None:
+        row = {
+            "salary_2025_num": 20_000_000,
+            "salary_2026_text": "QO",
+            "bird_rights": "R",
+            "experience_years": 6,
+        }
+        settings = {
+            "free_agency_mode": "1",
+            "current_year": "2025",
+            "average_salary_2025": "10000000",
+        }
+
+        self.assertEqual(25_000_000, cap_hold_amount(row, 2026, settings, 100_000_000))
+
+    def test_cap_hold_amount_uses_highest_max_tier_when_yos_missing(self) -> None:
+        row = {
+            "salary_2025_num": 40_000_000,
+            "salary_2026_text": "FB",
+            "bird_rights": "Reg",
+        }
+        settings = {
+            "free_agency_mode": "1",
+            "current_year": "2025",
+            "average_salary_2025": "10000000",
+        }
+
+        self.assertEqual(35_000_000, cap_hold_amount(row, 2026, settings, 100_000_000))
+
     def test_two_way_qo_hold_uses_one_year_minimum(self) -> None:
         row = {
             "salary_2025_num": 636_435,

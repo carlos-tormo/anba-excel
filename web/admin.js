@@ -329,11 +329,15 @@ function contractOptionActionMessage(teamCode, playerName, season, optionValue, 
   const option = String(optionValue || '').toUpperCase();
   const verb = action === 'accepted' ? 'aceptar' : 'rechazar';
   if (option === 'TO') {
-    const suffix = action === 'accepted' ? ' La cantidad quedará garantizada y se retirará la marca TO de la celda.' : '';
+    const suffix = action === 'accepted'
+      ? ' La cantidad quedará garantizada y se retirará la marca TO de la celda.'
+      : ' Se borrará esta temporada y cualquier temporada posterior de este contrato.';
     return `Confirmar que ${team} va a ${verb} su team option sobre ${player} para ${seasonLabel(season)}.${suffix}`;
   }
   if (option === 'PO') {
-    const suffix = action === 'accepted' ? ' La cantidad quedará garantizada y se retirará la marca PO de la celda.' : '';
+    const suffix = action === 'accepted'
+      ? ' La cantidad quedará garantizada y se retirará la marca PO de la celda.'
+      : ' Se borrará esta temporada y cualquier temporada posterior de este contrato.';
     return `Confirmar que ${player} va a ${verb} su player option con ${team} para ${seasonLabel(season)}.${suffix}`;
   }
   if (option === 'QO') {
@@ -343,6 +347,24 @@ function contractOptionActionMessage(teamCode, playerName, season, optionValue, 
     return `Confirmar que ${team} va a ${verb} la opción GAP de ${player} para ${seasonLabel(season)}.`;
   }
   return `Confirmar que ${team} va a ${verb} la opción ${option} de ${player} para ${seasonLabel(season)}.`;
+}
+
+function applyRejectedContractOptionLocally(player, season) {
+  if (!player) return;
+  ALL_SEASONS.forEach((year) => {
+    if (Number(year) < Number(season)) return;
+    player[`salary_${year}_text`] = null;
+    player[`salary_${year}_num`] = null;
+    player[`salary_${year}_guaranteed_text`] = null;
+    player[`salary_${year}_note_text`] = null;
+    player[`option_${year}`] = null;
+    player[`salary_${year}_provisional`] = false;
+    player[`salary_${year}_partially_guaranteed`] = false;
+    player[`salary_${year}_note`] = false;
+    if (player.option_decisions) {
+      delete player.option_decisions[`option_${year}`];
+    }
+  });
 }
 
 function salaryTextTagClass(value) {
@@ -916,16 +938,44 @@ function pendingCapHold(shortLabel, message, options = {}) {
 }
 
 function calculatedCapHold(amount, shortLabel, message, options = {}) {
+  const clamp = capHoldClampInfo(options.player, options.season, amount);
+  const clampMessage = clamp.clamped
+    ? ` Limitado al salario máximo por YOS: ${formatDots(clamp.limit)}.`
+    : '';
   return {
     active: true,
     displayable: true,
-    amount: Math.round(Number(amount || 0)),
+    amount: clamp.amount,
     displayAmount: options.displayAmount,
     pending: false,
     label: 'Cap hold',
     shortLabel,
-    message,
+    message: `${message || ''}${clampMessage}`,
   };
+}
+
+function maximumSalaryForExperience(season, experienceYears) {
+  const cap = capForSeason(season);
+  const experience = normalizeExperienceYears(experienceYears);
+  let percentage = 0.35;
+  if (experience !== null && experience < 7) {
+    percentage = 0.25;
+  } else if (experience !== null && experience < 10) {
+    percentage = 0.30;
+  }
+  return Math.round(Number(cap || 0) * percentage);
+}
+
+function capHoldClampInfo(player, season, amount) {
+  const rawAmount = Math.round(Number(amount || 0));
+  if (!player || !Number(season) || rawAmount <= 0) {
+    return { amount: Math.max(0, rawAmount), limit: 0, clamped: false };
+  }
+  const limit = maximumSalaryForExperience(season, player.experience_years);
+  if (!limit || rawAmount <= limit) {
+    return { amount: rawAmount, limit, clamped: false };
+  }
+  return { amount: limit, limit, clamped: true };
 }
 
 function birdCapHoldInfo(player, season, code) {
@@ -940,12 +990,13 @@ function birdCapHoldInfo(player, season, code) {
         minimumSalaryForSeason(season, 2, 1),
         'NB hold',
         'Cap hold Non-Bird mínimo: mínimo de veterano de dos años.',
+        { player, season },
       );
     }
-    return calculatedCapHold(previousSalary * 1.2, 'NB hold', 'Cap hold Non-Bird: 120% del salario anterior.');
+    return calculatedCapHold(previousSalary * 1.2, 'NB hold', 'Cap hold Non-Bird: 120% del salario anterior.', { player, season });
   }
   if (code === 'EB') {
-    return calculatedCapHold(previousSalary * 1.3, 'EB hold', 'Cap hold Early Bird: 130% del salario anterior.');
+    return calculatedCapHold(previousSalary * 1.3, 'EB hold', 'Cap hold Early Bird: 130% del salario anterior.', { player, season });
   }
   if (code === 'FB') {
     const averageSalary = averageSalaryForSeason(season - 1);
@@ -957,6 +1008,7 @@ function birdCapHoldInfo(player, season, code) {
       previousSalary * multiplier,
       'FB hold',
       `Cap hold Full Bird: ${Math.round(multiplier * 100)}% del salario anterior.`,
+      { player, season },
     );
   }
   return null;
@@ -993,7 +1045,7 @@ function capHoldInfo(player, season) {
       capHoldAmount,
       'QO hold',
       details,
-      { displayAmount: qualifyingOfferValue || undefined },
+      { displayAmount: qualifyingOfferValue || undefined, player, season },
     );
   }
 
@@ -1025,7 +1077,7 @@ function capHoldInfo(player, season) {
       capHoldAmount,
       'QO hold',
       details,
-      { displayAmount: qualifyingOfferValue || undefined },
+      { displayAmount: qualifyingOfferValue || undefined, player, season },
     );
   }
 
@@ -3816,7 +3868,7 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
     const message = isDraftRequest
       ? `${request.team_code} selecciona a ${request.selection_text} con el pick ${gmDraftPickLabel(request)}.\n\nAl aprobarla, la elección quedará registrada y el reloj avanzará al siguiente pick.`
       : isFreeAgentOfferRequest
-        ? `${request.team_code} presenta una ${String(request.offer_type || '').toLowerCase() === 'renewal' ? 'oferta de renovación' : 'oferta de agente libre'} a ${request.player_name}.\n\nAl aprobarla, la oferta se publicará en Discord.`
+        ? `${request.team_code} firma a ${request.player_name} tras una ${String(request.offer_type || '').toLowerCase() === 'renewal' ? 'oferta de renovación' : 'oferta de agente libre'}.\n\nAl aprobarla, el jugador se añadirá al roster, se eliminará de Agentes libres y, si marcas Discord, se publicará la noticia oficial.`
       : isBirdRenounceRequest
         ? `${request.team_code} renuncia a los derechos ${String(request.option_value || '').toUpperCase()} de ${request.player_name} para ${request.season_label}.\n\nAl aprobarla, se borrará la marca ${String(request.option_value || '').toUpperCase()} de la celda y desaparecerá el cap hold.`
         : `${contractOptionActionMessage(
@@ -5048,8 +5100,13 @@ async function submitFreeAgentNegotiation() {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    const suffix = result.agent_discord_configured ? '' : ' No hay Discord ID configurado para este agente.';
-    setFreeAgentActionStatus('negotiate', `Negociación enviada a Discord.${suffix}`);
+    if (result.discord_sent) {
+      setFreeAgentActionStatus('negotiate', 'Negociación enviada por DM al agente.');
+    } else if (!result.agent_discord_configured) {
+      setFreeAgentActionStatus('negotiate', 'Negociación registrada, pero no hay Discord ID configurado para este agente.', true);
+    } else {
+      setFreeAgentActionStatus('negotiate', 'Negociación registrada, pero no se pudo enviar el DM al agente. Revisa DISCORD_BOT_TOKEN y los logs.', true);
+    }
   } catch (err) {
     setFreeAgentActionStatus('negotiate', `No se pudo enviar la negociación: ${err.message}`, true);
   } finally {
@@ -7697,7 +7754,7 @@ function renderPlayers() {
         acceptBtn.disabled = true;
         rejectBtn.disabled = true;
         try {
-          await api(`/api/players/${p.id}`, {
+          const response = await api(`/api/players/${p.id}`, {
             method: 'PATCH',
             body: JSON.stringify({
               [optionField]: nextOptionValue || null,
@@ -7709,8 +7766,17 @@ function renderPlayers() {
               discord_custom_image: decision.customDiscordImage,
             }),
           });
-          p[optionField] = nextOptionValue || null;
-          optionSelect.value = nextOptionValue;
+          if (response?.player) {
+            Object.assign(p, response.player);
+            if (action === 'rejected' && ['TO', 'PO'].includes(optionValue)) {
+              applyRejectedContractOptionLocally(p, season);
+            }
+          } else if (action === 'rejected' && ['TO', 'PO'].includes(optionValue)) {
+            applyRejectedContractOptionLocally(p, season);
+          } else {
+            p[optionField] = nextOptionValue || null;
+          }
+          optionSelect.value = p[optionField] || nextOptionValue || '';
           if (action === 'accepted' && ['QO', 'GAP'].includes(optionValue)) {
             p.option_decisions = {
               ...(p.option_decisions || {}),

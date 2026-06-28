@@ -386,6 +386,18 @@ def minimum_salary_for_season(salary_cap: float, experience_years: int, contract
     return scaled_minimum_salary(row[contract_idx], salary_cap)
 
 
+def maximum_salary_for_experience(salary_cap: float, experience_years: Any = None) -> float:
+    cap = float(salary_cap or 0.0)
+    experience = normalize_experience_years(experience_years)
+    if experience is None or experience >= 10:
+        percentage = 0.35
+    elif experience >= 7:
+        percentage = 0.30
+    else:
+        percentage = 0.25
+    return float(round(cap * percentage))
+
+
 def minimum_salary_values_for_cap(salary_cap: float) -> List[float]:
     values = [scaled_minimum_salary(TWO_WAY_MINIMUM_BASE_SALARY, salary_cap)]
     for row in MINIMUM_SALARY_BASE_ROWS.values():
@@ -432,6 +444,12 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
     if int(season) != int(current_year) + 1:
         return 0.0
 
+    def capped_hold(raw_amount: float) -> float:
+        amount = float(round(raw_amount or 0.0))
+        if amount <= 0:
+            return 0.0
+        return min(amount, maximum_salary_for_experience(salary_cap, row.get("experience_years")))
+
     text_code = season_salary_text_code(row, season)
     option_code = season_option_code(row, season)
     is_qo = text_code == "QO" or option_code == "QO"
@@ -440,14 +458,14 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
         return 0.0
 
     if is_two_way_player(row):
-        return minimum_salary_for_season(salary_cap, 1, 1) if is_qo else 0.0
+        return capped_hold(minimum_salary_for_season(salary_cap, 1, 1)) if is_qo else 0.0
 
     previous_salary = row_salary_num(row, season - 1)
     if is_qo and is_restricted_rights_player(row):
         average_salary = parse_float(settings.get(f"average_salary_{season - 1}")) or 0.0
         if previous_salary <= 0 or average_salary <= 0:
             return 0.0
-        return float(round(previous_salary * (3.0 if previous_salary < average_salary else 2.5)))
+        return capped_hold(previous_salary * (3.0 if previous_salary < average_salary else 2.5))
 
     if not bird_code or previous_salary <= 0:
         return 0.0
@@ -455,15 +473,15 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
         rights = str(row.get("bird_rights") or "").strip().upper()
         previous_cap = parse_float(settings.get(f"salary_cap_{season - 1}")) or salary_cap
         if rights in {"MIN", "TW"} or salary_looks_like_minimum(previous_salary, previous_cap):
-            return minimum_salary_for_season(salary_cap, 2, 1)
-        return float(round(previous_salary * 1.2))
+            return capped_hold(minimum_salary_for_season(salary_cap, 2, 1))
+        return capped_hold(previous_salary * 1.2)
     if bird_code == "EB":
-        return float(round(previous_salary * 1.3))
+        return capped_hold(previous_salary * 1.3)
     if bird_code == "FB":
         average_salary = parse_float(settings.get(f"average_salary_{season - 1}")) or 0.0
         if average_salary <= 0:
             return 0.0
-        return float(round(previous_salary * (1.9 if previous_salary < average_salary else 1.5)))
+        return capped_hold(previous_salary * (1.9 if previous_salary < average_salary else 1.5))
     return 0.0
 
 

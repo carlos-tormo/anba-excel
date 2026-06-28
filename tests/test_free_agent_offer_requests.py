@@ -106,6 +106,51 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("approved", updated["status"])
         self.assertEqual("admin@example.com", updated["admin_email"])
 
+    def test_free_agent_offer_request_survives_signing_player(self) -> None:
+        request = self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {
+                "contract_type": "Min",
+                "years": 2,
+                "salary_by_season": {"2026": "2.296.274", "2027": "2.411.090"},
+            },
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        player_id = self.db.sign_free_agent(
+            self.free_agent_id,
+            "ATL",
+            {
+                "name": "Test Free Agent",
+                "bird_rights": "Min",
+                "salary_2026_text": "2.296.274",
+                "salary_2027_text": "2.411.090",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        self.assertIsNone(self.db.get_free_agent(self.free_agent_id))
+
+        updated = self.db.mark_gm_free_agent_offer_request_decided(
+            int(request["id"]),
+            "approved",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+
+        self.assertIsNotNone(updated)
+        self.assertEqual("approved", updated["status"])
+        self.assertEqual("Test Free Agent", updated["player_name"])
+
+        requests = self.db.list_gm_option_requests(status="all")
+        offer_requests = [item for item in requests if item["request_type"] == "free_agent_offer"]
+        self.assertEqual(1, len(offer_requests))
+        self.assertEqual("Test Free Agent", offer_requests[0]["player_name"])
+
+        player = self.db.get_player_record(int(player_id))
+        self.assertIsNotNone(player)
+        self.assertEqual("ATL", player["team_code"])
+        self.assertEqual("2.296.274", player["salary_2026_text"])
+
 
 if __name__ == "__main__":
     unittest.main()

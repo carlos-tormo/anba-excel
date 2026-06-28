@@ -5,7 +5,7 @@ import tempfile
 import unittest
 import zipfile
 
-from app.server import LeagueDB
+from app.server import LeagueDB, contract_option_rejection_clear_payload
 from app.domain_rules import minimum_salary_for_season
 from app.xlsx_import import create_schema, now_iso
 
@@ -250,6 +250,48 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual("GAP", decision["option_value"])
         self.assertEqual("accepted", decision["action"])
         self.assertEqual("approved", decision["status"])
+
+    def test_rejected_contract_option_clears_option_season_and_future_years(self) -> None:
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Rejected Option Player",
+                "bird_rights": "Reg",
+                "position": "SF",
+                "salary_2025_text": "10000000",
+                "salary_2026_text": "12000000",
+                "salary_2027_text": "13000000",
+                "salary_2028_text": "14000000",
+                "salary_2026_guaranteed_text": "6000000",
+                "salary_2027_note_text": "Future note",
+                "option_2026": "TO",
+                "option_2027": "TO",
+                "salary_2026_provisional": True,
+                "salary_2027_partially_guaranteed": True,
+                "salary_2028_note": True,
+            },
+        )
+        self.assertIsNotNone(player_id)
+
+        self.assertTrue(
+            self.db.update_player(
+                int(player_id),
+                contract_option_rejection_clear_payload(2026),
+            )
+        )
+        player = self.db.get_player_record(int(player_id))
+        self.assertIsNotNone(player)
+        self.assertEqual("10000000", player["salary_2025_text"])
+        self.assertEqual(10000000, player["salary_2025_num"])
+        for season in [2026, 2027, 2028, 2029, 2030]:
+            self.assertIsNone(player[f"salary_{season}_text"])
+            self.assertIsNone(player[f"salary_{season}_num"])
+            self.assertIsNone(player[f"salary_{season}_guaranteed_text"])
+            self.assertIsNone(player[f"salary_{season}_note_text"])
+            self.assertIsNone(player[f"option_{season}"])
+            self.assertEqual(0, player[f"salary_{season}_provisional"])
+            self.assertEqual(0, player[f"salary_{season}_partially_guaranteed"])
+            self.assertEqual(0, player[f"salary_{season}_note"])
 
     def test_gm_can_request_bird_rights_renounce_in_free_agency_mode(self) -> None:
         self.db.update_setting("current_year", "2025")

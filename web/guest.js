@@ -1291,16 +1291,44 @@ function pendingCapHold(shortLabel, message, options = {}) {
 }
 
 function calculatedCapHold(amount, shortLabel, message, options = {}) {
+  const clamp = capHoldClampInfo(options.player, options.season, amount);
+  const clampMessage = clamp.clamped
+    ? ` Limitado al salario máximo por YOS: ${formatDots(clamp.limit)}.`
+    : '';
   return {
     active: true,
     displayable: true,
-    amount: Math.round(Number(amount || 0)),
+    amount: clamp.amount,
     displayAmount: options.displayAmount,
     pending: false,
     label: 'Cap hold',
     shortLabel,
-    message,
+    message: `${message || ''}${clampMessage}`,
   };
+}
+
+function maximumSalaryForExperience(season, experienceYears) {
+  const cap = capForSeason(season);
+  const experience = normalizeExperienceYears(experienceYears);
+  let percentage = 0.35;
+  if (experience !== null && experience < 7) {
+    percentage = 0.25;
+  } else if (experience !== null && experience < 10) {
+    percentage = 0.30;
+  }
+  return Math.round(Number(cap || 0) * percentage);
+}
+
+function capHoldClampInfo(player, season, amount) {
+  const rawAmount = Math.round(Number(amount || 0));
+  if (!player || !Number(season) || rawAmount <= 0) {
+    return { amount: Math.max(0, rawAmount), limit: 0, clamped: false };
+  }
+  const limit = maximumSalaryForExperience(season, player.experience_years);
+  if (!limit || rawAmount <= limit) {
+    return { amount: rawAmount, limit, clamped: false };
+  }
+  return { amount: limit, limit, clamped: true };
 }
 
 function birdCapHoldInfo(player, season, code) {
@@ -1315,12 +1343,13 @@ function birdCapHoldInfo(player, season, code) {
         minimumSalaryForSeason(season, 2, 1),
         'NB hold',
         'Cap hold Non-Bird mínimo: mínimo de veterano de dos años.',
+        { player, season },
       );
     }
-    return calculatedCapHold(previousSalary * 1.2, 'NB hold', 'Cap hold Non-Bird: 120% del salario anterior.');
+    return calculatedCapHold(previousSalary * 1.2, 'NB hold', 'Cap hold Non-Bird: 120% del salario anterior.', { player, season });
   }
   if (code === 'EB') {
-    return calculatedCapHold(previousSalary * 1.3, 'EB hold', 'Cap hold Early Bird: 130% del salario anterior.');
+    return calculatedCapHold(previousSalary * 1.3, 'EB hold', 'Cap hold Early Bird: 130% del salario anterior.', { player, season });
   }
   if (code === 'FB') {
     const averageSalary = averageSalaryForSeason(season - 1);
@@ -1332,6 +1361,7 @@ function birdCapHoldInfo(player, season, code) {
       previousSalary * multiplier,
       'FB hold',
       `Cap hold Full Bird: ${Math.round(multiplier * 100)}% del salario anterior.`,
+      { player, season },
     );
   }
   return null;
@@ -1368,7 +1398,7 @@ function capHoldInfo(player, season) {
       capHoldAmount,
       'QO hold',
       details,
-      { displayAmount: qualifyingOfferValue || undefined },
+      { displayAmount: qualifyingOfferValue || undefined, player, season },
     );
   }
 
@@ -1400,7 +1430,7 @@ function capHoldInfo(player, season) {
       capHoldAmount,
       'QO hold',
       details,
-      { displayAmount: qualifyingOfferValue || undefined },
+      { displayAmount: qualifyingOfferValue || undefined, player, season },
     );
   }
 
@@ -4383,8 +4413,13 @@ async function submitFreeAgentNegotiation() {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    const suffix = result.agent_discord_configured ? '' : ' No hay Discord ID configurado para este agente.';
-    setFreeAgentActionStatus('negotiate', `Negociación enviada a Discord.${suffix}`);
+    if (result.discord_sent) {
+      setFreeAgentActionStatus('negotiate', 'Negociación enviada por DM al agente.');
+    } else if (!result.agent_discord_configured) {
+      setFreeAgentActionStatus('negotiate', 'Negociación registrada, pero no hay Discord ID configurado para este agente.', true);
+    } else {
+      setFreeAgentActionStatus('negotiate', 'Negociación registrada, pero no se pudo enviar el DM al agente. Revisa la configuración de Discord.', true);
+    }
   } catch (err) {
     setFreeAgentActionStatus('negotiate', `No se pudo enviar la negociación: ${err.message}`, true);
   } finally {

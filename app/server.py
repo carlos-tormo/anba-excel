@@ -148,6 +148,8 @@ DRAFT_LIVE_MAX_PENDING_REQUESTS = 2
 FREE_AGENT_TYPE_UNRESTRICTED = "No restringido"
 FREE_AGENT_TYPE_RESTRICTED = "Restringido"
 FREE_AGENT_SOURCE_CAP_HOLD = "cap_hold"
+PLAYER_CONTRACT_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030]
+CONTRACT_TERMINATING_OPTION_VALUES = {"TO", "PO"}
 OWNER_SEASON_OBJECTIVES = [
     "Campeones",
     "Finalistas",
@@ -158,6 +160,22 @@ OWNER_SEASON_OBJECTIVES = [
     "Luchar por el play-in",
     "Desarrollo de jóvenes",
 ]
+
+
+def contract_option_rejection_clear_payload(season: int) -> Dict[str, Any]:
+    """Clear the rejected option season and every future contract year."""
+    payload: Dict[str, Any] = {}
+    for year in PLAYER_CONTRACT_SEASONS:
+        if year < season:
+            continue
+        payload[f"salary_{year}_text"] = None
+        payload[f"salary_{year}_guaranteed_text"] = None
+        payload[f"salary_{year}_note_text"] = None
+        payload[f"option_{year}"] = None
+        payload[f"salary_{year}_provisional"] = False
+        payload[f"salary_{year}_partially_guaranteed"] = False
+        payload[f"salary_{year}_note"] = False
+    return payload
 OWNER_OFFICE_IMPORT_ROWS = {
     "income": [
         {"key": "recaudacion", "label": "Recaudación", "type": "category"},
@@ -908,6 +926,86 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def __init__(self, db_path: str):
         self.db_path = db_path
 
+    def _ensure_gm_free_agent_offer_requests_are_retained(self, conn: sqlite3.Connection) -> None:
+        fk_rows = conn.execute("PRAGMA foreign_key_list(gm_free_agent_offer_requests)").fetchall()
+        has_free_agent_cascade = any(
+            str(row["table"]) == "free_agents"
+            and str(row["from"]) == "free_agent_id"
+            and str(row["on_delete"] or "").upper() == "CASCADE"
+            for row in fk_rows
+        )
+        if not has_free_agent_cascade:
+            return
+
+        backup_table = f"gm_free_agent_offer_requests_old_{secrets.token_hex(4)}"
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.execute(f"ALTER TABLE gm_free_agent_offer_requests RENAME TO {backup_table}")
+            conn.execute(
+                """
+                CREATE TABLE gm_free_agent_offer_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    free_agent_id INTEGER NOT NULL,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    requester_email TEXT,
+                    requester_name TEXT,
+                    offer_payload_json TEXT NOT NULL DEFAULT '{}',
+                    offer_type TEXT NOT NULL DEFAULT 'free_agent_offer',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    admin_email TEXT,
+                    admin_name TEXT,
+                    admin_decision_note TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    decided_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                INSERT INTO gm_free_agent_offer_requests (
+                    id,
+                    free_agent_id,
+                    team_id,
+                    requester_user_id,
+                    requester_email,
+                    requester_name,
+                    offer_payload_json,
+                    offer_type,
+                    status,
+                    admin_email,
+                    admin_name,
+                    admin_decision_note,
+                    created_at,
+                    updated_at,
+                    decided_at
+                )
+                SELECT
+                    id,
+                    free_agent_id,
+                    team_id,
+                    requester_user_id,
+                    requester_email,
+                    requester_name,
+                    offer_payload_json,
+                    offer_type,
+                    status,
+                    admin_email,
+                    admin_name,
+                    admin_decision_note,
+                    created_at,
+                    updated_at,
+                    decided_at
+                FROM {backup_table}
+                """
+            )
+            conn.execute(f"DROP TABLE {backup_table}")
+            conn.commit()
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+
     def ensure_auth_schema(self) -> None:
         with self.connect() as conn:
             self._ensure_maintenance_schema(conn)
@@ -1009,7 +1107,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """
                 CREATE TABLE IF NOT EXISTS gm_free_agent_offer_requests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    free_agent_id INTEGER NOT NULL REFERENCES free_agents(id) ON DELETE CASCADE,
+                    free_agent_id INTEGER NOT NULL,
                     team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
                     requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                     requester_email TEXT,
@@ -1026,6 +1124,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 )
                 """
             )
+            self._ensure_gm_free_agent_offer_requests_are_retained(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_gm_free_agent_offer_requests_status
@@ -3043,6 +3142,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         if not isinstance(offer_payload, dict):
             offer_payload = {}
         item["offer_payload"] = offer_payload
+        if not str(item.get("player_name") or "").strip():
+            item["player_name"] = str(offer_payload.get("player_name") or offer_payload.get("name") or "Agente libre")
         contract_type = str(offer_payload.get("contract_type") or "").strip() or "Sin tipo"
         years = parse_int(offer_payload.get("years"))
         years_text = f"{years} año(s)" if years is not None and years > 0 else "Sin duración"
@@ -3137,7 +3238,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     t.code AS team_code,
                     t.name AS team_name
                 FROM gm_free_agent_offer_requests r
-                JOIN free_agents f ON f.id = r.free_agent_id
+                LEFT JOIN free_agents f ON f.id = r.free_agent_id
                 JOIN teams t ON t.id = r.team_id
                 {where}
                 ORDER BY
@@ -3196,7 +3297,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     t.code AS team_code,
                     t.name AS team_name
                 FROM gm_free_agent_offer_requests r
-                JOIN free_agents f ON f.id = r.free_agent_id
+                LEFT JOIN free_agents f ON f.id = r.free_agent_id
                 JOIN teams t ON t.id = r.team_id
                 WHERE r.id = ?
                 """,
@@ -3570,18 +3671,21 @@ class LeagueDB(DatabaseMaintenanceMixin):
         normalized_offer_type = str(offer_type or "free_agent_offer").strip().lower()
         if normalized_offer_type not in {"free_agent_offer", "renewal"}:
             normalized_offer_type = "free_agent_offer"
-        offer_payload = payload if isinstance(payload, dict) else {}
-        offer_payload_json = json.dumps(offer_payload, ensure_ascii=False, sort_keys=True)
+        offer_payload = dict(payload) if isinstance(payload, dict) else {}
         requester_user_id = parse_int(str(requester.get("user_id") or "")) if requester else None
         timestamp = now_iso()
         request_id: Optional[int] = None
         with self.connect() as conn:
             free_agent = conn.execute(
-                "SELECT id FROM free_agents WHERE id = ?",
+                "SELECT id, name, profile_id FROM free_agents WHERE id = ?",
                 (int(free_agent_id),),
             ).fetchone()
             if not free_agent:
                 return None
+            offer_payload.setdefault("player_name", free_agent["name"])
+            if free_agent["profile_id"] is not None:
+                offer_payload.setdefault("profile_id", free_agent["profile_id"])
+            offer_payload_json = json.dumps(offer_payload, ensure_ascii=False, sort_keys=True)
             team = conn.execute(
                 "SELECT id FROM teams WHERE code = ?",
                 (normalized_team,),
@@ -12059,6 +12163,8 @@ class Handler(SimpleHTTPRequestHandler):
     google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
     google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/auth/google/callback")
     discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    discord_bot_token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+    discord_api_base_url = os.getenv("DISCORD_API_BASE_URL", "https://discord.com/api/v10").rstrip("/")
     discord_free_agent_offers_webhook_url = os.getenv("DISCORD_FREE_AGENT_OFFERS_WEBHOOK_URL", "").strip()
     discord_free_agent_offers_forum_tag_ids = [
         re.sub(r"\D+", "", value)
@@ -13346,6 +13452,51 @@ QUALITY REQUIREMENTS
             return parsed if isinstance(parsed, dict) else None
         return None
 
+    def _post_discord_bot_json(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        *,
+        method: str = "POST",
+    ) -> Optional[Dict[str, Any]]:
+        if not self.discord_bot_token:
+            raise RuntimeError("DISCORD_BOT_TOKEN is not configured")
+        endpoint_path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        req = Request(
+            f"{self.discord_api_base_url}{endpoint_path}",
+            data=data,
+            headers={
+                "Authorization": f"Bot {self.discord_bot_token}",
+                "Content-Type": "application/json",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method=method,
+        )
+        with urlopen(req, timeout=self.discord_timeout_seconds) as resp:
+            raw = resp.read()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _send_discord_dm(self, user_id: str, payload: Dict[str, Any]) -> bool:
+        clean_user_id = re.sub(r"\D+", "", str(user_id or ""))
+        if not clean_user_id:
+            return False
+        channel = self._post_discord_bot_json(
+            "/users/@me/channels",
+            {"recipient_id": clean_user_id},
+        )
+        channel_id = str((channel or {}).get("id") or "").strip()
+        if not channel_id:
+            return False
+        self._post_discord_bot_json(f"/channels/{channel_id}/messages", payload)
+        return True
+
     def _post_discord_multipart(
         self,
         payload: Dict[str, Any],
@@ -13392,9 +13543,9 @@ QUALITY REQUIREMENTS
         image_fallback_prompt: Optional[str] = None,
         generate_image: bool = True,
         custom_image: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> bool:
         if not self.discord_notifications_enabled or not self.discord_webhook_url:
-            return
+            return False
 
         normalized_fields: List[Dict[str, Any]] = []
         for field in fields or []:
@@ -13445,14 +13596,18 @@ QUALITY REQUIREMENTS
                 file_bytes, filename, mime_type = image_attachment
                 try:
                     self._post_discord_multipart(payload, file_bytes, filename, mime_type)
+                    return True
                 except (HTTPError, URLError, TimeoutError, OSError) as upload_err:
                     self.log_error("Discord image notification failed; retrying text-only: %s", upload_err)
                     embed.pop("image", None)
                     self._post_discord_json(payload)
+                    return True
             else:
                 self._post_discord_json(payload)
+                return True
         except (HTTPError, URLError, TimeoutError, OSError) as err:
             self.log_error("Discord notification failed: %s", err)
+            return False
 
     def _discord_notify_requested(self, payload: Dict[str, Any]) -> bool:
         if "notify_discord" not in payload:
@@ -13560,7 +13715,7 @@ QUALITY REQUIREMENTS
         *,
         generate_image: bool = True,
         custom_image: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> bool:
         team_code = str(player.get("team_code") or "").upper()
         team_name = str(player.get("team_name") or team_code)
         player_name = str(player.get("name") or "Jugador")
@@ -13607,7 +13762,7 @@ QUALITY REQUIREMENTS
         if contract_type:
             fields.append({"name": "Contrato", "value": contract_type, "inline": True})
         fields.append({"name": "Salario", "value": salary_summary, "inline": False})
-        self._notify_discord(
+        return self._notify_discord(
             headline,
             description,
             fields=fields,
@@ -13647,6 +13802,51 @@ QUALITY REQUIREMENTS
             if match:
                 rights_team = normalize_team_code(match.group(1))
         return bool(team and rights_team and team == rights_team)
+
+    def _player_payload_from_free_agent_offer(
+        self,
+        free_agent: Dict[str, Any],
+        offer_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        contract_type = str(offer_payload.get("contract_type") or "").strip()
+        player_payload: Dict[str, Any] = {
+            "name": str(free_agent.get("name") or free_agent.get("profile_name") or "").strip() or "New Player",
+            "position": free_agent.get("position"),
+            "rating": free_agent.get("rating"),
+            "bird_rights": contract_type or free_agent.get("bird_rights"),
+            "notes": str(offer_payload.get("notes") or "").strip() or free_agent.get("notes"),
+            "signed_as_free_agent": True,
+        }
+        if parse_int(free_agent.get("profile_id")) is not None:
+            player_payload["profile_id"] = free_agent.get("profile_id")
+        if free_agent.get("experience_years") not in (None, ""):
+            player_payload["experience_years"] = free_agent.get("experience_years")
+        if free_agent.get("reference_image_url"):
+            player_payload["reference_image_url"] = free_agent.get("reference_image_url")
+        if free_agent.get("profile_notes"):
+            player_payload["profile_notes"] = free_agent.get("profile_notes")
+
+        salary_by_season = offer_payload.get("salary_by_season")
+        if isinstance(salary_by_season, dict):
+            for raw_season, raw_value in salary_by_season.items():
+                season = parse_int(str(raw_season))
+                if season is None or season < CAP_FORECAST_MIN_YEAR or season > 2030:
+                    continue
+                value = str(raw_value or "").strip()
+                if value:
+                    player_payload[f"salary_{season}_text"] = value
+
+        option_by_season = offer_payload.get("option_by_season")
+        if isinstance(option_by_season, dict):
+            for raw_season, raw_value in option_by_season.items():
+                season = parse_int(str(raw_season))
+                if season is None or season < CAP_FORECAST_MIN_YEAR or season > 2030:
+                    continue
+                value = str(raw_value or "").strip().upper()
+                if value:
+                    player_payload[f"option_{season}"] = value
+
+        return player_payload
 
     def _notify_free_agent_offer(
         self,
@@ -13749,7 +13949,13 @@ QUALITY REQUIREMENTS
         payload: Dict[str, Any],
         agent_discord_id: Optional[str],
     ) -> bool:
-        if not self.discord_notifications_enabled or not self.discord_webhook_url:
+        if not self.discord_notifications_enabled:
+            return False
+        clean_agent_discord_id = re.sub(r"\D+", "", str(agent_discord_id or ""))
+        if not clean_agent_discord_id:
+            return False
+        if not self.discord_bot_token:
+            self.log_error("Discord free-agent negotiation DM failed: DISCORD_BOT_TOKEN is not configured")
             return False
         player_name = str(free_agent.get("name") or "Jugador")
         agent_name = str(free_agent.get("agent") or payload.get("agent") or "").strip() or "Agente sin asignar"
@@ -13757,7 +13963,6 @@ QUALITY REQUIREMENTS
         economic_offer = str(payload.get("economic_offer") or "").strip() or "Sin oferta económica detallada"
         role_offer = str(payload.get("role_offer") or "").strip() or "Sin rol detallado"
         comments = str(payload.get("comments") or "").strip() or "Sin comentarios adicionales"
-        content = f"<@{agent_discord_id}>" if agent_discord_id else None
         fields = [
             {"name": "Equipo", "value": team, "inline": True},
             {"name": "Jugador", "value": self._discord_text(player_name, 1024), "inline": True},
@@ -13766,14 +13971,6 @@ QUALITY REQUIREMENTS
             {"name": "Rol ofrecido", "value": self._discord_text(role_offer, 1024), "inline": False},
             {"name": "Comentario del GM", "value": self._discord_text(comments, 1024), "inline": False},
         ]
-        if not agent_discord_id:
-            fields.append(
-                {
-                    "name": "Aviso",
-                    "value": "Este agente no tiene Discord ID configurado en League Settings.",
-                    "inline": False,
-                }
-            )
         payload_json: Dict[str, Any] = {
             "embeds": [
                 {
@@ -13785,14 +13982,16 @@ QUALITY REQUIREMENTS
             ],
             "allowed_mentions": {"parse": []},
         }
-        if agent_discord_id:
-            payload_json["content"] = content
-            payload_json["allowed_mentions"]["users"] = [agent_discord_id]
         try:
-            self._post_discord_json(payload_json)
-            return True
+            return self._send_discord_dm(clean_agent_discord_id, payload_json)
         except (HTTPError, URLError, TimeoutError, OSError) as err:
-            self.log_error("Discord free-agent negotiation notification failed: %s", err)
+            if isinstance(err, HTTPError):
+                self.log_error("Discord free-agent negotiation DM failed: %s", self._http_error_excerpt(err))
+            else:
+                self.log_error("Discord free-agent negotiation DM failed: %s", err)
+            return False
+        except RuntimeError as err:
+            self.log_error("Discord free-agent negotiation DM failed: %s", err)
             return False
 
     def _trade_pick_ref_for_discord(self, value: Any) -> str:
@@ -15975,6 +16174,25 @@ QUALITY REQUIREMENTS
             if not free_agent:
                 self._json(404, {"error": "free_agent_not_found"})
                 return
+            offer_payload = dict(request.get("offer_payload")) if isinstance(request.get("offer_payload"), dict) else {}
+            if request.get("player_name"):
+                offer_payload.setdefault("player_name", request.get("player_name"))
+            team_code = normalize_team_code(request.get("team_code"))
+            if not team_code:
+                self._json(400, {"error": "invalid_team_code"})
+                return
+            sign_payload = self._player_payload_from_free_agent_offer(free_agent, offer_payload)
+            try:
+                player_id = self.db.sign_free_agent(free_agent_id, team_code, sign_payload)
+            except ValueError as err:
+                if str(err) == "profile_has_active_contract":
+                    self._json(409, {"error": "profile_has_active_contract"})
+                    return
+                raise
+            if not player_id:
+                self._json(404, {"error": "free_agent_or_team_not_found"})
+                return
+            player_after = self.db.get_player_record(player_id)
             updated = self.db.mark_gm_free_agent_offer_request_decided(
                 request_id,
                 "approved",
@@ -15984,14 +16202,14 @@ QUALITY REQUIREMENTS
             if not updated:
                 self._json(409, {"error": "request_already_decided"})
                 return
+            if request.get("player_name") and str(updated.get("player_name") or "Agente libre") == "Agente libre":
+                updated["player_name"] = request.get("player_name")
             discord_sent = False
-            if self._discord_notify_requested(payload):
-                offer_payload = request.get("offer_payload") if isinstance(request.get("offer_payload"), dict) else {}
-                discord_sent = self._notify_free_agent_offer(
-                    free_agent,
-                    str(request.get("team_code") or ""),
-                    offer_payload,
-                    str(request.get("offer_type") or ""),
+            if player_after and self._discord_notify_requested(payload):
+                discord_sent = self._notify_free_agent_signed(
+                    player_after,
+                    generate_image=self._discord_image_requested(payload),
+                    custom_image=payload.get("discord_custom_image"),
                 )
             self._log_admin_action(
                 "approve",
@@ -16000,20 +16218,17 @@ QUALITY REQUIREMENTS
                 request.get("team_code"),
                 {
                     "free_agent_id": free_agent_id,
+                    "player_id": player_id,
                     "player_name": request.get("player_name"),
                     "offer_type": request.get("offer_type"),
-                    "contract_type": (request.get("offer_payload") or {}).get("contract_type")
-                    if isinstance(request.get("offer_payload"), dict)
-                    else None,
-                    "years": (request.get("offer_payload") or {}).get("years")
-                    if isinstance(request.get("offer_payload"), dict)
-                    else None,
+                    "contract_type": offer_payload.get("contract_type"),
+                    "years": offer_payload.get("years"),
                     "sent_to_discord": discord_sent,
                 },
                 before={"request": request},
-                after={"request": updated},
+                after={"request": updated, "player": player_after},
             )
-            self._json(200, {"ok": True, "request": updated, "discord_sent": discord_sent})
+            self._json(200, {"ok": True, "request": updated, "player_id": player_id, "discord_sent": discord_sent})
             return
 
         if parsed.path.startswith("/api/admin/gm-option-requests/"):
@@ -16187,7 +16402,11 @@ QUALITY REQUIREMENTS
                 return
 
             player_payload: Dict[str, Any] = {}
-            if option_action == "accepted" and option_value in {"QO", "GAP"}:
+            if option_action == "rejected" and option_value in CONTRACT_TERMINATING_OPTION_VALUES:
+                # Rejecting a TO/PO ends that contract path, so the option
+                # season and all later contract-year data must disappear.
+                player_payload.update(contract_option_rejection_clear_payload(option_action_season))
+            elif option_action == "accepted" and option_value in {"QO", "GAP"}:
                 # Keep QO/GAP markers so accepted option state and cap-hold UI
                 # continue to work until an admin applies the contract outcome.
                 player_payload[option_field] = option_value
@@ -16236,7 +16455,7 @@ QUALITY REQUIREMENTS
                     generate_image=self._discord_image_requested(payload),
                     custom_image=payload.get("discord_custom_image"),
                 )
-            self._json(200, {"ok": True, "request": updated})
+            self._json(200, {"ok": True, "request": updated, "player": player_after})
             return
 
         if parsed.path.startswith("/api/admin/users/"):
@@ -16670,11 +16889,15 @@ QUALITY REQUIREMENTS
                 if option_action_value not in {"TO", "PO", "QO", "GAP"}:
                     self._json(400, {"error": "invalid_option_action_value"})
                     return
-                if option_action == "accepted" and option_action_value in {"TO", "PO"}:
+                if option_action == "rejected" and option_action_value in CONTRACT_TERMINATING_OPTION_VALUES:
+                    payload.update(contract_option_rejection_clear_payload(option_action_season))
+                elif option_action == "accepted" and option_action_value in {"TO", "PO"}:
+                    payload[option_action_field] = None
+                elif option_action == "rejected":
                     payload[option_action_field] = None
             ok = self.db.update_player(player_id, payload)
+            player_after = self.db.get_player_record(player_id) if ok else None
             if ok:
-                player_after = self.db.get_player_record(player_id)
                 log_details: Dict[str, Any] = {"fields": sorted(payload.keys())}
                 if option_action and option_action_season is not None:
                     log_details.update(
@@ -16708,7 +16931,7 @@ QUALITY REQUIREMENTS
                         generate_image=self._discord_image_requested(payload),
                         custom_image=payload.get("discord_custom_image"),
                     )
-            self._json(200 if ok else 404, {"ok": ok})
+            self._json(200 if ok else 404, {"ok": ok, "player": player_after})
             return
 
         if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/luxury-history"):
