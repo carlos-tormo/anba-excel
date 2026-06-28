@@ -1117,6 +1117,14 @@ function isExhibit10Player(player) {
   return normalized === 'E10' || normalized === 'EXHIBIT10';
 }
 
+function normalizeExperienceYears(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const parsed = Number(raw.replace('+', '').replace(',', '.'));
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.min(50, Math.floor(parsed)));
+}
+
 function capTotalTooltipText() {
   return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Cuando el modo agencia libre está desactivado, si el equipo queda por debajo del Salary Floor, el CAP TOTAL sube hasta ese mínimo. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
 }
