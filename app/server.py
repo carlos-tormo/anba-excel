@@ -47,6 +47,7 @@ try:
         TRADE_PICK_ACTION_SEND,
         TRADE_PICK_ACTION_SWAP,
         TRADE_ROOM_TPE_BUFFER,
+        TWO_WAY_MINIMUM_BASE_SALARY,
         apron_yos_adjustment,
         cap_hold_amount,
         counts_open_roster_minimum,
@@ -56,6 +57,7 @@ try:
         is_exhibit10_player,
         is_two_way_player,
         luxury_tax_amount,
+        maximum_salary_for_experience,
         minimum_salary_2_yos_for_cap,
         minimum_salary_for_season,
         normalize_bird_years,
@@ -74,6 +76,7 @@ try:
         row_salary_num,
         salary_floor_for_season,
         apply_salary_floor,
+        scaled_minimum_salary,
         season_label,
         settings_int,
     )
@@ -104,6 +107,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         TRADE_PICK_ACTION_SEND,
         TRADE_PICK_ACTION_SWAP,
         TRADE_ROOM_TPE_BUFFER,
+        TWO_WAY_MINIMUM_BASE_SALARY,
         apron_yos_adjustment,
         cap_hold_amount,
         counts_open_roster_minimum,
@@ -113,6 +117,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         is_exhibit10_player,
         is_two_way_player,
         luxury_tax_amount,
+        maximum_salary_for_experience,
         minimum_salary_2_yos_for_cap,
         minimum_salary_for_season,
         normalize_bird_years,
@@ -131,6 +136,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         row_salary_num,
         salary_floor_for_season,
         apply_salary_floor,
+        scaled_minimum_salary,
         season_label,
         settings_int,
     )
@@ -13884,6 +13890,141 @@ QUALITY REQUIREMENTS
                 rights_team = normalize_team_code(match.group(1))
         return bool(team and rights_team and team == rights_team)
 
+    def _free_agent_offer_start_season(self, settings: Dict[str, Any]) -> int:
+        current_year = parse_int(settings.get("current_year")) or CAP_FORECAST_MIN_YEAR
+        if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
+            current_year = CAP_FORECAST_MIN_YEAR
+        return int(current_year) + 1 if parse_bool(settings.get("free_agency_mode")) else int(current_year)
+
+    def _settings_salary_cap_for_season(self, settings: Dict[str, Any], season: int) -> float:
+        return float(
+            parse_amount_like(settings.get(f"salary_cap_{int(season)}"))
+            or parse_amount_like(settings.get("salary_cap_2025"))
+            or 154_647_000
+        )
+
+    def _free_agent_offer_minimum_amount(
+        self,
+        free_agent: Dict[str, Any],
+        settings: Dict[str, Any],
+        season: int,
+        contract_year: int,
+        contract_type: str,
+    ) -> float:
+        normalized_type = str(contract_type or "").strip().upper()
+        if normalized_type == "E10":
+            return 0.0
+        salary_cap = self._settings_salary_cap_for_season(settings, season)
+        if normalized_type == "TW":
+            return float(scaled_minimum_salary(TWO_WAY_MINIMUM_BASE_SALARY, salary_cap))
+        experience = normalize_experience_years(free_agent.get("experience_years"))
+        base_experience = experience or 0
+        amount = minimum_salary_for_season(salary_cap, base_experience, contract_year)
+        if amount:
+            return float(amount)
+        projected_experience = min(10, base_experience + max(0, int(contract_year or 1) - 1))
+        return float(minimum_salary_for_season(salary_cap, projected_experience, 1))
+
+    def _free_agent_offer_maximum_amount(
+        self,
+        free_agent: Dict[str, Any],
+        settings: Dict[str, Any],
+        season: int,
+        contract_type: str,
+    ) -> float:
+        if str(contract_type or "").strip().upper() == "E10":
+            return float("inf")
+        salary_cap = self._settings_salary_cap_for_season(settings, season)
+        return float(maximum_salary_for_experience(salary_cap, free_agent.get("experience_years")))
+
+    def _free_agent_offer_salary_text(self, value: float) -> str:
+        amount = int(round(float(value or 0)))
+        sign = "-" if amount < 0 else ""
+        return f"{sign}{abs(amount):,}".replace(",", ".")
+
+    def _validate_and_normalize_free_agent_offer_payload(
+        self,
+        free_agent: Dict[str, Any],
+        team_code: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_free_agent_offer")
+        settings = self.db.get_settings()
+        start_season = self._free_agent_offer_start_season(settings)
+        years = parse_int(payload.get("years")) or 1
+        years = max(1, min(5, int(years)))
+        contract_type = str(payload.get("contract_type") or "").strip()
+        contract_type_upper = contract_type.upper()
+        salary_by_season = payload.get("salary_by_season")
+        if not isinstance(salary_by_season, dict):
+            salary_by_season = {}
+        option_by_season = payload.get("option_by_season")
+        if not isinstance(option_by_season, dict):
+            option_by_season = {}
+
+        normalized_options: Dict[str, str] = {}
+        for raw_season, raw_option in option_by_season.items():
+            option = str(raw_option or "").strip().upper()
+            if not option:
+                continue
+            season = parse_int(str(raw_season))
+            if season is None:
+                raise ValueError("invalid_offer_option_season")
+            if int(season) == start_season:
+                raise ValueError("first_year_option_not_allowed")
+            if option in {"QO", "GAP"}:
+                raise ValueError("qo_gap_options_are_automatic")
+            if option not in {"TO", "PO"}:
+                raise ValueError("invalid_offer_option")
+            normalized_options[str(int(season))] = option
+
+        raise_percent = parse_amount_like(payload.get("annual_raise_percent"))
+        if raise_percent is None:
+            raise_percent = 0.0
+        raise_percent = float(raise_percent)
+        if raise_percent < 0 or raise_percent > 8:
+            raise ValueError("invalid_annual_raise_percent")
+        rights = str(free_agent.get("bird_rights") or "").strip().upper()
+        can_use_bird_raises = self._free_agent_offer_is_renewal(free_agent, team_code) and rights in {"FB", "EB"}
+        if raise_percent > 5 and not can_use_bird_raises:
+            raise ValueError("annual_raise_requires_full_or_early_bird")
+
+        first_raw = salary_by_season.get(str(start_season))
+        if first_raw is None:
+            first_raw = salary_by_season.get(start_season)
+        first_amount = parse_amount_like(first_raw)
+        first_minimum = self._free_agent_offer_minimum_amount(free_agent, settings, start_season, 1, contract_type_upper)
+        first_maximum = self._free_agent_offer_maximum_amount(free_agent, settings, start_season, contract_type_upper)
+
+        if contract_type_upper == "MIN":
+            first_amount = first_minimum
+        elif contract_type_upper != "E10" and (first_amount is None or first_amount <= 0):
+            raise ValueError("first_year_salary_required")
+        elif first_amount is None:
+            first_amount = 0.0
+
+        if first_amount < first_minimum - 1:
+            raise ValueError("first_year_salary_below_minimum")
+        if math.isfinite(first_maximum) and first_amount > first_maximum + 1:
+            raise ValueError("first_year_salary_above_maximum")
+
+        normalized_salaries: Dict[str, str] = {}
+        for idx in range(years):
+            season = start_season + idx
+            if contract_type_upper == "MIN":
+                amount = self._free_agent_offer_minimum_amount(free_agent, settings, season, idx + 1, contract_type_upper)
+            else:
+                amount = float(first_amount) + (float(first_amount) * (raise_percent / 100.0) * idx)
+            normalized_salaries[str(season)] = self._free_agent_offer_salary_text(amount)
+
+        normalized_payload = dict(payload)
+        normalized_payload["years"] = years
+        normalized_payload["annual_raise_percent"] = raise_percent
+        normalized_payload["salary_by_season"] = normalized_salaries
+        normalized_payload["option_by_season"] = normalized_options
+        return normalized_payload
+
     def _player_payload_from_free_agent_offer(
         self,
         free_agent: Dict[str, Any],
@@ -13944,6 +14085,8 @@ QUALITY REQUIREMENTS
         contract_type = str(payload.get("contract_type") or "").strip() or "Sin tipo definido"
         years = parse_int(payload.get("years"))
         years_text = f"{years} año(s)" if years is not None and years > 0 else "Sin duración definida"
+        raise_percent = parse_amount_like(payload.get("annual_raise_percent"))
+        raise_text = f"{raise_percent:g}%" if raise_percent is not None and raise_percent > 0 else "Sin subidas"
         salary_lines = self._contract_offer_salary_lines(payload)
         notes = str(payload.get("notes") or "").strip()
         thread_name = self._discord_text(player_name, 100) or "Jugador"
@@ -13971,6 +14114,7 @@ QUALITY REQUIREMENTS
                 {"name": "Modalidad", "value": offer_label, "inline": True},
                 {"name": "Tipo", "value": self._discord_text(contract_type, 1024), "inline": True},
                 {"name": "Duración", "value": years_text, "inline": True},
+                {"name": "Subidas", "value": raise_text, "inline": True},
                 {"name": "Importes", "value": self._discord_text(salary_lines, 1024), "inline": False},
             ],
         }
@@ -15213,6 +15357,7 @@ QUALITY REQUIREMENTS
                 is_renewal = self._free_agent_offer_is_renewal(free_agent, team_code)
                 offer_type = "renewal" if is_renewal else "free_agent_offer"
                 try:
+                    payload = self._validate_and_normalize_free_agent_offer_payload(free_agent, team_code, payload)
                     request = self.db.create_gm_free_agent_offer_request(
                         free_agent_id,
                         team_code,

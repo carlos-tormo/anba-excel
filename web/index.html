@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260629b">
+  <link rel="stylesheet" href="/styles.css?v=20260629c">
 </head>
 <body class="app-layout">
   <header>
@@ -174,6 +174,8 @@
           <option value="4">4 años</option>
           <option value="5">5 años</option>
         </select>
+        <label for="freeAgentOfferRaisePct">Subidas interanuales</label>
+        <input id="freeAgentOfferRaisePct" type="number" min="0" max="8" step="0.5" value="0">
       </div>
       <div class="table-wrap sign-free-agent-years-wrap">
         <table id="freeAgentOfferYearsTable">
@@ -187,6 +189,7 @@
           <tbody></tbody>
         </table>
       </div>
+      <div id="freeAgentOfferValidation" class="offer-validation-alert section-hidden" role="alert"></div>
       <label class="free-agent-action-notes" for="freeAgentOfferNotes">
         <span>Comentarios</span>
         <textarea id="freeAgentOfferNotes" rows="3" placeholder="Detalles adicionales de la oferta"></textarea>
@@ -603,6 +606,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260629a" defer></script>
+  <script src="/guest.js?v=20260629c" defer></script>
 </body>
 </html>

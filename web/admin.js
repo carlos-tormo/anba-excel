@@ -3902,7 +3902,9 @@ function gmFreeAgentOfferContext(request) {
     .map((year) => String(salaryBySeason[year] || '').trim())
     .find(Boolean);
   const salaryLine = firstSalary ? `<div class="muted">Desde ${escapeHtml(firstSalary)}</div>` : '';
-  return `${escapeHtml(contractType)} · ${escapeHtml(yearsText)}${salaryLine}`;
+  const raise = Number(payload.annual_raise_percent || 0);
+  const raiseText = Number.isFinite(raise) && raise > 0 ? ` · Subidas ${raise}%` : '';
+  return `${escapeHtml(contractType)} · ${escapeHtml(yearsText)}${escapeHtml(raiseText)}${salaryLine}`;
 }
 
 function updateGmOptionRequestBadges() {
@@ -5079,6 +5081,126 @@ function freeAgentOfferIsRenewal(agent, teamCode) {
   return Boolean(rightsTeam && rightsTeam === team);
 }
 
+function freeAgentOfferParseAmount(raw) {
+  if (typeof parseAmountLike === 'function') return parseAmountLike(raw);
+  if (typeof parseAmount === 'function') return parseAmount(raw);
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function freeAgentOfferExperienceYears(agent) {
+  const experience = normalizeExperienceYears(agent?.experience_years);
+  return experience === null ? 0 : experience;
+}
+
+function freeAgentOfferContractType() {
+  return String(document.getElementById('freeAgentOfferType')?.value || '').trim();
+}
+
+function freeAgentOfferRaisePercent() {
+  const input = document.getElementById('freeAgentOfferRaisePct');
+  const value = Number(input?.value || 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function freeAgentOfferCanUseBirdRaises(agent) {
+  const teamCode = document.getElementById('freeAgentOfferTeam')?.value || '';
+  const rights = String(agent?.bird_rights || '').trim().toUpperCase();
+  return freeAgentOfferIsRenewal(agent, teamCode) && ['FB', 'EB'].includes(rights);
+}
+
+function freeAgentOfferMinimumAmount(agent, season, contractYear = 1) {
+  const type = freeAgentOfferContractType().toUpperCase();
+  if (type === 'E10') return 0;
+  if (type === 'TW') return twoWayMinimumSalaryForSeason(season) || 0;
+  const experience = freeAgentOfferExperienceYears(agent);
+  return (
+    minimumSalaryForSeason(season, experience, contractYear)
+    || minimumSalaryForSeason(season, Math.min(10, experience + contractYear - 1), 1)
+    || 0
+  );
+}
+
+function freeAgentOfferMaximumAmount(agent, season) {
+  const type = freeAgentOfferContractType().toUpperCase();
+  if (type === 'E10') return Infinity;
+  return maximumSalaryForExperience(season, agent?.experience_years) || Infinity;
+}
+
+function setFreeAgentOfferValidation(message = '', isError = false) {
+  const alert = document.getElementById('freeAgentOfferValidation');
+  if (alert) {
+    alert.textContent = message;
+    alert.classList.toggle('section-hidden', !message);
+    alert.classList.toggle('is-error', Boolean(isError));
+  }
+  const btn = document.getElementById('freeAgentOfferSubmitBtn');
+  if (btn) btn.disabled = Boolean(isError);
+  return !isError;
+}
+
+function syncFreeAgentOfferAmounts() {
+  const agent = freeAgentById(state.ui.freeAgentActionId);
+  const inputs = Array.from(document.querySelectorAll('[data-offer-salary-season]'));
+  const raiseInput = document.getElementById('freeAgentOfferRaisePct');
+  const contractType = freeAgentOfferContractType().toUpperCase();
+  if (!agent || !inputs.length) {
+    setFreeAgentOfferValidation();
+    return true;
+  }
+
+  const isMinimumContract = contractType === 'MIN';
+  if (raiseInput) {
+    raiseInput.disabled = isMinimumContract;
+    if (isMinimumContract) raiseInput.value = '0';
+  }
+
+  const firstInput = inputs[0];
+  const firstSeason = Number(firstInput?.dataset.offerSalarySeason || defaultSeasonViewStart());
+  const firstMinimum = freeAgentOfferMinimumAmount(agent, firstSeason, 1);
+  const firstMaximum = freeAgentOfferMaximumAmount(agent, firstSeason);
+  if (isMinimumContract && firstInput) {
+    firstInput.value = formatDots(firstMinimum);
+  }
+  if (firstInput) firstInput.readOnly = isMinimumContract;
+
+  const firstAmount = firstInput ? freeAgentOfferParseAmount(firstInput.value) : null;
+  const raisePercent = freeAgentOfferRaisePercent();
+  const canUseBirdRaises = freeAgentOfferCanUseBirdRaises(agent);
+  inputs.forEach((input, idx) => {
+    if (idx === 0) return;
+    input.readOnly = true;
+    const season = Number(input.dataset.offerSalarySeason || firstSeason + idx);
+    if (isMinimumContract) {
+      input.value = formatDots(freeAgentOfferMinimumAmount(agent, season, idx + 1));
+      return;
+    }
+    if (firstAmount === null || firstAmount <= 0) {
+      input.value = '';
+      return;
+    }
+    const annualRaise = firstAmount * (raisePercent / 100);
+    input.value = formatDots(Math.round(firstAmount + (annualRaise * idx)));
+  });
+
+  if (contractType !== 'E10' && (firstAmount === null || firstAmount <= 0)) {
+    return setFreeAgentOfferValidation('Introduce el importe del primer año.', true);
+  }
+  if (firstAmount !== null && firstAmount < firstMinimum) {
+    return setFreeAgentOfferValidation(`El importe del primer año no puede ser inferior al mínimo: ${formatDots(firstMinimum)}.`, true);
+  }
+  if (firstAmount !== null && Number.isFinite(firstMaximum) && firstAmount > firstMaximum) {
+    return setFreeAgentOfferValidation(`El importe del primer año supera el máximo permitido para este jugador: ${formatDots(firstMaximum)}.`, true);
+  }
+  if (raisePercent < 0 || raisePercent > 8) {
+    return setFreeAgentOfferValidation('Las subidas interanuales deben estar entre 0% y 8%.', true);
+  }
+  if (raisePercent > 5 && !canUseBirdRaises) {
+    return setFreeAgentOfferValidation('Solo los equipos con Full Bird o Early Bird pueden ofrecer subidas superiores al 5%.', true);
+  }
+  return setFreeAgentOfferValidation();
+}
+
 function updateFreeAgentOfferSummary() {
   const agent = freeAgentById(state.ui.freeAgentActionId);
   const summary = document.getElementById('freeAgentOfferSummary');
@@ -5090,10 +5212,13 @@ function updateFreeAgentOfferSummary() {
   summary.innerHTML = `${freeAgentActionSummary(agent)}${renewalBadge}`;
 }
 
-function renderFreeAgentOfferYearsTable() {
+function renderFreeAgentOfferYearsTable(options = {}) {
   const tbody = document.querySelector('#freeAgentOfferYearsTable tbody');
   const yearsSelect = document.getElementById('freeAgentOfferYears');
   if (!tbody || !yearsSelect) return;
+  const previousFirstAmount = options.preserveFirstAmount
+    ? String(document.querySelector('[data-offer-salary-season]')?.value || '')
+    : '';
   const years = Math.max(1, Math.min(5, Number(yearsSelect.value || 1)));
   const start = defaultSeasonViewStart();
   tbody.innerHTML = Array.from({ length: years }, (_, idx) => {
@@ -5101,19 +5226,22 @@ function renderFreeAgentOfferYearsTable() {
     return `
       <tr>
         <td>${seasonLabel(season)}</td>
-        <td><input data-offer-salary-season="${season}" type="text" inputmode="numeric" placeholder="Importe"></td>
+        <td><input data-offer-salary-season="${season}" data-offer-salary-index="${idx}" type="text" inputmode="numeric" placeholder="Importe"${idx === 0 ? '' : ' readonly'}></td>
         <td>
-          <select data-offer-option-season="${season}">
-            <option value=""></option>
-            <option value="TO">TO</option>
-            <option value="PO">PO</option>
-            <option value="QO">QO</option>
-            <option value="GAP">GAP</option>
+          <select data-offer-option-season="${season}"${idx === 0 ? ' disabled' : ''}>
+            <option value="">${idx === 0 ? 'No disponible' : ''}</option>
+            ${idx === 0 ? '' : '<option value="TO">TO</option><option value="PO">PO</option>'}
           </select>
         </td>
       </tr>
     `;
   }).join('');
+  const firstInput = tbody.querySelector('[data-offer-salary-index="0"]');
+  if (firstInput && previousFirstAmount) firstInput.value = previousFirstAmount;
+  tbody.querySelectorAll('[data-offer-salary-season]').forEach((input) => {
+    input.addEventListener('input', syncFreeAgentOfferAmounts);
+  });
+  syncFreeAgentOfferAmounts();
 }
 
 function openFreeAgentOfferModal(agent) {
@@ -5123,6 +5251,7 @@ function openFreeAgentOfferModal(agent) {
   updateFreeAgentOfferSummary();
   document.getElementById('freeAgentOfferType').value = 'Reg';
   document.getElementById('freeAgentOfferYears').value = '1';
+  document.getElementById('freeAgentOfferRaisePct').value = '0';
   document.getElementById('freeAgentOfferNotes').value = '';
   renderFreeAgentOfferYearsTable();
   setFreeAgentActionStatus('offer');
@@ -5151,6 +5280,7 @@ function freeAgentOfferPayload() {
     team_code: document.getElementById('freeAgentOfferTeam')?.value || '',
     contract_type: document.getElementById('freeAgentOfferType')?.value || '',
     years: Number(document.getElementById('freeAgentOfferYears')?.value || 1),
+    annual_raise_percent: freeAgentOfferRaisePercent(),
     salary_by_season: salaryBySeason,
     option_by_season: optionBySeason,
     notes: document.getElementById('freeAgentOfferNotes')?.value.trim() || '',
@@ -5160,6 +5290,7 @@ function freeAgentOfferPayload() {
 async function submitFreeAgentOffer() {
   const agent = freeAgentById(state.ui.freeAgentActionId);
   if (!agent) return;
+  if (!syncFreeAgentOfferAmounts()) return;
   const payload = freeAgentOfferPayload();
   if (!payload.team_code) {
     setFreeAgentActionStatus('offer', 'Selecciona un equipo.', true);
@@ -5182,9 +5313,9 @@ async function submitFreeAgentOffer() {
     setFreeAgentActionStatus('offer', `No se pudo enviar la oferta: ${err.message}`, true);
   } finally {
     if (btn) {
-      btn.disabled = false;
       btn.textContent = oldText;
     }
+    syncFreeAgentOfferAmounts();
   }
 }
 
@@ -11102,8 +11233,15 @@ async function init() {
   document.getElementById('signFreeAgentModal').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeSignFreeAgentModal();
   });
-  document.getElementById('freeAgentOfferYears')?.addEventListener('change', renderFreeAgentOfferYearsTable);
-  document.getElementById('freeAgentOfferTeam')?.addEventListener('change', updateFreeAgentOfferSummary);
+  document.getElementById('freeAgentOfferYears')?.addEventListener('change', () => {
+    renderFreeAgentOfferYearsTable({ preserveFirstAmount: true });
+  });
+  document.getElementById('freeAgentOfferTeam')?.addEventListener('change', () => {
+    updateFreeAgentOfferSummary();
+    syncFreeAgentOfferAmounts();
+  });
+  document.getElementById('freeAgentOfferType')?.addEventListener('change', syncFreeAgentOfferAmounts);
+  document.getElementById('freeAgentOfferRaisePct')?.addEventListener('input', syncFreeAgentOfferAmounts);
   document.getElementById('freeAgentOfferCloseBtn')?.addEventListener('click', closeFreeAgentOfferModal);
   document.getElementById('freeAgentOfferSubmitBtn')?.addEventListener('click', () => { void submitFreeAgentOffer(); });
   document.getElementById('freeAgentOfferModal')?.addEventListener('click', (e) => {

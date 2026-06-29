@@ -1023,6 +1023,19 @@ h1 {
   background: #ecfdf5;
   color: #047857;
 }
+.offer-validation-alert {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff1f2;
+  color: #991b1b;
+  font-weight: 900;
+}
+#freeAgentOfferYearsTable input[readonly] {
+  background: #f8fafc;
+  color: #64748b;
+}
 .free-agent-action-notes {
   display: grid;
   gap: 6px;
