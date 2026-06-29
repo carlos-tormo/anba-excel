@@ -2364,6 +2364,8 @@ function tradeMachineFlowSkeleton(code) {
     beforeApronAccount,
     incomingSalary: 0,
     outgoingSalary: 0,
+    incomingMatchingSalary: 0,
+    outgoingMatchingSalary: 0,
     incomingCash: 0,
     outgoingCash: 0,
     incomingCapSalary: 0,
@@ -2431,13 +2433,16 @@ function tradeMachineFlows() {
     if (!meta || !flows[selection.fromTeam] || !flows[selection.toTeam]) return;
     const asset = tradeMachineAssetForSelection(meta, selection);
     const salary = Number(asset.salary || 0);
+    const matchingSalary = asset.isMinimumContract ? 0 : salary;
     const capSalary = Number(asset.capSalary ?? asset.salary ?? 0);
     const apronSalary = Number(asset.apronSalary ?? asset.capSalary ?? asset.salary ?? 0);
     flows[selection.fromTeam].outgoingSalary += salary;
+    flows[selection.fromTeam].outgoingMatchingSalary += salary;
     flows[selection.fromTeam].outgoingCapSalary += capSalary;
     flows[selection.fromTeam].outgoingApronSalary += apronSalary;
     flows[selection.fromTeam].outgoingAssets.push({ ...asset, toTeam: selection.toTeam });
     flows[selection.toTeam].incomingSalary += salary;
+    flows[selection.toTeam].incomingMatchingSalary += matchingSalary;
     flows[selection.toTeam].incomingCapSalary += capSalary;
     flows[selection.toTeam].incomingApronSalary += apronSalary;
     flows[selection.toTeam].incomingAssets.push({ ...asset, fromTeam: selection.fromTeam });
@@ -3083,7 +3088,8 @@ function renderTradeMachineDynamicSections() {
     const card = Array.from(grid.querySelectorAll('[data-trade-team-card]'))
       .find((item) => item.dataset.tradeTeamCard === code);
     const flow = result.flows[code] || tradeMachineFlowSkeleton(code);
-    if (card && state.tradeMachine.teamDataByCode[code] && !card.querySelector('.trade-machine-ledger')) {
+    const isLoadingCard = Boolean(card?.querySelector('.trade-machine-team-top + .trade-machine-empty'));
+    if (card && state.tradeMachine.teamDataByCode[code] && (!card.querySelector('.trade-machine-ledger') || isLoadingCard)) {
       card.outerHTML = renderTradeMachineTeamCard(code, index, flow);
       return;
     }
@@ -3191,6 +3197,7 @@ function resetTradeMachine() {
   const seed = [state.tradeMachine.selectedTeams[0] || state.teamCode].filter(Boolean);
   state.tradeMachine.selectedTeams = defaultTradeMachineTeams(seed);
   state.tradeMachine.selections = {};
+  state.tradeMachine.cashTransfers = {};
   state.tradeMachine.seasonStart = currentSeasonStart();
   void ensureTradeMachineTeamData(state.tradeMachine.selectedTeams).then(() => renderTradeMachine());
   renderTradeMachine();
@@ -3215,6 +3222,20 @@ function setupTradeMachineControls() {
     });
   }
   if (grid) {
+    grid.addEventListener('input', (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (!target.matches('[data-trade-cash-amount]')) return;
+      const fromTeam = target.dataset.tradeCashAmount;
+      if (!fromTeam) return;
+      const existing = state.tradeMachine.cashTransfers[fromTeam] || {};
+      state.tradeMachine.cashTransfers[fromTeam] = {
+        ...existing,
+        amountText: target.value,
+        toTeam: existing.toTeam || tradeMachineDefaultRecipient(fromTeam),
+      };
+      renderTradeMachineDynamicSections();
+    });
     grid.addEventListener('change', async (e) => {
       const target = e.target;
       if (!(target instanceof HTMLElement)) return;
@@ -3248,6 +3269,19 @@ function setupTradeMachineControls() {
         const key = target.dataset.tradeRecipient;
         if (key && state.tradeMachine.selections[key]) {
           state.tradeMachine.selections[key].toTeam = target.value;
+          renderTradeMachineDynamicSections();
+        }
+        return;
+      }
+      if (target.matches('[data-trade-cash-recipient]')) {
+        const fromTeam = target.dataset.tradeCashRecipient;
+        if (fromTeam) {
+          const existing = state.tradeMachine.cashTransfers[fromTeam] || {};
+          state.tradeMachine.cashTransfers[fromTeam] = {
+            ...existing,
+            amountText: existing.amountText ?? '',
+            toTeam: target.value,
+          };
           renderTradeMachineDynamicSections();
         }
         return;

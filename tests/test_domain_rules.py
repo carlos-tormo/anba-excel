@@ -10,6 +10,7 @@ from app.domain_rules import (
     parse_free_agent_rep_discord_ids,
     public_settings_payload,
     apply_salary_floor,
+    roster_contract_counts,
 )
 
 
@@ -119,6 +120,42 @@ class DomainRulesTests(unittest.TestCase):
             11 * minimum_salary_for_season(154_647_000, 0, 1),
             result["amount"],
         )
+
+    def test_standard_cap_holds_count_for_open_roster_minimum_not_roster_limit(self) -> None:
+        settings = {
+            "free_agency_mode": "1",
+            "current_year": "2025",
+            "average_salary_2025": "13254485",
+        }
+        players = [
+            {"salary_2026_num": 10_000_000, "bird_rights": "Reg"}
+            for _ in range(10)
+        ] + [
+            {"salary_2025_num": 5_000_000, "salary_2026_text": "FB", "bird_rights": "Reg"}
+            for _ in range(8)
+        ]
+
+        open_roster_hold = open_roster_spot_cap_hold(players, 2026, settings, 154_647_000)
+        roster_counts = roster_contract_counts(players, 2026)
+
+        self.assertEqual(18, open_roster_hold["roster_count"])
+        self.assertEqual(0, open_roster_hold["open_spots"])
+        self.assertEqual({"standard": 10, "two_way": 0}, roster_counts)
+
+    def test_two_way_contracts_count_only_against_two_way_roster_limit(self) -> None:
+        settings = {"free_agency_mode": "1", "current_year": "2025"}
+        players = [
+            {"salary_2026_num": 10_000_000, "bird_rights": "Reg"},
+            {"salary_2026_num": 636_435, "bird_rights": "TW", "is_two_way": 1},
+            {"salary_2025_num": 636_435, "salary_2026_text": "QO", "bird_rights": "TW", "is_two_way": 1},
+        ]
+
+        open_roster_hold = open_roster_spot_cap_hold(players, 2026, settings, 154_647_000)
+        roster_counts = roster_contract_counts(players, 2026)
+
+        self.assertEqual(1, open_roster_hold["roster_count"])
+        self.assertEqual(11, open_roster_hold["open_spots"])
+        self.assertEqual({"standard": 1, "two_way": 1}, roster_counts)
 
 
 if __name__ == "__main__":

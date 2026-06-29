@@ -158,6 +158,52 @@ class TradeValidationServerTests(unittest.TestCase):
             )
         )
 
+    def test_cap_hold_assets_move_open_roster_minimum_without_roster_limit_slot(self) -> None:
+        self.db.update_setting("free_agency_mode", "1")
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("average_salary_2025", "13254485")
+        for idx in range(10):
+            self.db.create_player(
+                "ATL",
+                {
+                    "name": f"Active {idx}",
+                    "bird_rights": "Reg",
+                    "position": "SG",
+                    "salary_2026_text": "10000000",
+                },
+            )
+        hold_player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Bird Rights Hold",
+                "bird_rights": "Reg",
+                "position": "SF",
+                "salary_2025_text": "5000000",
+                "salary_2026_text": "FB",
+            },
+        )
+
+        result = self.db.validate_trade_machine(
+            {
+                "teams": ["ATL", "BOS"],
+                "season": 2026,
+                "selections": [
+                    {"type": "player", "id": hold_player_id, "from_team": "ATL", "to_team": "BOS"},
+                ],
+            }
+        )
+        atl_flow = result["flows"]["ATL"]
+        bos_flow = result["flows"]["BOS"]
+
+        self.assertEqual(10, atl_flow["beforeRosterStandard"])
+        self.assertEqual(10, atl_flow["postRosterStandard"])
+        self.assertEqual(11, atl_flow["beforeOpenRosterSpotRosterCount"])
+        self.assertEqual(10, atl_flow["postOpenRosterSpotRosterCount"])
+        self.assertEqual(0, bos_flow["beforeRosterStandard"])
+        self.assertEqual(0, bos_flow["postRosterStandard"])
+        self.assertEqual(0, bos_flow["beforeOpenRosterSpotRosterCount"])
+        self.assertEqual(1, bos_flow["postOpenRosterSpotRosterCount"])
+
     def test_stepien_restricted_pick_only_allows_swap_action(self) -> None:
         pick_id = self.db.create_asset(
             "ATL",
@@ -341,6 +387,43 @@ class TradeValidationServerTests(unittest.TestCase):
                 and "2do apron" in issue["message"]
                 for issue in result["issues"]
             )
+        )
+
+    def test_incoming_minimum_salary_is_excluded_from_salary_matching_only(self) -> None:
+        outgoing = self.db.create_player(
+            "ATL",
+            {"name": "Outgoing Salary", "position": "SG", "salary_2026_text": "10000000"},
+        )
+        incoming_regular = self.db.create_player(
+            "BOS",
+            {"name": "Incoming Regular", "position": "PF", "salary_2026_text": "10000000"},
+        )
+        incoming_minimum = self.db.create_player(
+            "BOS",
+            {"name": "Incoming Minimum", "position": "PG", "salary_2026_text": "2048494"},
+        )
+
+        result = self.db.validate_trade_machine(
+            {
+                "teams": ["ATL", "BOS"],
+                "season": 2026,
+                "selections": [
+                    {"type": "player", "id": outgoing, "from_team": "ATL", "to_team": "BOS"},
+                    {"type": "player", "id": incoming_regular, "from_team": "BOS", "to_team": "ATL"},
+                    {"type": "player", "id": incoming_minimum, "from_team": "BOS", "to_team": "ATL"},
+                ],
+            }
+        )
+
+        atl_flow = result["flows"]["ATL"]
+        bos_flow = result["flows"]["BOS"]
+
+        self.assertEqual(12048494.0, atl_flow["incomingSalary"])
+        self.assertEqual(10000000.0, atl_flow["incomingMatchingSalary"])
+        self.assertEqual(12048494.0, bos_flow["outgoingSalary"])
+        self.assertEqual(12048494.0, bos_flow["outgoingMatchingSalary"])
+        self.assertFalse(
+            any(issue["severity"] == "illegal" and issue["rule"] == "salary" and issue["teamCode"] == "ATL" for issue in result["issues"])
         )
 
     def test_apron_hard_cap_is_scoped_by_season(self) -> None:

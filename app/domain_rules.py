@@ -361,6 +361,26 @@ def is_exhibit10_player(row: Dict[str, Any]) -> bool:
     return normalized in {"E10", "EXHIBIT10"}
 
 
+def roster_contract_slot_type(row: Dict[str, Any], season: int) -> str:
+    if is_exhibit10_player(row):
+        return ""
+    if row_salary_num(row, season) <= 0:
+        return ""
+    return "two_way" if is_two_way_player(row) else "standard"
+
+
+def roster_contract_counts(players: List[Dict[str, Any]], season: int) -> Dict[str, int]:
+    standard = 0
+    two_way = 0
+    for player in players:
+        slot_type = roster_contract_slot_type(player, season)
+        if slot_type == "standard":
+            standard += 1
+        elif slot_type == "two_way":
+            two_way += 1
+    return {"standard": standard, "two_way": two_way}
+
+
 def is_free_agent_signed_contract(row: Dict[str, Any]) -> bool:
     return parse_bool(row.get("signed_as_free_agent"))
 
@@ -485,6 +505,16 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
     return 0.0
 
 
+def counts_open_roster_minimum(row: Dict[str, Any], season: int, settings: Dict[str, str], salary_cap: float) -> bool:
+    if is_two_way_player(row) or is_exhibit10_player(row):
+        return False
+    return (
+        cap_hold_amount(row, season, settings, salary_cap) > 0
+        or has_standard_cap_hold_marker(row, season)
+        or row_salary_num(row, season) > 0
+    )
+
+
 def open_roster_spot_cap_hold(players: List[Dict[str, Any]], season: int, settings: Dict[str, str], salary_cap: float) -> Dict[str, float]:
     if not parse_bool(settings.get("free_agency_mode")):
         return {"roster_count": 0.0, "open_spots": 0.0, "minimum_salary": 0.0, "amount": 0.0}
@@ -492,15 +522,11 @@ def open_roster_spot_cap_hold(players: List[Dict[str, Any]], season: int, settin
     if int(season) != int(current_year) + 1:
         return {"roster_count": 0.0, "open_spots": 0.0, "minimum_salary": 0.0, "amount": 0.0}
 
-    roster_count = 0
-    for player in players:
-        if is_two_way_player(player) or is_exhibit10_player(player):
-            continue
-        if cap_hold_amount(player, season, settings, salary_cap) > 0 or has_standard_cap_hold_marker(player, season):
-            roster_count += 1
-            continue
-        if row_salary_num(player, season) > 0:
-            roster_count += 1
+    roster_count = sum(
+        1
+        for player in players
+        if counts_open_roster_minimum(player, season, settings, salary_cap)
+    )
 
     open_spots = max(0, OPEN_ROSTER_SPOT_MINIMUM - roster_count)
     minimum_salary = minimum_salary_for_season(salary_cap, 0, 1)

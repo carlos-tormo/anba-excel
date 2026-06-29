@@ -2282,6 +2282,38 @@ h1 {
 .trade-machine-roster-count--over strong {
   color: #b91c1c;
 }
+.trade-machine-cash-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #dbe3ee;
+  background: #f8fafc;
+}
+.trade-machine-cash-panel h3 {
+  margin: 0;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.trade-machine-cash-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, 132px);
+  gap: 8px;
+}
+.trade-machine-cash-row input,
+.trade-machine-cash-row select {
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
 .trade-machine-assets {
   display: grid;
   gap: 14px;

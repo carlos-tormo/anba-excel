@@ -49,6 +49,7 @@ try:
         TRADE_ROOM_TPE_BUFFER,
         apron_yos_adjustment,
         cap_hold_amount,
+        counts_open_roster_minimum,
         format_trade_money,
         has_standard_cap_hold_marker,
         increment_bird_years_value,
@@ -68,6 +69,8 @@ try:
         parse_free_agent_rep_discord_ids,
         parse_int,
         public_settings_payload,
+        roster_contract_counts,
+        roster_contract_slot_type,
         row_salary_num,
         salary_floor_for_season,
         apply_salary_floor,
@@ -103,6 +106,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         TRADE_ROOM_TPE_BUFFER,
         apron_yos_adjustment,
         cap_hold_amount,
+        counts_open_roster_minimum,
         format_trade_money,
         has_standard_cap_hold_marker,
         increment_bird_years_value,
@@ -122,6 +126,8 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         parse_free_agent_rep_discord_ids,
         parse_int,
         public_settings_payload,
+        roster_contract_counts,
+        roster_contract_slot_type,
         row_salary_num,
         salary_floor_for_season,
         apply_salary_floor,
@@ -8360,12 +8366,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
         apron_figure_players = sum(player_salary_for_apron(p) for p in players)
         # GASTO Total: player payroll excluding non-financial Exhibit 10 contracts.
         player_payroll = sum(player_salary_for_gasto(p) for p in players)
-        roster_standard_count = sum(
-            1
-            for p in players
-            if not is_two_way_player(p)
-        )
-        roster_two_way_count = len(players) - roster_standard_count
+        roster_counts = roster_contract_counts(players, current_year)
+        roster_standard_count = roster_counts["standard"]
+        roster_two_way_count = roster_counts["two_way"]
 
         dead_cap_team_salary = sum(
             dead_contract_salary_num(d, current_year)
@@ -10348,8 +10351,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
     ) -> Dict[str, Any]:
         balances = self._trade_machine_team_balances(team_data, season, thresholds["salaryCap"], settings)
         players = team_data.get("players") or []
-        standard_count = sum(1 for p in players if not is_two_way_player(p))
-        two_way_count = len(players) - standard_count
+        roster_counts = roster_contract_counts(players, season)
+        standard_count = roster_counts["standard"]
+        two_way_count = roster_counts["two_way"]
         before_cap = float(balances["cap_total"])
         before_raw_cap = float(balances.get("cap_total_before_floor") or before_cap)
         before_apron = float(balances["apron_account"])
@@ -10361,6 +10365,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "beforeApronAccount": before_apron,
             "incomingSalary": 0.0,
             "outgoingSalary": 0.0,
+            "incomingMatchingSalary": 0.0,
+            "outgoingMatchingSalary": 0.0,
             "incomingCash": 0.0,
             "outgoingCash": 0.0,
             "incomingCapSalary": 0.0,
@@ -10453,6 +10459,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 else row_salary_num(player, season) + apron_yos_adjustment(player, season, thresholds["salaryCap"])
             )
             minimum_cutoff = minimum_salary_2_yos_for_cap(thresholds["salaryCap"])
+            roster_slot = roster_contract_slot_type(player, season)
+            counts_open_minimum = counts_open_roster_minimum(player, season, settings, thresholds["salaryCap"])
             return {
                 "key": f"player:{from_team}:{asset_id}",
                 "type": "player",
@@ -10468,6 +10476,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "isMinimumContract": salary > 0 and salary <= minimum_cutoff,
                 "isTwoWay": is_two_way_player(player),
                 "isExhibit10": is_exhibit10_player(player),
+                "rosterSlot": roster_slot,
+                "countsOpenRosterMinimum": counts_open_minimum,
                 "restricted": False,
                 "protected": False,
                 "conditional": False,
@@ -10699,8 +10709,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
         team_data: Dict[str, Any],
         thresholds: Dict[str, float],
     ) -> Dict[str, Any]:
-        incoming = float(flow.get("incomingSalary") or 0.0)
-        outgoing = float(flow.get("outgoingSalary") or 0.0)
+        raw_incoming_matching = flow.get("incomingMatchingSalary")
+        raw_outgoing_matching = flow.get("outgoingMatchingSalary")
+        incoming = float(raw_incoming_matching if raw_incoming_matching is not None else flow.get("incomingSalary") or 0.0)
+        outgoing = float(raw_outgoing_matching if raw_outgoing_matching is not None else flow.get("outgoingSalary") or 0.0)
+        actual_incoming = float(flow.get("incomingSalary") or 0.0)
         before_cap = float(flow.get("beforeCap") or 0.0)
         post_cap = float(flow.get("postCap") or 0.0)
         outgoing_players = len([a for a in flow.get("outgoingAssets") or [] if a.get("type") == "player"])
@@ -10709,6 +10722,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
         second_limited = self._trade_machine_second_apron_limited(flow, thresholds)
         aggregation_hard_cap_trigger = "second" if outgoing_players > 1 and incoming_players > 0 else ""
         standard_limit = outgoing + TRADE_MATCH_CUSHION if outgoing_players > 0 and incoming_players > 0 else 0.0
+        minimum_excluded = max(0.0, actual_incoming - incoming)
+        minimum_note = (
+            f" {format_trade_money(minimum_excluded)} en mínimos recibidos no computan para el cuadre salarial."
+            if minimum_excluded > 0
+            else ""
+        )
         if incoming <= 0 or incoming <= outgoing:
             return {
                 "legal": True,
@@ -10716,9 +10735,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "label": "Sin TPE",
                 "limit": outgoing,
                 "hardCapTrigger": aggregation_hard_cap_trigger,
-                "message": "No recibe salario de jugadores."
+                "message": "No recibe salario computable de jugadores."
                 if incoming <= 0
-                else f"Recibe {format_trade_money(incoming)} y envía {format_trade_money(outgoing)}; no necesita recibir más salario del que envía.",
+                else f"Recibe {format_trade_money(incoming)} computable y envía {format_trade_money(outgoing)}; no necesita recibir más salario del que envía.{minimum_note}",
             }
         if second_limited:
             return {
@@ -10726,7 +10745,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "tpe": "second_apron_block",
                 "label": "Restricción 2do apron",
                 "limit": outgoing,
-                "message": f"Está limitado por el 2do apron: no puede recibir más salario del que envía ({format_trade_money(outgoing)}). Recibe {format_trade_money(incoming)}.",
+                "message": f"Está limitado por el 2do apron: no puede recibir más salario computable del que envía ({format_trade_money(outgoing)}). Recibe {format_trade_money(incoming)} computable.{minimum_note}",
             }
         if first_limited:
             label = "TPE agregada" if outgoing_players > 1 else "TPE estándar"
@@ -10741,9 +10760,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     if outgoing_players <= 0
                     else f"Necesita recibir al menos un jugador para usar {label}."
                     if incoming_players <= 0
-                    else f"{label}: puede recibir hasta {format_trade_money(standard_limit)} (100% del salario enviado + $250k)."
+                    else f"{label}: puede recibir hasta {format_trade_money(standard_limit)} computable (100% del salario enviado + $250k).{minimum_note}"
                     if incoming <= standard_limit
-                    else f"{label}: puede recibir hasta {format_trade_money(standard_limit)} (100% del salario enviado + $250k), pero recibe {format_trade_money(incoming)}."
+                    else f"{label}: puede recibir hasta {format_trade_money(standard_limit)} computable (100% del salario enviado + $250k), pero recibe {format_trade_money(incoming)} computable.{minimum_note}"
                 ),
             }
 
@@ -10786,7 +10805,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "tpe": "room",
                 "label": "Room TPE",
                 "limit": room_limit,
-                "message": f"Room TPE: queda hasta $250k por encima del salary cap; límite {format_trade_money(room_limit)} de salario recibido.",
+                "message": f"Room TPE: queda hasta $250k por encima del salary cap; límite {format_trade_money(room_limit)} de salario computable recibido.{minimum_note}",
             }
         best_limit = max(expanded_limit, room_limit if before_cap < salary_cap else 0.0)
         reason = (
@@ -10801,7 +10820,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "tpe": "none",
             "label": "Sin TPE válida",
             "limit": best_limit,
-            "message": f"No hay TPE válida: {reason}. Puede recibir hasta {format_trade_money(best_limit)}, pero recibe {format_trade_money(incoming)}.",
+            "message": f"No hay TPE válida: {reason}. Puede recibir hasta {format_trade_money(best_limit)} computable, pero recibe {format_trade_money(incoming)} computable.{minimum_note}",
         }
 
     def _trade_machine_issue_messages(self, issues: List[Dict[str, Any]], rule: str) -> List[str]:
@@ -10979,25 +10998,30 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if selected.get("type") == "player":
                 any_player_selected = True
             salary = float(selected.get("salary") or 0.0)
+            matching_salary = 0.0 if selected.get("isMinimumContract") else salary
             cap_salary = float(selected.get("capSalary") if selected.get("capSalary") is not None else salary)
             apron_salary = float(selected.get("apronSalary") if selected.get("apronSalary") is not None else cap_salary)
             from_flow = flows[from_team]
             to_flow = flows[to_team]
             from_flow["outgoingSalary"] += salary
+            from_flow["outgoingMatchingSalary"] += salary
             from_flow["outgoingCapSalary"] += cap_salary
             from_flow["outgoingApronSalary"] += apron_salary
             from_flow["outgoingAssets"].append({**selected, "toTeam": to_team})
             to_flow["incomingSalary"] += salary
+            to_flow["incomingMatchingSalary"] += matching_salary
             to_flow["incomingCapSalary"] += cap_salary
             to_flow["incomingApronSalary"] += apron_salary
             to_flow["incomingAssets"].append({**selected, "fromTeam": from_team})
             if selected.get("type") == "player":
-                if selected.get("isTwoWay"):
+                roster_slot = selected.get("rosterSlot")
+                if roster_slot == "two_way":
                     from_flow["postRosterTwoWay"] -= 1
                     to_flow["postRosterTwoWay"] += 1
-                elif not selected.get("isExhibit10"):
+                elif roster_slot == "standard":
                     from_flow["postRosterStandard"] -= 1
                     to_flow["postRosterStandard"] += 1
+                if selected.get("countsOpenRosterMinimum"):
                     from_flow["postOpenRosterSpotRosterCount"] -= 1
                     to_flow["postOpenRosterSpotRosterCount"] += 1
 
@@ -11034,9 +11058,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
             flows[to_team]["incomingAssets"].append(dict(asset))
 
         for flow in flows.values():
-            post_open_roster_count = int(flow.get("postOpenRosterSpotRosterCount") or 0)
+            post_open_roster_count = max(0, int(flow.get("postOpenRosterSpotRosterCount") or 0))
             post_open_spots = max(0, OPEN_ROSTER_SPOT_MINIMUM - post_open_roster_count)
             post_open_hold = float(post_open_spots) * float(flow.get("openRosterSpotMinimumSalary") or 0.0)
+            flow["postOpenRosterSpotRosterCount"] = post_open_roster_count
             flow["postOpenRosterSpotCount"] = post_open_spots
             flow["postOpenRosterSpotCapHold"] = post_open_hold
             open_hold_delta = post_open_hold - float(flow.get("beforeOpenRosterSpotCapHold") or 0.0)

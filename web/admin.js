@@ -60,6 +60,7 @@ const state = {
     selectedTeams: [],
     teamDataByCode: {},
     selections: {},
+    cashTransfers: {},
     seasonStart: null,
     playersByTeam: {},
     picksByTeam: {},
@@ -2634,6 +2635,7 @@ function tradeAssetMeta(key) {
       salary,
       capSalary: salaryDisplayNumericValue(player, season),
       apronSalary: salary,
+      isMinimumContract: salaryLooksLikeMinimum(salary, season),
       isTwoWay: isTwoWayPlayer(player),
       isExhibit10: isExhibit10Player(player),
     };
@@ -2749,6 +2751,10 @@ function tradeLocalFlowSkeleton(code) {
     beforeApronAccount,
     incomingSalary: 0,
     outgoingSalary: 0,
+    incomingMatchingSalary: 0,
+    outgoingMatchingSalary: 0,
+    incomingCash: 0,
+    outgoingCash: 0,
     incomingCapSalary: 0,
     outgoingCapSalary: 0,
     incomingApronSalary: 0,
@@ -2768,6 +2774,42 @@ function tradeLocalFlowSkeleton(code) {
   };
 }
 
+function tradeCashTransfersForPayload() {
+  return Object.entries(state.trade.cashTransfers || {}).map(([fromTeam, transfer]) => {
+    const amount = parseAmount(transfer?.amountText ?? transfer?.amount);
+    const toTeam = String(transfer?.toTeam || tradeDefaultRecipient(fromTeam) || '').trim().toUpperCase();
+    if (!Number.isFinite(amount) || amount <= 0 || !fromTeam || !toTeam || fromTeam === toTeam) return null;
+    return {
+      from_team: fromTeam,
+      to_team: toTeam,
+      amount,
+    };
+  }).filter(Boolean);
+}
+
+function tradeApplyCashTransfersToFlows(flows) {
+  tradeCashTransfersForPayload().forEach((transfer, index) => {
+    const fromTeam = transfer.from_team;
+    const toTeam = transfer.to_team;
+    const amount = Number(transfer.amount || 0);
+    if (!flows[fromTeam] || !flows[toTeam] || amount <= 0) return;
+    const asset = {
+      key: `cash:${fromTeam}:${toTeam}:${index}`,
+      type: 'cash',
+      label: 'Cash considerations',
+      detail: formatBalanceMoney(amount),
+      salary: 0,
+      cashAmount: amount,
+      fromTeam,
+      toTeam,
+    };
+    flows[fromTeam].outgoingCash = Number(flows[fromTeam].outgoingCash || 0) + amount;
+    flows[fromTeam].outgoingAssets.push(asset);
+    flows[toTeam].incomingCash = Number(flows[toTeam].incomingCash || 0) + amount;
+    flows[toTeam].incomingAssets.push(asset);
+  });
+}
+
 function tradeLocalFlows() {
   const flows = {};
   (state.trade.selectedTeams || []).forEach((code) => {
@@ -2778,13 +2820,16 @@ function tradeLocalFlows() {
     if (!meta || !flows[selection.fromTeam] || !flows[selection.toTeam]) return;
     const asset = tradeAssetForSelection(meta, selection);
     const salary = Number(asset.salary || 0);
+    const matchingSalary = asset.isMinimumContract ? 0 : salary;
     const capSalary = Number(asset.capSalary ?? salary);
     const apronSalary = Number(asset.apronSalary ?? capSalary);
     flows[selection.fromTeam].outgoingSalary += salary;
+    flows[selection.fromTeam].outgoingMatchingSalary += salary;
     flows[selection.fromTeam].outgoingCapSalary += capSalary;
     flows[selection.fromTeam].outgoingApronSalary += apronSalary;
     flows[selection.fromTeam].outgoingAssets.push({ ...asset, toTeam: selection.toTeam });
     flows[selection.toTeam].incomingSalary += salary;
+    flows[selection.toTeam].incomingMatchingSalary += matchingSalary;
     flows[selection.toTeam].incomingCapSalary += capSalary;
     flows[selection.toTeam].incomingApronSalary += apronSalary;
     flows[selection.toTeam].incomingAssets.push({ ...asset, fromTeam: selection.fromTeam });
@@ -2798,6 +2843,7 @@ function tradeLocalFlows() {
       }
     }
   });
+  tradeApplyCashTransfersToFlows(flows);
   Object.values(flows).forEach((flow) => {
     flow.postRawCap = flow.beforeRawCap + flow.incomingCapSalary - flow.outgoingCapSalary;
     flow.postCap = applySalaryFloorForSeason(tradeSeasonStart(), flow.postRawCap);
@@ -2827,6 +2873,7 @@ function buildTradeProcessPayload() {
     teams: state.trade.selectedTeams || [],
     season: tradeSeasonStart(),
     selections,
+    cash: tradeCashTransfersForPayload(),
     trade_bucket: normalizeMoveBucket(document.getElementById('tradeBucketSelect')?.value || state.settings.trade_move_phase),
     force_trade: Boolean(document.getElementById('forceTradeCheckbox')?.checked),
   };
@@ -2837,12 +2884,13 @@ function tradeValidationSignature(payload = buildTradeProcessPayload()) {
     teams: payload.teams,
     season: payload.season,
     selections: payload.selections,
+    cash: payload.cash,
     trade_bucket: payload.trade_bucket,
   });
 }
 
 function tradePayloadHasMinimumAssets(payload) {
-  return (payload.selections || []).length > 0;
+  return (payload.selections || []).length > 0 || (payload.cash || []).length > 0;
 }
 
 function resetTradeValidation() {
@@ -3094,6 +3142,30 @@ function tradeRightsRowsHtml(data, code) {
   })).join('');
 }
 
+function tradeCashHtml(code) {
+  const transfer = state.trade.cashTransfers?.[code] || {};
+  const selectedTo = transfer.toTeam || tradeDefaultRecipient(code);
+  const amountText = transfer.amountText ?? '';
+  return `
+    <section class="trade-machine-cash-panel">
+      <h3>Cash considerations</h3>
+      <div class="trade-machine-cash-row">
+        <input
+          type="text"
+          inputmode="numeric"
+          data-official-trade-cash-amount="${escapeHtml(code)}"
+          value="${escapeHtml(amountText)}"
+          placeholder="0"
+          aria-label="Cash enviado por ${escapeHtml(code)}"
+        >
+        <select data-official-trade-cash-recipient="${escapeHtml(code)}" aria-label="Destino del cash de ${escapeHtml(code)}">
+          ${tradeRecipientOptions(code, selectedTo)}
+        </select>
+      </div>
+    </section>
+  `;
+}
+
 function renderTradeTeamCard(code, index, flow) {
   const data = state.trade.teamDataByCode[code];
   const canRemove = (state.trade.selectedTeams || []).length > TRADE_MACHINE_MIN_TEAMS;
@@ -3123,6 +3195,7 @@ function renderTradeTeamCard(code, index, flow) {
       ${tradeLedgerHtml(flow)}
       ${tradeRosterHtml(flow)}
       ${tradeTeamPreviewHtml(flow)}
+      ${tradeCashHtml(code)}
       <div class="trade-machine-assets">
         <section><h3>Plantilla (${(data.players || []).length})</h3><div class="trade-machine-asset-list">${tradePlayerRowsHtml(data, code)}</div></section>
         <section><h3>Rondas del draft</h3><div class="trade-machine-asset-list">${tradePickRowsHtml(data, code)}</div></section>
@@ -3300,6 +3373,11 @@ function pruneTradeSelections() {
       delete state.trade.selections[key];
     }
   });
+  Object.entries(state.trade.cashTransfers || {}).forEach(([fromTeam, transfer]) => {
+    if (!teams.has(fromTeam) || !teams.has(transfer?.toTeam) || fromTeam === transfer?.toTeam) {
+      delete state.trade.cashTransfers[fromTeam];
+    }
+  });
 }
 
 function renderTradeSeasonControl() {
@@ -3347,6 +3425,12 @@ function renderTradeDynamicSections() {
     const card = Array.from(grid.querySelectorAll('[data-official-trade-team-card]'))
       .find((item) => item.dataset.officialTradeTeamCard === code);
     const flow = flows?.[code] || localFlows[code] || tradeLocalFlowSkeleton(code);
+    const isLoadingCard = Boolean(card?.querySelector('.trade-machine-team-top + .trade-machine-empty'));
+    if (card && state.trade.teamDataByCode[code] && (!card.querySelector('.trade-machine-ledger') || isLoadingCard)) {
+      const index = codes.indexOf(code);
+      card.outerHTML = renderTradeTeamCard(code, index, flow);
+      return;
+    }
     const ledger = card?.querySelector('.trade-machine-ledger');
     if (ledger) ledger.outerHTML = tradeLedgerHtml(flow);
     const roster = card?.querySelector('.trade-machine-roster-counts');
@@ -3383,6 +3467,9 @@ async function updateOfficialTradeTeam(index, code) {
   Object.entries(state.trade.selections).forEach(([key, selection]) => {
     if (selection.fromTeam === oldCode || selection.toTeam === oldCode) delete state.trade.selections[key];
   });
+  Object.entries(state.trade.cashTransfers || {}).forEach(([fromTeam, transfer]) => {
+    if (fromTeam === oldCode || transfer?.toTeam === oldCode) delete state.trade.cashTransfers[fromTeam];
+  });
   renderTradeTeams();
   await ensureTradeTeamData([nextCode]);
   scheduleTradeValidation();
@@ -3405,6 +3492,9 @@ function removeOfficialTradeTeam(index) {
   Object.entries(state.trade.selections).forEach(([key, selection]) => {
     if (selection.fromTeam === removed || selection.toTeam === removed) delete state.trade.selections[key];
   });
+  Object.entries(state.trade.cashTransfers || {}).forEach(([fromTeam, transfer]) => {
+    if (fromTeam === removed || transfer?.toTeam === removed) delete state.trade.cashTransfers[fromTeam];
+  });
   scheduleTradeValidation();
 }
 
@@ -3423,6 +3513,7 @@ async function openTradeModal(options = {}) {
   state.trade.teamA = state.trade.selectedTeams[0] || null;
   state.trade.teamB = state.trade.selectedTeams[1] || null;
   state.trade.selections = {};
+  state.trade.cashTransfers = {};
   state.trade.seasonStart = Number(options.season || state.trade.seasonStart || currentSeasonStart());
   resetTradeValidation();
   const tradeBucketSelect = document.getElementById('tradeBucketSelect');
@@ -3457,7 +3548,7 @@ function selectedTradeCounts() {
     else if (selection.type === 'pick') counts.picks += 1;
     else if (selection.type === 'right') counts.rights += 1;
     return counts;
-  }, { players: 0, picks: 0, rights: 0 });
+  }, { players: 0, picks: 0, rights: 0, cash: tradeCashTransfersForPayload().length });
 }
 
 async function confirmTrade() {
@@ -3483,7 +3574,7 @@ async function confirmTrade() {
     : '';
   const decision = await confirmWithDiscordNotification({
     title: 'Confirmar traspaso',
-    message: `${payload.teams.join(' / ')}\n${counts.players} jugador(es), ${counts.picks} ronda(s), ${counts.rights} derecho(s)\nCuenta como: ${moveBucketLabel(payload.trade_bucket)}${forceMessage}`,
+    message: `${payload.teams.join(' / ')}\n${counts.players} jugador(es), ${counts.picks} ronda(s), ${counts.rights} derecho(s), ${counts.cash} cash\nCuenta como: ${moveBucketLabel(payload.trade_bucket)}${forceMessage}`,
     confirmLabel: 'Confirmar traspaso',
     danger: Boolean(payload.force_trade && illegalIssues.length),
     defaultNotify: true,
@@ -3507,6 +3598,7 @@ async function confirmTrade() {
     state.trade.playersByTeam = {};
     state.trade.picksByTeam = {};
     state.trade.rightsByTeam = {};
+    state.trade.cashTransfers = {};
     closeTradeModal();
     if (state.teamCode) await loadTeam(state.teamCode);
     else await loadTracker();
@@ -3559,6 +3651,7 @@ function setupTradeModal() {
     state.trade.playersByTeam = {};
     state.trade.picksByTeam = {};
     state.trade.rightsByTeam = {};
+    state.trade.cashTransfers = {};
     resetTradeValidation();
     renderTradeTeams();
     void ensureTradeTeamData(state.trade.selectedTeams).then(() => scheduleTradeValidation());
@@ -3602,6 +3695,19 @@ function setupTradeModal() {
       }
       return;
     }
+    if (target.matches('[data-official-trade-cash-recipient]')) {
+      const fromTeam = target.dataset.officialTradeCashRecipient;
+      if (fromTeam) {
+        const existing = state.trade.cashTransfers[fromTeam] || {};
+        state.trade.cashTransfers[fromTeam] = {
+          ...existing,
+          amountText: existing.amountText ?? '',
+          toTeam: target.value,
+        };
+        scheduleTradeValidation();
+      }
+      return;
+    }
     if (target.matches('[data-official-trade-pick-action]')) {
       const key = target.dataset.officialTradePickAction;
       if (key && state.trade.selections[key]) {
@@ -3617,6 +3723,21 @@ function setupTradeModal() {
         scheduleTradeValidation();
       }
     }
+  });
+
+  grid?.addEventListener('input', (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (!target.matches('[data-official-trade-cash-amount]')) return;
+    const fromTeam = target.dataset.officialTradeCashAmount;
+    if (!fromTeam) return;
+    const existing = state.trade.cashTransfers[fromTeam] || {};
+    state.trade.cashTransfers[fromTeam] = {
+      ...existing,
+      amountText: target.value,
+      toTeam: existing.toTeam || tradeDefaultRecipient(fromTeam),
+    };
+    scheduleTradeValidation();
   });
 
   grid?.addEventListener('click', (e) => {
