@@ -8983,6 +8983,62 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return cur.rowcount > 0
 
+    def delete_player_profile(self, profile_id: int) -> Dict[str, Any]:
+        with self.connect() as conn:
+            profile_cur = conn.execute(
+                """
+                SELECT
+                    id, name, date_of_birth, nationality, experience_years, yos_source,
+                    reference_image_url, profile_notes, transaction_notes, created_at, updated_at
+                FROM player_profiles
+                WHERE id = ?
+                """,
+                (profile_id,),
+            )
+            profile_row = profile_cur.fetchone()
+            if not profile_row:
+                return {"ok": False, "error": "not_found"}
+            profile = row_to_dict(profile_cur, profile_row)
+            free_agent_ids = [
+                int(row["id"])
+                for row in conn.execute("SELECT id FROM free_agents WHERE profile_id = ?", (profile_id,)).fetchall()
+            ]
+            free_agent_request_count = 0
+            if free_agent_ids:
+                placeholders = ",".join("?" for _ in free_agent_ids)
+                free_agent_request_count = int(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM gm_free_agent_offer_requests WHERE free_agent_id IN ({placeholders})",
+                        free_agent_ids,
+                    ).fetchone()[0]
+                )
+
+            linked_counts = {
+                "active_contracts": int(conn.execute("SELECT COUNT(*) FROM players WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
+                "free_agents": int(conn.execute("SELECT COUNT(*) FROM free_agents WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
+                "dead_contracts": int(conn.execute("SELECT COUNT(*) FROM dead_contracts WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
+                "transactions": int(conn.execute("SELECT COUNT(*) FROM player_transactions WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
+                "discord_offer_threads": int(conn.execute("SELECT COUNT(*) FROM discord_free_agent_offer_threads WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
+                "free_agent_offer_requests": free_agent_request_count,
+            }
+
+            conn.execute("DELETE FROM player_transactions WHERE profile_id = ?", (profile_id,))
+            conn.execute("DELETE FROM discord_free_agent_offer_threads WHERE profile_id = ?", (profile_id,))
+            if free_agent_ids:
+                placeholders = ",".join("?" for _ in free_agent_ids)
+                conn.execute(
+                    f"DELETE FROM gm_free_agent_offer_requests WHERE free_agent_id IN ({placeholders})",
+                    free_agent_ids,
+                )
+            conn.execute("DELETE FROM players WHERE profile_id = ?", (profile_id,))
+            conn.execute("DELETE FROM free_agents WHERE profile_id = ?", (profile_id,))
+            conn.execute("DELETE FROM dead_contracts WHERE profile_id = ?", (profile_id,))
+            cur = conn.execute("DELETE FROM player_profiles WHERE id = ?", (profile_id,))
+            conn.commit()
+            if cur.rowcount <= 0:
+                return {"ok": False, "error": "not_found"}
+            return {"ok": True, "profile": profile, "deleted": linked_counts}
+
     def create_player_transaction(self, profile_id: int, payload: Dict[str, Any]) -> Optional[int]:
         summary = str(payload.get("summary") or "").strip()
         if not summary:
@@ -16879,6 +16935,27 @@ QUALITY REQUIREMENTS
                     {"fields": sorted(payload.keys())},
                 )
             self._json(200 if ok else 404, {"ok": ok})
+            return
+
+        if parsed.path.startswith("/api/player-profiles/"):
+            try:
+                profile_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_profile_id"})
+                return
+            result = self.db.delete_player_profile(profile_id)
+            if not result.get("ok"):
+                self._json(404, {"error": result.get("error") or "not_found"})
+                return
+            self._log_admin_action(
+                "delete",
+                "player_profile",
+                str(profile_id),
+                details={"deleted": result.get("deleted") or {}},
+                before=result.get("profile") or {},
+                after=None,
+            )
+            self._json(200, result)
             return
 
         if parsed.path.startswith("/api/players/"):

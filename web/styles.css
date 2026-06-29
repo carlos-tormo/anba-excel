@@ -7815,6 +7815,30 @@ td.salary-option--nb .salary-pct {
   background: #fef2f2;
   color: #b91c1c;
 }
+#leaguePlayersTable tr.league-player-row--duplicate {
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.35), 0 0 22px rgba(220, 38, 38, 0.22);
+}
+#leaguePlayersTable tr.league-player-row--duplicate td {
+  background: #fff5f5;
+}
+#leaguePlayersTable tr.league-player-row--duplicate td:first-child {
+  box-shadow: inset 4px 0 0 #dc2626;
+}
+#leaguePlayersTable tr.league-player-row--duplicate .player-profile-input {
+  border-color: #fca5a5;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.11);
+}
+.league-player-actions {
+  min-width: 110px;
+  white-space: nowrap;
+}
+.player-profile-delete-btn {
+  padding: 6px 10px;
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #b91c1c;
+  font-size: 0.82rem;
+}
 .league-player-contract {
   border-radius: 8px;
   background: #f1f5f9;

@@ -163,6 +163,85 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         )
         self.db.assert_player_identity_integrity()
 
+    def test_delete_player_profile_removes_linked_rows(self) -> None:
+        profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
+        now = now_iso()
+
+        self.db.create_dead_contract(
+            "ATL",
+            {"label": "Legacy Hawk", "profile_id": profile_id, "salary_2025_text": "250000"},
+        )
+        self.db.create_player_transaction(
+            profile_id,
+            {"summary": "Manual cleanup marker", "action": "manual", "team_code": "ATL"},
+        )
+        free_agent_id = None
+        with self.db.connect() as conn:
+            free_agent_cur = conn.execute(
+                """
+                INSERT INTO free_agents (
+                    profile_id, name, position, bird_rights, rating, years_left,
+                    free_agent_type, source, rights_team_code, agent, notes, created_at, updated_at
+                ) VALUES (?, 'Legacy Hawk', 'PG', 'Reg', '70', 1, 'No restringido', 'manual', NULL, NULL, NULL, ?, ?)
+                """,
+                (profile_id, now, now),
+            )
+            free_agent_id = int(free_agent_cur.lastrowid)
+            team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            conn.execute(
+                """
+                INSERT INTO gm_free_agent_offer_requests (
+                    free_agent_id, team_id, requester_email, requester_name,
+                    offer_payload_json, offer_type, status, created_at, updated_at
+                ) VALUES (?, ?, 'gm@example.com', 'GM', '{}', 'free_agent_offer', 'pending', ?, ?)
+                """,
+                (free_agent_id, team_id, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO discord_free_agent_offer_threads (
+                    profile_id, player_name_key, player_name, thread_id, thread_name, created_at, updated_at
+                ) VALUES (?, 'legacy hawk', 'Legacy Hawk', 'thread-1', 'Legacy Hawk', ?, ?)
+                """,
+                (profile_id, now, now),
+            )
+            conn.commit()
+
+        result = self.db.delete_player_profile(profile_id)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["deleted"]["active_contracts"])
+        self.assertEqual(1, result["deleted"]["free_agents"])
+        self.assertEqual(1, result["deleted"]["dead_contracts"])
+        self.assertEqual(1, result["deleted"]["transactions"])
+        self.assertEqual(1, result["deleted"]["discord_offer_threads"])
+        self.assertEqual(1, result["deleted"]["free_agent_offer_requests"])
+        with self.db.connect() as conn:
+            for table in (
+                "player_profiles",
+                "players",
+                "free_agents",
+                "dead_contracts",
+                "player_transactions",
+                "discord_free_agent_offer_threads",
+            ):
+                count = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE profile_id = ?"
+                    if table != "player_profiles"
+                    else "SELECT COUNT(*) FROM player_profiles WHERE id = ?",
+                    (profile_id,),
+                ).fetchone()[0]
+                self.assertEqual(0, count, table)
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM gm_free_agent_offer_requests WHERE free_agent_id = ?",
+                    (free_agent_id,),
+                ).fetchone()[0],
+            )
+
+        self.db.assert_player_identity_integrity()
+
     def test_cut_then_sign_preserves_profile_identity(self) -> None:
         profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
 

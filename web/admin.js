@@ -5555,6 +5555,21 @@ function leaguePlayerProfileFieldsHtml(player) {
   `;
 }
 
+function leaguePlayerDuplicateNameKey(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function leaguePlayerDeleteSummary(player) {
+  const parts = [];
+  if (player.active_contract) parts.push('contrato activo');
+  if (Number(player.free_agent_id || 0)) parts.push('entrada de agente libre');
+  const deadCount = Number(player.dead_contract_count || 0);
+  if (deadCount) parts.push(`${deadCount} dead contract${deadCount === 1 ? '' : 's'}`);
+  const logCount = Array.isArray(player.transaction_logs) ? player.transaction_logs.length : 0;
+  if (logCount) parts.push(`${logCount} movimiento${logCount === 1 ? '' : 's'}`);
+  return parts.length ? parts.join(', ') : 'solo el perfil';
+}
+
 function renderLeaguePlayers() {
   const tbody = document.querySelector('#leaguePlayersTable tbody');
   if (!tbody) return;
@@ -5562,15 +5577,23 @@ function renderLeaguePlayers() {
   const rows = sortedRows(state.leaguePlayers || [], state.sort.league_players);
   if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="7">No hay jugadores cargados.</td>';
+    tr.innerHTML = '<td colspan="8">No hay jugadores cargados.</td>';
     tbody.appendChild(tr);
     return;
   }
+  const nameCounts = new Map();
+  rows.forEach((player) => {
+    const key = leaguePlayerDuplicateNameKey(player.name);
+    if (!key) return;
+    nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
+  });
   rows.forEach((player) => {
     const profileId = player.profile_id || null;
     const contractRowId = player.player_id || player.id || null;
+    const duplicateName = (nameCounts.get(leaguePlayerDuplicateNameKey(player.name)) || 0) > 1;
     const tr = document.createElement('tr');
     tr.dataset.id = profileId || contractRowId || '';
+    if (duplicateName) tr.classList.add('league-player-row--duplicate');
     tr.innerHTML = `
       <td><input class="player-profile-input" data-player-profile-field="name" title="${escapeHtml(playerIdentityTitle(player))}" value="${escapeHtml(player.name || '')}"></td>
       <td>${leaguePlayerStatusHtml(player)}</td>
@@ -5579,6 +5602,9 @@ function renderLeaguePlayers() {
       <td>${leaguePlayerProfileFieldsHtml(player)}</td>
       <td>${leaguePlayerContractHtml(player)}</td>
       <td>${leaguePlayerLogsHtml(player)}</td>
+      <td class="league-player-actions">
+        <button type="button" class="danger player-profile-delete-btn" data-player-profile-delete="${escapeHtml(profileId || '')}"${profileId ? '' : ' disabled'}>Eliminar</button>
+      </td>
     `;
     const teamBtn = tr.querySelector('[data-team-code]');
     if (teamBtn) {
@@ -5651,6 +5677,28 @@ function renderLeaguePlayers() {
           }),
         });
         await loadLeaguePlayers();
+      });
+    }
+    const deleteBtn = tr.querySelector('[data-player-profile-delete]');
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', async () => {
+        if (!profileId) {
+          alert('Este jugador no tiene perfil global para eliminar.');
+          return;
+        }
+        const name = String(player.name || 'este jugador').trim() || 'este jugador';
+        const summary = leaguePlayerDeleteSummary(player);
+        const confirmed = window.confirm(
+          `¿Eliminar definitivamente a ${name}?\n\nSe eliminará: ${summary}.\nEsta acción no se puede deshacer.`
+        );
+        if (!confirmed) return;
+        try {
+          await api(`/api/player-profiles/${profileId}`, { method: 'DELETE' });
+          await loadLeaguePlayers();
+          if (typeof loadAdminLogs === 'function') await loadAdminLogs();
+        } catch (err) {
+          alert(`No se pudo eliminar el jugador: ${err.message || err}`);
+        }
       });
     }
     tbody.appendChild(tr);
