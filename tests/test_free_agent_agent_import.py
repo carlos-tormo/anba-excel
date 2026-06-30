@@ -5,7 +5,21 @@ import tempfile
 import unittest
 
 from app.server import LeagueDB, _spreadsheet_rows_from_payload, _xlsx_workbook_bytes
-from app.xlsx_import import create_schema
+from app.xlsx_import import create_schema, now_iso
+
+
+def insert_team(conn: sqlite3.Connection, code: str, name: str) -> None:
+    now = now_iso()
+    conn.execute(
+        """
+        INSERT INTO teams (
+            code, name, gm, cash_note, apron_hard_cap,
+            salary_cap, luxury_cap, first_apron, second_apron,
+            created_at, updated_at
+        ) VALUES (?, ?, NULL, NULL, NULL, 154647000, 187896105, 195945000, 207824000, ?, ?)
+        """,
+        (code, name, now, now),
+    )
 
 
 class FreeAgentAgentImportTests(unittest.TestCase):
@@ -16,6 +30,7 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
+            insert_team(conn, "ATL", "Atlanta Hawks")
             conn.commit()
         self.db = LeagueDB(self.db_path)
         self.db.ensure_auth_schema()
@@ -113,6 +128,33 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         self.assertFalse(preview["ok"])
         self.assertTrue(any("Nombre ambiguo" in message for message in messages))
         self.assertTrue(any("No se encontró agente libre" in message for message in messages))
+
+    def test_free_agency_mode_adds_expiring_contract_without_cap_hold_marker_to_free_agents(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("free_agency_mode", "1")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Expiring Contract",
+                "position": "SG",
+                "rating": "74",
+                "bird_rights": "Reg",
+                "salary_2025_text": "10000000",
+                "salary_2026_text": "",
+                "option_2026": "",
+            },
+        )
+        self.assertIsNotNone(player_id)
+
+        free_agents = self.db.list_free_agents()
+        expiring = next((agent for agent in free_agents if agent["name"] == "Expiring Contract"), None)
+
+        self.assertIsNotNone(expiring)
+        self.assertEqual("No restringido", expiring["free_agent_type"])
+        self.assertEqual("cap_hold", expiring["source"])
+        self.assertIsNone(expiring["rights_team_code"])
+        self.assertIsNone(expiring["bird_rights"])
+        self.assertIn("Contrato expirado", expiring["notes"])
 
 
 if __name__ == "__main__":

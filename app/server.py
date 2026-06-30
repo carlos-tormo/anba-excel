@@ -9884,6 +9884,22 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return FREE_AGENT_TYPE_RESTRICTED
         return FREE_AGENT_TYPE_UNRESTRICTED
 
+    def _free_agency_empty_cell(self, value: Any) -> bool:
+        raw = str(value or "").strip()
+        return raw in {"", "-", "—", "0"}
+
+    def _free_agency_expiring_contract_without_next_year(self, player: Dict[str, Any], current_year: int, next_year: int) -> bool:
+        if is_two_way_player(player) or is_exhibit10_player(player):
+            return False
+        if row_salary_num(player, int(current_year)) <= 0:
+            return False
+        if row_salary_num(player, int(next_year)) > 0:
+            return False
+        return (
+            self._free_agency_empty_cell(player.get(f"salary_{int(next_year)}_text"))
+            and self._free_agency_empty_cell(player.get(f"option_{int(next_year)}"))
+        )
+
     def ensure_renounced_bird_rights_free_agent(
         self,
         player: Dict[str, Any],
@@ -10028,8 +10044,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 has_restricted_option = fa_type == FREE_AGENT_TYPE_RESTRICTED
                 hold_amount = cap_hold_amount(player, season, settings, salary_cap)
                 has_hold_marker = has_standard_cap_hold_marker(player, season)
-                if not has_restricted_option and hold_amount <= 0 and not has_hold_marker:
+                is_expiring_contract = self._free_agency_expiring_contract_without_next_year(
+                    player,
+                    int(current_year),
+                    int(season),
+                )
+                if not has_restricted_option and hold_amount <= 0 and not has_hold_marker and not is_expiring_contract:
                     continue
+                has_retained_rights = has_restricted_option or hold_amount > 0 or has_hold_marker
 
                 player_id = parse_int(player.get("id"))
                 if player_id is None:
@@ -10041,7 +10063,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     continue
                 valid_profile_ids.append(int(profile_id))
                 name = str(player.get("name") or player.get("profile_name") or "Agente libre").strip() or "Agente libre"
-                default_notes = f"Cap hold retenido por {team_code} para {season_label(season)}"
+                default_notes = (
+                    f"Cap hold retenido por {team_code} para {season_label(season)}"
+                    if has_retained_rights
+                    else f"Contrato expirado tras {season_label(int(current_year))}"
+                )
+                synced_bird_rights = (str(player.get("bird_rights") or "").strip() or None) if has_retained_rights else None
+                synced_rights_team = team_code if has_retained_rights else None
                 existing = conn.execute(
                     "SELECT id, notes FROM free_agents WHERE profile_id = ? LIMIT 1",
                     (int(profile_id),),
@@ -10060,6 +10088,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             rights_team_code = ?,
                             notes = CASE
                                 WHEN notes IS NULL OR TRIM(notes) = '' OR notes LIKE 'Cap hold retenido por %'
+                                    OR notes LIKE 'Contrato expirado tras %'
                                 THEN ?
                                 ELSE notes
                             END,
@@ -10069,12 +10098,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         (
                             name,
                             str(player.get("position") or "").strip() or None,
-                            str(player.get("bird_rights") or "").strip() or None,
+                            synced_bird_rights,
                             str(player.get("rating") or "").strip() or None,
                             normalize_bird_years(player.get("years_left")),
                             fa_type,
                             FREE_AGENT_SOURCE_CAP_HOLD,
-                            team_code,
+                            synced_rights_team,
                             default_notes,
                             timestamp,
                             int(existing["id"]),
@@ -10093,12 +10122,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         int(profile_id),
                         name,
                         str(player.get("position") or "").strip() or None,
-                        str(player.get("bird_rights") or "").strip() or None,
+                        synced_bird_rights,
                         str(player.get("rating") or "").strip() or None,
                         normalize_bird_years(player.get("years_left")),
                         fa_type,
                         FREE_AGENT_SOURCE_CAP_HOLD,
-                        team_code,
+                        synced_rights_team,
                         default_notes,
                         timestamp,
                         timestamp,
