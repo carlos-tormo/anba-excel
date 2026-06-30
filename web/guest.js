@@ -4377,9 +4377,17 @@ function freeAgentOfferRaisePercent() {
   return Number.isFinite(value) ? value : 0;
 }
 
+function freeAgentOfferBirdRightsCode(agent) {
+  const raw = String(agent?.bird_rights || '').trim().toUpperCase().replace(/[\s_-]+/g, '');
+  if (raw === 'FB' || raw === 'FULLBIRD') return 'FB';
+  if (raw === 'EB' || raw === 'EARLYBIRD') return 'EB';
+  if (raw === 'NB' || raw === 'NONBIRD') return 'NB';
+  return capHoldBirdCodeFromYears(agent?.years_left);
+}
+
 function freeAgentOfferCanUseBirdRaises(agent) {
   const teamCode = document.getElementById('freeAgentOfferTeam')?.value || '';
-  const rights = String(agent?.bird_rights || '').trim().toUpperCase();
+  const rights = freeAgentOfferBirdRightsCode(agent);
   return freeAgentOfferIsRenewal(agent, teamCode) && ['FB', 'EB'].includes(rights);
 }
 

@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from app.server import LeagueDB
+from app.server import Handler, LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
 
@@ -150,6 +150,32 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertIsNotNone(player)
         self.assertEqual("ATL", player["team_code"])
         self.assertEqual("2.296.274", player["salary_2026_text"])
+
+    def test_renewal_offer_uses_bird_years_for_large_raises(self) -> None:
+        handler = object.__new__(Handler)
+        handler.db = self.db
+
+        normalized = handler._validate_and_normalize_free_agent_offer_payload(
+            {
+                "name": "Bird Rights Free Agent",
+                "source": "cap_hold",
+                "rights_team_code": "ATL",
+                "years_left": "2+",
+                "bird_rights": "",
+                "experience_years": 10,
+            },
+            "ATL",
+            {
+                "contract_type": "Max",
+                "years": 5,
+                "annual_raise_percent": 8,
+                "salary_by_season": {},
+            },
+        )
+
+        self.assertEqual(8.0, normalized["annual_raise_percent"])
+        self.assertEqual(5, normalized["years"])
+        self.assertEqual("54.126.450", normalized["salary_by_season"]["2025"])
 
 
 if __name__ == "__main__":

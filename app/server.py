@@ -50,6 +50,7 @@ try:
         TRADE_ROOM_TPE_BUFFER,
         TWO_WAY_MINIMUM_BASE_SALARY,
         apron_yos_adjustment,
+        cap_hold_bird_code_from_years,
         cap_hold_amount,
         counts_open_roster_minimum,
         format_trade_money,
@@ -110,6 +111,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         TRADE_ROOM_TPE_BUFFER,
         TWO_WAY_MINIMUM_BASE_SALARY,
         apron_yos_adjustment,
+        cap_hold_bird_code_from_years,
         cap_hold_amount,
         counts_open_roster_minimum,
         format_trade_money,
@@ -10038,6 +10040,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return free_agent_id
 
+    def _cap_hold_free_agent_bird_rights_code(self, player: Dict[str, Any], season: int) -> Optional[str]:
+        for key in (f"salary_{int(season)}_text", f"option_{int(season)}"):
+            code = str(player.get(key) or "").strip().upper()
+            if code in {"NB", "EB", "FB"}:
+                return code
+        code = cap_hold_bird_code_from_years(player.get("years_left"))
+        return code or None
+
     def _sync_cap_hold_free_agents(self, conn: sqlite3.Connection, settings: Dict[str, str]) -> int:
         timestamp = now_iso()
         if not parse_bool(settings.get("free_agency_mode")):
@@ -10087,7 +10097,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     if has_retained_rights
                     else f"Contrato expirado tras {season_label(int(current_year))}"
                 )
-                synced_bird_rights = (str(player.get("bird_rights") or "").strip() or None) if has_retained_rights else None
+                synced_bird_rights = self._cap_hold_free_agent_bird_rights_code(player, season) if has_retained_rights else None
                 synced_rights_team = team_code if has_retained_rights else None
                 existing = conn.execute(
                     "SELECT id, notes, source FROM free_agents WHERE profile_id = ? LIMIT 1",
@@ -14782,6 +14792,16 @@ QUALITY REQUIREMENTS
                 rights_team = normalize_team_code(match.group(1))
         return bool(team and rights_team and team == rights_team)
 
+    def _free_agent_offer_bird_rights_code(self, free_agent: Dict[str, Any]) -> str:
+        raw = re.sub(r"[\s_-]+", "", str(free_agent.get("bird_rights") or "").strip().upper())
+        if raw in {"FB", "FULLBIRD"}:
+            return "FB"
+        if raw in {"EB", "EARLYBIRD"}:
+            return "EB"
+        if raw in {"NB", "NONBIRD"}:
+            return "NB"
+        return cap_hold_bird_code_from_years(free_agent.get("years_left"))
+
     def _free_agent_offer_start_season(self, settings: Dict[str, Any]) -> int:
         current_year = parse_int(settings.get("current_year")) or CAP_FORECAST_MIN_YEAR
         if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
@@ -14877,7 +14897,7 @@ QUALITY REQUIREMENTS
         raise_percent = float(raise_percent)
         if raise_percent < 0 or raise_percent > 8:
             raise ValueError("invalid_annual_raise_percent")
-        rights = str(free_agent.get("bird_rights") or "").strip().upper()
+        rights = self._free_agent_offer_bird_rights_code(free_agent)
         can_use_bird_raises = self._free_agent_offer_is_renewal(free_agent, team_code) and rights in {"FB", "EB"}
         if raise_percent > 5 and not can_use_bird_raises:
             raise ValueError("annual_raise_requires_full_or_early_bird")

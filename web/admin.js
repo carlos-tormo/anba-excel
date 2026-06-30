@@ -265,6 +265,14 @@ function normalizeBirdYears(value) {
   return '';
 }
 
+function capHoldBirdCodeFromYears(value) {
+  const normalized = normalizeBirdYears(value);
+  if (normalized === '1') return 'NB';
+  if (normalized === '2') return 'EB';
+  if (normalized === '2+') return 'FB';
+  return '';
+}
+
 function birdYearsOptions(selected = '') {
   const normalized = normalizeBirdYears(selected);
   return ['', '1', '2', '2+']
@@ -5256,9 +5264,17 @@ function freeAgentOfferRaisePercent() {
   return Number.isFinite(value) ? value : 0;
 }
 
+function freeAgentOfferBirdRightsCode(agent) {
+  const raw = String(agent?.bird_rights || '').trim().toUpperCase().replace(/[\s_-]+/g, '');
+  if (raw === 'FB' || raw === 'FULLBIRD') return 'FB';
+  if (raw === 'EB' || raw === 'EARLYBIRD') return 'EB';
+  if (raw === 'NB' || raw === 'NONBIRD') return 'NB';
+  return capHoldBirdCodeFromYears(agent?.years_left);
+}
+
 function freeAgentOfferCanUseBirdRaises(agent) {
   const teamCode = document.getElementById('freeAgentOfferTeam')?.value || '';
-  const rights = String(agent?.bird_rights || '').trim().toUpperCase();
+  const rights = freeAgentOfferBirdRightsCode(agent);
   return freeAgentOfferIsRenewal(agent, teamCode) && ['FB', 'EB'].includes(rights);
 }
 
