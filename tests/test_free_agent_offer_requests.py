@@ -177,6 +177,56 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(5, normalized["years"])
         self.assertEqual("54.126.450", normalized["salary_by_season"]["2025"])
 
+    def test_free_agent_offer_discord_thread_mentions_role_only_on_creation(self) -> None:
+        handler = object.__new__(Handler)
+        handler.db = self.db
+        handler.discord_notifications_enabled = True
+        handler.discord_free_agent_offers_webhook_url = "https://discord.example/webhook"
+        handler.discord_webhook_url = ""
+        handler.discord_free_agent_offers_forum_tag_ids = []
+        handler.discord_free_agent_offers_role_id = "485913691045494785"
+
+        calls = []
+
+        def fake_post_discord_json(payload, **kwargs):
+            calls.append({"payload": payload, "kwargs": kwargs})
+            if kwargs.get("thread_name"):
+                return {"channel_id": "1520310271862902864"}
+            return {}
+
+        handler._post_discord_json = fake_post_discord_json
+        free_agent = self.db.get_free_agent(self.free_agent_id)
+        offer_payload = {
+            "contract_type": "Reg",
+            "years": 1,
+            "salary_by_season": {"2026": "10.000.000"},
+        }
+
+        first_sent = handler._notify_free_agent_offer(
+            free_agent,
+            "ATL",
+            offer_payload,
+            "free_agent_offer",
+        )
+        second_sent = handler._notify_free_agent_offer(
+            free_agent,
+            "ATL",
+            offer_payload,
+            "free_agent_offer",
+        )
+
+        self.assertTrue(first_sent)
+        self.assertTrue(second_sent)
+        self.assertEqual(2, len(calls))
+        self.assertEqual("Test Free Agent", calls[0]["kwargs"].get("thread_name"))
+        self.assertEqual("<@&485913691045494785>", calls[0]["payload"].get("content"))
+        self.assertEqual(
+            ["485913691045494785"],
+            calls[0]["payload"].get("allowed_mentions", {}).get("roles"),
+        )
+        self.assertEqual("1520310271862902864", calls[1]["kwargs"].get("thread_id"))
+        self.assertNotIn("content", calls[1]["payload"])
+
 
 if __name__ == "__main__":
     unittest.main()

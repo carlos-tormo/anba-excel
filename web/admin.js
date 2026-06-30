@@ -5482,7 +5482,15 @@ async function submitFreeAgentOffer() {
       body: JSON.stringify(payload),
     });
     const requestKind = result.offer_type === 'renewal' ? 'Oferta de renovación' : 'Oferta';
-    setFreeAgentActionStatus('offer', `${requestKind} enviada a GM Requests. Quedará pendiente de aprobación.`);
+    if (result.discord_sent) {
+      setFreeAgentActionStatus('offer', `${requestKind} enviada a GM Requests y publicada en Discord. Quedará pendiente de aprobación.`);
+    } else {
+      setFreeAgentActionStatus(
+        'offer',
+        `${requestKind} enviada a GM Requests. Quedará pendiente de aprobación, pero Discord no está configurado o falló.`,
+        true,
+      );
+    }
   } catch (err) {
     setFreeAgentActionStatus('offer', `No se pudo enviar la oferta: ${err.message}`, true);
   } finally {

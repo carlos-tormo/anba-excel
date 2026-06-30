@@ -13157,6 +13157,11 @@ class Handler(SimpleHTTPRequestHandler):
         for value in os.getenv("DISCORD_FREE_AGENT_OFFERS_FORUM_TAG_IDS", "").split(",")
         if re.sub(r"\D+", "", value)
     ][:5]
+    discord_free_agent_offers_role_id = re.sub(
+        r"\D+",
+        "",
+        os.getenv("DISCORD_FREE_AGENT_OFFERS_ROLE_ID", "485913691045494785"),
+    )
     discord_role_id = os.getenv("DISCORD_NOTIFY_ROLE_ID", "486604867293544458").strip()
     discord_notifications_enabled = str(os.getenv("DISCORD_NOTIFICATIONS_ENABLED", "true")).strip().lower() not in {
         "0",
@@ -15044,8 +15049,10 @@ QUALITY REQUIREMENTS
             existing_thread = self.db.get_free_agent_offer_thread(free_agent)
             if existing_thread and existing_thread.get("thread_id"):
                 try:
+                    thread_payload_json = dict(payload_json)
+                    thread_payload_json.pop("applied_tags", None)
                     self._post_discord_json(
-                        payload_json,
+                        thread_payload_json,
                         webhook_url=webhook_url,
                         thread_id=str(existing_thread.get("thread_id")),
                     )
@@ -15058,8 +15065,17 @@ QUALITY REQUIREMENTS
                         self._http_error_excerpt(err),
                     )
             try:
+                creation_payload_json = {
+                    **payload_json,
+                    "allowed_mentions": dict(payload_json.get("allowed_mentions") or {}),
+                }
+                offer_role_id = re.sub(r"\D+", "", str(self.discord_free_agent_offers_role_id or ""))
+                if offer_role_id:
+                    creation_payload_json["content"] = f"<@&{offer_role_id}>"
+                    creation_payload_json["allowed_mentions"]["parse"] = []
+                    creation_payload_json["allowed_mentions"]["roles"] = [offer_role_id]
                 response = self._post_discord_json(
-                    payload_json,
+                    creation_payload_json,
                     webhook_url=webhook_url,
                     thread_name=thread_name,
                     wait=True,
@@ -16314,7 +16330,16 @@ QUALITY REQUIREMENTS
                 if not request:
                     self._json(404, {"error": "free_agent_not_found"})
                     return
-                self._json(201, {"ok": True, "request": request, "offer_type": offer_type})
+                sent = self._notify_free_agent_offer(free_agent, team_code, payload, offer_type)
+                self._json(
+                    201,
+                    {
+                        "ok": True,
+                        "request": request,
+                        "offer_type": offer_type,
+                        "discord_sent": sent,
+                    },
+                )
                 return
             if action == "negotiate":
                 settings_payload = public_settings_payload(self.db.get_settings())
