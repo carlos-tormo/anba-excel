@@ -1,0 +1,119 @@
+import base64
+import os
+import sqlite3
+import tempfile
+import unittest
+
+from app.server import LeagueDB, _spreadsheet_rows_from_payload, _xlsx_workbook_bytes
+from app.xlsx_import import create_schema
+
+
+class FreeAgentAgentImportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="anba-fa-agent-import-", suffix=".db")
+        os.close(fd)
+        self.db_path = path
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            create_schema(conn)
+            conn.commit()
+        self.db = LeagueDB(self.db_path)
+        self.db.ensure_auth_schema()
+        first_id = self.db.create_free_agent(
+            {
+                "name": "Nikola Jokic",
+                "position": "C",
+                "rating": "98",
+                "free_agent_type": "No restringido",
+            }
+        )
+        second_id = self.db.create_free_agent(
+            {
+                "name": "Jrue Holiday",
+                "position": "PG",
+                "rating": "81",
+                "free_agent_type": "No restringido",
+                "agent": "Old Rep",
+            }
+        )
+        self.assertIsNotNone(first_id)
+        self.assertIsNotNone(second_id)
+        self.first_id = int(first_id)
+        self.second_id = int(second_id)
+
+    def tearDown(self) -> None:
+        try:
+            os.unlink(self.db_path)
+        except FileNotFoundError:
+            pass
+
+    def test_preview_and_apply_free_agent_agent_import(self) -> None:
+        rows = [
+            ["player", "agent"],
+            ["Nikola Jokic", "New Rep"],
+            ["Jrue Holiday", "Old Rep"],
+        ]
+
+        preview = self.db.preview_free_agent_agent_import(rows)
+
+        self.assertTrue(preview["ok"])
+        self.assertEqual([], preview["errors"])
+        self.assertEqual(2, preview["summary"]["record_count"])
+        self.assertEqual(1, preview["summary"]["changed_count"])
+        self.assertEqual(["New Rep", "Old Rep"], preview["new_agents"])
+
+        result = self.db.apply_free_agent_agent_import(preview["records"])
+
+        self.assertEqual(2, result["record_count"])
+        self.assertEqual(1, result["changed_count"])
+        self.assertEqual(1, result["unchanged_count"])
+        free_agents = {item["id"]: item for item in self.db.list_free_agents()}
+        self.assertEqual("New Rep", free_agents[self.first_id]["agent"])
+        self.assertEqual("Old Rep", free_agents[self.second_id]["agent"])
+        settings = self.db.get_settings()
+        self.assertIn("New Rep", settings.get("free_agent_reps", ""))
+        self.assertIn("Old Rep", settings.get("free_agent_reps", ""))
+
+    def test_xlsx_payload_rows_are_supported(self) -> None:
+        data = _xlsx_workbook_bytes(
+            [
+                {
+                    "name": "Agents",
+                    "rows": [
+                        ["player", "agent"],
+                        ["Nikola Jokic", "XLSX Rep"],
+                    ],
+                }
+            ]
+        )
+        rows = _spreadsheet_rows_from_payload(
+            file_name="agents.xlsx",
+            file_data_base64=base64.b64encode(data).decode("ascii"),
+        )
+
+        preview = self.db.preview_free_agent_agent_import(rows)
+
+        self.assertTrue(preview["ok"])
+        self.assertEqual(1, preview["summary"]["record_count"])
+        self.assertEqual("XLSX Rep", preview["records"][0]["agent_name"])
+
+    def test_preview_reports_missing_and_ambiguous_names(self) -> None:
+        duplicate_id = self.db.create_free_agent({"name": "Nikola Jokic"})
+        self.assertIsNotNone(duplicate_id)
+
+        preview = self.db.preview_free_agent_agent_import(
+            [
+                ["player", "agent"],
+                ["Nikola Jokic", "Rep"],
+                ["Missing Player", "Rep"],
+            ]
+        )
+
+        messages = [error["message"] for error in preview["errors"]]
+        self.assertFalse(preview["ok"])
+        self.assertTrue(any("Nombre ambiguo" in message for message in messages))
+        self.assertTrue(any("No se encontró agente libre" in message for message in messages))
+
+
+if __name__ == "__main__":
+    unittest.main()

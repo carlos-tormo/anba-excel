@@ -824,6 +824,14 @@ function birdYearsSortValue(value) {
   return normalized === '2+' ? 3 : Number(normalized);
 }
 
+function capHoldBirdCodeFromYears(value) {
+  const normalized = normalizeBirdYears(value);
+  if (normalized === '1') return 'NB';
+  if (normalized === '2') return 'EB';
+  if (normalized === '2+') return 'FB';
+  return '';
+}
+
 function birdYearsCellHtml(value) {
   const normalized = normalizeBirdYears(value);
   if (!normalized) return '';
@@ -1382,9 +1390,12 @@ function capHoldInfo(player, season) {
   const textCode = seasonSalaryTextCode(player, season);
   const optionCode = seasonOptionCode(player, season);
   const isQualifyingOffer = textCode === 'QO' || optionCode === 'QO' || optionAcceptedByTeam(player, season, 'GAP');
-  const birdCode = ['NB', 'EB', 'FB'].includes(textCode)
+  let birdCode = ['NB', 'EB', 'FB'].includes(textCode)
     ? textCode
     : (['NB', 'EB', 'FB'].includes(optionCode) ? optionCode : '');
+  if (isQualifyingOffer && !birdCode && !isRestrictedRightsPlayer(player)) {
+    birdCode = capHoldBirdCodeFromYears(player?.years_left);
+  }
   const qualifyingOfferValue = isQualifyingOffer ? salaryNumericValue(player, season) : 0;
 
   if (!isQualifyingOffer && hasNumericSeasonSalary(player, season)) {

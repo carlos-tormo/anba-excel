@@ -135,6 +135,17 @@ def increment_bird_years_value(value: Any, seasons: int = 1) -> Optional[str]:
     return str(level)
 
 
+def cap_hold_bird_code_from_years(value: Any) -> str:
+    normalized = normalize_bird_years(value)
+    if normalized == "1":
+        return "NB"
+    if normalized == "2":
+        return "EB"
+    if normalized == "2+":
+        return "FB"
+    return ""
+
+
 def normalize_experience_years(value: Any) -> Optional[int]:
     raw = str(value or "").strip()
     if not raw:
@@ -499,6 +510,8 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
     option_code = season_option_code(row, season)
     is_qo = is_qo_style_option(row, season)
     bird_code = text_code if text_code in {"NB", "EB", "FB"} else option_code if option_code in {"NB", "EB", "FB"} else ""
+    if is_qo and not bird_code and not is_restricted_rights_player(row):
+        bird_code = cap_hold_bird_code_from_years(row.get("years_left"))
     if not is_qo and has_numeric_season_salary(row, season):
         return 0.0
 

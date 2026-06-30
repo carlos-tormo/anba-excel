@@ -17,6 +17,7 @@ const state = {
   economySettingsSeason: null,
   economyImportPreview: null,
   ownerOfficeImportPreview: null,
+  freeAgentAgentImportPreview: null,
   offseasonExceptionPreview: null,
   offseasonExceptionChoices: {},
   adminUsers: [],
@@ -11135,6 +11136,185 @@ function setupOwnerOfficeImportControls() {
   });
 }
 
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result || '');
+      resolve(value.includes(',') ? value.split(',').pop() : value);
+    };
+    reader.onerror = () => reject(reader.error || new Error('file_read_failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function setFreeAgentAgentImportStatus(message, tone = '') {
+  const status = document.getElementById('freeAgentAgentImportStatus');
+  if (!status) return;
+  status.className = `economy-import-status${tone ? ` economy-import-status--${tone}` : ''}`;
+  status.textContent = message || '';
+}
+
+function openFreeAgentAgentImportModal() {
+  const modal = document.getElementById('freeAgentAgentImportModal');
+  state.freeAgentAgentImportPreview = null;
+  const input = document.getElementById('freeAgentAgentImportFileInput');
+  if (input) input.value = '';
+  const confirm = document.getElementById('freeAgentAgentImportConfirmBtn');
+  if (confirm) confirm.disabled = true;
+  const preview = document.getElementById('freeAgentAgentImportPreview');
+  if (preview) preview.innerHTML = '';
+  setFreeAgentAgentImportStatus('');
+  modal?.classList.remove('section-hidden');
+}
+
+function closeFreeAgentAgentImportModal() {
+  document.getElementById('freeAgentAgentImportModal')?.classList.add('section-hidden');
+}
+
+function renderFreeAgentAgentImportPreview(preview) {
+  const container = document.getElementById('freeAgentAgentImportPreview');
+  const confirm = document.getElementById('freeAgentAgentImportConfirmBtn');
+  if (!container) return;
+  const errors = preview?.errors || [];
+  const records = preview?.records || [];
+  const summary = preview?.summary || {};
+  const newAgents = preview?.new_agents || [];
+  if (confirm) confirm.disabled = Boolean(errors.length) || !records.length;
+  const rowsHtml = records.length ? `
+    <div class="table-wrap economy-import-table-wrap">
+      <table class="economy-import-table">
+        <thead>
+          <tr>
+            <th>Línea</th>
+            <th>Jugador</th>
+            <th>Agente actual</th>
+            <th>Nuevo agente</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${records.map((row) => `
+            <tr>
+              <td>${escapeHtml(row.line || '')}</td>
+              <td><strong>${escapeHtml(row.player_name || row.input_player_name || '')}</strong></td>
+              <td>${escapeHtml(row.current_agent || '-')}</td>
+              <td>${escapeHtml(row.agent_name || '-')}</td>
+              <td>${row.changed ? '<span class="status-pill status-success">Cambiar</span>' : '<span class="status-pill">Sin cambios</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  ` : '<p class="economy-import-empty">No hay filas válidas para importar todavía.</p>';
+  const newAgentsHtml = newAgents.length ? `
+    <p>También se añadirán a League Settings como representantes: <strong>${newAgents.map((agent) => escapeHtml(agent)).join(', ')}</strong>.</p>
+  ` : '';
+  container.innerHTML = `
+    ${economyImportErrorsHtml(errors)}
+    <div class="economy-import-summary">
+      <h3>Previsualización</h3>
+      <p>
+        ${escapeHtml(summary.record_count || records.length)} jugadores encontrados ·
+        ${escapeHtml(summary.changed_count || 0)} cambios ·
+        ${escapeHtml(summary.unchanged_count || 0)} sin cambios
+      </p>
+      ${newAgentsHtml}
+      ${rowsHtml}
+    </div>
+  `;
+  if (errors.length) {
+    setFreeAgentAgentImportStatus('Corrige los errores antes de confirmar.', 'error');
+  } else if (records.length) {
+    setFreeAgentAgentImportStatus('Previsualización lista. Revisa los cambios antes de confirmar.', 'success');
+  } else {
+    setFreeAgentAgentImportStatus('No se encontraron filas válidas.', 'error');
+  }
+}
+
+async function previewFreeAgentAgentImport() {
+  const input = document.getElementById('freeAgentAgentImportFileInput');
+  const file = input?.files?.[0];
+  if (!file) {
+    alert('Selecciona un archivo CSV o XLSX.');
+    return;
+  }
+  const button = document.getElementById('freeAgentAgentImportPreviewBtn');
+  const confirm = document.getElementById('freeAgentAgentImportConfirmBtn');
+  if (button) button.disabled = true;
+  if (confirm) confirm.disabled = true;
+  setFreeAgentAgentImportStatus('Leyendo y validando archivo...');
+  try {
+    const fileDataBase64 = await fileToBase64(file);
+    const result = await api('/api/admin/free-agent-agent-import/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        file_name: file.name,
+        file_data_base64: fileDataBase64,
+      }),
+    });
+    state.freeAgentAgentImportPreview = result;
+    renderFreeAgentAgentImportPreview(result);
+  } catch (err) {
+    state.freeAgentAgentImportPreview = null;
+    setFreeAgentAgentImportStatus('Error validando archivo.', 'error');
+    alert(`Free-agent agent import preview failed: ${err.message || err}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function confirmFreeAgentAgentImport() {
+  const preview = state.freeAgentAgentImportPreview;
+  if (!preview || !Array.isArray(preview.records) || preview.errors?.length) return;
+  const button = document.getElementById('freeAgentAgentImportConfirmBtn');
+  if (button) button.disabled = true;
+  setFreeAgentAgentImportStatus('Importando agentes...');
+  try {
+    const result = await api('/api/admin/free-agent-agent-import/import', {
+      method: 'POST',
+      body: JSON.stringify({ records: preview.records }),
+    });
+    if (Array.isArray(result.free_agent_reps)) {
+      state.settings.free_agent_reps = result.free_agent_reps;
+      const freeAgentRepsInput = document.getElementById('freeAgentRepsInput');
+      if (freeAgentRepsInput) freeAgentRepsInput.value = result.free_agent_reps.join('\n');
+    }
+    await loadFreeAgents();
+    if (state.ui.viewMode === 'free-agents') renderFreeAgents();
+    renderFreeAgentBulkControls();
+    await refreshAdminLogsSafe();
+    setFreeAgentAgentImportStatus(`Importados ${result.record_count || 0} agentes.`, 'success');
+    alert('Agentes libres importados.');
+  } catch (err) {
+    setFreeAgentAgentImportStatus('Error importando agentes.', 'error');
+    alert(`Free-agent agent import failed: ${err.message || err}`);
+  } finally {
+    if (button && state.freeAgentAgentImportPreview && !state.freeAgentAgentImportPreview.errors?.length) button.disabled = false;
+  }
+}
+
+function setupFreeAgentAgentImportControls() {
+  document.getElementById('openFreeAgentAgentImportBtn')?.addEventListener('click', openFreeAgentAgentImportModal);
+  document.getElementById('freeAgentAgentImportCloseBtn')?.addEventListener('click', closeFreeAgentAgentImportModal);
+  document.getElementById('freeAgentAgentImportModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeFreeAgentAgentImportModal();
+  });
+  document.getElementById('freeAgentAgentImportPreviewBtn')?.addEventListener('click', () => {
+    void previewFreeAgentAgentImport();
+  });
+  document.getElementById('freeAgentAgentImportConfirmBtn')?.addEventListener('click', () => {
+    void confirmFreeAgentAgentImport();
+  });
+  document.getElementById('freeAgentAgentImportFileInput')?.addEventListener('change', () => {
+    state.freeAgentAgentImportPreview = null;
+    document.getElementById('freeAgentAgentImportConfirmBtn')?.setAttribute('disabled', 'disabled');
+    const preview = document.getElementById('freeAgentAgentImportPreview');
+    if (preview) preview.innerHTML = '';
+    setFreeAgentAgentImportStatus('');
+  });
+}
+
 function setupEconomySettingsControls() {
   document.getElementById('loadEconomySettingsBtn')?.addEventListener('click', async () => {
     const input = document.getElementById('economySettingsSeasonInput');
@@ -11220,6 +11400,7 @@ async function init() {
   setupTrackerEconomySeasonControl();
   setupTeamTabs();
   setupEconomySettingsControls();
+  setupFreeAgentAgentImportControls();
   setupOffseasonExceptionControls();
   await loadEconomySettingsSeason(Number(state.settings.current_year || 2025));
   document.getElementById('logActionFilter').addEventListener('change', () => { void loadAdminLogs(); });

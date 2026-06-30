@@ -11,6 +11,7 @@ import re
 import secrets
 import sqlite3
 import unicodedata
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import UTC, datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -852,6 +853,118 @@ def _xlsx_workbook_bytes(sheets: List[Dict[str, Any]]) -> bytes:
         for idx, sheet in enumerate(normalized_sheets, start=1):
             archive.writestr(f"xl/worksheets/sheet{idx}.xml", _xlsx_sheet_xml(sheet["rows"]))
     return output.getvalue()
+
+
+def _xlsx_col_index_from_ref(cell_ref: str) -> int:
+    letters = re.sub(r"[^A-Za-z]", "", str(cell_ref or ""))
+    value = 0
+    for char in letters.upper():
+        value = value * 26 + (ord(char) - ord("A") + 1)
+    return max(1, value)
+
+
+def _xlsx_shared_strings(archive: zipfile.ZipFile) -> List[str]:
+    try:
+        raw = archive.read("xl/sharedStrings.xml")
+    except KeyError:
+        return []
+    root = ET.fromstring(raw)
+    strings: List[str] = []
+    for item in root.iter():
+        if item.tag.rsplit("}", 1)[-1] != "si":
+            continue
+        parts: List[str] = []
+        for child in item.iter():
+            if child.tag.rsplit("}", 1)[-1] == "t" and child.text:
+                parts.append(child.text)
+        strings.append("".join(parts))
+    return strings
+
+
+def _xlsx_cell_text(cell: ET.Element, shared_strings: List[str]) -> str:
+    cell_type = str(cell.attrib.get("t") or "")
+    if cell_type == "inlineStr":
+        parts: List[str] = []
+        for child in cell.iter():
+            if child.tag.rsplit("}", 1)[-1] == "t" and child.text:
+                parts.append(child.text)
+        return "".join(parts).strip()
+    value_text = ""
+    for child in cell:
+        if child.tag.rsplit("}", 1)[-1] == "v":
+            value_text = child.text or ""
+            break
+    if cell_type == "s":
+        index = parse_int(value_text)
+        if index is not None and 0 <= index < len(shared_strings):
+            return str(shared_strings[index]).strip()
+        return ""
+    return str(value_text or "").strip()
+
+
+def _xlsx_first_sheet_rows(file_bytes: bytes) -> List[List[str]]:
+    with zipfile.ZipFile(io.BytesIO(file_bytes), "r") as archive:
+        shared_strings = _xlsx_shared_strings(archive)
+        try:
+            sheet_bytes = archive.read("xl/worksheets/sheet1.xml")
+        except KeyError as err:
+            raise ValueError("xlsx_first_sheet_missing") from err
+        root = ET.fromstring(sheet_bytes)
+        rows: List[List[str]] = []
+        for row in root.iter():
+            if row.tag.rsplit("}", 1)[-1] != "row":
+                continue
+            values: Dict[int, str] = {}
+            max_col = 0
+            for cell in row:
+                if cell.tag.rsplit("}", 1)[-1] != "c":
+                    continue
+                col_idx = _xlsx_col_index_from_ref(str(cell.attrib.get("r") or ""))
+                max_col = max(max_col, col_idx)
+                values[col_idx] = _xlsx_cell_text(cell, shared_strings)
+            if max_col <= 0:
+                rows.append([])
+            else:
+                rows.append([values.get(col_idx, "") for col_idx in range(1, max_col + 1)])
+        return rows
+
+
+def _spreadsheet_rows_from_payload(
+    file_name: str = "",
+    file_data_base64: str = "",
+    csv_text: str = "",
+) -> List[List[str]]:
+    if csv_text:
+        text = str(csv_text)
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+        except csv.Error:
+            dialect = csv.excel
+        return [[str(cell or "").strip() for cell in row] for row in csv.reader(io.StringIO(text), dialect)]
+
+    raw_name = str(file_name or "").strip().lower()
+    raw_data = str(file_data_base64 or "").strip()
+    if not raw_data:
+        raise ValueError("file_required")
+    if "," in raw_data and raw_data.lower().startswith("data:"):
+        raw_data = raw_data.split(",", 1)[1]
+    try:
+        data = base64.b64decode(raw_data, validate=True)
+    except (ValueError, TypeError) as err:
+        raise ValueError("invalid_file_data") from err
+    if len(data) > 5_000_000:
+        raise ValueError("file_too_large")
+    if raw_name.endswith(".xlsx") or data[:2] == b"PK":
+        return _xlsx_first_sheet_rows(data)
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    return [[str(cell or "").strip() for cell in row] for row in csv.reader(io.StringIO(text), dialect)]
 
 
 def normalize_import_text(value: Any) -> str:
@@ -10189,6 +10302,210 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "skipped": skipped,
         }
 
+    def _free_agent_agent_import_records_from_rows(self, rows: List[List[str]]) -> Dict[str, Any]:
+        errors: List[Dict[str, Any]] = []
+        records: List[Dict[str, Any]] = []
+        first_row_index: Optional[int] = None
+        for index, row in enumerate(rows):
+            if any(str(cell or "").strip() for cell in row):
+                first_row_index = index
+                break
+        if first_row_index is None:
+            return {
+                "ok": False,
+                "errors": [{"line": None, "message": "El archivo no tiene filas con datos."}],
+                "records": [],
+                "summary": {"record_count": 0, "changed_count": 0, "unchanged_count": 0, "new_agent_count": 0},
+                "new_agents": [],
+            }
+
+        header = [normalize_import_text(cell) for cell in rows[first_row_index]]
+        player_header_keys = {"player", "player_name", "jugador", "nombre", "name"}
+        agent_header_keys = {"agent", "agente", "rep", "representante", "representante_jugador"}
+        player_col = next((idx for idx, value in enumerate(header) if value in player_header_keys), None)
+        agent_col = next((idx for idx, value in enumerate(header) if value in agent_header_keys), None)
+        has_header = player_col is not None and agent_col is not None
+        if not has_header:
+            player_col = 0
+            agent_col = 1
+            data_start = first_row_index
+        else:
+            data_start = first_row_index + 1
+
+        with self.connect() as conn:
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            if self._sync_cap_hold_free_agents(conn, settings):
+                conn.commit()
+            cur = conn.execute(
+                """
+                SELECT f.id, COALESCE(pp.name, f.name) AS name, f.agent
+                FROM free_agents f
+                LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                ORDER BY COALESCE(pp.name, f.name) COLLATE NOCASE, f.id
+                """
+            )
+            free_agents = [row_to_dict(cur, row) for row in cur.fetchall()]
+            settings_row = conn.execute("SELECT value FROM app_settings WHERE key = 'free_agent_reps'").fetchone()
+
+        by_name: Dict[str, List[Dict[str, Any]]] = {}
+        for free_agent in free_agents:
+            key = normalize_import_text(free_agent.get("name"))
+            if not key:
+                continue
+            by_name.setdefault(key, []).append(free_agent)
+
+        seen_free_agent_ids: Dict[int, int] = {}
+        for row_index in range(data_start, len(rows)):
+            row = rows[row_index]
+            line_number = row_index + 1
+            if not any(str(cell or "").strip() for cell in row):
+                continue
+            player_name = str(row[player_col] if player_col is not None and player_col < len(row) else "").strip()
+            agent_name = re.sub(r"\s+", " ", str(row[agent_col] if agent_col is not None and agent_col < len(row) else "").strip())
+            if not player_name and not agent_name:
+                continue
+            if not player_name or not agent_name:
+                errors.append({"line": line_number, "message": "Cada fila debe tener jugador y agente."})
+                continue
+            matches = by_name.get(normalize_import_text(player_name), [])
+            if not matches:
+                errors.append({"line": line_number, "message": f"No se encontró agente libre: {player_name}."})
+                continue
+            if len(matches) > 1:
+                errors.append({"line": line_number, "message": f"Nombre ambiguo: {player_name}. Hay más de un agente libre con ese nombre."})
+                continue
+            free_agent = matches[0]
+            free_agent_id = int(free_agent["id"])
+            if free_agent_id in seen_free_agent_ids:
+                errors.append(
+                    {
+                        "line": line_number,
+                        "message": f"Jugador duplicado en el archivo: {player_name} ya apareció en la línea {seen_free_agent_ids[free_agent_id]}.",
+                    }
+                )
+                continue
+            seen_free_agent_ids[free_agent_id] = line_number
+            current_agent = str(free_agent.get("agent") or "").strip()
+            records.append(
+                {
+                    "line": line_number,
+                    "free_agent_id": free_agent_id,
+                    "player_name": str(free_agent.get("name") or player_name).strip(),
+                    "input_player_name": player_name,
+                    "current_agent": current_agent,
+                    "agent_name": agent_name,
+                    "changed": current_agent.casefold() != agent_name.casefold(),
+                }
+            )
+
+        existing_reps: List[str] = []
+        if settings_row and settings_row["value"]:
+            try:
+                parsed_reps = json.loads(str(settings_row["value"]))
+                if isinstance(parsed_reps, list):
+                    existing_reps = [str(rep or "").strip() for rep in parsed_reps if str(rep or "").strip()]
+            except json.JSONDecodeError:
+                existing_reps = []
+        known_reps = {rep.casefold() for rep in existing_reps}
+        new_agents: List[str] = []
+        for record in records:
+            agent_name = str(record.get("agent_name") or "").strip()
+            key = agent_name.casefold()
+            if agent_name and key not in known_reps:
+                known_reps.add(key)
+                new_agents.append(agent_name)
+
+        changed_count = sum(1 for record in records if record.get("changed"))
+        summary = {
+            "record_count": len(records),
+            "changed_count": changed_count,
+            "unchanged_count": len(records) - changed_count,
+            "new_agent_count": len(new_agents),
+        }
+        return {
+            "ok": not errors,
+            "errors": errors,
+            "records": records,
+            "summary": summary,
+            "new_agents": new_agents,
+        }
+
+    def preview_free_agent_agent_import(self, rows: List[List[str]]) -> Dict[str, Any]:
+        return self._free_agent_agent_import_records_from_rows(rows)
+
+    def apply_free_agent_agent_import(self, records_payload: Any) -> Dict[str, Any]:
+        if not isinstance(records_payload, list) or not records_payload:
+            raise ValueError("records_required")
+        timestamp = now_iso()
+        changed_count = 0
+        unchanged_count = 0
+        imported_agents: List[str] = []
+        with self.connect() as conn:
+            existing_reps_row = conn.execute("SELECT value FROM app_settings WHERE key = 'free_agent_reps'").fetchone()
+            try:
+                existing_reps_raw = json.loads(str(existing_reps_row["value"])) if existing_reps_row else []
+            except json.JSONDecodeError:
+                existing_reps_raw = []
+            existing_reps = [
+                str(rep or "").strip()
+                for rep in (existing_reps_raw if isinstance(existing_reps_raw, list) else [])
+                if str(rep or "").strip()
+            ]
+            known_reps = {rep.casefold() for rep in existing_reps}
+            next_reps = list(existing_reps)
+
+            for raw_record in records_payload:
+                if not isinstance(raw_record, dict):
+                    raise ValueError("invalid_records")
+                free_agent_id = parse_int(raw_record.get("free_agent_id"))
+                agent_name = re.sub(r"\s+", " ", str(raw_record.get("agent_name") or "").strip())
+                if free_agent_id is None or not agent_name:
+                    raise ValueError("invalid_records")
+                row = conn.execute(
+                    """
+                    SELECT id, agent
+                    FROM free_agents
+                    WHERE id = ?
+                    """,
+                    (free_agent_id,),
+                ).fetchone()
+                if not row:
+                    raise ValueError("invalid_records")
+                current_agent = str(row["agent"] or "").strip()
+                cur = conn.execute(
+                    "UPDATE free_agents SET agent = ?, updated_at = ? WHERE id = ?",
+                    (agent_name, timestamp, free_agent_id),
+                )
+                if cur.rowcount:
+                    if current_agent.casefold() == agent_name.casefold():
+                        unchanged_count += 1
+                    else:
+                        changed_count += 1
+                key = agent_name.casefold()
+                if key not in known_reps:
+                    known_reps.add(key)
+                    next_reps.append(agent_name)
+                    imported_agents.append(agent_name)
+
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('free_agent_reps', ?, ?)
+                ON CONFLICT(key)
+                DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (json.dumps(next_reps, ensure_ascii=False), timestamp),
+            )
+            conn.commit()
+        return {
+            "record_count": changed_count + unchanged_count,
+            "changed_count": changed_count,
+            "unchanged_count": unchanged_count,
+            "new_agents": imported_agents,
+            "free_agent_reps": next_reps,
+        }
+
     def update_free_agent(self, free_agent_id: int, payload: Dict[str, Any]) -> bool:
         fields = ["name", "position", "bird_rights", "rating", "years_left", "free_agent_type", "agent", "notes"]
         assigns = []
@@ -16201,6 +16518,67 @@ QUALITY REQUIREMENTS
                 {
                     "record_count": result.get("record_count"),
                     "group_count": result.get("group_count"),
+                    "backup_id": backup.get("id"),
+                    "backup_path": backup.get("path"),
+                    "backup_sha256": backup.get("sha256"),
+                },
+            )
+            result["backup"] = backup
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/admin/free-agent-agent-import/preview":
+            try:
+                rows = _spreadsheet_rows_from_payload(
+                    file_name=str(payload.get("file_name") or ""),
+                    file_data_base64=str(payload.get("file_data_base64") or ""),
+                    csv_text=str(payload.get("csv_text") or ""),
+                )
+                result = self.db.preview_free_agent_agent_import(rows)
+            except ValueError as err:
+                message = str(err) or "invalid_file"
+                label = {
+                    "file_required": "Selecciona un archivo CSV o XLSX.",
+                    "file_too_large": "El archivo supera el tamaño máximo de 5 MB.",
+                    "invalid_file_data": "No se pudo leer el archivo.",
+                    "xlsx_first_sheet_missing": "No se pudo encontrar la primera hoja del XLSX.",
+                }.get(message, "No se pudo procesar el archivo.")
+                result = {
+                    "ok": False,
+                    "errors": [{"line": None, "message": label}],
+                    "records": [],
+                    "summary": {"record_count": 0, "changed_count": 0, "unchanged_count": 0, "new_agent_count": 0},
+                    "new_agents": [],
+                }
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/admin/free-agent-agent-import/import":
+            try:
+                backup = self.db.create_verified_backup("pre_free_agent_agent_import")
+            except (OSError, sqlite3.Error, ValueError) as err:
+                self._json(500, {"error": "pre_import_backup_failed", "detail": str(err)})
+                return
+            try:
+                result = self.db.apply_free_agent_agent_import(payload.get("records"))
+            except ValueError as err:
+                message = str(err)
+                if message == "records_required":
+                    self._json(400, {"error": "records_required"})
+                    return
+                if message == "invalid_records":
+                    self._json(400, {"error": "invalid_records"})
+                    return
+                raise
+            self._log_admin_action(
+                "import",
+                "free_agent_agents",
+                "bulk",
+                None,
+                {
+                    "record_count": result.get("record_count"),
+                    "changed_count": result.get("changed_count"),
+                    "new_agents": result.get("new_agents"),
                     "backup_id": backup.get("id"),
                     "backup_path": backup.get("path"),
                     "backup_sha256": backup.get("sha256"),
