@@ -4424,6 +4424,7 @@ function syncFreeAgentOfferAmounts() {
   }
 
   const isMinimumContract = contractType === 'MIN';
+  const isMaximumContract = contractType === 'MAX';
   if (raiseInput) {
     raiseInput.disabled = isMinimumContract;
     if (isMinimumContract) raiseInput.value = '0';
@@ -4433,10 +4434,14 @@ function syncFreeAgentOfferAmounts() {
   const firstSeason = Number(firstInput?.dataset.offerSalarySeason || defaultSeasonViewStart());
   const firstMinimum = freeAgentOfferMinimumAmount(agent, firstSeason, 1);
   const firstMaximum = freeAgentOfferMaximumAmount(agent, firstSeason);
-  if (isMinimumContract && firstInput) {
-    firstInput.value = formatDots(firstMinimum);
+  if (firstInput) {
+    if (isMinimumContract) {
+      firstInput.value = formatDots(firstMinimum);
+    } else if (isMaximumContract && Number.isFinite(firstMaximum)) {
+      firstInput.value = formatDots(firstMaximum);
+    }
   }
-  if (firstInput) firstInput.readOnly = isMinimumContract;
+  if (firstInput) firstInput.readOnly = isMinimumContract || isMaximumContract;
 
   const firstAmount = firstInput ? freeAgentOfferParseAmount(firstInput.value) : null;
   const raisePercent = freeAgentOfferRaisePercent();

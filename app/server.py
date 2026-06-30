@@ -151,6 +151,18 @@ OWNER_BACKGROUND_ALLOWED_MIME_TYPES = {
     "image/png": "png",
     "image/webp": "webp",
 }
+
+
+def normalize_player_happiness(value: Any) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    parsed = parse_int(raw)
+    if parsed is None or parsed < -10 or parsed > 10:
+        raise ValueError("invalid_happiness")
+    return parsed
+
+
 DISCORD_CUSTOM_IMAGE_ALLOWED_MIME_TYPES = {
     **OWNER_BACKGROUND_ALLOWED_MIME_TYPES,
     "image/gif": "gif",
@@ -1715,6 +1727,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     reference_image_url TEXT,
                     profile_notes TEXT,
                     transaction_notes TEXT,
+                    happiness INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -1968,6 +1981,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE player_profiles ADD COLUMN yos_source TEXT")
             if "transaction_notes" not in profile_cols:
                 conn.execute("ALTER TABLE player_profiles ADD COLUMN transaction_notes TEXT")
+            if "happiness" not in profile_cols:
+                conn.execute("ALTER TABLE player_profiles ADD COLUMN happiness INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_players_profile_id ON players(profile_id)")
             duplicate_active_profile = conn.execute(
                 """
@@ -5925,7 +5940,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return "Traspaso procesado"
         return " ".join(part for part in [action, entity] if part).strip() or "Movimiento registrado"
 
-    def list_players(self) -> List[Dict[str, Any]]:
+    def list_players(self, include_private: bool = False) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
@@ -5937,7 +5952,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """
                 SELECT
                     id, name, date_of_birth, nationality, experience_years, yos_source,
-                    reference_image_url, profile_notes, transaction_notes, created_at, updated_at
+                    reference_image_url, profile_notes, transaction_notes, happiness, created_at, updated_at
                 FROM player_profiles
                 ORDER BY name COLLATE NOCASE, id
                 """
@@ -5946,6 +5961,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for row in profile_cur.fetchall():
                 profile = row_to_dict(profile_cur, row)
                 profile_id = int(profile["id"])
+                happiness = profile.pop("happiness", None)
                 profiles[profile_id] = {
                     **profile,
                     "profile_id": profile_id,
@@ -5968,6 +5984,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "active_contract_summary": "No",
                     "transaction_logs": [],
                 }
+                if include_private:
+                    profiles[profile_id]["happiness"] = happiness
 
             active_cur = conn.execute(
                 f"""
@@ -9479,6 +9497,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             fields["profile_notes"] = str(payload.get("profile_notes") or "").strip() or None
         if "transaction_notes" in payload:
             fields["transaction_notes"] = str(payload.get("transaction_notes") or "").strip() or None
+        if "happiness" in payload:
+            fields["happiness"] = normalize_player_happiness(payload.get("happiness"))
         if not fields:
             return False
 
@@ -10061,7 +10081,6 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     profile_id = self._ensure_profile_for_player(conn, player_id, timestamp)
                 if profile_id is None:
                     continue
-                valid_profile_ids.append(int(profile_id))
                 name = str(player.get("name") or player.get("profile_name") or "Agente libre").strip() or "Agente libre"
                 default_notes = (
                     f"Cap hold retenido por {team_code} para {season_label(season)}"
@@ -10071,9 +10090,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 synced_bird_rights = (str(player.get("bird_rights") or "").strip() or None) if has_retained_rights else None
                 synced_rights_team = team_code if has_retained_rights else None
                 existing = conn.execute(
-                    "SELECT id, notes FROM free_agents WHERE profile_id = ? LIMIT 1",
+                    "SELECT id, notes, source FROM free_agents WHERE profile_id = ? LIMIT 1",
                     (int(profile_id),),
                 ).fetchone()
+                if existing and str(existing["source"] or "").strip() == FREE_AGENT_SOURCE_RENOUNCED_RIGHTS:
+                    continue
+                valid_profile_ids.append(int(profile_id))
                 if existing:
                     cur = conn.execute(
                         """
@@ -14869,6 +14891,8 @@ QUALITY REQUIREMENTS
 
         if contract_type_upper == "MIN":
             first_amount = first_minimum
+        elif contract_type_upper == "MAX":
+            first_amount = first_maximum
         elif contract_type_upper != "E10" and (first_amount is None or first_amount <= 0):
             raise ValueError("first_year_salary_required")
         elif first_amount is None:
@@ -15647,6 +15671,12 @@ QUALITY REQUIREMENTS
                     "Cache-Control": "no-store",
                 },
             )
+            return
+
+        if parsed.path == "/api/admin/players":
+            if not self._require_admin():
+                return
+            self._json(200, {"players": self.db.list_players(include_private=True)})
             return
 
         if parsed.path == "/api/players":
@@ -18102,7 +18132,11 @@ QUALITY REQUIREMENTS
             except ValueError:
                 self._json(400, {"error": "invalid_profile_id"})
                 return
-            ok = self.db.update_player_profile(profile_id, payload)
+            try:
+                ok = self.db.update_player_profile(profile_id, payload)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_profile"})
+                return
             if ok:
                 self._log_admin_action(
                     "update",

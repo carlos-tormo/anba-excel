@@ -5303,6 +5303,7 @@ function syncFreeAgentOfferAmounts() {
   }
 
   const isMinimumContract = contractType === 'MIN';
+  const isMaximumContract = contractType === 'MAX';
   if (raiseInput) {
     raiseInput.disabled = isMinimumContract;
     if (isMinimumContract) raiseInput.value = '0';
@@ -5312,10 +5313,14 @@ function syncFreeAgentOfferAmounts() {
   const firstSeason = Number(firstInput?.dataset.offerSalarySeason || defaultSeasonViewStart());
   const firstMinimum = freeAgentOfferMinimumAmount(agent, firstSeason, 1);
   const firstMaximum = freeAgentOfferMaximumAmount(agent, firstSeason);
-  if (isMinimumContract && firstInput) {
-    firstInput.value = formatDots(firstMinimum);
+  if (firstInput) {
+    if (isMinimumContract) {
+      firstInput.value = formatDots(firstMinimum);
+    } else if (isMaximumContract && Number.isFinite(firstMaximum)) {
+      firstInput.value = formatDots(firstMaximum);
+    }
   }
-  if (firstInput) firstInput.readOnly = isMinimumContract;
+  if (firstInput) firstInput.readOnly = isMinimumContract || isMaximumContract;
 
   const firstAmount = firstInput ? freeAgentOfferParseAmount(firstInput.value) : null;
   const raisePercent = freeAgentOfferRaisePercent();
@@ -5861,7 +5866,7 @@ function renderLeaguePlayers() {
   const rows = sortedRows(state.leaguePlayers || [], state.sort.league_players);
   if (!rows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="8">No hay jugadores cargados.</td>';
+    tr.innerHTML = '<td colspan="9">No hay jugadores cargados.</td>';
     tbody.appendChild(tr);
     return;
   }
@@ -5883,6 +5888,7 @@ function renderLeaguePlayers() {
       <td>${leaguePlayerStatusHtml(player)}</td>
       <td>${leaguePlayerTeamHtml(player)}</td>
       <td><input class="player-profile-input player-profile-input--tiny" data-player-profile-field="experience_years" type="number" min="0" max="50" value="${player.experience_years == null ? '' : escapeHtml(player.experience_years)}"></td>
+      <td><input class="player-profile-input player-profile-input--tiny" data-player-profile-field="happiness" type="number" min="-10" max="10" step="1" value="${player.happiness == null ? '0' : escapeHtml(player.happiness)}" aria-label="Felicidad"></td>
       <td>${leaguePlayerProfileFieldsHtml(player)}</td>
       <td>${leaguePlayerContractHtml(player)}</td>
       <td>${leaguePlayerLogsHtml(player)}</td>
@@ -9790,10 +9796,10 @@ async function fetchLeaguePlayersFallback() {
 async function loadLeaguePlayers() {
   let players = [];
   try {
-    const res = await api('/api/players');
+    const res = await api('/api/admin/players');
     players = Array.isArray(res.players) ? res.players : [];
   } catch (err) {
-    console.warn('API /api/players not available, using team roster fallback.', err);
+    console.warn('API /api/admin/players not available, using team roster fallback.', err);
   }
   if (!players.length) {
     players = await fetchLeaguePlayersFallback();
