@@ -9,6 +9,7 @@ const state = {
   trackerEconomySeasons: [],
   leaguePlayers: [],
   freeAgents: [],
+  coadminVotes: [],
   draftOrder: {
     draft_year: null,
     draft_order: [],
@@ -578,11 +579,19 @@ function visibleSeasonYears() {
   return Array.from({ length: SEASON_WINDOW_SIZE }, (_, idx) => start + idx);
 }
 
+function hasGmLevelRole(role) {
+  return ['gm', 'co_admin'].includes(String(role || '').trim().toLowerCase());
+}
+
+function isCoAdminRole(role) {
+  return String(role || '').trim().toLowerCase() === 'co_admin';
+}
+
 function canViewOwnerOfficeForTeam(code = state.teamCode) {
   const auth = state.auth || {};
   if (!auth.authenticated) return false;
   if (auth.role === 'admin') return true;
-  if (auth.role !== 'gm') return false;
+  if (!hasGmLevelRole(auth.role)) return false;
   const teamCodes = Array.isArray(auth.team_codes)
     ? auth.team_codes.map((teamCode) => String(teamCode || '').toUpperCase()).filter(Boolean)
     : [];
@@ -1112,7 +1121,7 @@ function canSubmitGmOptionRequest(row, season, optionCode) {
   const option = String(optionCode || '').trim().toUpperCase();
   if (!['TO', 'QO', 'GAP'].includes(option)) return false;
   const auth = state.auth || {};
-  if (!auth.authenticated || auth.role !== 'gm') return false;
+  if (!auth.authenticated || !hasGmLevelRole(auth.role)) return false;
   const teamCodes = Array.isArray(auth.team_codes)
     ? auth.team_codes.map((code) => String(code || '').toUpperCase()).filter(Boolean)
     : [];
@@ -1137,7 +1146,7 @@ function canSubmitGmBirdRightsRenounceRequest(row, season, rightsCode) {
   const rights = String(rightsCode || '').trim().toUpperCase();
   if (!['FB', 'EB', 'NB'].includes(rights)) return false;
   const auth = state.auth || {};
-  if (!auth.authenticated || auth.role !== 'gm') return false;
+  if (!auth.authenticated || !hasGmLevelRole(auth.role)) return false;
   const teamCodes = Array.isArray(auth.team_codes)
     ? auth.team_codes.map((code) => String(code || '').toUpperCase()).filter(Boolean)
     : [];
@@ -3607,19 +3616,21 @@ function renderAuthControls() {
     adminLink.hidden = false;
     logoutBtn.hidden = true;
     syncMobileAuthControls(auth);
+    syncCoadminVoteNav();
     return;
   }
 
   const userName = auth.user?.name || auth.user?.email || 'Signed In';
   const teamCodes = Array.isArray(auth.team_codes) ? auth.team_codes.filter(Boolean) : [];
-  const roleLabel = auth.role === 'gm' && teamCodes.length
-    ? `GM ${teamCodes.join('/')}`
+  const roleLabel = hasGmLevelRole(auth.role) && teamCodes.length
+    ? `${auth.role === 'co_admin' ? 'Co-admin' : 'GM'} ${teamCodes.join('/')}`
     : auth.role;
   badge.textContent = `${userName} (${roleLabel})`;
   loginLink.hidden = true;
   adminLink.hidden = auth.role !== 'admin';
   logoutBtn.hidden = false;
   syncMobileAuthControls(auth);
+  syncCoadminVoteNav();
 }
 
 function setPageHeading(title, subtitle = '') {
@@ -3766,6 +3777,26 @@ function syncMobileAuthControls(auth) {
   mobileAdminLink.hidden = auth.role !== 'admin';
   mobileLoginLink.hidden = true;
   mobileLogoutBtn.hidden = false;
+}
+
+function syncCoadminVoteNav() {
+  const show = Boolean(state.auth?.authenticated && isCoAdminRole(state.auth?.role));
+  ['coadminVotesHomeBtn', 'mobileCoadminVotesBtn'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.hidden = !show;
+    el.classList.toggle('section-hidden', !show);
+  });
+}
+
+function syncCoadminVoteBadges() {
+  const count = Array.isArray(state.coadminVotes) ? state.coadminVotes.length : 0;
+  ['coadminVotesBadge', 'mobileCoadminVotesBadge'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = String(count);
+    el.hidden = count <= 0;
+  });
 }
 
 function teamLogoCandidates(code) {
@@ -4146,12 +4177,14 @@ function setViewMode(mode) {
   const leaguePlayersSection = document.getElementById('leaguePlayersSection');
   const draftOrderSection = document.getElementById('draftOrderSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
+  const coadminVotesSection = document.getElementById('coadminVotesSection');
   const showTracker = mode === 'tracker';
   const showFigures = mode === 'figures';
   const showFreeAgents = mode === 'free-agents';
   const showLeaguePlayers = mode === 'league-players';
   const showDraftOrder = mode === 'draft-order';
   const showTradeMachine = mode === 'trade-machine';
+  const showCoadminVotes = mode === 'coadmin-votes';
 
   trackerSection.classList.toggle('section-hidden', !showTracker);
   if (figuresSection) figuresSection.classList.toggle('section-hidden', !showFigures);
@@ -4159,6 +4192,7 @@ function setViewMode(mode) {
   if (leaguePlayersSection) leaguePlayersSection.classList.toggle('section-hidden', !showLeaguePlayers);
   if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
+  if (coadminVotesSection) coadminVotesSection.classList.toggle('section-hidden', !showCoadminVotes);
   syncTrackerTabs();
   syncTeamTabs();
   syncMainNavState();
@@ -4254,7 +4288,7 @@ function freeAgentActionTeamCodes() {
   if (auth.role === 'admin') {
     return (state.teams || []).map((team) => team.code).filter(Boolean);
   }
-  if (auth.role !== 'gm') return [];
+  if (!hasGmLevelRole(auth.role)) return [];
   return Array.isArray(auth.team_codes)
     ? auth.team_codes.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean)
     : [];
@@ -4262,7 +4296,11 @@ function freeAgentActionTeamCodes() {
 
 function canSubmitFreeAgentAction() {
   const auth = state.auth || {};
-  return Boolean(auth.authenticated && ['gm', 'admin'].includes(auth.role) && freeAgentActionTeamCodes().length);
+  return Boolean(
+    auth.authenticated
+      && (auth.role === 'admin' || hasGmLevelRole(auth.role))
+      && freeAgentActionTeamCodes().length
+  );
 }
 
 function populateFreeAgentActionTeams(selectId, selected = '') {
@@ -4612,6 +4650,155 @@ async function submitFreeAgentNegotiation() {
   }
 }
 
+function coadminVoteTeamInputHtml(team, scores = {}) {
+  const code = String(team.code || '').trim().toUpperCase();
+  const score = scores && Object.prototype.hasOwnProperty.call(scores, code) ? scores[code] : '';
+  return `
+    <label class="coadmin-vote-team">
+      <span class="coadmin-vote-team-identity">
+        ${draftOrderLogoHtml(code, 'coadmin-vote-team-logo')}
+        <span>
+          <strong>${escapeHtml(code)}</strong>
+          <small>${escapeHtml(team.name || code)}</small>
+        </span>
+      </span>
+      <input
+        type="number"
+        min="1"
+        max="100"
+        step="1"
+        inputmode="numeric"
+        value="${escapeHtml(score)}"
+        data-coadmin-vote-score="${escapeHtml(code)}"
+        aria-label="Puntuación para ${escapeHtml(code)}"
+      >
+    </label>
+  `;
+}
+
+function renderCoadminVotes() {
+  const board = document.getElementById('coadminVotesBoard');
+  const subtitle = document.getElementById('coadminVotesSubtitle');
+  if (!board) return;
+  if (!isCoAdminRole(state.auth?.role)) {
+    board.innerHTML = '<p class="muted">No tienes votaciones pendientes.</p>';
+    if (subtitle) subtitle.textContent = '';
+    return;
+  }
+  const votes = Array.isArray(state.coadminVotes) ? state.coadminVotes : [];
+  if (subtitle) subtitle.textContent = votes.length ? `${votes.length} votación(es) abiertas.` : 'No tienes votaciones abiertas.';
+  if (!votes.length) {
+    board.innerHTML = '<article class="coadmin-vote-card"><p class="muted">No hay votaciones abiertas ahora mismo.</p></article>';
+    return;
+  }
+  board.innerHTML = votes.map((vote) => {
+    const teams = Array.isArray(vote.target_teams) ? vote.target_teams : [];
+    const submitted = Boolean(vote.submitted);
+    return `
+      <article class="coadmin-vote-card ${submitted ? 'is-submitted' : ''}" data-coadmin-vote-card="${escapeHtml(vote.id)}">
+        <div class="coadmin-vote-head">
+          <div>
+            <h3>${escapeHtml(vote.title || 'Votación')}</h3>
+            <p>${submitted ? 'Voto enviado. Puedes actualizarlo mientras siga abierta.' : `Completa ${teams.length} puntuaciones del 1 al 100.`}</p>
+          </div>
+          <span class="coadmin-vote-status">${submitted ? 'Enviada' : 'Pendiente'}</span>
+        </div>
+        <div class="coadmin-vote-progress">
+          ${escapeHtml(vote.submitted_voter_count || 0)} / ${escapeHtml(vote.expected_voter_count || 0)} co-admins han votado
+        </div>
+        <div class="coadmin-vote-grid">
+          ${teams.map((team) => coadminVoteTeamInputHtml(team, vote.scores || {})).join('')}
+        </div>
+        <div class="coadmin-vote-actions">
+          <span class="coadmin-vote-message" data-coadmin-vote-message></span>
+          <button type="button" data-coadmin-vote-submit="${escapeHtml(vote.id)}">${submitted ? 'Actualizar voto' : 'Enviar voto'}</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+async function submitCoadminVote(voteId) {
+  const card = document.querySelector(`[data-coadmin-vote-card="${Number(voteId)}"]`);
+  if (!card) return;
+  const inputs = Array.from(card.querySelectorAll('[data-coadmin-vote-score]'));
+  const scores = {};
+  let invalid = false;
+  inputs.forEach((input) => {
+    const code = String(input.dataset.coadminVoteScore || '').trim().toUpperCase();
+    const value = Number(input.value);
+    if (!code || !Number.isInteger(value) || value < 1 || value > 100) {
+      invalid = true;
+      input.classList.add('is-invalid');
+      return;
+    }
+    input.classList.remove('is-invalid');
+    scores[code] = value;
+  });
+  const message = card.querySelector('[data-coadmin-vote-message]');
+  if (invalid || Object.keys(scores).length !== inputs.length) {
+    if (message) message.textContent = 'Completa todas las puntuaciones con números del 1 al 100.';
+    return;
+  }
+  const button = card.querySelector('[data-coadmin-vote-submit]');
+  const oldText = button?.textContent || '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Enviando...';
+  }
+  if (message) message.textContent = '';
+  try {
+    const result = await api(`/api/coadmin-votes/${voteId}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ scores }),
+    });
+    const updated = result.vote;
+    if (updated && Array.isArray(state.coadminVotes)) {
+      state.coadminVotes = state.coadminVotes.map((vote) => (
+        String(vote.id) === String(voteId) ? updated : vote
+      ));
+    }
+    syncCoadminVoteBadges();
+    renderCoadminVotes();
+  } catch (err) {
+    if (message) message.textContent = `No se pudo enviar: ${err.message}`;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+    }
+  }
+}
+
+async function loadCoadminVotes() {
+  setPageHeading('Votaciones', 'Tarjetas de co-admin');
+  setViewMode('coadmin-votes');
+  if (!isCoAdminRole(state.auth?.role)) {
+    state.coadminVotes = [];
+    renderCoadminVotes();
+    return;
+  }
+  const result = await api('/api/coadmin-votes');
+  state.coadminVotes = Array.isArray(result.votes) ? result.votes : [];
+  syncCoadminVoteBadges();
+  renderCoadminVotes();
+}
+
+async function refreshCoadminVoteRequests({ silent = true } = {}) {
+  if (!isCoAdminRole(state.auth?.role)) {
+    state.coadminVotes = [];
+    syncCoadminVoteBadges();
+    return;
+  }
+  try {
+    const result = await api('/api/coadmin-votes');
+    state.coadminVotes = Array.isArray(result.votes) ? result.votes : [];
+    syncCoadminVoteBadges();
+  } catch (err) {
+    if (!silent) throw err;
+  }
+}
+
 function renderFreeAgents() {
   const tbody = document.querySelector('#freeAgentsTable tbody');
   if (!tbody) return;
@@ -4938,7 +5125,7 @@ function canSelectDraftLivePick(row) {
     : Number(row?.id || 0) === Number(live.current_pick_id || 0);
   if (!isRequestable) return false;
   if (auth.role === 'admin') return true;
-  if (auth.role !== 'gm') return false;
+  if (!hasGmLevelRole(auth.role)) return false;
   const owned = String(row?.owner_team_code || '').trim().toUpperCase();
   const teamCodes = Array.isArray(auth.team_codes)
     ? auth.team_codes.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean)
@@ -5321,7 +5508,7 @@ function ownerOfficePerformanceTable(entry, season) {
 function ownerOfficeExitInterviewCard(entry, season) {
   if (!freeAgencyModeActive() || Number(season) !== currentSeasonStart()) return '';
   const auth = state.auth || {};
-  if (auth.role !== 'gm') return '';
+  if (!hasGmLevelRole(auth.role)) return '';
   const interview = entry?.exit_interview || { status: 'available' };
   const status = String(interview.status || 'available').toLowerCase();
   const completed = status === 'completed';
@@ -7291,6 +7478,7 @@ function setupMobileNav() {
   const leaguePlayersBtn = document.getElementById('mobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
   const tradeMachineBtn = document.getElementById('mobileTradeMachineBtn');
+  const coadminVotesBtn = document.getElementById('mobileCoadminVotesBtn');
   const mobileLogoutBtn = document.getElementById('mobileLogoutBtn');
   const infoBtn = document.getElementById('mobileInfoBtn');
   const infoCloseBtn = document.getElementById('mobileInfoCloseBtn');
@@ -7347,6 +7535,12 @@ function setupMobileNav() {
       await loadTradeMachine();
     });
   }
+  if (coadminVotesBtn) {
+    coadminVotesBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadCoadminVotes();
+    });
+  }
   if (mobileLogoutBtn) {
     mobileLogoutBtn.addEventListener('click', async () => {
       await api('/api/auth/logout', { method: 'POST', body: '{}' });
@@ -7399,6 +7593,14 @@ async function init() {
   document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
     await loadFreeAgents();
   });
+  document.getElementById('coadminVotesHomeBtn')?.addEventListener('click', async () => {
+    await loadCoadminVotes();
+  });
+  document.getElementById('coadminVotesBoard')?.addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-coadmin-vote-submit]');
+    if (!btn) return;
+    void submitCoadminVote(btn.dataset.coadminVoteSubmit);
+  });
   document.getElementById('freeAgentSearchInput')?.addEventListener('input', (event) => {
     state.ui.freeAgentSearch = String(event.target.value || '');
     renderFreeAgents();
@@ -7425,6 +7627,7 @@ async function init() {
 
   const teamsRes = await api('/api/teams');
   state.teams = teamsRes.teams;
+  await refreshCoadminVoteRequests();
   setupSorting();
   setupLocatorModal();
   setupMobileNav();
@@ -7452,7 +7655,7 @@ async function init() {
   setRosterView(initialRosterView, false);
   renderTeamStrip();
   renderMobileTeamGrid();
-  const initialTeam = readInitialTeamCode() || (state.auth?.role === 'gm' ? state.auth?.team_code : '');
+  const initialTeam = readInitialTeamCode() || (hasGmLevelRole(state.auth?.role) ? state.auth?.team_code : '');
   if (initialTeam && state.teams.some((t) => t.code === initialTeam)) {
     await loadTeam(initialTeam);
   } else {

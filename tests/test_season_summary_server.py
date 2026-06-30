@@ -326,7 +326,20 @@ class SeasonSummaryServerTests(unittest.TestCase):
         summary_before = team_before["season_summaries"]["2026"]
         self.assertGreater(round(float(summary_before["cap_figure"])), 0)
 
+        generated_free_agents = self.db.list_free_agents()
+        generated_agent = next(agent for agent in generated_free_agents if agent["name"] == "Bird Hold Player")
+        self.assertEqual("cap_hold", generated_agent["source"])
+        self.assertEqual("ATL", generated_agent["rights_team_code"])
+
+        player_before = self.db.get_player_record(int(player_id))
+        self.assertIsNotNone(player_before)
         self.assertTrue(self.db.update_player(int(player_id), {"salary_2026_text": None}))
+        renounced_free_agent_id = self.db.ensure_renounced_bird_rights_free_agent(
+            player_before,
+            2026,
+            "FB",
+        )
+        self.assertIsNotNone(renounced_free_agent_id)
         self.assertIsNotNone(
             self.db.mark_gm_option_request_decided(
                 int(request["id"]),
@@ -338,6 +351,13 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertIsNotNone(player_after)
         self.assertIsNone(player_after["salary_2026_text"])
         self.assertIsNone(player_after["salary_2026_num"])
+        free_agents = self.db.list_free_agents()
+        renounced_agent = next(agent for agent in free_agents if agent["name"] == "Bird Hold Player")
+        self.assertEqual(int(renounced_free_agent_id), int(renounced_agent["id"]))
+        self.assertEqual("renounced_rights", renounced_agent["source"])
+        self.assertEqual("No restringido", renounced_agent["free_agent_type"])
+        self.assertIsNone(renounced_agent["rights_team_code"])
+        self.assertIsNone(renounced_agent["bird_rights"])
 
     def test_progress_to_next_year_moves_players_without_new_year_contract_to_free_agents(self) -> None:
         self.db.update_setting("current_year", "2025")

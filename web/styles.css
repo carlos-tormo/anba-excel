@@ -4648,6 +4648,11 @@ th {
   background: rgba(var(--team-primary-rgb), 0.08);
   color: rgb(var(--team-primary-rgb));
 }
+.user-role-pill--co_admin {
+  border-color: rgba(124, 58, 237, 0.28);
+  background: #f5f3ff;
+  color: #6d28d9;
+}
 .user-role-pill--guest {
   border-color: #bfdbfe;
   background: #eff6ff;
@@ -4670,6 +4675,21 @@ th {
 }
 #adminUsersTable select {
   min-width: 220px;
+}
+
+.admin-user-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.admin-user-flag input {
+  width: 18px;
+  height: 18px;
+  accent-color: rgb(var(--team-primary-rgb));
 }
 
 .gm-request-action {
@@ -9300,6 +9320,194 @@ select[data-new-field="years_left"],
   .gm-timeline-table th,
   .gm-timeline-table td {
     padding: 7px;
+  }
+}
+
+.coadmin-votes-board,
+.coadmin-votes-admin-board {
+  display: grid;
+  gap: 18px;
+}
+
+.coadmin-vote-card {
+  background: #fff;
+  border: 1px solid #d7e2ef;
+  border-radius: 16px;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+  padding: 18px;
+}
+
+.coadmin-vote-head,
+.coadmin-vote-admin-actions,
+.coadmin-vote-actions,
+.coadmin-vote-result-team,
+.coadmin-vote-team-identity {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.coadmin-vote-head {
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.coadmin-vote-head h3 {
+  margin: 0 0 4px;
+}
+
+.coadmin-vote-head p,
+.coadmin-vote-progress {
+  color: #64748b;
+  font-weight: 700;
+  margin: 0;
+}
+
+.coadmin-vote-status {
+  background: #e0f2fe;
+  border: 1px solid #7dd3fc;
+  border-radius: 999px;
+  color: #075985;
+  font-weight: 900;
+  padding: 6px 10px;
+  text-transform: uppercase;
+}
+
+.coadmin-vote-status.is-closed {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+.coadmin-vote-progress {
+  margin-bottom: 14px;
+}
+
+.coadmin-vote-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.coadmin-vote-team {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #dbe3ef;
+  border-radius: 12px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px;
+}
+
+.coadmin-vote-team small {
+  color: #64748b;
+  display: block;
+  font-weight: 800;
+}
+
+.coadmin-vote-team input {
+  max-width: 86px;
+  text-align: center;
+}
+
+.coadmin-vote-team input.is-invalid {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+}
+
+.coadmin-vote-team-logo {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dbe3ef;
+  border-radius: 14px;
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  overflow: hidden;
+  width: 42px;
+}
+
+.coadmin-vote-team-logo img {
+  max-height: 34px;
+  max-width: 34px;
+}
+
+.coadmin-vote-team-logo span {
+  color: #0f766e;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.coadmin-vote-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.coadmin-vote-message {
+  color: #b91c1c;
+  flex: 1;
+  font-weight: 800;
+}
+
+.coadmin-vote-voters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+
+.coadmin-vote-voter {
+  background: #f8fafc;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  color: #64748b;
+  display: inline-flex;
+  gap: 6px;
+  padding: 6px 10px;
+  font-weight: 900;
+}
+
+.coadmin-vote-voter.is-submitted {
+  background: #ecfdf5;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.coadmin-vote-voter small {
+  color: inherit;
+}
+
+.coadmin-vote-results-wrap {
+  margin-top: 10px;
+}
+
+.coadmin-vote-results-table th,
+.coadmin-vote-results-table td {
+  white-space: nowrap;
+}
+
+.coadmin-vote-average {
+  color: #0f766e;
+  font-size: 1.15em;
+  font-weight: 1000;
+}
+
+@media (max-width: 720px) {
+  .coadmin-vote-card {
+    padding: 14px;
+  }
+  .coadmin-vote-head,
+  .coadmin-vote-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .coadmin-vote-grid {
+    grid-template-columns: 1fr;
+  }
+  .coadmin-vote-team {
+    gap: 8px;
   }
 }
 

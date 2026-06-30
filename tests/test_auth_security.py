@@ -1,10 +1,15 @@
+import os
+import sqlite3
+import tempfile
 import unittest
 
 from app.server import (
     Handler,
+    LeagueDB,
     pbkdf2_sha256_password_hash,
     verify_admin_password,
 )
+from app.xlsx_import import create_schema, now_iso
 
 
 def make_handler(headers=None):
@@ -18,6 +23,21 @@ def make_handler(headers=None):
     handler.allowed_origins = set()
     handler.pending_oauth_states = {}
     return handler
+
+
+def insert_team(conn: sqlite3.Connection, code: str, name: str) -> int:
+    now = now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO teams (
+            code, name, gm, cash_note, apron_hard_cap,
+            salary_cap, luxury_cap, first_apron, second_apron,
+            created_at, updated_at
+        ) VALUES (?, ?, NULL, NULL, NULL, 154647000, 187896105, 195945000, 207824000, ?, ?)
+        """,
+        (code, name, now, now),
+    )
+    return int(cur.lastrowid)
 
 
 class AuthSecurityTests(unittest.TestCase):
@@ -92,6 +112,44 @@ class AuthSecurityTests(unittest.TestCase):
         other = make_handler({"Cookie": "oauth_state=other-state"})
         other._store_oauth_state(state)
         self.assertFalse(other._oauth_state_ok(state))
+
+    def test_google_user_can_resolve_as_co_admin_without_full_admin_role(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="anba-auth-coadmin-", suffix=".db")
+        os.close(fd)
+        try:
+            with sqlite3.connect(path) as conn:
+                conn.row_factory = sqlite3.Row
+                create_schema(conn)
+                insert_team(conn, "ATL", "Atlanta Hawks")
+                conn.commit()
+
+            db = LeagueDB(path)
+            db.ensure_auth_schema()
+            user = db.upsert_google_user("google-coadmin", "co@example.com", "Co Admin", None)
+            updated = db.replace_user_team_assignments(user["id"], ["ATL"], is_co_admin=True)
+
+            self.assertIsNotNone(updated)
+            self.assertTrue(updated["is_co_admin"])
+            self.assertEqual(["ATL"], updated["team_codes"])
+
+            handler = make_handler()
+            handler.db = db
+            handler.admin_emails = {"admin@example.com"}
+            handler.gm_accounts = {}
+
+            role, team_codes = handler._google_role_for_email("co@example.com")
+            self.assertEqual("co_admin", role)
+            self.assertEqual(["ATL"], team_codes)
+            self.assertEqual("/?team=ATL", handler._landing_path_for_session(role, team_codes))
+
+            admin_role, admin_team_codes = handler._google_role_for_email("admin@example.com")
+            self.assertEqual("admin", admin_role)
+            self.assertEqual([], admin_team_codes)
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":

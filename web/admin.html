@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260629c">
+  <link rel="stylesheet" href="/styles.css?v=20260629d">
 </head>
 <body class="app-layout">
   <header>
@@ -42,7 +42,7 @@
         <button id="gmOptionRequestsBtn" class="sidebar-nav-item" type="button" data-nav-view="gm-option-requests">
           GM Requests <span id="gmOptionRequestsBadge" class="nav-badge" hidden>0</span>
         </button>
-        <button id="adminMenuBtn" class="sidebar-nav-item" type="button" data-nav-view="gm-option-requests admin-log admin-users admin-tools admin-settings">Admin Menu</button>
+        <button id="adminMenuBtn" class="sidebar-nav-item" type="button" data-nav-view="gm-option-requests coadmin-votes admin-log admin-users admin-tools admin-settings">Admin Menu</button>
       </div>
       <div class="sidebar-footer">
         <button id="logoutBtn" class="danger sidebar-nav-item" type="button">Logout</button>
@@ -71,6 +71,7 @@
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡" data-nav-view="admin-log">Admin Log</button>
         <button id="adminMobileUsersBtn" type="button" class="mobile-nav-btn" data-icon="☉" data-nav-view="admin-users">Users</button>
         <button id="adminMobileGmOptionRequestsBtn" type="button" class="mobile-nav-btn" data-icon="!" data-nav-view="gm-option-requests">GM Requests <span id="mobileGmOptionRequestsBadge" class="nav-badge" hidden>0</span></button>
+        <button id="adminMobileCoadminVotesBtn" type="button" class="mobile-nav-btn" data-icon="★" data-nav-view="coadmin-votes">Votaciones</button>
         <button id="adminMobileToolsBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="admin-tools">Admin Tools</button>
         <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙" data-nav-view="admin-settings">League Settings</button>
         <a href="/api/export/league.xlsx" class="mobile-nav-link" data-icon="⇩" download>Exportar datos</a>
@@ -102,6 +103,10 @@
       <button type="button" class="team-tab-btn admin-tab-btn" data-admin-tab-view="gm-option-requests" role="tab" aria-selected="false">
         <span class="team-tab-icon" aria-hidden="true">!</span>
         <span>Solicitudes</span>
+      </button>
+      <button type="button" class="team-tab-btn admin-tab-btn" data-admin-tab-view="coadmin-votes" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">★</span>
+        <span>Votaciones</span>
       </button>
       <button type="button" class="team-tab-btn admin-tab-btn" data-admin-tab-view="admin-tools" role="tab" aria-selected="false">
         <span class="team-tab-icon" aria-hidden="true">⇄</span>
@@ -140,6 +145,7 @@
           <option value="team_economy">team_economy</option>
           <option value="team_owner_office">team_owner_office</option>
           <option value="gm_option_request">gm_option_request</option>
+          <option value="coadmin_vote">coadmin_vote</option>
           <option value="asset">asset</option>
           <option value="dead_contract">dead_contract</option>
           <option value="team">team</option>
@@ -171,7 +177,7 @@
       <div class="section-head">
         <div>
           <h2>Users</h2>
-          <div class="section-subtitle">Signed-up Google users start as guests. Assign a team to enable GM access.</div>
+          <div class="section-subtitle">Signed-up Google users start as guests. Assign a team for GM access or mark Co-admin for elevated access.</div>
         </div>
         <div class="section-actions">
           <button id="refreshUsersBtn" type="button">Refresh Users</button>
@@ -183,6 +189,7 @@
             <tr>
               <th>User</th>
               <th>Role</th>
+              <th>Co-admin</th>
               <th>Team assignment</th>
               <th>Created</th>
               <th>Updated</th>
@@ -221,6 +228,29 @@
           <tbody></tbody>
         </table>
       </div>
+    </section>
+
+    <section id="coadminVotesSection" class="section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Votaciones de co-admins</h2>
+          <div class="section-subtitle">Crea tarjetas de voto, cierra votaciones y revisa los promedios por equipo.</div>
+        </div>
+        <div class="section-actions">
+          <button id="refreshCoadminVotesBtn" type="button">Refresh Votes</button>
+        </div>
+      </div>
+      <div class="admin-tool-card admin-tool-card-wide">
+        <div>
+          <h3>Nueva votación</h3>
+          <p>Los co-admins recibirán una tarjeta para puntuar del 1 al 100 a todos los equipos salvo el suyo.</p>
+        </div>
+        <div class="admin-tool-inline">
+          <input id="coadminVoteTitleInput" type="text" maxlength="140" placeholder="Ej: Valor de General Manager">
+          <button id="createCoadminVoteBtn" type="button">Crear votación</button>
+        </div>
+      </div>
+      <div id="coadminVotesAdminBoard" class="coadmin-votes-admin-board"></div>
     </section>
 
     <section id="adminToolsSection" class="section-hidden">
@@ -1228,6 +1258,6 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=20260629c" defer></script>
+  <script src="/admin.js?v=20260629d" defer></script>
 </body>
 </html>

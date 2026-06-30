@@ -21,6 +21,7 @@ const state = {
   offseasonExceptionChoices: {},
   adminUsers: [],
   gmOptionRequests: [],
+  coadminVotes: [],
   leaguePlayers: [],
   freeAgents: [],
   draftOrder: {
@@ -162,7 +163,7 @@ const TEAM_TABS = [
     sections: ['ownerOfficeSection'],
   },
 ];
-const ADMIN_VIEW_MODES = ['gm-option-requests', 'admin-tools', 'admin-users', 'admin-settings', 'admin-log'];
+const ADMIN_VIEW_MODES = ['gm-option-requests', 'coadmin-votes', 'admin-tools', 'admin-users', 'admin-settings', 'admin-log'];
 
 const OWNER_OFFICE_INCOME_ROWS = [
   { key: 'recaudacion', label: 'Recaudación', type: 'category' },
@@ -3806,6 +3807,7 @@ async function refreshAdminLogsSafe() {
 function formatUserRole(role) {
   const normalized = String(role || '').trim().toLowerCase();
   if (normalized === 'admin') return 'Admin';
+  if (normalized === 'co_admin') return 'Co-admin';
   if (normalized === 'gm') return 'GM';
   return 'Guest';
 }
@@ -3827,7 +3829,7 @@ function renderAdminUsers() {
   const users = state.adminUsers || [];
   tbody.innerHTML = '';
   if (!users.length) {
-    tbody.innerHTML = '<tr><td colspan="6">No signed-up users yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7">No signed-up users yet.</td></tr>';
     return;
   }
 
@@ -3838,6 +3840,8 @@ function renderAdminUsers() {
     const selectedTeam = user.team_code || teamCodes[0] || '';
     const created = user.created_at ? new Date(user.created_at).toLocaleString() : '';
     const updated = user.updated_at ? new Date(user.updated_at).toLocaleString() : '';
+    const isAdmin = String(user.role || '').toLowerCase() === 'admin';
+    const coAdminChecked = Boolean(user.is_co_admin);
     tr.dataset.adminUserId = String(userId);
     tr.innerHTML = `
       <td>
@@ -3845,6 +3849,12 @@ function renderAdminUsers() {
         <div class="muted">${escapeHtml(user.email || '')}</div>
       </td>
       <td><span class="user-role-pill user-role-pill--${escapeHtml(user.role || 'guest')}">${escapeHtml(formatUserRole(user.role))}</span></td>
+      <td>
+        <label class="admin-user-flag">
+          <input type="checkbox" data-admin-user-co-admin="${userId}" ${coAdminChecked ? 'checked' : ''} ${isAdmin ? 'disabled' : ''}>
+          <span>Co-admin</span>
+        </label>
+      </td>
       <td>
         <select data-admin-user-team="${userId}" aria-label="Team assignment for ${escapeHtml(user.email || 'user')}">
           ${adminUserTeamOptions(selectedTeam)}
@@ -4060,7 +4070,9 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
 async function saveAdminUserAccess(userId, button) {
   if (!Number.isInteger(userId) || userId <= 0) return;
   const select = document.querySelector(`[data-admin-user-team="${userId}"]`);
+  const coAdminInput = document.querySelector(`[data-admin-user-co-admin="${userId}"]`);
   const teamCode = String(select?.value || '').trim().toUpperCase();
+  const isCoAdmin = Boolean(coAdminInput?.checked);
   const originalText = button?.textContent || 'Save';
   if (button) {
     button.disabled = true;
@@ -4069,7 +4081,7 @@ async function saveAdminUserAccess(userId, button) {
   try {
     const result = await api(`/api/admin/users/${userId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ team_code: teamCode }),
+      body: JSON.stringify({ team_code: teamCode, is_co_admin: isCoAdmin }),
     });
     const updatedUser = result.user;
     if (updatedUser) {
@@ -4221,6 +4233,7 @@ function setViewMode(mode) {
   const showAdminLog = mode === 'admin-log';
   const showAdminUsers = mode === 'admin-users';
   const showGmOptionRequests = mode === 'gm-option-requests';
+  const showCoadminVotes = mode === 'coadmin-votes';
   const showAdminTools = mode === 'admin-tools';
   const showLeagueSettings = mode === 'admin-settings';
 
@@ -4242,6 +4255,7 @@ function setViewMode(mode) {
   toggleSection('adminLogsSection', !showAdminLog);
   toggleSection('adminUsersSection', !showAdminUsers);
   toggleSection('gmOptionRequestsSection', !showGmOptionRequests);
+  toggleSection('coadminVotesSection', !showCoadminVotes);
   toggleSection('adminToolsSection', !showAdminTools);
   toggleSection('rosterSection', !showTeam);
   toggleSection('deadContractsSection', !showTeam);
@@ -4290,6 +4304,11 @@ async function openAdminSection(mode = 'gm-option-requests') {
     await loadGmOptionRequests();
     return;
   }
+  if (normalizedMode === 'coadmin-votes') {
+    setPageHeading('Votaciones de co-admins', '');
+    await loadCoadminVotesAdmin();
+    return;
+  }
   if (normalizedMode === 'admin-tools') {
     setPageHeading('ANBA Admin Tools', '');
     renderOffseasonExceptionControls();
@@ -4319,6 +4338,134 @@ function setupAdminMenu() {
   gmRequestsBtn?.addEventListener('click', async () => {
     await openAdminSection('gm-option-requests');
   });
+}
+
+function coadminVoteTeamLogoHtml(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  const src = teamLogoCandidates(normalized)[0] || '';
+  if (!src) return `<span class="league-player-team-logo-fallback">${escapeHtml(normalized || '-')}</span>`;
+  return `
+    <span class="coadmin-vote-team-logo" title="${escapeHtml(normalized)}" aria-label="${escapeHtml(normalized)}">
+      <span>${escapeHtml(normalized)}</span>
+      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+    </span>
+  `;
+}
+
+function coadminVoteStatusLabel(status) {
+  return String(status || '').toLowerCase() === 'closed' ? 'Cerrada' : 'Abierta';
+}
+
+function renderCoadminVoteAverages(vote) {
+  const rows = Array.isArray(vote.averages) ? vote.averages : [];
+  if (!rows.length) return '<p class="muted">Todavía no hay equipos para mostrar.</p>';
+  return `
+    <div class="table-wrap coadmin-vote-results-wrap">
+      <table class="coadmin-vote-results-table">
+        <thead>
+          <tr>
+            <th>Equipo</th>
+            <th>Promedio</th>
+            <th>Votos</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => {
+            const average = row.average_score == null ? '-' : Number(row.average_score).toFixed(1);
+            return `
+              <tr>
+                <td>
+                  <span class="coadmin-vote-result-team">
+                    ${coadminVoteTeamLogoHtml(row.team_code)}
+                    <strong>${escapeHtml(row.team_code || '')}</strong>
+                    <span>${escapeHtml(row.team_name || '')}</span>
+                  </span>
+                </td>
+                <td class="coadmin-vote-average">${escapeHtml(average)}</td>
+                <td>${escapeHtml(row.vote_count || 0)}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderCoadminVoteVoters(vote) {
+  const voters = Array.isArray(vote.voters) ? vote.voters : [];
+  if (!voters.length) return '<p class="muted">No hay co-admins configurados todavía.</p>';
+  return `
+    <div class="coadmin-vote-voters">
+      ${voters.map((voter) => `
+        <span class="coadmin-vote-voter ${voter.submitted ? 'is-submitted' : ''}">
+          ${escapeHtml(voter.display_name || voter.email || 'Co-admin')}
+          ${Array.isArray(voter.team_codes) && voter.team_codes.length ? `<small>${escapeHtml(voter.team_codes.join('/'))}</small>` : ''}
+        </span>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderCoadminVotesAdmin() {
+  const board = document.getElementById('coadminVotesAdminBoard');
+  if (!board) return;
+  const votes = Array.isArray(state.coadminVotes) ? state.coadminVotes : [];
+  if (!votes.length) {
+    board.innerHTML = '<article class="coadmin-vote-card"><p class="muted">No hay votaciones creadas todavía.</p></article>';
+    return;
+  }
+  board.innerHTML = votes.map((vote) => {
+    const status = String(vote.status || 'open').toLowerCase();
+    const nextStatus = status === 'closed' ? 'open' : 'closed';
+    return `
+      <article class="coadmin-vote-card coadmin-vote-admin-card">
+        <div class="coadmin-vote-head">
+          <div>
+            <h3>${escapeHtml(vote.title || 'Votación')}</h3>
+            <p>${escapeHtml(vote.submitted_voter_count || 0)} / ${escapeHtml(vote.expected_voter_count || 0)} co-admins han votado</p>
+          </div>
+          <div class="coadmin-vote-admin-actions">
+            <span class="coadmin-vote-status ${status === 'closed' ? 'is-closed' : ''}">${escapeHtml(coadminVoteStatusLabel(status))}</span>
+            <button type="button" data-coadmin-vote-status="${escapeHtml(vote.id)}" data-status="${escapeHtml(nextStatus)}">
+              ${status === 'closed' ? 'Reabrir' : 'Cerrar'}
+            </button>
+          </div>
+        </div>
+        ${renderCoadminVoteVoters(vote)}
+        ${renderCoadminVoteAverages(vote)}
+      </article>
+    `;
+  }).join('');
+}
+
+async function loadCoadminVotesAdmin() {
+  const result = await api('/api/admin/coadmin-votes');
+  state.coadminVotes = Array.isArray(result.votes) ? result.votes : [];
+  renderCoadminVotesAdmin();
+}
+
+async function createCoadminVote() {
+  const input = document.getElementById('coadminVoteTitleInput');
+  const title = String(input?.value || '').trim();
+  if (!title) {
+    alert('Escribe un nombre para la votación.');
+    return;
+  }
+  await api('/api/admin/coadmin-votes', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+  if (input) input.value = '';
+  await loadCoadminVotesAdmin();
+}
+
+async function setCoadminVoteStatus(voteId, status) {
+  await api(`/api/admin/coadmin-votes/${voteId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+  await loadCoadminVotesAdmin();
 }
 
 function offseasonExceptionSeasonOptions() {
@@ -4722,6 +4869,7 @@ function setupAdminMobileNav() {
   const logBtn = document.getElementById('adminMobileLogBtn');
   const usersBtn = document.getElementById('adminMobileUsersBtn');
   const gmRequestsBtn = document.getElementById('adminMobileGmOptionRequestsBtn');
+  const coadminVotesBtn = document.getElementById('adminMobileCoadminVotesBtn');
   const toolsBtn = document.getElementById('adminMobileToolsBtn');
   const settingsBtn = document.getElementById('adminMobileSettingsBtn');
   const logoutBtn = document.getElementById('adminMobileLogoutBtn');
@@ -4788,6 +4936,12 @@ function setupAdminMobileNav() {
     gmRequestsBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
       await openAdminSection('gm-option-requests');
+    });
+  }
+  if (coadminVotesBtn) {
+    coadminVotesBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      await openAdminSection('coadmin-votes');
     });
   }
   if (toolsBtn) {
@@ -11075,6 +11229,18 @@ async function init() {
   document.getElementById('refreshLogsBtn').addEventListener('click', () => { void loadAdminLogs(); });
   document.getElementById('refreshUsersBtn')?.addEventListener('click', () => { void loadAdminUsers(); });
   document.getElementById('refreshGmOptionRequestsBtn')?.addEventListener('click', () => { void loadGmOptionRequests(); });
+  document.getElementById('refreshCoadminVotesBtn')?.addEventListener('click', () => { void loadCoadminVotesAdmin(); });
+  document.getElementById('createCoadminVoteBtn')?.addEventListener('click', () => { void createCoadminVote(); });
+  document.getElementById('coadminVoteTitleInput')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    void createCoadminVote();
+  });
+  document.getElementById('coadminVotesAdminBoard')?.addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-coadmin-vote-status]');
+    if (!btn) return;
+    void setCoadminVoteStatus(btn.dataset.coadminVoteStatus, btn.dataset.status);
+  });
   await loadGmOptionRequests();
 
   document.getElementById('reloadBtn').addEventListener('click', async () => {

@@ -160,6 +160,7 @@ DRAFT_LIVE_MAX_PENDING_REQUESTS = 2
 FREE_AGENT_TYPE_UNRESTRICTED = "No restringido"
 FREE_AGENT_TYPE_RESTRICTED = "Restringido"
 FREE_AGENT_SOURCE_CAP_HOLD = "cap_hold"
+FREE_AGENT_SOURCE_RENOUNCED_RIGHTS = "renounced_rights"
 PLAYER_CONTRACT_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030]
 CONTRACT_TERMINATING_OPTION_VALUES = {"TO", "PO"}
 OWNER_SEASON_OBJECTIVES = [
@@ -1029,6 +1030,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     email TEXT UNIQUE,
                     display_name TEXT,
                     avatar_url TEXT,
+                    is_co_admin INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -1148,6 +1150,48 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_gm_free_agent_offer_requests_pending_unique
                 ON gm_free_agent_offer_requests (free_agent_id, team_id)
                 WHERE status = 'pending'
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS coadmin_votes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_by_email TEXT,
+                    created_by_name TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    closed_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_coadmin_votes_status
+                ON coadmin_votes (status, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS coadmin_vote_scores (
+                    vote_id INTEGER NOT NULL REFERENCES coadmin_votes(id) ON DELETE CASCADE,
+                    voter_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    voter_email TEXT,
+                    voter_name TEXT,
+                    voter_team_code TEXT,
+                    target_team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    score INTEGER NOT NULL CHECK(score >= 1 AND score <= 100),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (vote_id, voter_user_id, target_team_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_coadmin_vote_scores_vote
+                ON coadmin_vote_scores (vote_id)
                 """
             )
             conn.execute(
@@ -1683,6 +1727,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(admin_logs)").fetchall()
             }
+            user_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "is_co_admin" not in user_cols:
+                conn.execute("ALTER TABLE users ADD COLUMN is_co_admin INTEGER NOT NULL DEFAULT 0")
             admin_log_add_columns = {
                 "actor_role": "TEXT",
                 "actor_user_id": "INTEGER",
@@ -3059,6 +3109,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     u.email,
                     u.display_name,
                     u.avatar_url,
+                    COALESCE(u.is_co_admin, 0) AS is_co_admin,
                     u.created_at,
                     u.updated_at,
                     GROUP_CONCAT(t.code, ',') AS team_codes
@@ -3073,10 +3124,42 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for row in cur.fetchall():
                 item = row_to_dict(cur, row)
                 item["team_codes"] = normalize_team_codes(item.get("team_codes"))
+                item["is_co_admin"] = bool(parse_bool(item.get("is_co_admin")))
                 rows.append(item)
             return rows
 
-    def replace_user_team_assignments(self, user_id: int, team_codes: Any) -> Optional[Dict[str, Any]]:
+    def user_access_for_email(self, email: str) -> Dict[str, Any]:
+        normalized = str(email or "").strip().lower()
+        if not normalized:
+            return {"team_codes": [], "is_co_admin": False}
+        with self.connect() as conn:
+            user_row = conn.execute(
+                "SELECT id, COALESCE(is_co_admin, 0) AS is_co_admin FROM users WHERE lower(email) = ?",
+                (normalized,),
+            ).fetchone()
+            if not user_row:
+                return {"team_codes": [], "is_co_admin": False}
+            rows = conn.execute(
+                """
+                SELECT t.code
+                FROM user_team_assignments a
+                JOIN teams t ON t.id = a.team_id
+                WHERE a.user_id = ?
+                ORDER BY t.code
+                """,
+                (int(user_row["id"]),),
+            ).fetchall()
+            return {
+                "team_codes": [str(row["code"]).upper() for row in rows],
+                "is_co_admin": bool(parse_bool(user_row["is_co_admin"])),
+            }
+
+    def replace_user_team_assignments(
+        self,
+        user_id: int,
+        team_codes: Any,
+        is_co_admin: Optional[bool] = None,
+    ) -> Optional[Dict[str, Any]]:
         normalized_codes = normalize_team_codes(team_codes)
         timestamp = now_iso()
         with self.connect() as conn:
@@ -3106,10 +3189,330 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     """,
                     (int(user_id), int(team_row["id"]), timestamp, timestamp),
                 )
-            conn.execute("UPDATE users SET updated_at = ? WHERE id = ?", (timestamp, int(user_id)))
+            if is_co_admin is None:
+                conn.execute("UPDATE users SET updated_at = ? WHERE id = ?", (timestamp, int(user_id)))
+            else:
+                conn.execute(
+                    "UPDATE users SET is_co_admin = ?, updated_at = ? WHERE id = ?",
+                    (1 if parse_bool(is_co_admin) else 0, timestamp, int(user_id)),
+                )
             conn.commit()
 
         return next((user for user in self.list_users() if int(user.get("id") or 0) == int(user_id)), None)
+
+    def _coadmin_vote_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
+        item = row_to_dict(cursor, row)
+        item["id"] = parse_int(item.get("id"))
+        item["status"] = str(item.get("status") or "open").strip().lower() or "open"
+        return item
+
+    def _coadmin_expected_voters(self, conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT
+                u.id,
+                u.email,
+                u.display_name,
+                GROUP_CONCAT(t.code, ',') AS team_codes
+            FROM users u
+            LEFT JOIN user_team_assignments a ON a.user_id = u.id
+            LEFT JOIN teams t ON t.id = a.team_id
+            WHERE COALESCE(u.is_co_admin, 0) = 1
+            GROUP BY u.id
+            ORDER BY lower(u.email)
+            """
+        ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "email": row["email"],
+                "display_name": row["display_name"],
+                "team_codes": normalize_team_codes(row["team_codes"]),
+            }
+            for row in rows
+        ]
+
+    def create_coadmin_vote(self, title: Any, actor: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        cleaned_title = str(title or "").strip()
+        if not cleaned_title:
+            raise ValueError("title_required")
+        if len(cleaned_title) > 140:
+            raise ValueError("title_too_long")
+        actor = actor or {}
+        timestamp = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO coadmin_votes (
+                    title, status, created_by_email, created_by_name, created_at, updated_at
+                ) VALUES (?, 'open', ?, ?, ?, ?)
+                """,
+                (
+                    cleaned_title,
+                    str(actor.get("email") or "").strip() or None,
+                    str(actor.get("name") or "").strip() or None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            conn.commit()
+            vote_id = int(cur.lastrowid)
+        vote = self.get_coadmin_vote(vote_id)
+        if not vote:
+            raise RuntimeError("Failed to create co-admin vote")
+        return vote
+
+    def get_coadmin_vote(self, vote_id: Any) -> Optional[Dict[str, Any]]:
+        parsed_id = parse_int(vote_id)
+        if parsed_id is None:
+            return None
+        with self.connect() as conn:
+            cur = conn.execute("SELECT * FROM coadmin_votes WHERE id = ?", (parsed_id,))
+            row = cur.fetchone()
+            return self._coadmin_vote_from_row(cur, row) if row else None
+
+    def set_coadmin_vote_status(
+        self,
+        vote_id: Any,
+        status: Any,
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        parsed_id = parse_int(vote_id)
+        normalized_status = str(status or "").strip().lower()
+        if parsed_id is None:
+            raise ValueError("invalid_vote_id")
+        if normalized_status not in {"open", "closed"}:
+            raise ValueError("invalid_status")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            existing = conn.execute("SELECT id FROM coadmin_votes WHERE id = ?", (parsed_id,)).fetchone()
+            if not existing:
+                return None
+            conn.execute(
+                """
+                UPDATE coadmin_votes
+                SET status = ?,
+                    updated_at = ?,
+                    closed_at = CASE WHEN ? = 'closed' THEN ? ELSE NULL END
+                WHERE id = ?
+                """,
+                (normalized_status, timestamp, normalized_status, timestamp, parsed_id),
+            )
+            conn.commit()
+        return self.get_coadmin_vote(parsed_id)
+
+    def list_admin_coadmin_votes(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            expected_voters = self._coadmin_expected_voters(conn)
+            expected_count = len(expected_voters)
+            vote_cur = conn.execute(
+                """
+                SELECT *
+                FROM coadmin_votes
+                ORDER BY
+                    CASE status WHEN 'open' THEN 0 ELSE 1 END,
+                    datetime(created_at) DESC,
+                    id DESC
+                """
+            )
+            votes = [self._coadmin_vote_from_row(vote_cur, row) for row in vote_cur.fetchall()]
+            teams = [dict(row) for row in conn.execute("SELECT id, code, name FROM teams ORDER BY code").fetchall()]
+            for vote in votes:
+                vote_id = int(vote["id"] or 0)
+                submitted_rows = conn.execute(
+                    """
+                    SELECT DISTINCT voter_user_id
+                    FROM coadmin_vote_scores
+                    WHERE vote_id = ?
+                    """,
+                    (vote_id,),
+                ).fetchall()
+                submitted_ids = {int(row["voter_user_id"]) for row in submitted_rows}
+                avg_rows = conn.execute(
+                    """
+                    SELECT
+                        t.id AS team_id,
+                        t.code AS team_code,
+                        t.name AS team_name,
+                        COUNT(s.score) AS vote_count,
+                        AVG(s.score) AS average_score
+                    FROM teams t
+                    LEFT JOIN coadmin_vote_scores s
+                        ON s.target_team_id = t.id
+                       AND s.vote_id = ?
+                    GROUP BY t.id
+                    ORDER BY t.code
+                    """,
+                    (vote_id,),
+                ).fetchall()
+                averages = []
+                for row in avg_rows:
+                    average_score = row["average_score"]
+                    averages.append(
+                        {
+                            "team_id": int(row["team_id"]),
+                            "team_code": row["team_code"],
+                            "team_name": row["team_name"],
+                            "vote_count": int(row["vote_count"] or 0),
+                            "average_score": round(float(average_score), 2) if average_score is not None else None,
+                        }
+                    )
+                averages.sort(
+                    key=lambda item: (
+                        item["average_score"] is None,
+                        -(item["average_score"] or 0),
+                        str(item["team_code"] or ""),
+                    )
+                )
+                vote["expected_voter_count"] = expected_count
+                vote["submitted_voter_count"] = len(submitted_ids)
+                vote["all_submitted"] = expected_count > 0 and len(submitted_ids) >= expected_count
+                vote["averages"] = averages
+                vote["voters"] = [
+                    {
+                        **voter,
+                        "submitted": int(voter["id"]) in submitted_ids,
+                    }
+                    for voter in expected_voters
+                ]
+                vote["teams"] = teams
+            return votes
+
+    def list_coadmin_votes_for_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        user_id = parse_int(session.get("user_id"))
+        role = str(session.get("role") or "").strip().lower()
+        if user_id is None or role != "co_admin":
+            return {"votes": [], "own_team_codes": []}
+        own_team_codes = normalize_team_codes(session.get("team_codes"))
+        with self.connect() as conn:
+            team_rows = conn.execute("SELECT id, code, name FROM teams ORDER BY code").fetchall()
+            target_teams = [
+                {"id": int(row["id"]), "code": row["code"], "name": row["name"]}
+                for row in team_rows
+                if str(row["code"] or "").strip().upper() not in own_team_codes
+            ]
+            vote_cur = conn.execute(
+                """
+                SELECT *
+                FROM coadmin_votes
+                WHERE status = 'open'
+                ORDER BY datetime(created_at) DESC, id DESC
+                """
+            )
+            votes = [self._coadmin_vote_from_row(vote_cur, row) for row in vote_cur.fetchall()]
+            expected_count = len(self._coadmin_expected_voters(conn))
+            for vote in votes:
+                vote_id = int(vote["id"] or 0)
+                score_rows = conn.execute(
+                    """
+                    SELECT t.code AS team_code, s.score
+                    FROM coadmin_vote_scores s
+                    JOIN teams t ON t.id = s.target_team_id
+                    WHERE s.vote_id = ? AND s.voter_user_id = ?
+                    """,
+                    (vote_id, user_id),
+                ).fetchall()
+                scores = {str(row["team_code"]).upper(): int(row["score"]) for row in score_rows}
+                submitted_count = conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT voter_user_id)
+                    FROM coadmin_vote_scores
+                    WHERE vote_id = ?
+                    """,
+                    (vote_id,),
+                ).fetchone()[0]
+                vote["target_teams"] = target_teams
+                vote["scores"] = scores
+                vote["submitted"] = len(scores) >= len(target_teams) and len(target_teams) > 0
+                vote["submitted_voter_count"] = int(submitted_count or 0)
+                vote["expected_voter_count"] = expected_count
+            return {"votes": votes, "own_team_codes": own_team_codes}
+
+    def submit_coadmin_vote(
+        self,
+        vote_id: Any,
+        scores: Any,
+        session: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        parsed_vote_id = parse_int(vote_id)
+        user_id = parse_int(session.get("user_id"))
+        if parsed_vote_id is None:
+            raise ValueError("invalid_vote_id")
+        if user_id is None or str(session.get("role") or "").strip().lower() != "co_admin":
+            raise ValueError("coadmin_required")
+        if not isinstance(scores, dict):
+            raise ValueError("scores_required")
+        own_team_codes = normalize_team_codes(session.get("team_codes"))
+        with self.connect() as conn:
+            vote_row = conn.execute("SELECT id, status FROM coadmin_votes WHERE id = ?", (parsed_vote_id,)).fetchone()
+            if not vote_row:
+                raise ValueError("vote_not_found")
+            if str(vote_row["status"] or "").lower() != "open":
+                raise ValueError("vote_closed")
+
+            team_rows = conn.execute("SELECT id, code FROM teams ORDER BY code").fetchall()
+            team_by_code = {str(row["code"]).upper(): int(row["id"]) for row in team_rows}
+            target_codes = [code for code in team_by_code if code not in own_team_codes]
+            normalized_scores: Dict[str, int] = {}
+            for raw_code, raw_score in scores.items():
+                code = normalize_team_code(raw_code)
+                if not code or code not in team_by_code:
+                    raise ValueError("invalid_team_code")
+                if code in own_team_codes:
+                    raise ValueError("own_team_score_not_allowed")
+                score = parse_int(raw_score)
+                if score is None or score < 1 or score > 100:
+                    raise ValueError("invalid_score")
+                normalized_scores[code] = int(score)
+            missing = [code for code in target_codes if code not in normalized_scores]
+            extra = [code for code in normalized_scores if code not in target_codes]
+            if missing:
+                raise ValueError(f"missing_scores:{','.join(missing)}")
+            if extra:
+                raise ValueError("invalid_score_targets")
+
+            timestamp = now_iso()
+            voter_email = str(session.get("email") or "").strip() or None
+            voter_name = str(session.get("name") or "").strip() or None
+            voter_team_code = own_team_codes[0] if own_team_codes else None
+            for code, score in normalized_scores.items():
+                conn.execute(
+                    """
+                    INSERT INTO coadmin_vote_scores (
+                        vote_id,
+                        voter_user_id,
+                        voter_email,
+                        voter_name,
+                        voter_team_code,
+                        target_team_id,
+                        score,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(vote_id, voter_user_id, target_team_id)
+                    DO UPDATE SET
+                        voter_email = excluded.voter_email,
+                        voter_name = excluded.voter_name,
+                        voter_team_code = excluded.voter_team_code,
+                        score = excluded.score,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        parsed_vote_id,
+                        user_id,
+                        voter_email,
+                        voter_name,
+                        voter_team_code,
+                        team_by_code[code],
+                        score,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            conn.execute("UPDATE coadmin_votes SET updated_at = ? WHERE id = ?", (timestamp, parsed_vote_id))
+            conn.commit()
+        refreshed = self.list_coadmin_votes_for_session(session)
+        return next((vote for vote in refreshed.get("votes", []) if int(vote.get("id") or 0) == parsed_vote_id), {})
 
     def _gm_option_request_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
         item = row_to_dict(cursor, row)
@@ -9368,6 +9771,124 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return FREE_AGENT_TYPE_RESTRICTED
         return FREE_AGENT_TYPE_UNRESTRICTED
 
+    def ensure_renounced_bird_rights_free_agent(
+        self,
+        player: Dict[str, Any],
+        season_year: int,
+        rights_value: str,
+    ) -> Optional[int]:
+        season = parse_int(season_year)
+        rights = str(rights_value or "").strip().upper()
+        if season is None or rights not in {"FB", "EB", "NB"}:
+            return None
+
+        timestamp = now_iso()
+        with self.connect() as conn:
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            current_year = parse_int(settings.get("current_year")) or 2025
+            if not parse_bool(settings.get("free_agency_mode")) or int(season) != int(current_year) + 1:
+                return None
+
+            player_id = parse_int(player.get("id"))
+            profile_id = parse_int(player.get("profile_id"))
+            if profile_id is None and player_id is not None:
+                profile_id = self._ensure_profile_for_player(conn, int(player_id), timestamp)
+            if profile_id is None:
+                return None
+
+            team_code = normalize_team_code(player.get("team_code"))
+            name = (
+                str(player.get("profile_name") or player.get("name") or "Agente libre").strip()
+                or "Agente libre"
+            )
+            default_notes = (
+                f"Derechos Bird renunciados por {team_code or 'el equipo'} "
+                f"para {season_label(int(season))}."
+            )
+            existing = conn.execute(
+                "SELECT id, notes FROM free_agents WHERE profile_id = ? LIMIT 1",
+                (int(profile_id),),
+            ).fetchone()
+            if existing:
+                free_agent_id = int(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE free_agents
+                    SET name = ?,
+                        position = ?,
+                        bird_rights = NULL,
+                        rating = ?,
+                        years_left = ?,
+                        free_agent_type = ?,
+                        source = ?,
+                        rights_team_code = NULL,
+                        notes = CASE
+                            WHEN notes IS NULL
+                                OR TRIM(notes) = ''
+                                OR notes LIKE 'Cap hold retenido por %'
+                                OR notes LIKE 'Derechos Bird renunciados por %'
+                            THEN ?
+                            ELSE notes
+                        END,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        name,
+                        str(player.get("position") or "").strip() or None,
+                        str(player.get("rating") or "").strip() or None,
+                        normalize_bird_years(player.get("years_left")),
+                        FREE_AGENT_TYPE_UNRESTRICTED,
+                        FREE_AGENT_SOURCE_RENOUNCED_RIGHTS,
+                        default_notes,
+                        timestamp,
+                        free_agent_id,
+                    ),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    INSERT INTO free_agents (
+                        profile_id, name, position, bird_rights, rating, years_left,
+                        free_agent_type, source, rights_team_code, notes, created_at, updated_at
+                    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?)
+                    """,
+                    (
+                        int(profile_id),
+                        name,
+                        str(player.get("position") or "").strip() or None,
+                        str(player.get("rating") or "").strip() or None,
+                        normalize_bird_years(player.get("years_left")),
+                        FREE_AGENT_TYPE_UNRESTRICTED,
+                        FREE_AGENT_SOURCE_RENOUNCED_RIGHTS,
+                        default_notes,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                free_agent_id = int(cur.lastrowid)
+
+            self._record_player_transaction(
+                conn,
+                profile_id,
+                "free_agent",
+                f"{team_code or 'Equipo'} renuncia los derechos {rights} de {name} para {season_label(int(season))}",
+                player_id=player_id,
+                free_agent_id=free_agent_id,
+                team_code=team_code,
+                from_team_code=team_code,
+                details={
+                    "player_name": name,
+                    "season_year": int(season),
+                    "rights_value": rights,
+                    "source": FREE_AGENT_SOURCE_RENOUNCED_RIGHTS,
+                },
+                created_at=timestamp,
+            )
+            conn.commit()
+            return free_agent_id
+
     def _sync_cap_hold_free_agents(self, conn: sqlite3.Connection, settings: Dict[str, str]) -> int:
         timestamp = now_iso()
         if not parse_bool(settings.get("free_agency_mode")):
@@ -12517,7 +13038,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _is_gm(self) -> bool:
         sess = self._current_session()
-        return bool(sess and sess.get("role") == "gm")
+        return bool(sess and sess.get("role") in {"gm", "co_admin"})
 
     def _current_session_team_codes(self) -> List[str]:
         sess = self._current_session() or {}
@@ -12751,7 +13272,10 @@ class Handler(SimpleHTTPRequestHandler):
         normalized = str(email or "").strip().lower()
         if normalized in self.admin_emails:
             return "admin", []
-        db_team_codes = self.db.get_user_team_codes_by_email(normalized)
+        db_access = self.db.user_access_for_email(normalized)
+        db_team_codes = normalize_team_codes(db_access.get("team_codes"))
+        if parse_bool(db_access.get("is_co_admin")):
+            return "co_admin", db_team_codes
         if db_team_codes:
             return "gm", db_team_codes
         team_codes = self.gm_accounts.get(normalized, [])
@@ -12762,7 +13286,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _landing_path_for_session(self, role: Any, team_codes: Optional[List[str]] = None) -> str:
         if role == "admin":
             return "/admin"
-        if role == "gm":
+        if role in {"gm", "co_admin"}:
             team_code = (team_codes or [None])[0]
             if team_code:
                 return f"/?team={team_code}"
@@ -14897,7 +15421,13 @@ QUALITY REQUIREMENTS
             for user in users:
                 email = str(user.get("email") or "").strip().lower()
                 team_codes = normalize_team_codes(user.get("team_codes"))
-                user["role"] = "admin" if email in self.admin_emails else ("gm" if team_codes else "guest")
+                is_co_admin = bool(parse_bool(user.get("is_co_admin")))
+                user["is_co_admin"] = is_co_admin
+                user["role"] = (
+                    "admin"
+                    if email in self.admin_emails
+                    else ("co_admin" if is_co_admin else ("gm" if team_codes else "guest"))
+                )
                 user["team_code"] = team_codes[0] if team_codes else None
                 user["team_codes"] = team_codes
             self._json(200, {"users": users})
@@ -14909,6 +15439,22 @@ QUALITY REQUIREMENTS
             qs = parse_qs(parsed.query)
             status = (qs.get("status") or ["pending"])[0].strip().lower() or "pending"
             self._json(200, {"requests": self.db.list_gm_option_requests(status=status)})
+            return
+
+        if parsed.path == "/api/admin/coadmin-votes":
+            if not self._require_admin():
+                return
+            self._json(200, {"votes": self.db.list_admin_coadmin_votes()})
+            return
+
+        if parsed.path == "/api/coadmin-votes":
+            if not self._require_authenticated():
+                return
+            session = self._current_session() or {}
+            if str(session.get("role") or "").strip().lower() != "co_admin":
+                self._json(403, {"error": "coadmin_required"})
+                return
+            self._json(200, self.db.list_coadmin_votes_for_session(session))
             return
 
         if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/owner-office"):
@@ -15400,6 +15946,33 @@ QUALITY REQUIREMENTS
                 self._json(200, {"ok": True, "discord_sent": sent, "agent_discord_configured": bool(agent_discord_id)})
                 return
 
+        if parsed.path.startswith("/api/coadmin-votes/") and parsed.path.endswith("/submit"):
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            session = self._current_session() or {}
+            if str(session.get("role") or "").strip().lower() != "co_admin":
+                self._json(403, {"error": "coadmin_required"})
+                return
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            vote_id = parse_int(parts[2])
+            if vote_id is None:
+                self._json(400, {"error": "invalid_vote_id"})
+                return
+            try:
+                vote = self.db.submit_coadmin_vote(vote_id, payload.get("scores"), session)
+            except ValueError as err:
+                message = str(err) or "invalid_vote"
+                status = 409 if message in {"vote_closed", "vote_not_found"} or message.startswith("missing_scores:") else 400
+                self._json(status, {"error": message})
+                return
+            self._json(200, {"ok": True, "vote": vote})
+            return
+
         if parsed.path.startswith("/api/teams/") and "/owner-exit-interview/" in parsed.path:
             parts = parsed.path.split("/")
             if len(parts) < 6:
@@ -15507,6 +16080,22 @@ QUALITY REQUIREMENTS
         if not self._require_csrf():
             return
         if not self._require_sensitive_rate_limit("admin_post"):
+            return
+
+        if parsed.path == "/api/admin/coadmin-votes":
+            try:
+                vote = self.db.create_coadmin_vote(payload.get("title"), self._current_session() or {})
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_vote"})
+                return
+            self._log_admin_action(
+                "create",
+                "coadmin_vote",
+                str(vote.get("id")),
+                None,
+                {"title": vote.get("title")},
+            )
+            self._json(201, {"ok": True, "vote": vote})
             return
 
         if parsed.path == "/api/offseason-exceptions/generate":
@@ -16244,6 +16833,29 @@ QUALITY REQUIREMENTS
             self._json(200, {"ok": True, **result})
             return
 
+        if parsed.path.startswith("/api/admin/coadmin-votes/"):
+            vote_id = parse_int(parsed.path.split("/")[-1])
+            if vote_id is None:
+                self._json(400, {"error": "invalid_vote_id"})
+                return
+            try:
+                vote = self.db.set_coadmin_vote_status(vote_id, payload.get("status"), self._current_session() or {})
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_vote"})
+                return
+            if not vote:
+                self._json(404, {"error": "vote_not_found"})
+                return
+            self._log_admin_action(
+                "update",
+                "coadmin_vote",
+                str(vote_id),
+                None,
+                {"status": vote.get("status"), "title": vote.get("title")},
+            )
+            self._json(200, {"ok": True, "vote": vote})
+            return
+
         if parsed.path.startswith("/api/admin/gm-draft-pick-requests/"):
             try:
                 request_id = int(parsed.path.split("/")[-1])
@@ -16551,6 +17163,11 @@ QUALITY REQUIREMENTS
                 if not ok:
                     self._json(404, {"error": "player_not_found"})
                     return
+                renounced_free_agent_id = self.db.ensure_renounced_bird_rights_free_agent(
+                    player_before,
+                    action_season,
+                    option_value,
+                )
                 player_after = self.db.get_player_record(player_id)
                 updated = self.db.mark_gm_option_request_decided(
                     request_id,
@@ -16574,6 +17191,7 @@ QUALITY REQUIREMENTS
                         "rights_value": option_value,
                         "rights_season": action_season,
                         "applied_fields": sorted(player_payload.keys()),
+                        "free_agent_id": renounced_free_agent_id,
                     },
                     before={"request": request, "player": player_before},
                     after={"request": updated, "player": player_after},
@@ -16697,8 +17315,9 @@ QUALITY REQUIREMENTS
             if team_codes is None:
                 self._json(400, {"error": "team_codes_required"})
                 return
+            is_co_admin = parse_bool(payload.get("is_co_admin")) if "is_co_admin" in payload else None
             try:
-                user = self.db.replace_user_team_assignments(user_id, team_codes)
+                user = self.db.replace_user_team_assignments(user_id, team_codes, is_co_admin=is_co_admin)
             except ValueError as err:
                 message = str(err)
                 if message.startswith("invalid_team_code:"):
@@ -16710,7 +17329,13 @@ QUALITY REQUIREMENTS
                 return
             assigned_codes = normalize_team_codes(user.get("team_codes"))
             email = str(user.get("email") or "").strip().lower()
-            user["role"] = "admin" if email in self.admin_emails else ("gm" if assigned_codes else "guest")
+            is_co_admin_response = bool(parse_bool(user.get("is_co_admin")))
+            user["is_co_admin"] = is_co_admin_response
+            user["role"] = (
+                "admin"
+                if email in self.admin_emails
+                else ("co_admin" if is_co_admin_response else ("gm" if assigned_codes else "guest"))
+            )
             user["team_code"] = assigned_codes[0] if assigned_codes else None
             user["team_codes"] = assigned_codes
             self._log_admin_action(
@@ -16718,7 +17343,7 @@ QUALITY REQUIREMENTS
                 "user_access",
                 str(user_id),
                 assigned_codes[0] if assigned_codes else None,
-                {"email": user.get("email"), "team_codes": assigned_codes},
+                {"email": user.get("email"), "team_codes": assigned_codes, "is_co_admin": is_co_admin_response},
             )
             self._json(200, {"ok": True, "user": user})
             return
@@ -17082,27 +17707,6 @@ QUALITY REQUIREMENTS
             self._json(200 if ok else 404, {"ok": ok})
             return
 
-        if parsed.path.startswith("/api/player-profiles/"):
-            try:
-                profile_id = int(parsed.path.split("/")[-1])
-            except ValueError:
-                self._json(400, {"error": "invalid_profile_id"})
-                return
-            result = self.db.delete_player_profile(profile_id)
-            if not result.get("ok"):
-                self._json(404, {"error": result.get("error") or "not_found"})
-                return
-            self._log_admin_action(
-                "delete",
-                "player_profile",
-                str(profile_id),
-                details={"deleted": result.get("deleted") or {}},
-                before=result.get("profile") or {},
-                after=None,
-            )
-            self._json(200, result)
-            return
-
         if parsed.path.startswith("/api/players/"):
             try:
                 player_id = int(parsed.path.split("/")[-1])
@@ -17146,6 +17750,33 @@ QUALITY REQUIREMENTS
             player_after = self.db.get_player_record(player_id) if ok else None
             if ok:
                 log_details: Dict[str, Any] = {"fields": sorted(payload.keys())}
+                renounced_free_agent_id: Optional[int] = None
+                settings = self.db.get_settings()
+                current_year = parse_int(settings.get("current_year")) or 2025
+                renounce_season = int(current_year) + 1
+                renounce_field = f"salary_{renounce_season}_text"
+                if (
+                    parse_bool(settings.get("free_agency_mode"))
+                    and renounce_field in payload
+                    and str(player_before.get(renounce_field) or "").strip().upper() in {"FB", "EB", "NB"}
+                    and not str((player_after or {}).get(renounce_field) or "").strip()
+                ):
+                    renounced_rights = str(player_before.get(renounce_field) or "").strip().upper()
+                    renounced_free_agent_id = self.db.ensure_renounced_bird_rights_free_agent(
+                        player_before,
+                        renounce_season,
+                        renounced_rights,
+                    )
+                    if renounced_free_agent_id is not None:
+                        log_details.update(
+                            {
+                                "bird_rights_renounced": True,
+                                "rights_field": renounce_field,
+                                "rights_value": renounced_rights,
+                                "rights_season": renounce_season,
+                                "free_agent_id": renounced_free_agent_id,
+                            }
+                        )
                 if option_action and option_action_season is not None:
                     log_details.update(
                         {
@@ -17431,6 +18062,27 @@ QUALITY REQUIREMENTS
             if ok:
                 self._log_admin_action("delete", "player_transaction", str(transaction_id))
             self._json(200 if ok else 404, {"ok": ok})
+            return
+
+        if parsed.path.startswith("/api/player-profiles/"):
+            try:
+                profile_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_profile_id"})
+                return
+            result = self.db.delete_player_profile(profile_id)
+            if not result.get("ok"):
+                self._json(404, {"error": result.get("error") or "not_found"})
+                return
+            self._log_admin_action(
+                "delete",
+                "player_profile",
+                str(profile_id),
+                details={"deleted": result.get("deleted") or {}},
+                before=result.get("profile") or {},
+                after=None,
+            )
+            self._json(200, result)
             return
 
         if parsed.path.startswith("/api/players/"):
