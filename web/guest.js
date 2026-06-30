@@ -1100,8 +1100,6 @@ function qoAcceptedByTeam(row, season) {
 }
 
 function acceptedOptionLabel(optionValue) {
-  const option = String(optionValue || '').trim().toUpperCase();
-  if (option === 'GAP') return 'GAP aceptada por el equipo';
   return 'QO aceptada por el equipo';
 }
 
@@ -1383,7 +1381,7 @@ function capHoldInfo(player, season) {
 
   const textCode = seasonSalaryTextCode(player, season);
   const optionCode = seasonOptionCode(player, season);
-  const isQualifyingOffer = textCode === 'QO' || optionCode === 'QO';
+  const isQualifyingOffer = textCode === 'QO' || optionCode === 'QO' || optionAcceptedByTeam(player, season, 'GAP');
   const birdCode = ['NB', 'EB', 'FB'].includes(textCode)
     ? textCode
     : (['NB', 'EB', 'FB'].includes(optionCode) ? optionCode : '');

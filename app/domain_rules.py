@@ -352,6 +352,31 @@ def season_option_code(row: Dict[str, Any], season: int) -> str:
     return str(row.get(f"option_{season}") or "").strip().upper()
 
 
+def option_accepted_by_team(row: Dict[str, Any], season: int, option: str) -> bool:
+    expected = str(option or "").strip().upper()
+    if not expected:
+        return False
+    option_code = season_option_code(row, season)
+    if option_code != expected:
+        return False
+    decisions = row.get("option_decisions") or {}
+    if not isinstance(decisions, dict):
+        return False
+    decision = decisions.get(f"option_{season}") or {}
+    if not isinstance(decision, dict):
+        return False
+    decision_option = str(decision.get("option_value") or "").strip().upper()
+    action = str(decision.get("action") or "").strip().lower()
+    status = str(decision.get("status") or "").strip().lower()
+    return decision_option == expected and action == "accepted" and status == "approved"
+
+
+def is_qo_style_option(row: Dict[str, Any], season: int) -> bool:
+    text_code = season_salary_text_code(row, season)
+    option_code = season_option_code(row, season)
+    return text_code == "QO" or option_code == "QO" or option_accepted_by_team(row, season, "GAP")
+
+
 def is_two_way_player(row: Dict[str, Any]) -> bool:
     return parse_bool(row.get("is_two_way")) or str(row.get("bird_rights") or "").strip().upper() == "TW"
 
@@ -454,7 +479,7 @@ def has_standard_cap_hold_marker(row: Dict[str, Any], season: int) -> bool:
         return False
     text_code = season_salary_text_code(row, season)
     option_code = season_option_code(row, season)
-    return text_code in {"NB", "EB", "FB", "QO"} or option_code in {"NB", "EB", "FB", "QO"}
+    return text_code in {"NB", "EB", "FB", "QO"} or option_code in {"NB", "EB", "FB", "QO"} or is_qo_style_option(row, season)
 
 
 def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], salary_cap: float) -> float:
@@ -472,7 +497,7 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
 
     text_code = season_salary_text_code(row, season)
     option_code = season_option_code(row, season)
-    is_qo = text_code == "QO" or option_code == "QO"
+    is_qo = is_qo_style_option(row, season)
     bird_code = text_code if text_code in {"NB", "EB", "FB"} else option_code if option_code in {"NB", "EB", "FB"} else ""
     if not is_qo and has_numeric_season_salary(row, season):
         return 0.0

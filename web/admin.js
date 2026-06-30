@@ -306,8 +306,6 @@ function qoAcceptedByTeam(row, season) {
 }
 
 function acceptedOptionLabel(optionValue) {
-  const option = String(optionValue || '').trim().toUpperCase();
-  if (option === 'GAP') return 'GAP aceptada por el equipo';
   return 'QO aceptada por el equipo';
 }
 

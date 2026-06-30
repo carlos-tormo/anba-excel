@@ -76,6 +76,28 @@ class DomainRulesTests(unittest.TestCase):
 
         self.assertEqual(25_000_000, cap_hold_amount(row, 2026, settings, 100_000_000))
 
+    def test_approved_gap_option_uses_qo_cap_hold_logic(self) -> None:
+        row = {
+            "salary_2025_num": 8_000_000,
+            "salary_2026_text": "2639760",
+            "option_2026": "GAP",
+            "bird_rights": "R",
+            "option_decisions": {
+                "option_2026": {
+                    "option_value": "GAP",
+                    "action": "accepted",
+                    "status": "approved",
+                },
+            },
+        }
+        settings = {
+            "free_agency_mode": "1",
+            "current_year": "2025",
+            "average_salary_2025": "13254485",
+        }
+
+        self.assertEqual(24_000_000, cap_hold_amount(row, 2026, settings, 154_647_000))
+
     def test_cap_hold_amount_uses_highest_max_tier_when_yos_missing(self) -> None:
         row = {
             "salary_2025_num": 40_000_000,
