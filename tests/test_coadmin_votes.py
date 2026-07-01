@@ -73,6 +73,11 @@ class CoadminVoteTests(unittest.TestCase):
         self.assertEqual(80.0, averages["BKN"]["average_score"])
         self.assertEqual(70.0, averages["BOS"]["average_score"])
         self.assertIsNone(averages["ATL"]["average_score"])
+        individual_scores = admin_votes[0]["individual_scores"]
+        self.assertEqual(1, len(individual_scores))
+        self.assertEqual("Co Admin", individual_scores[0]["voter_name"])
+        scores = {row["team_code"]: row["score"] for row in individual_scores[0]["scores"]}
+        self.assertEqual({"BKN": 80, "BOS": 70}, scores)
 
     def test_closed_vote_rejects_new_submission(self) -> None:
         vote = self.db.create_coadmin_vote("Valor GM", {"email": "admin@example.com", "name": "Admin"})

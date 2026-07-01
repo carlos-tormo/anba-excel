@@ -452,6 +452,10 @@
           <div id="draftOrderSubtitle" class="section-subtitle"></div>
         </div>
         <div class="section-actions">
+          <label class="season-view-control" for="draftYearSelect">
+            <span>Año</span>
+            <select id="draftYearSelect"></select>
+          </label>
           <button id="addDraftOrderFirstBtn" type="button">Add 1st-round pick</button>
           <button id="addDraftOrderSecondBtn" type="button">Add 2nd-round pick</button>
           <button id="processDraftBtn" type="button">Procesar draft</button>
@@ -494,6 +498,7 @@
           </div>
         </article>
       </div>
+      <div id="draftPickLedgerBoard" class="draft-pick-ledger-board"></div>
     </section>
 
     <nav id="teamTabs" class="team-tabs section-hidden" role="tablist" aria-label="Team sections">

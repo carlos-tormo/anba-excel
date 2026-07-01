@@ -14,6 +14,7 @@ const state = {
     draft_year: null,
     draft_order: [],
   },
+  draftLedger: null,
   draftLive: null,
   teamCode: null,
   teamData: null,
@@ -5020,6 +5021,121 @@ function draftOrderViaCellHtml(row) {
   return draftOrderViaHtml(row?.original_team_code, row?.original_team_name);
 }
 
+function draftLedgerStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'ok') return 'Localizada';
+  if (normalized === 'missing') return 'Perdida';
+  if (normalized === 'duplicate') return 'Duplicada';
+  if (normalized === 'conditional') return 'Condicional';
+  if (normalized === 'frozen') return 'Bloqueada';
+  return normalized || 'Revisar';
+}
+
+function draftLedgerPickHtml(pick, showAssetIds = false) {
+  if (!pick) return '';
+  const status = String(pick.status || 'missing').trim().toLowerCase();
+  const holderCodes = Array.isArray(pick.holder_team_codes) ? pick.holder_team_codes : [];
+  const holderNames = Array.isArray(pick.holder_team_names) ? pick.holder_team_names : [];
+  const holderHtml = holderCodes.length
+    ? holderCodes.map((code, index) => {
+      const name = holderNames[index] || code;
+      return `
+        <span class="draft-ledger-holder" title="${escapeHtml(name)}">
+          ${draftOrderLogoHtml(code, 'draft-order-via-logo')}
+          <strong>${escapeHtml(code)}</strong>
+        </span>
+      `;
+    }).join('<span class="draft-ledger-holder-separator">/</span>')
+    : '<span class="draft-ledger-holder draft-ledger-holder--missing">Sin localizar</span>';
+  const assetIds = Array.isArray(pick.asset_ids) ? pick.asset_ids.filter((id) => id !== null && id !== undefined) : [];
+  const soldToCodes = Array.isArray(pick.sold_to_team_codes) ? pick.sold_to_team_codes.filter(Boolean) : [];
+  const metaItems = [];
+  if (soldToCodes.length) metaItems.push(`Vendida a ${soldToCodes.join('/')}`);
+  if (showAssetIds && assetIds.length) metaItems.push(`Assets ${assetIds.join(', ')}`);
+  return `
+    <div class="draft-ledger-pick draft-ledger-pick--${escapeHtml(status)}">
+      <div class="draft-ledger-pick-main">
+        ${holderHtml}
+        <span class="draft-ledger-status draft-ledger-status--${escapeHtml(status)}">${escapeHtml(draftLedgerStatusLabel(status))}</span>
+      </div>
+      <small>${escapeHtml(pick.canonical_id || '')}</small>
+      ${metaItems.length ? `<small>${escapeHtml(metaItems.join(' · '))}</small>` : ''}
+    </div>
+  `;
+}
+
+function renderDraftPickLedger(showAssetIds = false) {
+  const ledger = state.draftLedger || {};
+  const rows = Array.isArray(ledger.rows) ? ledger.rows : [];
+  const summary = ledger.summary || {};
+  if (!rows.length) return '';
+  const issueCount = Number(summary.error || 0) + Number(summary.warning || 0);
+  return `
+    <article class="draft-pick-ledger">
+      <div class="draft-pick-ledger-head">
+        <div>
+          <h3>Mapa de rondas ${escapeHtml(ledger.draft_year || state.draftOrder?.draft_year || '')}</h3>
+          <p>Resumen por equipo original y localización actual de cada ronda.</p>
+        </div>
+        <div class="draft-pick-ledger-summary">
+          <span class="draft-ledger-summary-pill draft-ledger-summary-pill--ok">${escapeHtml(summary.ok || 0)} OK</span>
+          <span class="draft-ledger-summary-pill ${Number(summary.error || 0) ? 'draft-ledger-summary-pill--error' : ''}">${escapeHtml(summary.error || 0)} errores</span>
+          <span class="draft-ledger-summary-pill ${Number(summary.warning || 0) ? 'draft-ledger-summary-pill--warning' : ''}">${escapeHtml(summary.warning || 0)} avisos</span>
+        </div>
+      </div>
+      ${issueCount ? `
+        <div class="draft-pick-ledger-alert">
+          Hay ${escapeHtml(issueCount)} incidencia(s) de tracking para revisar.
+        </div>
+      ` : ''}
+      <div class="table-wrap draft-pick-ledger-table-wrap">
+        <table class="draft-pick-ledger-table">
+          <thead>
+            <tr>
+              <th>Equipo original</th>
+              <th>1ª ronda</th>
+              <th>2ª ronda</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${draftOrderTeamHtml(row.team_code, row.team_name)}</td>
+                <td>${draftLedgerPickHtml(row.first, showAssetIds)}</td>
+                <td>${draftLedgerPickHtml(row.second, showAssetIds)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function draftYearOptions() {
+  const current = currentSeasonStart();
+  const years = new Set();
+  for (let offset = 1; offset <= 7; offset += 1) {
+    years.add(current + offset);
+  }
+  const active = Number(state.draftOrder?.draft_year || 0);
+  if (Number.isInteger(active) && active >= 2000 && active <= 2100) years.add(active);
+  return Array.from(years).sort((a, b) => a - b);
+}
+
+function renderDraftYearSelect(draftYear) {
+  const select = document.getElementById('draftYearSelect');
+  if (!select) return;
+  const selected = Number(draftYear || state.draftOrder?.draft_year || currentSeasonStart() + 1);
+  select.innerHTML = draftYearOptions()
+    .map((year) => `<option value="${escapeHtml(year)}"${year === selected ? ' selected' : ''}>${escapeHtml(year)}</option>`)
+    .join('');
+  select.value = String(selected);
+  select.onchange = () => {
+    loadDraftOrder(Number(select.value || 0)).catch((err) => alert(`No se pudo cargar el draft: ${err.message}`));
+  };
+}
+
 function setDraftLiveState(data) {
   state.draftLive = data || null;
   if (data && Array.isArray(data.draft_order)) {
@@ -5134,7 +5250,8 @@ function startDraftLiveTimer() {
     if (state.ui.viewMode !== 'draft-order') return;
     if (document.querySelector('.draft-live-modal-backdrop')) return;
     try {
-      const res = await api('/api/draft-live');
+      const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart() + 1);
+      const res = await api(`/api/draft-live?year=${encodeURIComponent(draftYear)}`);
       setDraftLiveState(res);
       renderDraftOrder();
     } catch (err) {
@@ -5339,10 +5456,12 @@ function renderDraftOrder() {
   if (!board) return;
   const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart() + 1);
   if (subtitle) subtitle.textContent = `${draftYear} order of selection`;
+  renderDraftYearSelect(draftYear);
   renderDraftLivePanel();
   board.innerHTML = `
     ${renderDraftOrderRound('1st', '1st Round')}
     ${renderDraftOrderRound('2nd', '2nd Round')}
+    ${renderDraftPickLedger(false)}
   `;
   bindDraftLiveButtons(board);
 }
@@ -7149,9 +7268,17 @@ async function loadLeaguePlayers() {
   updateSortIndicators('leaguePlayersTable', state.sort.league_players);
 }
 
-async function loadDraftOrder() {
-  const res = await api('/api/draft-live');
+async function loadDraftOrder(draftYearInput = null) {
+  const draftYear = Number(draftYearInput || document.getElementById('draftYearSelect')?.value || state.draftOrder?.draft_year || currentSeasonStart() + 1);
+  const res = await api(`/api/draft-live?year=${encodeURIComponent(draftYear)}`);
   setDraftLiveState(res);
+  const loadedDraftYear = Number(state.draftOrder?.draft_year || draftYear);
+  try {
+    state.draftLedger = await api(`/api/draft-pick-ledger?year=${encodeURIComponent(loadedDraftYear)}`);
+  } catch (err) {
+    console.warn('Draft pick ledger load failed', err);
+    state.draftLedger = null;
+  }
   state.teamCode = null;
   state.teamData = null;
   setTeamInUrl(null);

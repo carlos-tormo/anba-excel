@@ -550,6 +550,82 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual("2nd", acquired_pick["draft_round"])
         self.assertEqual("BOS", acquired_pick["original_owner"])
 
+    def test_selection_process_moves_acquired_pick_without_selling_source_own_pick(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            insert_team(conn, "MIA", "Miami Heat")
+            insert_team(conn, "DAL", "Dallas Mavericks")
+            conn.commit()
+        mia_own_pick_id = self.db.create_asset(
+            "MIA",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "1st",
+                "year": 2027,
+                "label": "1st pick",
+            },
+        )
+        dal_pick_id = self.db.create_asset(
+            "MIA",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "acquired",
+                "draft_round": "1st",
+                "year": 2027,
+                "original_owner": "DAL",
+                "label": "1st pick",
+                "detail": "DAL acquired pick",
+                "draft_pick_protected": True,
+            },
+        )
+
+        result = self.db.process_trade_from_payload(
+            {
+                "teams": ["MIA", "ATL"],
+                "season": 2026,
+                "selections": [
+                    {"type": "pick", "id": dal_pick_id, "from_team": "MIA", "to_team": "ATL"},
+                ],
+            }
+        )
+
+        self.assertIsNotNone(result)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            source_own_pick = conn.execute(
+                "SELECT draft_pick_type, draft_pick_sold_to FROM assets WHERE id = ?",
+                (mia_own_pick_id,),
+            ).fetchone()
+            moved_pick = conn.execute(
+                """
+                SELECT a.draft_pick_type, a.original_owner, a.draft_pick_protected, t.code
+                FROM assets a
+                JOIN teams t ON t.id = a.team_id
+                WHERE a.id = ?
+                """,
+                (dal_pick_id,),
+            ).fetchone()
+            remaining_source_dal_picks = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM assets a
+                JOIN teams t ON t.id = a.team_id
+                WHERE t.code = 'MIA'
+                  AND a.asset_type = 'draft_pick'
+                  AND CAST(a.year AS INTEGER) = 2027
+                  AND a.draft_round = '1st'
+                  AND a.original_owner = 'DAL'
+                """,
+            ).fetchone()["cnt"]
+
+        self.assertEqual("own", source_own_pick["draft_pick_type"])
+        self.assertIsNone(source_own_pick["draft_pick_sold_to"])
+        self.assertEqual("ATL", moved_pick["code"])
+        self.assertEqual("acquired", moved_pick["draft_pick_type"])
+        self.assertEqual("DAL", moved_pick["original_owner"])
+        self.assertEqual(1, moved_pick["draft_pick_protected"])
+        self.assertEqual(0, remaining_source_dal_picks)
+
     def test_legacy_process_moves_selected_future_second_round_pick(self) -> None:
         player_id = self.db.create_player(
             "BOS",
@@ -604,6 +680,147 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual("2nd", acquired_pick["draft_round"])
         self.assertEqual("ATL", acquired_pick["original_owner"])
         self.assertEqual(1, acquired_pick["draft_pick_protected"])
+
+    def test_legacy_process_moves_acquired_pick_without_selling_source_own_pick(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            insert_team(conn, "MIA", "Miami Heat")
+            insert_team(conn, "DAL", "Dallas Mavericks")
+            conn.commit()
+        mia_own_pick_id = self.db.create_asset(
+            "MIA",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "2nd",
+                "year": 2028,
+                "label": "2nd pick",
+            },
+        )
+        dal_pick_id = self.db.create_asset(
+            "MIA",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "acquired",
+                "draft_round": "2nd",
+                "year": 2028,
+                "original_owner": "DAL",
+                "label": "2nd pick",
+                "detail": "DAL acquired pick",
+            },
+        )
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Return Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2026_text": "10000000",
+            },
+        )
+
+        result = self.db.process_trade("MIA", "ATL", [], [player_id], pick_ids_a=[dal_pick_id])
+
+        self.assertIsNotNone(result)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            source_own_pick = conn.execute(
+                "SELECT draft_pick_type, draft_pick_sold_to FROM assets WHERE id = ?",
+                (mia_own_pick_id,),
+            ).fetchone()
+            moved_pick = conn.execute(
+                """
+                SELECT a.draft_pick_type, a.original_owner, t.code
+                FROM assets a
+                JOIN teams t ON t.id = a.team_id
+                WHERE a.id = ?
+                """,
+                (dal_pick_id,),
+            ).fetchone()
+
+        self.assertEqual("own", source_own_pick["draft_pick_type"])
+        self.assertIsNone(source_own_pick["draft_pick_sold_to"])
+        self.assertEqual("ATL", moved_pick["code"])
+        self.assertEqual("acquired", moved_pick["draft_pick_type"])
+        self.assertEqual("DAL", moved_pick["original_owner"])
+
+    def test_draft_pick_ledger_detects_duplicate_and_missing_picks(self) -> None:
+        self.db.create_asset(
+            "ATL",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "1st",
+                "year": 2027,
+                "label": "1st pick",
+            },
+        )
+        self.db.create_asset(
+            "BOS",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "acquired",
+                "draft_round": "1st",
+                "year": 2027,
+                "original_owner": "ATL",
+                "label": "1st pick",
+            },
+        )
+        self.db.create_asset(
+            "ATL",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "2nd",
+                "year": 2027,
+                "label": "2nd pick",
+            },
+        )
+        self.db.create_asset(
+            "BOS",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "own",
+                "draft_round": "1st",
+                "year": 2027,
+                "label": "1st pick",
+            },
+        )
+
+        ledger = self.db.list_draft_pick_ledger(2027)
+        rows_by_team = {row["team_code"]: row for row in ledger["rows"]}
+
+        self.assertEqual("duplicate", rows_by_team["ATL"]["first"]["status"])
+        self.assertEqual(["ATL", "BOS"], rows_by_team["ATL"]["first"]["holder_team_codes"])
+        self.assertEqual("ok", rows_by_team["ATL"]["second"]["status"])
+        self.assertEqual("ok", rows_by_team["BOS"]["first"]["status"])
+        self.assertEqual("missing", rows_by_team["BOS"]["second"]["status"])
+        self.assertEqual(2, ledger["summary"]["error"])
+        self.assertTrue(any(issue["rule"] == "duplicate_pick" for issue in ledger["issues"]))
+        self.assertTrue(any(issue["rule"] == "missing_pick" for issue in ledger["issues"]))
+
+    def test_draft_pick_ledger_reports_acquired_pick_holder(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            insert_team(conn, "DAL", "Dallas Mavericks")
+            conn.commit()
+        pick_id = self.db.create_asset(
+            "BOS",
+            {
+                "asset_type": "draft_pick",
+                "draft_pick_type": "acquired",
+                "draft_round": "2nd",
+                "year": 2028,
+                "original_owner": "DAL",
+                "label": "2nd pick",
+            },
+        )
+
+        ledger = self.db.list_draft_pick_ledger(2028)
+        rows_by_team = {row["team_code"]: row for row in ledger["rows"]}
+
+        self.assertEqual("ok", rows_by_team["DAL"]["second"]["status"])
+        self.assertEqual(["BOS"], rows_by_team["DAL"]["second"]["holder_team_codes"])
+        self.assertEqual([pick_id], rows_by_team["DAL"]["second"]["asset_ids"])
+        self.assertEqual("2028-2ND-DAL", rows_by_team["DAL"]["second"]["canonical_id"])
 
     def test_move_summaries_reset_by_season(self) -> None:
         with sqlite3.connect(self.db_path) as conn:

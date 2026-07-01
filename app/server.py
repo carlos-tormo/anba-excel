@@ -3494,10 +3494,61 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         str(item["team_code"] or ""),
                     )
                 )
+                score_rows = conn.execute(
+                    """
+                    SELECT
+                        s.voter_user_id,
+                        s.voter_email,
+                        s.voter_name,
+                        s.voter_team_code,
+                        t.id AS target_team_id,
+                        t.code AS target_team_code,
+                        t.name AS target_team_name,
+                        s.score,
+                        s.updated_at
+                    FROM coadmin_vote_scores s
+                    JOIN teams t ON t.id = s.target_team_id
+                    WHERE s.vote_id = ?
+                    ORDER BY
+                        lower(COALESCE(NULLIF(s.voter_name, ''), s.voter_email, CAST(s.voter_user_id AS TEXT))),
+                        t.code
+                    """,
+                    (vote_id,),
+                ).fetchall()
+                voter_lookup = {int(voter["id"]): voter for voter in expected_voters}
+                individual_by_voter: Dict[int, Dict[str, Any]] = {}
+                for row in score_rows:
+                    voter_id = int(row["voter_user_id"])
+                    expected_voter = voter_lookup.get(voter_id, {})
+                    item = individual_by_voter.setdefault(
+                        voter_id,
+                        {
+                            "voter_user_id": voter_id,
+                            "voter_email": row["voter_email"] or expected_voter.get("email"),
+                            "voter_name": row["voter_name"] or expected_voter.get("display_name"),
+                            "voter_team_code": row["voter_team_code"],
+                            "team_codes": expected_voter.get("team_codes") or normalize_team_codes(row["voter_team_code"]),
+                            "scores": [],
+                        },
+                    )
+                    item["scores"].append(
+                        {
+                            "team_id": int(row["target_team_id"]),
+                            "team_code": row["target_team_code"],
+                            "team_name": row["target_team_name"],
+                            "score": int(row["score"]),
+                            "updated_at": row["updated_at"],
+                        }
+                    )
+                individual_scores = list(individual_by_voter.values())
+                individual_scores.sort(
+                    key=lambda item: str(item.get("voter_name") or item.get("voter_email") or item.get("voter_user_id") or "").lower()
+                )
                 vote["expected_voter_count"] = expected_count
                 vote["submitted_voter_count"] = len(submitted_ids)
                 vote["all_submitted"] = expected_count > 0 and len(submitted_ids) >= expected_count
                 vote["averages"] = averages
+                vote["individual_scores"] = individual_scores
                 vote["voters"] = [
                     {
                         **voter,
@@ -4560,6 +4611,251 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "draft_year": int(year),
                 "draft_order": [row_to_dict(cur, row) for row in cur.fetchall()],
             }
+
+    def list_draft_pick_ledger(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
+        year = draft_year if draft_year is not None else self.current_draft_year()
+        with self.connect() as conn:
+            team_cur = conn.execute(
+                "SELECT id, code, name FROM teams ORDER BY code"
+            )
+            teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
+            team_names = {
+                str(team.get("code") or "").strip().upper(): str(team.get("name") or team.get("code") or "").strip()
+                for team in teams
+            }
+            asset_cur = conn.execute(
+                """
+                SELECT
+                    a.id,
+                    a.team_id,
+                    holder.code AS holder_team_code,
+                    COALESCE(holder.name, holder.code) AS holder_team_name,
+                    a.asset_type,
+                    a.label,
+                    a.year,
+                    a.detail,
+                    a.draft_pick_type,
+                    a.draft_round,
+                    a.original_owner,
+                    a.draft_pick_sold_to,
+                    a.draft_pick_conditional_teams,
+                    a.draft_pick_restricted,
+                    a.draft_pick_stepien_restricted,
+                    a.draft_pick_protected,
+                    a.draft_pick_frozen,
+                    a.created_at,
+                    a.updated_at
+                FROM assets a
+                JOIN teams holder ON holder.id = a.team_id
+                WHERE a.asset_type = 'draft_pick'
+                  AND CAST(COALESCE(a.year, '') AS INTEGER) = ?
+                ORDER BY
+                    holder.code,
+                    CASE COALESCE(a.draft_round, '1st') WHEN '1st' THEN 1 WHEN '2nd' THEN 2 ELSE 3 END,
+                    CASE COALESCE(a.draft_pick_type, 'own')
+                        WHEN 'own' THEN 1
+                        WHEN 'acquired' THEN 2
+                        WHEN 'conditional' THEN 3
+                        WHEN 'sold' THEN 4
+                        ELSE 5
+                    END,
+                    a.id
+                """,
+                (int(year),),
+            )
+            assets = [row_to_dict(asset_cur, row) for row in asset_cur.fetchall()]
+
+        def canonical_round(value: Any) -> str:
+            return normalize_pick_round(value)
+
+        def canonical_key(owner_code: str, draft_round: str) -> str:
+            round_key = "1ST" if draft_round == "1st" else "2ND"
+            return f"{int(year)}-{round_key}-{owner_code}"
+
+        def original_owner_codes(asset: Dict[str, Any]) -> List[str]:
+            pick_type = normalize_pick_type(asset.get("draft_pick_type"))
+            holder = normalize_team_code(asset.get("holder_team_code"))
+            original = normalize_team_code(asset.get("original_owner"))
+            if pick_type == "conditional":
+                codes = normalize_team_codes(asset.get("draft_pick_conditional_teams"))
+                return codes or ([original] if original else ([holder] if holder else []))
+            if pick_type in {"acquired", "sold"}:
+                return [original or holder] if (original or holder) else []
+            return [holder] if holder else []
+
+        active_by_key: Dict[str, List[Dict[str, Any]]] = {}
+        sold_by_key: Dict[str, List[Dict[str, Any]]] = {}
+        unexpected_assets: List[Dict[str, Any]] = []
+        valid_team_codes = set(team_names.keys())
+        for asset in assets:
+            draft_round = canonical_round(asset.get("draft_round"))
+            pick_type = normalize_pick_type(asset.get("draft_pick_type"))
+            owner_codes = [code for code in original_owner_codes(asset) if code]
+            if not owner_codes:
+                unexpected_assets.append(asset)
+                continue
+            for owner_code in owner_codes:
+                key = canonical_key(owner_code, draft_round)
+                target = sold_by_key if pick_type == "sold" else active_by_key
+                target.setdefault(key, []).append(asset)
+                if owner_code not in valid_team_codes:
+                    unexpected_assets.append(asset)
+
+        def asset_summary(asset: Dict[str, Any]) -> Dict[str, Any]:
+            holder_code = normalize_team_code(asset.get("holder_team_code"))
+            sold_to_codes = normalize_team_codes(asset.get("draft_pick_sold_to"))
+            conditional_codes = normalize_team_codes(asset.get("draft_pick_conditional_teams"))
+            return {
+                "asset_id": parse_int(asset.get("id")),
+                "holder_team_code": holder_code,
+                "holder_team_name": asset.get("holder_team_name") or team_names.get(holder_code or "", holder_code or ""),
+                "pick_type": normalize_pick_type(asset.get("draft_pick_type")),
+                "label": asset.get("label"),
+                "detail": asset.get("detail"),
+                "sold_to_team_codes": sold_to_codes,
+                "conditional_team_codes": conditional_codes,
+                "restricted": bool(parse_bool(asset.get("draft_pick_restricted"))),
+                "stepien_restricted": bool(parse_bool(asset.get("draft_pick_stepien_restricted"))),
+                "protected": bool(parse_bool(asset.get("draft_pick_protected"))),
+                "frozen": bool(parse_bool(asset.get("draft_pick_frozen"))),
+            }
+
+        def pick_state(owner_code: str, draft_round: str) -> Dict[str, Any]:
+            key = canonical_key(owner_code, draft_round)
+            active_assets = active_by_key.get(key, [])
+            sold_assets = sold_by_key.get(key, [])
+            active_summaries = [asset_summary(asset) for asset in active_assets]
+            sold_summaries = [asset_summary(asset) for asset in sold_assets]
+            holder_codes: List[str] = []
+            holder_names: List[str] = []
+            pick_types: List[str] = []
+            frozen = False
+            for item in active_summaries:
+                holder_code = item.get("holder_team_code")
+                if holder_code and holder_code not in holder_codes:
+                    holder_codes.append(holder_code)
+                    holder_names.append(item.get("holder_team_name") or team_names.get(holder_code, holder_code))
+                pick_type = item.get("pick_type")
+                if pick_type and pick_type not in pick_types:
+                    pick_types.append(pick_type)
+                frozen = frozen or bool(item.get("frozen"))
+            if not active_summaries:
+                status = "missing"
+            elif len(active_summaries) > 1:
+                status = "duplicate"
+            elif "conditional" in pick_types:
+                status = "conditional"
+            elif frozen:
+                status = "frozen"
+            else:
+                status = "ok"
+            sold_to_codes: List[str] = []
+            for item in sold_summaries:
+                for code in item.get("sold_to_team_codes") or []:
+                    if code not in sold_to_codes:
+                        sold_to_codes.append(code)
+            return {
+                "canonical_id": key,
+                "round": draft_round,
+                "original_team_code": owner_code,
+                "original_team_name": team_names.get(owner_code, owner_code),
+                "status": status,
+                "holder_team_codes": holder_codes,
+                "holder_team_names": holder_names,
+                "asset_ids": [item.get("asset_id") for item in active_summaries if item.get("asset_id") is not None],
+                "pick_types": pick_types,
+                "sold_to_team_codes": sold_to_codes,
+                "sold_asset_ids": [item.get("asset_id") for item in sold_summaries if item.get("asset_id") is not None],
+                "active_assets": active_summaries,
+                "sold_assets": sold_summaries,
+            }
+
+        rows: List[Dict[str, Any]] = []
+        issues: List[Dict[str, Any]] = []
+        summary = {
+            "expected": len(teams) * 2,
+            "ok": 0,
+            "missing": 0,
+            "duplicate": 0,
+            "conditional": 0,
+            "frozen": 0,
+            "warning": 0,
+            "error": 0,
+        }
+        for team in teams:
+            owner_code = str(team.get("code") or "").strip().upper()
+            first = pick_state(owner_code, "1st")
+            second = pick_state(owner_code, "2nd")
+            rows.append(
+                {
+                    "team_code": owner_code,
+                    "team_name": team.get("name") or owner_code,
+                    "first": first,
+                    "second": second,
+                }
+            )
+            for state in [first, second]:
+                status = str(state.get("status") or "missing")
+                if status in summary:
+                    summary[status] += 1
+                if status == "missing":
+                    summary["error"] += 1
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "rule": "missing_pick",
+                            "canonical_id": state.get("canonical_id"),
+                            "message": f"{state.get('canonical_id')} no aparece en ningún equipo.",
+                        }
+                    )
+                elif status == "duplicate":
+                    summary["error"] += 1
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "rule": "duplicate_pick",
+                            "canonical_id": state.get("canonical_id"),
+                            "asset_ids": state.get("asset_ids") or [],
+                            "holder_team_codes": state.get("holder_team_codes") or [],
+                            "message": f"{state.get('canonical_id')} aparece en más de un asset activo.",
+                        }
+                    )
+                elif status in {"conditional", "frozen"}:
+                    summary["warning"] += 1
+                    issues.append(
+                        {
+                            "severity": "warning",
+                            "rule": f"{status}_pick",
+                            "canonical_id": state.get("canonical_id"),
+                            "asset_ids": state.get("asset_ids") or [],
+                            "holder_team_codes": state.get("holder_team_codes") or [],
+                            "message": f"{state.get('canonical_id')} requiere revisión: {status}.",
+                        }
+                    )
+
+        for asset in unexpected_assets:
+            asset_id = parse_int(asset.get("id"))
+            issue_key = f"unexpected:{asset_id}"
+            if any(str(issue.get("canonical_id")) == issue_key for issue in issues):
+                continue
+            summary["warning"] += 1
+            issues.append(
+                {
+                    "severity": "warning",
+                    "rule": "unexpected_pick_owner",
+                    "canonical_id": issue_key,
+                    "asset_id": asset_id,
+                    "holder_team_code": normalize_team_code(asset.get("holder_team_code")),
+                    "message": f"Asset #{asset_id} tiene propietario original no reconocido o vacío.",
+                }
+            )
+
+        return {
+            "draft_year": int(year),
+            "summary": summary,
+            "rows": rows,
+            "issues": issues,
+        }
 
     def create_draft_order_entry(self, payload: Dict[str, Any]) -> int:
         with self.connect() as conn:
@@ -12288,17 +12584,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
                 sold_label = pick_row.get("label") or f"{pick_round.upper()} pick"
                 sold_detail = pick_row.get("detail")
-                conn.execute(
-                    """
-                    UPDATE assets
-                    SET draft_pick_type = 'sold', original_owner = ?, draft_pick_sold_to = ?,
-                        draft_pick_conditional_teams = NULL, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (actual_owner, str(target_team["code"]), timestamp, pick_row["id"]),
-                )
 
-                if recipient_match:
+                def update_pick_row(asset_id: int) -> None:
                     conn.execute(
                         """
                         UPDATE assets
@@ -12319,9 +12606,60 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             1 if parse_bool(pick_row.get("draft_pick_protected")) else 0,
                             1 if parse_bool(pick_row.get("draft_pick_frozen")) else 0,
                             timestamp,
-                            recipient_match["id"],
+                            asset_id,
                         ),
                     )
+
+                if source_pick_type == "own":
+                    conn.execute(
+                        """
+                        UPDATE assets
+                        SET draft_pick_type = 'sold', original_owner = ?, draft_pick_sold_to = ?,
+                            draft_pick_conditional_teams = NULL, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (actual_owner, str(target_team["code"]), timestamp, pick_row["id"]),
+                    )
+                elif recipient_match:
+                    update_pick_row(int(recipient_match["id"]))
+                    if int(recipient_match["id"]) != int(pick_row["id"]):
+                        conn.execute("DELETE FROM assets WHERE id = ?", (pick_row["id"],))
+                    return
+                else:
+                    mx = conn.execute(
+                        "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                        (target_team["id"],),
+                    ).fetchone()["mx"]
+                    conn.execute(
+                        """
+                        UPDATE assets
+                        SET team_id = ?, row_order = ?, draft_pick_type = ?, original_owner = ?,
+                            draft_pick_sold_to = NULL, draft_pick_conditional_teams = ?,
+                            label = ?, detail = ?, draft_pick_restricted = ?,
+                            draft_pick_stepien_restricted = ?, draft_pick_protected = ?,
+                            draft_pick_frozen = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            target_team["id"],
+                            int(mx) + 1,
+                            target_pick_type,
+                            target_original_owner,
+                            target_conditional_teams,
+                            sold_label,
+                            sold_detail,
+                            1 if parse_bool(pick_row.get("draft_pick_restricted")) else 0,
+                            1 if parse_bool(pick_row.get("draft_pick_stepien_restricted")) else 0,
+                            1 if parse_bool(pick_row.get("draft_pick_protected")) else 0,
+                            1 if parse_bool(pick_row.get("draft_pick_frozen")) else 0,
+                            timestamp,
+                            pick_row["id"],
+                        ),
+                    )
+                    return
+
+                if recipient_match:
+                    update_pick_row(int(recipient_match["id"]))
                     return
 
                 mx = conn.execute(
@@ -12812,17 +13150,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
                 sold_label = pick_row.get("label") or f"{pick_round.upper()} pick"
                 sold_detail = pick_row.get("detail")
-                conn.execute(
-                    """
-                    UPDATE assets
-                    SET draft_pick_type = 'sold', original_owner = ?, draft_pick_sold_to = ?,
-                        draft_pick_conditional_teams = NULL, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (actual_owner, str(target_team["code"]), timestamp, pick_row["id"]),
-                )
 
-                if recipient_match:
+                def update_pick_row(asset_id: int) -> None:
                     conn.execute(
                         """
                         UPDATE assets
@@ -12843,9 +13172,60 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             1 if parse_bool(pick_row.get("draft_pick_protected")) else 0,
                             1 if parse_bool(pick_row.get("draft_pick_frozen")) else 0,
                             timestamp,
-                            recipient_match["id"],
+                            asset_id,
                         ),
                     )
+
+                if source_pick_type == "own":
+                    conn.execute(
+                        """
+                        UPDATE assets
+                        SET draft_pick_type = 'sold', original_owner = ?, draft_pick_sold_to = ?,
+                            draft_pick_conditional_teams = NULL, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (actual_owner, str(target_team["code"]), timestamp, pick_row["id"]),
+                    )
+                elif recipient_match:
+                    update_pick_row(int(recipient_match["id"]))
+                    if int(recipient_match["id"]) != int(pick_row["id"]):
+                        conn.execute("DELETE FROM assets WHERE id = ?", (pick_row["id"],))
+                    return
+                else:
+                    mx = conn.execute(
+                        "SELECT COALESCE(MAX(row_order), 0) AS mx FROM assets WHERE team_id = ?",
+                        (target_team["id"],),
+                    ).fetchone()["mx"]
+                    conn.execute(
+                        """
+                        UPDATE assets
+                        SET team_id = ?, row_order = ?, draft_pick_type = ?, original_owner = ?,
+                            draft_pick_sold_to = NULL, draft_pick_conditional_teams = ?,
+                            label = ?, detail = ?, draft_pick_restricted = ?,
+                            draft_pick_stepien_restricted = ?, draft_pick_protected = ?,
+                            draft_pick_frozen = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            target_team["id"],
+                            int(mx) + 1,
+                            target_pick_type,
+                            target_original_owner,
+                            target_conditional_teams,
+                            sold_label,
+                            sold_detail,
+                            1 if parse_bool(pick_row.get("draft_pick_restricted")) else 0,
+                            1 if parse_bool(pick_row.get("draft_pick_stepien_restricted")) else 0,
+                            1 if parse_bool(pick_row.get("draft_pick_protected")) else 0,
+                            1 if parse_bool(pick_row.get("draft_pick_frozen")) else 0,
+                            timestamp,
+                            pick_row["id"],
+                        ),
+                    )
+                    return
+
+                if recipient_match:
+                    update_pick_row(int(recipient_match["id"]))
                     return
 
                 mx = conn.execute(
@@ -15773,6 +16153,18 @@ QUALITY REQUIREMENTS
                     self._json(400, {"error": "invalid_draft_year"})
                     return
             self._json(200, self.db.list_draft_order(draft_year))
+            return
+
+        if parsed.path == "/api/draft-pick-ledger":
+            qs = parse_qs(parsed.query)
+            raw_year = (qs.get("year") or [""])[0].strip()
+            draft_year = None
+            if raw_year:
+                draft_year = parse_int(raw_year)
+                if draft_year is None or draft_year < 2000 or draft_year > 2100:
+                    self._json(400, {"error": "invalid_draft_year"})
+                    return
+            self._json(200, self.db.list_draft_pick_ledger(draft_year))
             return
 
         if parsed.path == "/api/draft-live":
