@@ -302,6 +302,8 @@ class SeasonSummaryServerTests(unittest.TestCase):
 
         self.assertEqual(12_000_000, round(float(player["salary_2025_history_num"])))
         self.assertEqual(22_800_000, cap_lines["Jugador - Manual History Hold Player (FB hold)"])
+        self.assertEqual(22_800_000, round(float(player["cap_hold_2026_amount"])))
+        self.assertEqual("FB hold", player["cap_hold_2026_short_label"])
 
     def test_cap_hold_free_agent_payload_includes_manual_salary_history(self) -> None:
         self.db.update_setting("current_year", "2026")

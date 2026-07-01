@@ -2571,6 +2571,73 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 player[f"salary_{season_year}_history_team_code"] = row["team_code"]
         return players
 
+    def _cap_hold_display_label(self, player: Dict[str, Any], season: int) -> str:
+        salary_marker = str(player.get(f"salary_{season}_text") or "").strip().upper()
+        option_marker = str(player.get(f"option_{season}") or "").strip().upper()
+        decision = (player.get("option_decisions") or {}).get(f"option_{season}") or {}
+        decision_option = str(decision.get("option_value") or "").strip().upper() if isinstance(decision, dict) else ""
+        decision_action = str(decision.get("action") or "").strip().lower() if isinstance(decision, dict) else ""
+        decision_status = str(decision.get("status") or "").strip().lower() if isinstance(decision, dict) else ""
+        is_qo_style = (
+            salary_marker == "QO"
+            or option_marker == "QO"
+            or (
+                option_marker == "GAP"
+                and decision_option == "GAP"
+                and decision_action == "accepted"
+                and decision_status == "approved"
+            )
+        )
+        if is_qo_style:
+            return "QO hold"
+        if salary_marker in {"NB", "EB", "FB"}:
+            return f"{salary_marker} hold"
+        if option_marker in {"NB", "EB", "FB"}:
+            return f"{option_marker} hold"
+        return "Cap hold"
+
+    def _cap_hold_display_message(self, label: str) -> str:
+        normalized = str(label or "").strip().upper()
+        if normalized.startswith("QO"):
+            return "Cap hold QO calculado con el salario anterior, salario medio y limite maximo por YOS."
+        if normalized.startswith("FB"):
+            return "Cap hold Full Bird calculado con el salario anterior, salario medio y limite maximo por YOS."
+        if normalized.startswith("EB"):
+            return "Cap hold Early Bird: 130% del salario anterior, limitado por maximo YOS si aplica."
+        if normalized.startswith("NB"):
+            return "Cap hold Non-Bird calculado con el salario anterior o minimo aplicable, limitado por maximo YOS si aplica."
+        return "Cap hold calculado por el servidor."
+
+    def _attach_cap_hold_display_fields(
+        self,
+        players: List[Dict[str, Any]],
+        settings: Dict[str, str],
+    ) -> List[Dict[str, Any]]:
+        if not parse_bool(settings.get("free_agency_mode")):
+            return players
+        season = parse_int(settings.get("current_year")) or 2025
+        salary_cap = (
+            parse_float(settings.get(f"salary_cap_{season}"))
+            or parse_float(settings.get("salary_cap_2025"))
+            or 0.0
+        )
+        if salary_cap <= 0:
+            return players
+        for player in players:
+            amount = cap_hold_amount(player, season, settings, salary_cap)
+            if amount <= 0:
+                continue
+            label = self._cap_hold_display_label(player, season)
+            player[f"cap_hold_{season}_displayable"] = True
+            player[f"cap_hold_{season}_amount"] = float(amount)
+            player[f"cap_hold_{season}_short_label"] = label
+            player[f"cap_hold_{season}_message"] = self._cap_hold_display_message(label)
+            if label.upper().startswith("QO"):
+                qo_value = row_salary_num(player, season)
+                if qo_value > 0:
+                    player[f"cap_hold_{season}_display_amount"] = float(qo_value)
+        return players
+
     def _find_profile_id(
         self,
         conn: sqlite3.Connection,
@@ -6234,6 +6301,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             season_summaries = self._team_season_summaries(conn, team, players, assets, dead_contracts, settings)
             exception_estimates = self._team_exception_estimates(season_summaries, assets)
+            self._attach_cap_hold_display_fields(players, settings)
             requested_move_year = parse_int(move_season_year) or int(summary["current_year"])
             move_summary = self._team_move_summary(conn, int(team["id"]), int(requested_move_year), settings)
             move_summaries = self._team_move_summaries(conn, int(team["id"]), settings, include_year=int(requested_move_year))

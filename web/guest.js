@@ -1503,10 +1503,28 @@ function birdCapHoldInfo(player, season, code) {
   return null;
 }
 
+function serverCapHoldInfo(player, season) {
+  const amount = Number(player?.[`cap_hold_${season}_amount`] || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const displayAmount = Number(player?.[`cap_hold_${season}_display_amount`] || 0);
+  return {
+    active: true,
+    displayable: true,
+    amount,
+    displayAmount: Number.isFinite(displayAmount) && displayAmount > 0 ? displayAmount : undefined,
+    pending: false,
+    label: 'Cap hold',
+    shortLabel: String(player?.[`cap_hold_${season}_short_label`] || 'Cap hold'),
+    message: String(player?.[`cap_hold_${season}_message`] || 'Cap hold calculado por el servidor.'),
+  };
+}
+
 function capHoldInfo(player, season) {
   if (!freeAgencyModeActive() || Number(season) !== capHoldTargetSeason()) {
     return { active: false, displayable: false, amount: 0 };
   }
+  const serverInfo = serverCapHoldInfo(player, season);
+  if (serverInfo) return serverInfo;
 
   const textCode = seasonSalaryTextCode(player, season);
   const optionCode = seasonOptionCode(player, season);
