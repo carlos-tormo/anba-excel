@@ -156,6 +156,63 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         self.assertIsNone(expiring["bird_rights"])
         self.assertIn("Contrato expirado", expiring["notes"])
 
+    def test_uncontracted_profile_is_synced_as_free_agent_without_bird_rights(self) -> None:
+        timestamp = now_iso()
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO player_profiles (name, created_at, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                ("Loose Profile", timestamp, timestamp),
+            )
+            profile_id = int(cur.lastrowid)
+            conn.commit()
+
+        players = self.db.list_players()
+        profile = next(item for item in players if int(item["profile_id"]) == profile_id)
+        free_agents = self.db.list_free_agents()
+        free_agent = next(item for item in free_agents if int(item["profile_id"]) == profile_id)
+
+        self.assertEqual("free_agent", profile["status"])
+        self.assertEqual("Agente libre", profile["status_label"])
+        self.assertEqual("No restringido", free_agent["free_agent_type"])
+        self.assertEqual("uncontracted_profile", free_agent["source"])
+        self.assertIsNone(free_agent["rights_team_code"])
+        self.assertIsNone(free_agent["bird_rights"])
+
+    def test_current_year_bird_marker_profile_status_preserves_retained_rights(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        self.db.update_setting("free_agency_mode", "1")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Bird Rights Guard",
+                "position": "PG",
+                "rating": "77",
+                "bird_rights": "Reg",
+                "years_left": "2+",
+                "salary_2025_text": "10000000",
+                "salary_2026_text": "FB",
+                "option_2026": "",
+            },
+        )
+        self.assertIsNotNone(player_id)
+
+        players = self.db.list_players()
+        profile = next(item for item in players if item["name"] == "Bird Rights Guard")
+        free_agents = self.db.list_free_agents()
+        free_agent = next(item for item in free_agents if item["name"] == "Bird Rights Guard")
+
+        self.assertEqual("free_agent", profile["status"])
+        self.assertEqual("Agente libre · derechos ATL", profile["status_label"])
+        self.assertFalse(profile["active_contract"])
+        self.assertEqual("FB", profile["bird_rights"])
+        self.assertEqual("ATL", profile["rights_team_code"])
+        self.assertEqual("cap_hold", free_agent["source"])
+        self.assertEqual("ATL", free_agent["rights_team_code"])
+        self.assertEqual("FB", free_agent["bird_rights"])
+
 
 if __name__ == "__main__":
     unittest.main()

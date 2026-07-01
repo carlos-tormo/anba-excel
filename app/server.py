@@ -176,6 +176,7 @@ FREE_AGENT_TYPE_UNRESTRICTED = "No restringido"
 FREE_AGENT_TYPE_RESTRICTED = "Restringido"
 FREE_AGENT_SOURCE_CAP_HOLD = "cap_hold"
 FREE_AGENT_SOURCE_RENOUNCED_RIGHTS = "renounced_rights"
+FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE = "uncontracted_profile"
 PLAYER_CONTRACT_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030]
 CONTRACT_TERMINATING_OPTION_VALUES = {"TO", "PO"}
 OWNER_SEASON_OBJECTIVES = [
@@ -6242,6 +6243,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            changed = self._sync_cap_hold_free_agents(conn, settings)
+            changed += self._sync_uncontracted_profile_free_agents(conn)
+            if changed:
+                conn.commit()
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < 2025 or current_year > 2030:
                 current_year = 2025
@@ -6269,6 +6274,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "team_name": None,
                     "player_id": None,
                     "free_agent_id": None,
+                    "free_agent_type": None,
+                    "free_agent_source": None,
+                    "rights_team_code": None,
                     "dead_contract_id": None,
                     "dead_contracts": [],
                     "dead_contract_count": 0,
@@ -6296,6 +6304,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     p.years_left,
                     p.signed_as_free_agent,
                     p.salary_{current_year}_text AS current_salary_text,
+                    p.salary_{current_year}_num AS current_salary_num,
+                    p.option_{current_year} AS current_option,
                     t.code AS team_code,
                     t.name AS team_name
                 FROM players p
@@ -6309,6 +6319,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 profile_id = parse_int(item.get("profile_id"))
                 if profile_id is None or profile_id not in profiles or profiles[profile_id]["active_contract"]:
                     continue
+                salary_text = str(item.get("current_salary_text") or "").strip()
+                salary_code = salary_text.upper()
+                option_code = str(item.get("current_option") or "").strip().upper()
+                is_rights_marker = salary_code in {"NB", "EB", "FB", "QO", "GAP"} or option_code in {"NB", "EB", "FB", "QO", "GAP"}
+                has_current_salary = (
+                    parse_float(item.get("current_salary_num")) is not None
+                    or parse_amount_like(salary_text) is not None
+                    or (bool(salary_text) and salary_text != "-")
+                )
+                if is_rights_marker or not has_current_salary:
+                    continue
                 contract_parts = [
                     str(item.get("team_code") or "").strip().upper(),
                     str(item.get("position") or "").strip(),
@@ -6317,7 +6338,6 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 birds = normalize_bird_years(item.get("years_left"))
                 if birds is not None:
                     contract_parts.append(f"{birds} birds")
-                salary_text = str(item.get("current_salary_text") or "").strip()
                 if salary_text:
                     contract_parts.append(salary_text)
                 profiles[profile_id].update(
@@ -6339,7 +6359,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
             free_agent_cur = conn.execute(
                 """
-                SELECT id AS free_agent_id, profile_id, position, bird_rights, rating, years_left
+                SELECT
+                    id AS free_agent_id,
+                    profile_id,
+                    position,
+                    bird_rights,
+                    rating,
+                    years_left,
+                    free_agent_type,
+                    source,
+                    rights_team_code
                 FROM free_agents
                 WHERE profile_id IS NOT NULL
                 ORDER BY profile_id, id
@@ -6350,11 +6379,18 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 profile_id = parse_int(item.get("profile_id"))
                 if profile_id is None or profile_id not in profiles or profiles[profile_id]["active_contract"]:
                     continue
+                rights_team_code = str(item.get("rights_team_code") or "").strip().upper() or None
+                status_label = "Agente libre"
+                if rights_team_code:
+                    status_label = f"Agente libre · derechos {rights_team_code}"
                 profiles[profile_id].update(
                     {
                         "status": "free_agent",
-                        "status_label": "Agente libre",
+                        "status_label": status_label,
                         "free_agent_id": item.get("free_agent_id"),
+                        "free_agent_type": item.get("free_agent_type"),
+                        "free_agent_source": item.get("source"),
+                        "rights_team_code": rights_team_code,
                         "position": profiles[profile_id].get("position") or item.get("position"),
                         "bird_rights": profiles[profile_id].get("bird_rights") or item.get("bird_rights"),
                         "rating": profiles[profile_id].get("rating") or item.get("rating"),
@@ -10481,11 +10517,68 @@ class LeagueDB(DatabaseMaintenanceMixin):
         changed += int(cur.rowcount or 0)
         return changed
 
+    def _sync_uncontracted_profile_free_agents(self, conn: sqlite3.Connection) -> int:
+        """Ensure canonical player profiles without a roster row are visible as free agents."""
+        timestamp = now_iso()
+        changed = 0
+        cur = conn.execute(
+            """
+            DELETE FROM free_agents
+            WHERE source = ?
+                AND profile_id IN (
+                    SELECT DISTINCT profile_id
+                    FROM players
+                    WHERE profile_id IS NOT NULL
+                )
+            """,
+            (FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,),
+        )
+        changed += int(cur.rowcount or 0)
+
+        cur = conn.execute(
+            """
+            INSERT INTO free_agents (
+                profile_id, name, position, bird_rights, rating, years_left,
+                free_agent_type, source, rights_team_code, agent, notes, created_at, updated_at
+            )
+            SELECT
+                pp.id,
+                pp.name,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                ?,
+                ?,
+                NULL,
+                NULL,
+                'Agente libre sin derechos Bird retenidos.',
+                ?,
+                ?
+            FROM player_profiles pp
+            LEFT JOIN players p ON p.profile_id = pp.id
+            LEFT JOIN free_agents f ON f.profile_id = pp.id
+            WHERE p.id IS NULL
+                AND f.id IS NULL
+                AND TRIM(COALESCE(pp.name, '')) != ''
+            """,
+            (
+                FREE_AGENT_TYPE_UNRESTRICTED,
+                FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,
+                timestamp,
+                timestamp,
+            ),
+        )
+        changed += int(cur.rowcount or 0)
+        return changed
+
     def list_free_agents(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
-            if self._sync_cap_hold_free_agents(conn, settings):
+            changed = self._sync_cap_hold_free_agents(conn, settings)
+            changed += self._sync_uncontracted_profile_free_agents(conn)
+            if changed:
                 conn.commit()
             cur = conn.execute(
                 """
@@ -10692,7 +10785,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
-            if self._sync_cap_hold_free_agents(conn, settings):
+            changed = self._sync_cap_hold_free_agents(conn, settings)
+            changed += self._sync_uncontracted_profile_free_agents(conn)
+            if changed:
                 conn.commit()
             cur = conn.execute(
                 """

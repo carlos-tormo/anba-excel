@@ -4909,7 +4909,7 @@ function leaguePlayerTeamHtml(player) {
 
 function leaguePlayerStatusHtml(player) {
   const status = String(player?.status || 'inactive').trim().toLowerCase();
-  const label = String(player?.status_label || 'Sin contrato').trim();
+  const label = String(player?.status_label || 'Agente libre').trim();
   return `<span class="league-player-status league-player-status--${escapeHtml(status)}">${escapeHtml(label)}</span>`;
 }
 
