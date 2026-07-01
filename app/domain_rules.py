@@ -1,6 +1,7 @@
 import json
 import math
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 
@@ -344,6 +345,35 @@ def row_salary_num(row: Dict[str, Any], season: int) -> float:
     return parse_amount_like(row.get(f"salary_{season}_text")) or 0.0
 
 
+def row_salary_history_num(row: Dict[str, Any], season: int) -> float:
+    value = row.get(f"salary_{season}_history_num")
+    if value is not None:
+        return float(value or 0.0)
+    return parse_amount_like(row.get(f"salary_{season}_history_text")) or 0.0
+
+
+def cap_hold_previous_salary_num(row: Dict[str, Any], season: int) -> float:
+    previous_season = int(season) - 1
+    direct_salary = row_salary_num(row, previous_season)
+    if direct_salary > 0:
+        return direct_salary
+    return row_salary_history_num(row, previous_season)
+
+
+def salary_text_indicates_minimum(value: Any) -> bool:
+    normalized = unicodedata.normalize("NFKD", str(value or "").strip().lower())
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = normalized.replace(".", "").replace(" ", "")
+    return normalized in {"min", "minimo", "minimum"} or normalized.startswith("minimo")
+
+
+def cap_hold_previous_salary_is_minimum(row: Dict[str, Any], season: int) -> bool:
+    previous_season = int(season) - 1
+    return salary_text_indicates_minimum(row.get(f"salary_{previous_season}_text")) or salary_text_indicates_minimum(
+        row.get(f"salary_{previous_season}_history_text")
+    )
+
+
 def has_numeric_season_salary(row: Dict[str, Any], season: int) -> bool:
     value = row.get(f"salary_{season}_num")
     if value is not None:
@@ -518,19 +548,20 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
     if is_two_way_player(row):
         return capped_hold(minimum_salary_for_season(salary_cap, 1, 1)) if is_qo else 0.0
 
-    previous_salary = row_salary_num(row, season - 1)
+    previous_salary = cap_hold_previous_salary_num(row, season)
+    previous_salary_is_minimum = cap_hold_previous_salary_is_minimum(row, season)
     if is_qo and is_restricted_rights_player(row):
         average_salary = parse_float(settings.get(f"average_salary_{season - 1}")) or 0.0
         if previous_salary <= 0 or average_salary <= 0:
             return 0.0
         return capped_hold(previous_salary * (3.0 if previous_salary < average_salary else 2.5))
 
-    if not bird_code or previous_salary <= 0:
+    if not bird_code or (previous_salary <= 0 and not (bird_code == "NB" and previous_salary_is_minimum)):
         return 0.0
     if bird_code == "NB":
         rights = str(row.get("bird_rights") or "").strip().upper()
         previous_cap = parse_float(settings.get(f"salary_cap_{season - 1}")) or salary_cap
-        if rights in {"MIN", "TW"} or salary_looks_like_minimum(previous_salary, previous_cap):
+        if rights in {"MIN", "TW"} or previous_salary_is_minimum or salary_looks_like_minimum(previous_salary, previous_cap):
             return capped_hold(minimum_salary_for_season(salary_cap, 2, 1))
         return capped_hold(previous_salary * 1.2)
     if bird_code == "EB":

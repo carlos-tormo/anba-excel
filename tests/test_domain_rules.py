@@ -61,6 +61,30 @@ class DomainRulesTests(unittest.TestCase):
 
         self.assertEqual(13_000_000, cap_hold_amount(row, 2026, settings, 154_647_000))
 
+    def test_cap_hold_amount_uses_previous_salary_history_fallback(self) -> None:
+        row = {
+            "salary_2025_num": None,
+            "salary_2025_history_num": 10_000_000,
+            "salary_2026_text": "EB",
+            "bird_rights": "Reg",
+        }
+        settings = {"free_agency_mode": "1", "current_year": "2026"}
+
+        self.assertEqual(13_000_000, cap_hold_amount(row, 2026, settings, 154_647_000))
+
+    def test_non_bird_hold_accepts_text_only_previous_minimum(self) -> None:
+        row = {
+            "salary_2025_text": "Mínimo",
+            "salary_2026_text": "NB",
+            "bird_rights": "Reg",
+        }
+        settings = {"free_agency_mode": "1", "current_year": "2026", "salary_cap_2025": "154647000"}
+
+        self.assertEqual(
+            minimum_salary_for_season(154_647_000, 2, 1),
+            cap_hold_amount(row, 2026, settings, 154_647_000),
+        )
+
     def test_cap_hold_amount_is_capped_by_low_yos_max_salary(self) -> None:
         row = {
             "salary_2025_num": 20_000_000,

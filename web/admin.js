@@ -919,6 +919,36 @@ function salaryNumericValue(row, season) {
   return parseAmount(row?.[`salary_${season}_text`]) || 0;
 }
 
+function salaryHistoryNumericValue(row, season) {
+  const direct = row?.[`salary_${season}_history_num`];
+  if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) {
+    return Number(direct);
+  }
+  return parseAmount(row?.[`salary_${season}_history_text`]) || 0;
+}
+
+function capHoldPreviousSalaryValue(row, season) {
+  const previousSeason = Number(season) - 1;
+  const directSalary = salaryNumericValue(row, previousSeason);
+  return directSalary > 0 ? directSalary : salaryHistoryNumericValue(row, previousSeason);
+}
+
+function salaryTextIndicatesMinimum(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[.\s]/g, '');
+  return ['min', 'minimo', 'minimum'].includes(normalized) || normalized.startsWith('minimo');
+}
+
+function capHoldPreviousSalaryIsMinimum(row, season) {
+  const previousSeason = Number(season) - 1;
+  return salaryTextIndicatesMinimum(row?.[`salary_${previousSeason}_text`])
+    || salaryTextIndicatesMinimum(row?.[`salary_${previousSeason}_history_text`]);
+}
+
 function seasonSalaryTextCode(row, season) {
   return String(row?.[`salary_${season}_text`] || '').trim().toUpperCase();
 }
@@ -998,13 +1028,14 @@ function capHoldClampInfo(player, season, amount) {
 }
 
 function birdCapHoldInfo(player, season, code) {
-  const previousSalary = salaryNumericValue(player, season - 1);
-  if (!previousSalary || previousSalary <= 0) {
+  const previousSalary = capHoldPreviousSalaryValue(player, season);
+  const previousSalaryIsMinimum = capHoldPreviousSalaryIsMinimum(player, season);
+  if ((!previousSalary || previousSalary <= 0) && !(code === 'NB' && previousSalaryIsMinimum)) {
     return pendingCapHold(`${code} hold`, 'Cap hold pendiente: falta salario anterior.');
   }
   if (code === 'NB') {
     const rights = String(player?.bird_rights || '').trim().toUpperCase();
-    if (rights === 'MIN' || rights === 'TW' || salaryLooksLikeMinimum(previousSalary, season - 1)) {
+    if (rights === 'MIN' || rights === 'TW' || previousSalaryIsMinimum || salaryLooksLikeMinimum(previousSalary, season - 1)) {
       return calculatedCapHold(
         minimumSalaryForSeason(season, 2, 1),
         'NB hold',
@@ -1069,7 +1100,7 @@ function capHoldInfo(player, season) {
   }
 
   if (isQualifyingOffer && isRestrictedRightsPlayer(player)) {
-    const previousSalary = salaryNumericValue(player, season - 1);
+    const previousSalary = capHoldPreviousSalaryValue(player, season);
     const averageSalary = averageSalaryForSeason(season - 1);
     if (!previousSalary || previousSalary <= 0) {
       return pendingCapHold(
@@ -1390,8 +1421,74 @@ function balanceInfoControlHtml(tooltip) {
   `;
 }
 
+let balanceInfoPortal = null;
+
+function ensureBalanceInfoPortal() {
+  if (balanceInfoPortal) return balanceInfoPortal;
+  balanceInfoPortal = document.createElement('div');
+  balanceInfoPortal.className = 'balance-info-popover balance-info-popover--portal';
+  balanceInfoPortal.setAttribute('role', 'tooltip');
+  document.body.appendChild(balanceInfoPortal);
+  return balanceInfoPortal;
+}
+
+function balanceInfoTextForButton(btn) {
+  const wrap = btn.closest('.balance-value-wrap');
+  return wrap?.querySelector('.balance-info-popover')?.textContent || '';
+}
+
+function showBalanceInfoPopover(btn) {
+  const text = balanceInfoTextForButton(btn);
+  if (!text) return;
+  const portal = ensureBalanceInfoPortal();
+  portal.textContent = text;
+  portal.classList.add('is-visible');
+  portal.style.left = '0px';
+  portal.style.top = '0px';
+
+  const rect = btn.getBoundingClientRect();
+  const gap = 8;
+  const margin = 12;
+  const width = portal.offsetWidth;
+  const height = portal.offsetHeight;
+  const maxLeft = window.innerWidth - width - margin;
+  let left = Math.min(Math.max(margin, rect.right - width), Math.max(margin, maxLeft));
+  let top = rect.bottom + gap;
+  if (top + height > window.innerHeight - margin) {
+    top = Math.max(margin, rect.top - height - gap);
+  }
+  portal.style.left = `${left}px`;
+  portal.style.top = `${top}px`;
+}
+
+function hideBalanceInfoPortal() {
+  if (balanceInfoPortal) balanceInfoPortal.classList.remove('is-visible');
+}
+
 function closeBalanceInfoPopovers() {
   document.querySelectorAll('.balance-info-btn.is-open').forEach((btn) => btn.classList.remove('is-open'));
+  hideBalanceInfoPortal();
+}
+
+function setupBalanceInfoButton(btn) {
+  btn.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const shouldOpen = !btn.classList.contains('is-open');
+    closeBalanceInfoPopovers();
+    if (shouldOpen) {
+      btn.classList.add('is-open');
+      showBalanceInfoPopover(btn);
+    }
+  });
+  btn.addEventListener('mouseenter', () => showBalanceInfoPopover(btn));
+  btn.addEventListener('mouseleave', () => {
+    if (!btn.classList.contains('is-open')) hideBalanceInfoPortal();
+  });
+  btn.addEventListener('focus', () => showBalanceInfoPopover(btn));
+  btn.addEventListener('blur', () => {
+    if (!btn.classList.contains('is-open')) hideBalanceInfoPortal();
+  });
 }
 
 function displayBalanceSeason() {
@@ -7079,15 +7176,7 @@ function renderImportantFigures() {
       `).join('')}
     </tbody>
   `;
-  table.querySelectorAll('[data-balance-info-toggle]').forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const shouldOpen = !btn.classList.contains('is-open');
-      closeBalanceInfoPopovers();
-      btn.classList.toggle('is-open', shouldOpen);
-    });
-  });
+  table.querySelectorAll('[data-balance-info-toggle]').forEach((btn) => setupBalanceInfoButton(btn));
 
   const appendix = document.getElementById('importantFiguresAppendix');
   if (!appendix) return;

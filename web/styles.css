@@ -7275,6 +7275,27 @@ td.salary-option--nb .salary-pct {
   visibility: visible;
   transform: translateY(0);
 }
+.balance-info-popover:not(.balance-info-popover--portal) {
+  display: none;
+}
+.balance-info-popover--portal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: auto;
+  z-index: 10000;
+  opacity: 0;
+  visibility: hidden;
+  transform: none;
+  pointer-events: none;
+}
+.balance-info-popover--portal.is-visible {
+  opacity: 1;
+  visibility: visible;
+}
+.balance-info-popover--portal::before {
+  display: none;
+}
 .figures-board {
   display: grid;
   gap: 18px;

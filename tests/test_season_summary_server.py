@@ -203,6 +203,42 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(round(float(summary["room_to_second_apron"])), round(float(tracker_row["espacio_2do_apron"])))
         self.assertEqual(round(float(summary["luxury_tax"])), round(float(tracker_row["luxury_tax"])))
 
+    def test_cap_hold_uses_salary_history_backfilled_from_season_snapshot(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("free_agency_mode", "1")
+        self.db.update_setting("salary_cap_2025", "100000000")
+        self.db.update_setting("salary_cap_2026", "100000000")
+        self.db.update_setting("average_salary_2025", "15000000")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Historical Hold Player",
+                "bird_rights": "Reg",
+                "position": "PG",
+                "salary_2025_text": "10000000",
+                "salary_2026_text": "FB",
+            },
+        )
+        self.assertIsNotNone(player_id)
+
+        self.db.progress_to_next_year()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM player_salary_history")
+            conn.execute(
+                "UPDATE players SET salary_2025_text = NULL, salary_2025_num = NULL WHERE id = ?",
+                (int(player_id),),
+            )
+            conn.commit()
+
+        self.db.ensure_auth_schema()
+        team = self.db.get_team("ATL")
+        player = next(row for row in team["players"] if row["id"] == int(player_id))
+        summary = team["season_summaries"]["2026"]
+        cap_lines = {line["label"]: round(float(line.get("amount") or 0)) for line in summary["balance_breakdowns"]["cap_total"]}
+
+        self.assertEqual(10_000_000, round(float(player["salary_2025_history_num"])))
+        self.assertEqual(19_000_000, cap_lines["Jugador - Historical Hold Player (FB hold)"])
+
     def test_tracker_can_select_future_season_and_hard_cap(self) -> None:
         self.db.update_setting("current_year", "2025")
         self.assertTrue(self.db.update_team_apron_hard_cap("ATL", 2026, "second"))

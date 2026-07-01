@@ -1766,6 +1766,23 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS player_salary_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER REFERENCES player_profiles(id) ON DELETE CASCADE,
+                    player_id INTEGER,
+                    team_code TEXT,
+                    season_year INTEGER NOT NULL,
+                    salary_text TEXT,
+                    salary_num REAL,
+                    source TEXT NOT NULL DEFAULT 'season_rollover',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(profile_id, season_year)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS player_transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile_id INTEGER NOT NULL REFERENCES player_profiles(id) ON DELETE CASCADE,
@@ -2030,6 +2047,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_profile_id ON free_agents(profile_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_source ON free_agents(source)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_profiles_name ON player_profiles(name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_player_salary_history_profile_season ON player_salary_history(profile_id, season_year)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_player_salary_history_player_season ON player_salary_history(player_id, season_year)")
             asset_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(assets)").fetchall()
@@ -2149,6 +2168,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             self._backfill_dead_contract_profiles(conn)
             self._backfill_player_transactions(conn)
+            self._backfill_player_salary_history_from_snapshots(conn)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_dead_contracts_profile_id ON dead_contracts(profile_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_transactions_profile_created ON player_transactions(profile_id, created_at DESC, id DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_transactions_source_log ON player_transactions(source_log_id)")
@@ -2303,6 +2323,221 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.execute("UPDATE free_agents SET profile_id = ? WHERE id = ?", (profile_id, int(row["id"])))
 
         self._backfill_dead_contract_profiles(conn)
+
+    def _clean_salary_history_value(self, salary_text: Any, salary_num: Any) -> Dict[str, Any]:
+        text = str(salary_text or "").strip() or None
+        numeric = parse_float(salary_num)
+        if numeric is None and text:
+            numeric = parse_amount_like(text)
+        if numeric is not None and not math.isfinite(float(numeric)):
+            numeric = None
+        return {
+            "text": text,
+            "num": float(numeric) if numeric is not None else None,
+        }
+
+    def _upsert_player_salary_history_row_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        profile_id: Any,
+        player_id: Any,
+        team_code: Any,
+        season_year: Any,
+        salary_text: Any,
+        salary_num: Any,
+        source: str,
+        timestamp: Optional[str] = None,
+    ) -> bool:
+        parsed_profile_id = parse_int(profile_id)
+        parsed_season_year = parse_int(season_year)
+        if parsed_profile_id is None or parsed_season_year is None:
+            return False
+        cleaned = self._clean_salary_history_value(salary_text, salary_num)
+        if cleaned["text"] is None and cleaned["num"] is None:
+            return False
+        now = timestamp or now_iso()
+        conn.execute(
+            """
+            INSERT INTO player_salary_history (
+                profile_id, player_id, team_code, season_year, salary_text,
+                salary_num, source, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, season_year)
+            DO UPDATE SET
+                player_id = COALESCE(excluded.player_id, player_salary_history.player_id),
+                team_code = COALESCE(excluded.team_code, player_salary_history.team_code),
+                salary_text = COALESCE(excluded.salary_text, player_salary_history.salary_text),
+                salary_num = COALESCE(excluded.salary_num, player_salary_history.salary_num),
+                source = excluded.source,
+                updated_at = excluded.updated_at
+            """,
+            (
+                parsed_profile_id,
+                parse_int(player_id),
+                normalize_team_code(team_code),
+                parsed_season_year,
+                cleaned["text"],
+                cleaned["num"],
+                str(source or "unknown").strip() or "unknown",
+                now,
+                now,
+            ),
+        )
+        return True
+
+    def _store_player_salary_history_for_season_conn(
+        self,
+        conn: sqlite3.Connection,
+        season_year: int,
+        timestamp: Optional[str] = None,
+        source: str = "season_rollover",
+    ) -> int:
+        text_col = f"salary_{int(season_year)}_text"
+        num_col = f"salary_{int(season_year)}_num"
+        player_cols = {row["name"] for row in conn.execute("PRAGMA table_info(players)").fetchall()}
+        if text_col not in player_cols and num_col not in player_cols:
+            return 0
+        rows = conn.execute(
+            f"""
+            SELECT
+                p.id,
+                p.profile_id,
+                t.code AS team_code,
+                {text_col if text_col in player_cols else "NULL"} AS salary_text,
+                {num_col if num_col in player_cols else "NULL"} AS salary_num
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+            ORDER BY p.id
+            """
+        ).fetchall()
+        count = 0
+        for row in rows:
+            profile_id = parse_int(row["profile_id"])
+            if profile_id is None:
+                profile_id = self._ensure_profile_for_player(conn, int(row["id"]), timestamp)
+            if self._upsert_player_salary_history_row_conn(
+                conn,
+                profile_id=profile_id,
+                player_id=row["id"],
+                team_code=row["team_code"],
+                season_year=season_year,
+                salary_text=row["salary_text"],
+                salary_num=row["salary_num"],
+                source=source,
+                timestamp=timestamp,
+            ):
+                count += 1
+        return count
+
+    def _unique_profile_name_map_conn(self, conn: sqlite3.Connection) -> Dict[str, int]:
+        rows = conn.execute(
+            """
+            SELECT lower(trim(name)) AS name_key, MIN(id) AS id, COUNT(*) AS count
+            FROM player_profiles
+            WHERE COALESCE(trim(name), '') != ''
+            GROUP BY lower(trim(name))
+            HAVING COUNT(*) = 1
+            """
+        ).fetchall()
+        return {str(row["name_key"]): int(row["id"]) for row in rows if row["name_key"]}
+
+    def _backfill_player_salary_history_from_snapshots(self, conn: sqlite3.Connection) -> int:
+        snapshot_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'season_snapshots'"
+        ).fetchone()
+        history_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'player_salary_history'"
+        ).fetchone()
+        if not snapshot_table or not history_table:
+            return 0
+
+        active_profile_by_player_id = {
+            int(row["id"]): int(row["profile_id"])
+            for row in conn.execute("SELECT id, profile_id FROM players WHERE profile_id IS NOT NULL").fetchall()
+        }
+        profile_by_name = self._unique_profile_name_map_conn(conn)
+        rows = conn.execute("SELECT season_year, payload_json, created_at FROM season_snapshots ORDER BY id").fetchall()
+        count = 0
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            snapshot_season = parse_int(payload.get("season_year")) or parse_int(row["season_year"])
+            if snapshot_season is None:
+                continue
+            teams_payload = payload.get("teams") or []
+            if not isinstance(teams_payload, list):
+                continue
+            for team_payload in teams_payload:
+                if not isinstance(team_payload, dict):
+                    continue
+                team_info = team_payload.get("team") or {}
+                team_code = normalize_team_code(team_info.get("code") if isinstance(team_info, dict) else None)
+                players_payload = team_payload.get("players") or []
+                if not isinstance(players_payload, list):
+                    continue
+                for player in players_payload:
+                    if not isinstance(player, dict):
+                        continue
+                    profile_id = parse_int(player.get("profile_id"))
+                    player_id = parse_int(player.get("id"))
+                    if profile_id is None and player_id is not None:
+                        profile_id = active_profile_by_player_id.get(player_id)
+                    if profile_id is None:
+                        name_key = str(player.get("name") or "").strip().lower()
+                        profile_id = profile_by_name.get(name_key)
+                    if self._upsert_player_salary_history_row_conn(
+                        conn,
+                        profile_id=profile_id,
+                        player_id=player_id,
+                        team_code=team_code,
+                        season_year=snapshot_season,
+                        salary_text=player.get(f"salary_{snapshot_season}_text"),
+                        salary_num=player.get(f"salary_{snapshot_season}_num"),
+                        source="season_snapshot",
+                        timestamp=str(row["created_at"] or "") or now_iso(),
+                    ):
+                        count += 1
+        return count
+
+    def _attach_player_salary_history_conn(
+        self,
+        conn: sqlite3.Connection,
+        players: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        profile_ids = sorted({
+            parse_int(player.get("profile_id"))
+            for player in players
+            if parse_int(player.get("profile_id")) is not None
+        })
+        if not profile_ids:
+            return players
+        placeholders = ",".join("?" for _ in profile_ids)
+        rows = conn.execute(
+            f"""
+            SELECT profile_id, season_year, salary_text, salary_num
+            FROM player_salary_history
+            WHERE profile_id IN ({placeholders})
+            """,
+            profile_ids,
+        ).fetchall()
+        history: Dict[int, Dict[int, sqlite3.Row]] = {}
+        for row in rows:
+            profile_id = parse_int(row["profile_id"])
+            season_year = parse_int(row["season_year"])
+            if profile_id is None or season_year is None:
+                continue
+            history.setdefault(profile_id, {})[season_year] = row
+        for player in players:
+            profile_id = parse_int(player.get("profile_id"))
+            if profile_id is None:
+                continue
+            for season_year, row in history.get(profile_id, {}).items():
+                player[f"salary_{season_year}_history_text"] = row["salary_text"]
+                player[f"salary_{season_year}_history_num"] = row["salary_num"]
+        return players
 
     def _find_profile_id(
         self,
@@ -2574,7 +2809,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             """,
             (team_id,),
         )
-        return self._player_rows_from_cursor(cur, cur.fetchall())
+        return self._attach_player_salary_history_conn(conn, self._player_rows_from_cursor(cur, cur.fetchall()))
 
     def _ensure_profile_for_player(
         self,
@@ -3181,6 +3416,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 previous_year = 2025
             delta = max(0, int(next_year) - previous_year)
             timestamp = now_iso()
+            stored_salary_history = (
+                self._store_player_salary_history_for_season_conn(conn, previous_year, timestamp)
+                if delta > 0
+                else 0
+            )
             conn.execute(
                 """
                 INSERT INTO app_settings (key, value, updated_at)
@@ -3203,6 +3443,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return {
                 "previous_year": previous_year,
                 "current_year": int(next_year),
+                "salary_history_rows_stored": stored_salary_history,
                 "bird_year_steps": delta,
                 "bird_year_players_updated": updated_bird_years,
                 "players_moved_to_free_agents": moved_free_agents,
@@ -3235,6 +3476,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
             next_year = current_year + 1
             timestamp = now_iso()
+            stored_salary_history = self._store_player_salary_history_for_season_conn(conn, current_year, timestamp)
             conn.execute(
                 """
                 INSERT INTO app_settings (key, value, updated_at)
@@ -3253,6 +3495,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return {
                 "previous_year": current_year,
                 "current_year": next_year,
+                "salary_history_rows_stored": stored_salary_history,
                 "deleted_draft_assets": int(draft_rollover["deleted_draft_assets"]),
                 "deleted_draft_asset_years": draft_rollover["deleted_draft_asset_years"],
                 "future_draft_asset_years": draft_rollover["future_draft_asset_years"],
