@@ -57,7 +57,7 @@ class DomainRulesTests(unittest.TestCase):
             "salary_2026_text": "EB",
             "bird_rights": "Reg",
         }
-        settings = {"free_agency_mode": "1", "current_year": "2025"}
+        settings = {"free_agency_mode": "1", "current_year": "2026"}
 
         self.assertEqual(13_000_000, cap_hold_amount(row, 2026, settings, 154_647_000))
 
@@ -70,7 +70,7 @@ class DomainRulesTests(unittest.TestCase):
         }
         settings = {
             "free_agency_mode": "1",
-            "current_year": "2025",
+            "current_year": "2026",
             "average_salary_2025": "10000000",
         }
 
@@ -92,7 +92,7 @@ class DomainRulesTests(unittest.TestCase):
         }
         settings = {
             "free_agency_mode": "1",
-            "current_year": "2025",
+            "current_year": "2026",
             "average_salary_2025": "13254485",
         }
 
@@ -108,7 +108,7 @@ class DomainRulesTests(unittest.TestCase):
         }
         settings = {
             "free_agency_mode": "1",
-            "current_year": "2025",
+            "current_year": "2026",
             "average_salary_2025": "13254485",
         }
 
@@ -122,7 +122,7 @@ class DomainRulesTests(unittest.TestCase):
         }
         settings = {
             "free_agency_mode": "1",
-            "current_year": "2025",
+            "current_year": "2026",
             "average_salary_2025": "10000000",
         }
 
@@ -135,7 +135,7 @@ class DomainRulesTests(unittest.TestCase):
             "bird_rights": "TW",
             "is_two_way": 1,
         }
-        settings = {"free_agency_mode": "1", "current_year": "2025"}
+        settings = {"free_agency_mode": "1", "current_year": "2026"}
 
         self.assertEqual(
             minimum_salary_for_season(154_647_000, 1, 1),
@@ -143,7 +143,7 @@ class DomainRulesTests(unittest.TestCase):
         )
 
     def test_open_roster_spot_hold_uses_rookie_minimum_and_excludes_two_ways(self) -> None:
-        settings = {"free_agency_mode": "1", "current_year": "2025"}
+        settings = {"free_agency_mode": "1", "current_year": "2026"}
         players = [
             {"salary_2026_num": 10_000_000, "bird_rights": "Reg"},
             {"salary_2025_num": 636_435, "salary_2026_text": "QO", "bird_rights": "TW", "is_two_way": 1},
@@ -162,7 +162,7 @@ class DomainRulesTests(unittest.TestCase):
     def test_standard_cap_holds_count_for_open_roster_minimum_not_roster_limit(self) -> None:
         settings = {
             "free_agency_mode": "1",
-            "current_year": "2025",
+            "current_year": "2026",
             "average_salary_2025": "13254485",
         }
         players = [
@@ -181,7 +181,7 @@ class DomainRulesTests(unittest.TestCase):
         self.assertEqual({"standard": 10, "two_way": 0}, roster_counts)
 
     def test_two_way_contracts_count_only_against_two_way_roster_limit(self) -> None:
-        settings = {"free_agency_mode": "1", "current_year": "2025"}
+        settings = {"free_agency_mode": "1", "current_year": "2026"}
         players = [
             {"salary_2026_num": 10_000_000, "bird_rights": "Reg"},
             {"salary_2026_num": 636_435, "bird_rights": "TW", "is_two_way": 1},

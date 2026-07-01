@@ -155,14 +155,14 @@ OWNER_BACKGROUND_ALLOWED_MIME_TYPES = {
 }
 
 
-def normalize_player_happiness(value: Any) -> int:
+def normalize_player_happiness(value: Any) -> Any:
     raw = str(value or "").strip()
     if not raw:
         return 0
-    parsed = parse_int(raw)
-    if parsed is None or parsed < -10 or parsed > 10:
+    parsed = parse_float(raw)
+    if parsed is None or not math.isfinite(parsed) or parsed < -10 or parsed > 10:
         raise ValueError("invalid_happiness")
-    return parsed
+    return int(parsed) if float(parsed).is_integer() else parsed
 
 
 DISCORD_CUSTOM_IMAGE_ALLOWED_MIME_TYPES = {
@@ -1729,7 +1729,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     reference_image_url TEXT,
                     profile_notes TEXT,
                     transaction_notes TEXT,
-                    happiness INTEGER NOT NULL DEFAULT 0,
+                    happiness REAL NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -1984,7 +1984,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if "transaction_notes" not in profile_cols:
                 conn.execute("ALTER TABLE player_profiles ADD COLUMN transaction_notes TEXT")
             if "happiness" not in profile_cols:
-                conn.execute("ALTER TABLE player_profiles ADD COLUMN happiness INTEGER NOT NULL DEFAULT 0")
+                conn.execute("ALTER TABLE player_profiles ADD COLUMN happiness REAL NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_players_profile_id ON players(profile_id)")
             duplicate_active_profile = conn.execute(
                 """
@@ -4034,7 +4034,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             current_year = parse_int(settings.get("current_year")) or 2025
             if not parse_bool(settings.get("free_agency_mode")):
                 raise ValueError("free_agency_mode_required")
-            if season != int(current_year) + 1:
+            if season != int(current_year):
                 raise ValueError("invalid_renounce_season")
 
             cur = conn.execute(
@@ -6673,7 +6673,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
                 current_year = CAP_FORECAST_MIN_YEAR
-            default_tracker_year = current_year + 1 if parse_bool(settings.get("free_agency_mode")) else current_year
+            default_tracker_year = current_year
             requested_year = parse_int(season_year)
             tracker_year = requested_year if requested_year is not None else default_tracker_year
             tracker_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, tracker_year))
@@ -10234,7 +10234,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
             current_year = parse_int(settings.get("current_year")) or 2025
-            if not parse_bool(settings.get("free_agency_mode")) or int(season) != int(current_year) + 1:
+            if not parse_bool(settings.get("free_agency_mode")) or int(season) != int(current_year):
                 return None
 
             player_id = parse_int(player.get("id"))
@@ -10351,7 +10351,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return int(cur.rowcount or 0)
 
         current_year = parse_int(settings.get("current_year")) or 2025
-        season = int(current_year) + 1
+        season = int(current_year)
         salary_cap = (
             parse_float(settings.get(f"salary_cap_{season}"))
             or parse_float(settings.get("salary_cap_2025"))
@@ -10372,7 +10372,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 has_hold_marker = has_standard_cap_hold_marker(player, season)
                 is_expiring_contract = self._free_agency_expiring_contract_without_next_year(
                     player,
-                    int(current_year),
+                    int(current_year) - 1,
                     int(season),
                 )
                 if not has_restricted_option and hold_amount <= 0 and not has_hold_marker and not is_expiring_contract:
@@ -10391,7 +10391,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 default_notes = (
                     f"Cap hold retenido por {team_code} para {season_label(season)}"
                     if has_retained_rights
-                    else f"Contrato expirado tras {season_label(int(current_year))}"
+                    else f"Contrato expirado tras {season_label(int(current_year) - 1)}"
                 )
                 synced_bird_rights = self._cap_hold_free_agent_bird_rights_code(player, season) if has_retained_rights else None
                 synced_rights_team = team_code if has_retained_rights else None
@@ -15191,7 +15191,7 @@ QUALITY REQUIREMENTS
         current_year = parse_int(settings.get("current_year")) or CAP_FORECAST_MIN_YEAR
         if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
             current_year = CAP_FORECAST_MIN_YEAR
-        return int(current_year) + 1 if parse_bool(settings.get("free_agency_mode")) else int(current_year)
+        return int(current_year)
 
     def _settings_salary_cap_for_season(self, settings: Dict[str, Any], season: int) -> float:
         return float(
@@ -18631,7 +18631,7 @@ QUALITY REQUIREMENTS
                 renounced_free_agent_id: Optional[int] = None
                 settings = self.db.get_settings()
                 current_year = parse_int(settings.get("current_year")) or 2025
-                renounce_season = int(current_year) + 1
+                renounce_season = int(current_year)
                 renounce_field = f"salary_{renounce_season}_text"
                 if (
                     parse_bool(settings.get("free_agency_mode"))

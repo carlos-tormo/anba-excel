@@ -488,7 +488,7 @@ function freeAgencyModeActive() {
 
 function defaultSeasonViewStart() {
   const currentYear = currentSeasonStart();
-  return freeAgencyModeActive() ? currentYear + 1 : currentYear;
+  return currentYear;
 }
 
 function availableSeasonViewStarts() {

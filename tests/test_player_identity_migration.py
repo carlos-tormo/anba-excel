@@ -115,7 +115,7 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
     def test_player_happiness_is_private_admin_profile_data(self) -> None:
         profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
 
-        self.assertTrue(self.db.update_player_profile(profile_id, {"happiness": 7}))
+        self.assertTrue(self.db.update_player_profile(profile_id, {"happiness": 7.5}))
 
         public_player = next(
             player for player in self.db.list_players()
@@ -127,7 +127,7 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         )
 
         self.assertNotIn("happiness", public_player)
-        self.assertEqual(7, private_player["happiness"])
+        self.assertEqual(7.5, private_player["happiness"])
         with self.assertRaises(ValueError):
             self.db.update_player_profile(profile_id, {"happiness": 11})
 

@@ -130,7 +130,7 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         self.assertTrue(any("No se encontró agente libre" in message for message in messages))
 
     def test_free_agency_mode_adds_expiring_contract_without_cap_hold_marker_to_free_agents(self) -> None:
-        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("current_year", "2026")
         self.db.update_setting("free_agency_mode", "1")
         player_id = self.db.create_player(
             "ATL",

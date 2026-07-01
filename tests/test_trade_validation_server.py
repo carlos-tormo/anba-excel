@@ -160,7 +160,7 @@ class TradeValidationServerTests(unittest.TestCase):
 
     def test_cap_hold_assets_move_open_roster_minimum_without_roster_limit_slot(self) -> None:
         self.db.update_setting("free_agency_mode", "1")
-        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("current_year", "2026")
         self.db.update_setting("average_salary_2025", "13254485")
         for idx in range(10):
             self.db.create_player(

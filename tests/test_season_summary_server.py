@@ -45,7 +45,7 @@ class SeasonSummaryServerTests(unittest.TestCase):
             pass
 
     def test_free_agency_cap_hold_counts_for_cap_but_not_apron(self) -> None:
-        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("current_year", "2026")
         self.db.update_setting("free_agency_mode", "1")
         self.db.update_setting("salary_cap_2025", "154647000")
         self.db.update_setting("salary_cap_2026", "154647000")
@@ -156,8 +156,8 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertLess(float(summary["cap_figure"]), 90_000_000)
         self.assertEqual(0, round(float(summary["salary_floor_adjustment"])))
 
-    def test_tracker_uses_free_agency_default_season(self) -> None:
-        self.db.update_setting("current_year", "2025")
+    def test_tracker_uses_free_agency_current_season(self) -> None:
+        self.db.update_setting("current_year", "2026")
         self.db.update_setting("free_agency_mode", "1")
         self.db.update_setting("salary_cap_2025", "154647000")
         self.db.update_setting("salary_cap_2026", "154647000")
@@ -294,7 +294,7 @@ class SeasonSummaryServerTests(unittest.TestCase):
             self.assertEqual(0, player[f"salary_{season}_note"])
 
     def test_gm_can_request_bird_rights_renounce_in_free_agency_mode(self) -> None:
-        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("current_year", "2026")
         self.db.update_setting("free_agency_mode", "1")
         self.db.update_setting("salary_cap_2026", "154647000")
         player_id = self.db.create_player(

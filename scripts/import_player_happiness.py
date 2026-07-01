@@ -4,7 +4,7 @@
 Expected columns, with flexible Spanish/English aliases:
 
     profile_id,player_name,felicidad
-    275,Nikola Jokic,8
+    275,Nikola Jokic,8.5
 
 `profile_id` is preferred. If it is missing, the script tries an exact
 case-insensitive name match against the player profile catalog.
@@ -37,6 +37,7 @@ import argparse
 import csv
 import getpass
 import json
+import math
 import os
 import re
 import sqlite3
@@ -68,7 +69,7 @@ class ImportRow:
     line_number: int
     profile_id: Optional[int]
     player_name: str
-    happiness: int
+    happiness: Any
 
 
 @dataclass
@@ -76,8 +77,8 @@ class ResolvedRow:
     line_number: int
     profile_id: int
     player_name: str
-    current_happiness: Optional[int]
-    next_happiness: int
+    current_happiness: Optional[Any]
+    next_happiness: Any
     warning: str = ""
 
 
@@ -105,10 +106,26 @@ def parse_int(value: Any) -> Optional[int]:
     return int(number)
 
 
-def parse_happiness(value: Any) -> int:
-    number = parse_int(value)
+def parse_decimal(value: Any) -> Optional[Any]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace(",", ".")
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def parse_happiness(value: Any) -> Any:
+    number = parse_decimal(value)
     if number is None or number < -10 or number > 10:
-        raise ValueError("felicidad debe ser un entero entre -10 y 10")
+        raise ValueError("felicidad debe ser un número entre -10 y 10")
     return number
 
 
@@ -143,7 +160,11 @@ def find_column(fieldnames: Iterable[str], aliases: set[str]) -> Optional[str]:
 
 
 def parse_rows(csv_text: str) -> Tuple[List[ImportRow], List[str]]:
-    reader = csv.DictReader(csv_text.splitlines())
+    try:
+        dialect = csv.Sniffer().sniff(csv_text[:4096], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(csv_text.splitlines(), dialect=dialect)
     if not reader.fieldnames:
         return [], ["El CSV no tiene cabecera."]
     profile_col = find_column(reader.fieldnames, PROFILE_ID_HEADERS)
@@ -219,7 +240,7 @@ class ApiClient:
         response = self.request("GET", "/api/admin/players")
         return list(response.get("players") or [])
 
-    def update_happiness(self, profile_id: int, happiness: int) -> None:
+    def update_happiness(self, profile_id: int, happiness: Any) -> None:
         self.request("PATCH", f"/api/player-profiles/{profile_id}", {"happiness": happiness})
 
 
@@ -241,14 +262,14 @@ def db_list_players(db_path: str) -> List[Dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
-def db_update_happiness(db_path: str, profile_id: int, happiness: int) -> None:
+def db_update_happiness(db_path: str, profile_id: int, happiness: Any) -> None:
     with sqlite3.connect(db_path) as conn:
         profile_cols = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(player_profiles)").fetchall()
         }
         if "happiness" not in profile_cols:
-            conn.execute("ALTER TABLE player_profiles ADD COLUMN happiness INTEGER NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE player_profiles ADD COLUMN happiness REAL NOT NULL DEFAULT 0")
         cur = conn.execute(
             """
             UPDATE player_profiles
@@ -308,7 +329,7 @@ def resolve_rows(import_rows: List[ImportRow], players: List[Dict[str, Any]]) ->
                 line_number=item.line_number,
                 profile_id=profile_id,
                 player_name=str(profile.get("name") or item.player_name),
-                current_happiness=parse_int(profile.get("happiness")),
+                current_happiness=parse_decimal(profile.get("happiness")),
                 next_happiness=item.happiness,
                 warning=warning,
             )

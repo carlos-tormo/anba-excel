@@ -497,7 +497,7 @@ def cap_hold_amount(row: Dict[str, Any], season: int, settings: Dict[str, str], 
     if not parse_bool(settings.get("free_agency_mode")):
         return 0.0
     current_year = parse_int(settings.get("current_year")) or 2025
-    if int(season) != int(current_year) + 1:
+    if int(season) != int(current_year):
         return 0.0
 
     def capped_hold(raw_amount: float) -> float:
@@ -557,7 +557,7 @@ def open_roster_spot_cap_hold(players: List[Dict[str, Any]], season: int, settin
     if not parse_bool(settings.get("free_agency_mode")):
         return {"roster_count": 0.0, "open_spots": 0.0, "minimum_salary": 0.0, "amount": 0.0}
     current_year = parse_int(settings.get("current_year")) or 2025
-    if int(season) != int(current_year) + 1:
+    if int(season) != int(current_year):
         return {"roster_count": 0.0, "open_spots": 0.0, "minimum_salary": 0.0, "amount": 0.0}
 
     roster_count = sum(

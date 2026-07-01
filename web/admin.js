@@ -709,7 +709,7 @@ function freeAgencyModeActive() {
 
 function defaultSeasonViewStart() {
   const currentYear = currentSeasonStart();
-  return freeAgencyModeActive() ? currentYear + 1 : currentYear;
+  return currentYear;
 }
 
 function availableSeasonViewStarts() {
@@ -5957,7 +5957,7 @@ function renderLeaguePlayers() {
       <td>${leaguePlayerStatusHtml(player)}</td>
       <td>${leaguePlayerTeamHtml(player)}</td>
       <td><input class="player-profile-input player-profile-input--tiny" data-player-profile-field="experience_years" type="number" min="0" max="50" value="${player.experience_years == null ? '' : escapeHtml(player.experience_years)}"></td>
-      <td><input class="player-profile-input player-profile-input--tiny" data-player-profile-field="happiness" type="number" min="-10" max="10" step="1" value="${player.happiness == null ? '0' : escapeHtml(player.happiness)}" aria-label="Felicidad"></td>
+      <td><input class="player-profile-input player-profile-input--tiny" data-player-profile-field="happiness" type="number" min="-10" max="10" step="any" value="${player.happiness == null ? '0' : escapeHtml(player.happiness)}" aria-label="Felicidad"></td>
       <td>${leaguePlayerProfileFieldsHtml(player)}</td>
       <td>${leaguePlayerContractHtml(player)}</td>
       <td>${leaguePlayerLogsHtml(player)}</td>
