@@ -11041,6 +11041,40 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if player_payload.get(key) in (None, "") and agent.get(key) not in (None, ""):
                 player_payload[key] = agent.get(key)
         player_payload.setdefault("signed_as_free_agent", True)
+
+        profile_id = parse_int(player_payload.get("profile_id")) or parse_int(agent.get("profile_id"))
+        normalized_team_code = normalize_team_code(team_code)
+        if profile_id is not None:
+            with self.connect() as conn:
+                active_rows = conn.execute(
+                    """
+                    SELECT p.id, t.code AS team_code
+                    FROM players p
+                    JOIN teams t ON t.id = p.team_id
+                    WHERE p.profile_id = ?
+                    ORDER BY p.id
+                    """,
+                    (int(profile_id),),
+                ).fetchall()
+                if active_rows:
+                    same_team_row = next(
+                        (
+                            row for row in active_rows
+                            if normalize_team_code(row["team_code"]) == normalized_team_code
+                        ),
+                        None,
+                    )
+                    if not same_team_row:
+                        raise ValueError("profile_has_active_contract")
+                    return self._apply_free_agent_contract_to_active_player(
+                        conn,
+                        int(same_team_row["id"]),
+                        free_agent_id,
+                        normalized_team_code,
+                        agent,
+                        player_payload,
+                    )
+
         player_id = self.create_player(team_code, player_payload)
         if not player_id:
             return None
@@ -11059,6 +11093,155 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.commit()
         self.delete_free_agent(free_agent_id, record_transaction=False)
+        return player_id
+
+    def _apply_free_agent_contract_to_active_player(
+        self,
+        conn: sqlite3.Connection,
+        player_id: int,
+        free_agent_id: int,
+        team_code: str,
+        agent: Dict[str, Any],
+        player_payload: Dict[str, Any],
+    ) -> Optional[int]:
+        player = conn.execute(
+            """
+            SELECT p.id, p.profile_id, COALESCE(pp.name, p.name) AS player_name, t.code AS team_code
+            FROM players p
+            LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+            JOIN teams t ON t.id = p.team_id
+            WHERE p.id = ?
+            """,
+            (player_id,),
+        ).fetchone()
+        if not player:
+            return None
+        if normalize_team_code(player["team_code"]) != normalize_team_code(team_code):
+            raise ValueError("profile_has_active_contract")
+
+        settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings").fetchall()}
+        current_year = parse_int(settings.get("current_year")) or PLAYER_CONTRACT_SEASONS[0]
+        touched_years = [
+            season for season in PLAYER_CONTRACT_SEASONS
+            if f"salary_{season}_text" in player_payload or f"option_{season}" in player_payload
+        ]
+        start_year = min(touched_years) if touched_years else int(current_year)
+        timestamp = now_iso()
+        assignments: List[str] = []
+        values: List[Any] = []
+
+        scalar_fields = [
+            "name",
+            "bird_rights",
+            "rating",
+            "position",
+            "years_left",
+            "notes",
+            "reference_image_url",
+            "profile_notes",
+        ]
+        for field in scalar_fields:
+            if field not in player_payload:
+                continue
+            assignments.append(f"{field} = ?")
+            if field == "years_left":
+                values.append(normalize_bird_years(player_payload.get(field)))
+            else:
+                values.append(player_payload.get(field))
+
+        if "experience_years" in player_payload:
+            assignments.append("experience_years = ?")
+            values.append(normalize_experience_years(player_payload.get("experience_years")))
+
+        assignments.append("signed_as_free_agent = ?")
+        values.append(1 if parse_bool(player_payload.get("signed_as_free_agent", True)) else 0)
+
+        if "bird_rights" in player_payload:
+            assignments.append("is_two_way = ?")
+            values.append(1 if str(player_payload.get("bird_rights") or "").upper() == "TW" else 0)
+
+        for season in PLAYER_CONTRACT_SEASONS:
+            if season < int(start_year):
+                continue
+            salary_field = f"salary_{season}_text"
+            salary_value = player_payload.get(salary_field) if salary_field in player_payload else None
+            assignments.append(f"{salary_field} = ?")
+            values.append(salary_value)
+            assignments.append(f"salary_{season}_num = ?")
+            values.append(parse_float(salary_value))
+
+            guaranteed_field = f"salary_{season}_guaranteed_text"
+            assignments.append(f"{guaranteed_field} = ?")
+            values.append(player_payload.get(guaranteed_field) if guaranteed_field in player_payload else None)
+
+            note_text_field = f"salary_{season}_note_text"
+            assignments.append(f"{note_text_field} = ?")
+            values.append(player_payload.get(note_text_field) if note_text_field in player_payload else None)
+
+            option_field = f"option_{season}"
+            assignments.append(f"{option_field} = ?")
+            values.append(player_payload.get(option_field) if option_field in player_payload else None)
+
+            for bool_suffix in ("provisional", "partially_guaranteed", "note"):
+                bool_field = f"salary_{season}_{bool_suffix}"
+                assignments.append(f"{bool_field} = ?")
+                values.append(1 if parse_bool(player_payload.get(bool_field)) else 0)
+
+        assignments.append("updated_at = ?")
+        values.append(timestamp)
+        values.append(player_id)
+        conn.execute(
+            f"UPDATE players SET {', '.join(assignments)} WHERE id = ?",
+            values,
+        )
+
+        profile_updates: List[str] = []
+        profile_values: List[Any] = []
+        if "name" in player_payload:
+            profile_updates.append("name = ?")
+            profile_values.append(str(player_payload.get("name") or "").strip() or "New Player")
+        if "experience_years" in player_payload:
+            profile_updates.append("experience_years = COALESCE(?, experience_years)")
+            profile_values.append(normalize_experience_years(player_payload.get("experience_years")))
+        if "reference_image_url" in player_payload:
+            profile_updates.append("reference_image_url = COALESCE(NULLIF(?, ''), reference_image_url)")
+            profile_values.append(str(player_payload.get("reference_image_url") or "").strip())
+        if "profile_notes" in player_payload:
+            profile_updates.append("profile_notes = COALESCE(?, profile_notes)")
+            profile_values.append(player_payload.get("profile_notes"))
+        if profile_updates and player["profile_id"] is not None:
+            profile_updates.append("updated_at = ?")
+            profile_values.append(timestamp)
+            profile_values.append(int(player["profile_id"]))
+            conn.execute(
+                f"UPDATE player_profiles SET {', '.join(profile_updates)} WHERE id = ?",
+                profile_values,
+            )
+
+        salary_by_season = {
+            str(season): player_payload.get(f"salary_{season}_text")
+            for season in PLAYER_CONTRACT_SEASONS
+            if player_payload.get(f"salary_{season}_text") not in (None, "")
+        }
+        player_name = str(player_payload.get("name") or player["player_name"] or agent.get("name") or "Jugador").strip()
+        self._record_player_transaction(
+            conn,
+            player["profile_id"],
+            "renew",
+            f"Renovado por {team_code.upper()}",
+            player_id=player_id,
+            free_agent_id=free_agent_id,
+            team_code=team_code,
+            to_team_code=team_code,
+            details={
+                "player_name": player_name,
+                "contract_type": player_payload.get("bird_rights"),
+                "salary_by_season": salary_by_season,
+            },
+            created_at=timestamp,
+        )
+        conn.execute("DELETE FROM free_agents WHERE id = ?", (free_agent_id,))
+        conn.commit()
         return player_id
 
     def cut_player(self, player_id: int) -> Optional[Dict[str, Any]]:

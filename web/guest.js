@@ -59,6 +59,10 @@ const state = {
     trackerSeason: null,
     trackerEconomySeason: null,
     freeAgentSearch: '',
+    freeAgentsPage: 1,
+    freeAgentsPageSize: 50,
+    leaguePlayersPage: 1,
+    leaguePlayersPageSize: 50,
     freeAgentActionId: null,
     statusPills: [],
     mobileSidebarOpen: false,
@@ -95,6 +99,11 @@ const SEASON_WINDOW_SIZE = 6;
 const TRADE_MACHINE_MIN_TEAMS = 2;
 const TRADE_MACHINE_MAX_TEAMS = 6;
 const TRADE_DRAFT_YEAR_WINDOW = 7;
+const PAGINATED_TABLE_PAGE_SIZES = [50, 100, 200];
+const PAGINATED_TABLE_CONFIG = {
+  freeAgents: { tableId: 'freeAgentsTable', pageKey: 'freeAgentsPage', sizeKey: 'freeAgentsPageSize' },
+  leaguePlayers: { tableId: 'leaguePlayersTable', pageKey: 'leaguePlayersPage', sizeKey: 'leaguePlayersPageSize' },
+};
 const TRADE_PICK_ACTION_SEND = 'send_pick';
 const TRADE_PICK_ACTION_SWAP = 'swap_rights';
 const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
@@ -3402,6 +3411,122 @@ function sortedRows(rows, sortCfg) {
   });
 }
 
+function normalizedPaginationSize(value) {
+  const parsed = Number(value);
+  return PAGINATED_TABLE_PAGE_SIZES.includes(parsed) ? parsed : PAGINATED_TABLE_PAGE_SIZES[0];
+}
+
+function resetPagination(kind) {
+  const config = PAGINATED_TABLE_CONFIG[kind];
+  if (!config) return;
+  state.ui[config.pageKey] = 1;
+}
+
+function paginatedRows(rows, kind) {
+  const config = PAGINATED_TABLE_CONFIG[kind];
+  const allRows = Array.isArray(rows) ? rows : [];
+  if (!config) {
+    return {
+      rows: allRows,
+      total: allRows.length,
+      page: 1,
+      pageSize: allRows.length || PAGINATED_TABLE_PAGE_SIZES[0],
+      pageCount: 1,
+      start: 0,
+      end: allRows.length,
+    };
+  }
+  const pageSize = normalizedPaginationSize(state.ui[config.sizeKey]);
+  state.ui[config.sizeKey] = pageSize;
+  const total = allRows.length;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.max(1, Number(state.ui[config.pageKey]) || 1);
+  const page = Math.min(currentPage, pageCount);
+  state.ui[config.pageKey] = page;
+  const start = total ? (page - 1) * pageSize : 0;
+  const end = Math.min(start + pageSize, total);
+  return {
+    rows: allRows.slice(start, end),
+    total,
+    page,
+    pageSize,
+    pageCount,
+    start,
+    end,
+  };
+}
+
+function ensurePaginationContainer(kind, position) {
+  const config = PAGINATED_TABLE_CONFIG[kind];
+  if (!config) return null;
+  const table = document.getElementById(config.tableId);
+  if (!table) return null;
+  const wrapper = table.closest('.table-wrap') || table;
+  const parent = wrapper.parentElement;
+  if (!parent) return null;
+  const id = `${kind}Pagination${position === 'top' ? 'Top' : 'Bottom'}`;
+  let container = document.getElementById(id);
+  if (!container) {
+    container = document.createElement('div');
+    container.id = id;
+    container.className = `table-pagination table-pagination--${position}`;
+    if (position === 'top') parent.insertBefore(container, wrapper);
+    else parent.insertBefore(container, wrapper.nextSibling);
+  }
+  return container;
+}
+
+function rerenderPaginatedTable(kind) {
+  if (kind === 'freeAgents') renderFreeAgents();
+  if (kind === 'leaguePlayers') renderLeaguePlayers();
+}
+
+function renderPaginationControl(container, kind, meta) {
+  if (!container) return;
+  if (!meta.total) {
+    container.innerHTML = '';
+    return;
+  }
+  const first = meta.start + 1;
+  const last = meta.end;
+  container.innerHTML = `
+    <div class="table-pagination-summary">Mostrando ${first}-${last} de ${meta.total}</div>
+    <div class="table-pagination-controls">
+      <label>
+        <span>Por página</span>
+        <select data-pagination-size="${escapeHtml(kind)}">
+          ${PAGINATED_TABLE_PAGE_SIZES.map((size) => `<option value="${size}"${size === meta.pageSize ? ' selected' : ''}>${size}</option>`).join('')}
+        </select>
+      </label>
+      <button type="button" data-pagination-page="${escapeHtml(kind)}" data-page="${meta.page - 1}"${meta.page <= 1 ? ' disabled' : ''}>Anterior</button>
+      <span class="table-pagination-current">Página ${meta.page} / ${meta.pageCount}</span>
+      <button type="button" data-pagination-page="${escapeHtml(kind)}" data-page="${meta.page + 1}"${meta.page >= meta.pageCount ? ' disabled' : ''}>Siguiente</button>
+    </div>
+  `;
+  container.querySelector('[data-pagination-size]')?.addEventListener('change', (event) => {
+    const config = PAGINATED_TABLE_CONFIG[kind];
+    if (!config) return;
+    state.ui[config.sizeKey] = normalizedPaginationSize(event.target.value);
+    state.ui[config.pageKey] = 1;
+    rerenderPaginatedTable(kind);
+  });
+  container.querySelectorAll('[data-pagination-page]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const config = PAGINATED_TABLE_CONFIG[kind];
+      if (!config) return;
+      const nextPage = Number(button.dataset.page);
+      if (!Number.isFinite(nextPage)) return;
+      state.ui[config.pageKey] = Math.max(1, nextPage);
+      rerenderPaginatedTable(kind);
+    });
+  });
+}
+
+function renderPaginationControls(kind, meta) {
+  renderPaginationControl(ensurePaginationContainer(kind, 'top'), kind, meta);
+  renderPaginationControl(ensurePaginationContainer(kind, 'bottom'), kind, meta);
+}
+
 function rosterPositionKey(player) {
   if (isTwoWayPlayer(player)) return 'TW';
   const raw = String(player?.position || '').trim().toUpperCase();
@@ -3592,6 +3717,7 @@ function setupSorting() {
         key,
         dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
       };
+      resetPagination('freeAgents');
       renderFreeAgents();
       updateSortIndicators('freeAgentsTable', state.sort.free_agents);
     });
@@ -3607,6 +3733,7 @@ function setupSorting() {
         key,
         dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
       };
+      resetPagination('leaguePlayers');
       renderLeaguePlayers();
       updateSortIndicators('leaguePlayersTable', state.sort.league_players);
     });
@@ -4842,14 +4969,16 @@ function renderFreeAgents() {
   const filteredRows = query
     ? (state.freeAgents || []).filter((agent) => String(agent.name || '').toLowerCase().includes(query))
     : (state.freeAgents || []);
-  const rows = sortedRows(filteredRows, state.sort.free_agents);
-  if (!rows.length) {
+  const allRows = sortedRows(filteredRows, state.sort.free_agents);
+  const pagination = paginatedRows(allRows, 'freeAgents');
+  renderPaginationControls('freeAgents', pagination);
+  if (!allRows.length) {
     const tr = document.createElement('tr');
     tr.innerHTML = '<td colspan="7">No hay agentes libres registrados.</td>';
     tbody.appendChild(tr);
     return;
   }
-  rows.forEach((agent) => {
+  pagination.rows.forEach((agent) => {
     const freeAgentType = String(agent.free_agent_type || 'No restringido').trim() === 'Restringido' ? 'Restringido' : 'No restringido';
     const canAct = canSubmitFreeAgentAction();
     const tr = document.createElement('tr');
@@ -4941,14 +5070,16 @@ function renderLeaguePlayers() {
   const tbody = document.querySelector('#leaguePlayersTable tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
-  const rows = sortedRows(state.leaguePlayers || [], state.sort.league_players);
-  if (!rows.length) {
+  const allRows = sortedRows(state.leaguePlayers || [], state.sort.league_players);
+  const pagination = paginatedRows(allRows, 'leaguePlayers');
+  renderPaginationControls('leaguePlayers', pagination);
+  if (!allRows.length) {
     const tr = document.createElement('tr');
     tr.innerHTML = '<td colspan="7">No hay jugadores cargados.</td>';
     tbody.appendChild(tr);
     return;
   }
-  rows.forEach((player) => {
+  pagination.rows.forEach((player) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${escapeHtml(player.name || '')}</td>
@@ -7191,6 +7322,7 @@ async function loadFigures() {
 async function loadFreeAgents() {
   const res = await api('/api/free-agents');
   state.freeAgents = res.free_agents || [];
+  resetPagination('freeAgents');
   state.teamCode = null;
   state.teamData = null;
   setTeamInUrl(null);
@@ -7250,6 +7382,7 @@ async function loadLeaguePlayers() {
     players = await fetchLeaguePlayersFallback();
   }
   state.leaguePlayers = players;
+  resetPagination('leaguePlayers');
   state.teamCode = null;
   state.teamData = null;
   setTeamInUrl(null);
@@ -7760,6 +7893,7 @@ async function init() {
   });
   document.getElementById('freeAgentSearchInput')?.addEventListener('input', (event) => {
     state.ui.freeAgentSearch = String(event.target.value || '');
+    resetPagination('freeAgents');
     renderFreeAgents();
   });
   document.getElementById('freeAgentOfferYears')?.addEventListener('change', () => {

@@ -30,6 +30,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
+            insert_team(conn, "BKN", "Brooklyn Nets")
             conn.commit()
         self.db = LeagueDB(self.db_path)
         self.db.ensure_auth_schema()
@@ -150,6 +151,105 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertIsNotNone(player)
         self.assertEqual("ATL", player["team_code"])
         self.assertEqual("2.296.274", player["salary_2026_text"])
+
+    def test_renewal_offer_updates_existing_active_contract_row(self) -> None:
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Bird Rights Free Agent",
+                "position": "SG",
+                "rating": "80",
+                "bird_rights": "Reg",
+                "years_left": "2+",
+                "salary_2025_text": "5.000.000",
+                "salary_2026_text": "FB",
+                "salary_2029_text": "FB",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        player = self.db.get_player_record(int(player_id))
+        profile_id = int(player["profile_id"])
+        free_agent_id = self.db.create_free_agent(
+            {
+                "profile_id": profile_id,
+                "name": "Bird Rights Free Agent",
+                "position": "SG",
+                "rating": "80",
+                "bird_rights": "FB",
+                "years_left": "2+",
+                "free_agent_type": "No restringido",
+                "notes": "Cap hold retenido por ATL para 2026-27",
+            }
+        )
+        self.assertIsNotNone(free_agent_id)
+
+        signed_player_id = self.db.sign_free_agent(
+            int(free_agent_id),
+            "ATL",
+            {
+                "profile_id": profile_id,
+                "name": "Bird Rights Free Agent",
+                "bird_rights": "Reg",
+                "salary_2026_text": "21.000.000",
+                "salary_2027_text": "22.680.000",
+                "salary_2028_text": "24.360.000",
+                "option_2028": "PO",
+            },
+        )
+
+        self.assertEqual(player_id, signed_player_id)
+        self.assertIsNone(self.db.get_free_agent(int(free_agent_id)))
+        updated = self.db.get_player_record(int(player_id))
+        self.assertEqual("5.000.000", updated["salary_2025_text"])
+        self.assertEqual("21.000.000", updated["salary_2026_text"])
+        self.assertEqual("22.680.000", updated["salary_2027_text"])
+        self.assertEqual("24.360.000", updated["salary_2028_text"])
+        self.assertEqual("PO", updated["option_2028"])
+        self.assertIsNone(updated["salary_2029_text"])
+        self.assertEqual("Reg", updated["bird_rights"])
+
+        players = [
+            row for row in self.db.list_players()
+            if int(row.get("profile_id") or 0) == profile_id
+        ]
+        self.assertEqual(1, len(players))
+
+    def test_signing_free_agent_with_active_contract_on_other_team_still_fails(self) -> None:
+        player_id = self.db.create_player(
+            "BKN",
+            {
+                "name": "Other Team Player",
+                "position": "SF",
+                "rating": "77",
+                "bird_rights": "Reg",
+                "salary_2026_text": "10.000.000",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        player = self.db.get_player_record(int(player_id))
+        free_agent_id = self.db.create_free_agent(
+            {
+                "profile_id": int(player["profile_id"]),
+                "name": "Other Team Player",
+                "position": "SF",
+                "rating": "77",
+                "free_agent_type": "No restringido",
+            }
+        )
+        self.assertIsNotNone(free_agent_id)
+
+        with self.assertRaises(ValueError) as ctx:
+            self.db.sign_free_agent(
+                int(free_agent_id),
+                "ATL",
+                {
+                    "profile_id": int(player["profile_id"]),
+                    "name": "Other Team Player",
+                    "bird_rights": "Reg",
+                    "salary_2026_text": "12.000.000",
+                },
+            )
+        self.assertEqual("profile_has_active_contract", str(ctx.exception))
 
     def test_renewal_offer_uses_bird_years_for_large_raises(self) -> None:
         handler = object.__new__(Handler)
