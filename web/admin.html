@@ -676,11 +676,11 @@
           <option value="2+">2+</option>
         </select>
         <button id="applyBulkBtn">Aplicar a seleccionados</button>
-        <button id="deleteBulkBtn" class="danger">Eliminar seleccionados</button>
+        <button id="deleteBulkBtn" class="danger">Remove selected</button>
       </div>
       <div id="selectedPlayerActions" class="bulk-bar section-hidden">
         <span id="selectedPlayersCount" class="selected-actions-label">0 selected</span>
-        <button id="selectedDeleteBtn" type="button" class="danger">Delete</button>
+        <button id="selectedDeleteBtn" type="button" class="danger">Remove</button>
         <button id="selectedDuplicateBtn" type="button">Duplicate</button>
         <button id="selectedCutBtn" type="button" class="danger">Cut</button>
       </div>
@@ -914,7 +914,7 @@
       </td>
       <td><button data-action="cut" class="danger" type="button">Cut</button></td>
       <td>
-        <button data-action="delete" class="danger">Delete</button>
+        <button data-action="remove" class="danger">Remove</button>
         <label class="provisional-master-toggle">
           <input data-role="provisional-amounts" type="checkbox">
           <span>Provisional amounts</span>

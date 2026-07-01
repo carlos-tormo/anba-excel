@@ -10226,6 +10226,102 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return cur.rowcount > 0
 
+    def remove_player_from_roster(self, player_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                SELECT {self._player_select_columns()}, t.code AS team_code, t.name AS team_name
+                FROM players p
+                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.id = ?
+                """,
+                (player_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            player = self._merge_player_profile(row_to_dict(cur, row))
+            timestamp = now_iso()
+            profile_id = self._ensure_profile_for_player(conn, player_id, timestamp)
+            if profile_id is None:
+                return None
+            team_code = normalize_team_code(player.get("team_code")) or str(player.get("team_code") or "").upper()
+            player_name = str(player.get("name") or "Agente libre").strip() or "Agente libre"
+            existing = conn.execute(
+                "SELECT id FROM free_agents WHERE profile_id = ? LIMIT 1",
+                (int(profile_id),),
+            ).fetchone()
+            if existing:
+                free_agent_id = int(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE free_agents
+                    SET name = ?,
+                        position = ?,
+                        bird_rights = NULL,
+                        rating = ?,
+                        years_left = NULL,
+                        free_agent_type = ?,
+                        source = ?,
+                        rights_team_code = NULL,
+                        notes = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        player_name,
+                        str(player.get("position") or "").strip() or None,
+                        str(player.get("rating") or "").strip() or None,
+                        FREE_AGENT_TYPE_UNRESTRICTED,
+                        FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,
+                        timestamp,
+                        free_agent_id,
+                    ),
+                )
+            else:
+                free_cur = conn.execute(
+                    """
+                    INSERT INTO free_agents (
+                        profile_id, name, position, bird_rights, rating, years_left,
+                        free_agent_type, source, rights_team_code, notes, created_at, updated_at
+                    ) VALUES (?, ?, ?, NULL, ?, NULL, ?, ?, NULL, NULL, ?, ?)
+                    """,
+                    (
+                        int(profile_id),
+                        player_name,
+                        str(player.get("position") or "").strip() or None,
+                        str(player.get("rating") or "").strip() or None,
+                        FREE_AGENT_TYPE_UNRESTRICTED,
+                        FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                free_agent_id = int(free_cur.lastrowid)
+
+            conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+            self._record_player_transaction(
+                conn,
+                profile_id,
+                "remove",
+                f"Eliminado del roster de {team_code}",
+                player_id=player_id,
+                free_agent_id=free_agent_id,
+                team_code=team_code,
+                from_team_code=team_code,
+                details={"player_name": player_name},
+                created_at=timestamp,
+            )
+            conn.commit()
+            return {
+                "team_code": team_code,
+                "team_name": player.get("team_name"),
+                "player_name": player_name,
+                "profile_id": int(profile_id),
+                "free_agent_id": free_agent_id,
+            }
+
     def _cap_hold_free_agent_type(self, player: Dict[str, Any], season: int) -> str:
         decision = (player.get("option_decisions") or {}).get(f"option_{int(season)}") or {}
         option_value = str(decision.get("option_value") or "").strip().upper()
@@ -15365,6 +15461,8 @@ QUALITY REQUIREMENTS
         self,
         player: Dict[str, Any],
         *,
+        offer_payload: Optional[Dict[str, Any]] = None,
+        offer_type: Optional[str] = None,
         generate_image: bool = True,
         custom_image: Optional[Dict[str, Any]] = None,
     ) -> bool:
@@ -15374,15 +15472,27 @@ QUALITY REQUIREMENTS
         reference_url = str(player.get("reference_image_url") or "").strip()
         contract_type = str(player.get("bird_rights") or "").strip()
         position = str(player.get("position") or "").strip()
-        salary_lines: List[str] = []
-        for season in range(CAP_FORECAST_MIN_YEAR, CAP_FORECAST_MAX_YEAR + 1):
-            salary_text = str(player.get(f"salary_{season}_text") or "").strip()
-            if salary_text:
-                salary_lines.append(f"{season_label(season)}: {salary_text}")
-        salary_summary = "\n".join(salary_lines[:3]) or "Sin salario registrado"
+        normalized_offer_type = str(offer_type or "").strip().lower()
+        is_renewal = normalized_offer_type == "renewal"
+        salary_summary = ""
+        if isinstance(offer_payload, dict) and isinstance(offer_payload.get("salary_by_season"), dict):
+            salary_summary = self._contract_offer_salary_lines(offer_payload)
+        if not salary_summary or salary_summary == "Sin importes detallados":
+            salary_lines: List[str] = []
+            for season in range(CAP_FORECAST_MIN_YEAR, CAP_FORECAST_MAX_YEAR + 1):
+                salary_text = str(player.get(f"salary_{season}_text") or "").strip()
+                if salary_text:
+                    amount = parse_amount_like(salary_text)
+                    if amount is not None:
+                        salary_text = f"{int(round(amount)):,}".replace(",", ".")
+                    option_text = str(player.get(f"option_{season}") or "").strip().upper()
+                    if option_text:
+                        salary_text = f"{salary_text} ({option_text})"
+                    salary_lines.append(f"{season_label(season)}: {salary_text}")
+            salary_summary = "\n".join(salary_lines[:3]) or "Sin salario registrado"
         details = " · ".join(part for part in [position, contract_type] if part)
-        headline = f"{team_code} firma a {player_name}"
-        description = "El jugador llega desde la agencia libre."
+        headline = f"{team_code} renueva a {player_name}" if is_renewal else f"{team_code} firma a {player_name}"
+        description = "El jugador firma un nuevo contrato con el equipo." if is_renewal else "El jugador llega desde la agencia libre."
         if details:
             description = f"{description} {details}."
         generic_prompt = self._news_image_prompt(
@@ -15402,7 +15512,7 @@ QUALITY REQUIREMENTS
             player_name=player_name,
             secondary_headline=description,
             additional_details=f"Contrato: {details or 'sin detalles'}. Salario: {salary_summary.replace(chr(10), '; ')}.",
-            transaction_type="Free Agency Signing",
+            transaction_type="Re-signing" if is_renewal else "Free Agency Signing",
             use_player_reference=bool(reference_url),
         )
         fields = [
@@ -15428,6 +15538,17 @@ QUALITY REQUIREMENTS
 
     def _contract_offer_salary_lines(self, payload: Dict[str, Any]) -> str:
         raw_by_season = payload.get("salary_by_season")
+        raw_options_by_season = payload.get("option_by_season")
+        options_by_season = raw_options_by_season if isinstance(raw_options_by_season, dict) else {}
+
+        def value_with_option(season: int, value: str) -> str:
+            option = str(
+                options_by_season.get(str(season))
+                if str(season) in options_by_season
+                else options_by_season.get(season, "")
+            ).strip().upper()
+            return f"{value} ({option})" if option else value
+
         lines: List[str] = []
         if isinstance(raw_by_season, dict):
             for season_key in sorted(raw_by_season.keys(), key=lambda value: parse_int(str(value)) or 9999):
@@ -15436,11 +15557,11 @@ QUALITY REQUIREMENTS
                     continue
                 value = str(raw_by_season.get(season_key) or "").strip()
                 if value:
-                    lines.append(f"{season_label(season)}: {value}")
+                    lines.append(f"{season_label(season)}: {value_with_option(season, value)}")
         for season in range(CAP_FORECAST_MIN_YEAR, CAP_FORECAST_MAX_YEAR + 1):
             value = str(payload.get(f"salary_{season}") or "").strip()
             if value and not any(line.startswith(season_label(season)) for line in lines):
-                lines.append(f"{season_label(season)}: {value}")
+                lines.append(f"{season_label(season)}: {value_with_option(season, value)}")
         return "\n".join(lines[:8]) or "Sin importes detallados"
 
     def _free_agent_offer_is_renewal(self, free_agent: Dict[str, Any], team_code: str) -> bool:
@@ -17494,6 +17615,42 @@ QUALITY REQUIREMENTS
             self._json(200, {"ok": True, "player_id": player_id})
             return
 
+        if parsed.path.startswith("/api/players/") and parsed.path.endswith("/remove"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                player_id = int(parts[2])
+            except ValueError:
+                self._json(400, {"error": "invalid_player_id"})
+                return
+            player_before = self.db.get_player_record(player_id)
+            if not player_before:
+                self._json(404, {"error": "player_not_found"})
+                return
+            if not self._require_team_write_access(player_before.get("team_code")):
+                return
+            result = self.db.remove_player_from_roster(player_id)
+            if not result:
+                self._json(404, {"error": "player_not_found"})
+                return
+            self._log_admin_action(
+                "remove",
+                "player",
+                str(player_id),
+                str(result.get("team_code") or ""),
+                {
+                    "profile_id": result.get("profile_id"),
+                    "player_name": result.get("player_name"),
+                    "free_agent_id": result.get("free_agent_id"),
+                },
+                before=player_before,
+                after={"remove_result": result},
+            )
+            self._json(200, {"ok": True, "result": result})
+            return
+
         if parsed.path.startswith("/api/players/") and parsed.path.endswith("/cut"):
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
@@ -18198,6 +18355,8 @@ QUALITY REQUIREMENTS
             if player_after and self._discord_notify_requested(payload):
                 discord_sent = self._notify_free_agent_signed(
                     player_after,
+                    offer_payload=offer_payload,
+                    offer_type=request.get("offer_type"),
                     generate_image=self._discord_image_requested(payload),
                     custom_image=payload.get("discord_custom_image"),
                 )

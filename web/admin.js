@@ -8667,9 +8667,9 @@ function renderPlayers() {
       await loadTeam(state.teamCode);
     });
 
-    tr.querySelector('[data-action="delete"]').addEventListener('click', async () => {
-      if (!confirm('Delete this player?')) return;
-      await api(`/api/players/${p.id}`, { method: 'DELETE' });
+    tr.querySelector('[data-action="remove"]').addEventListener('click', async () => {
+      if (!confirm(`Remove ${p.name || 'this player'} from the roster and move him to Agentes libres? This will not create dead cap or retained rights.`)) return;
+      await api(`/api/players/${p.id}/remove`, { method: 'POST', body: '{}' });
       await loadTeam(state.teamCode);
     });
 
@@ -8794,15 +8794,15 @@ function selectedPlayers() {
   return state.teamData.players.filter((p) => selected.has(p.id));
 }
 
-async function deleteSelectedPlayersAction() {
+async function removeSelectedPlayersAction() {
   const players = selectedPlayers();
   if (players.length === 0) {
     alert('Select at least one player.');
     return;
   }
-  if (!confirm(`Delete ${players.length} selected player(s)?`)) return;
+  if (!confirm(`Remove ${players.length} selected player(s) from the roster and move them to Agentes libres? This will not create dead cap or retained rights.`)) return;
   for (const p of players) {
-    await api(`/api/players/${p.id}`, { method: 'DELETE' });
+    await api(`/api/players/${p.id}/remove`, { method: 'POST', body: '{}' });
   }
   await loadTeam(state.teamCode);
 }
@@ -11832,15 +11832,15 @@ async function init() {
       alert('Selecciona al menos un jugador.');
       return;
     }
-    if (!confirm(`Eliminar ${ids.length} jugador(es) seleccionados?`)) return;
+    if (!confirm(`Remove ${ids.length} selected player(s) from the roster and move them to Agentes libres? This will not create dead cap or retained rights.`)) return;
     for (const id of ids) {
-      await api(`/api/players/${id}`, { method: 'DELETE' });
+      await api(`/api/players/${id}/remove`, { method: 'POST', body: '{}' });
     }
     await loadTeam(state.teamCode);
   });
 
   document.getElementById('selectedDeleteBtn').addEventListener('click', async () => {
-    await deleteSelectedPlayersAction();
+    await removeSelectedPlayersAction();
   });
   document.getElementById('selectedDuplicateBtn').addEventListener('click', async () => {
     await duplicateSelectedPlayersAction();

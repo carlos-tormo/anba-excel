@@ -182,6 +182,59 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         )
         self.db.assert_player_identity_integrity()
 
+    def test_remove_player_from_roster_moves_profile_to_free_agents_without_dead_contract(self) -> None:
+        profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
+
+        result = self.db.remove_player_from_roster(self.legacy_atl_player_id)
+
+        self.assertIsNotNone(result)
+        self.assertEqual("ATL", result["team_code"])
+        self.assertEqual(profile_id, result["profile_id"])
+        self.assertIsNotNone(result["free_agent_id"])
+        with self.db.connect() as conn:
+            self.assertIsNone(
+                conn.execute("SELECT id FROM players WHERE id = ?", (self.legacy_atl_player_id,)).fetchone()
+            )
+            free_agent = conn.execute(
+                """
+                SELECT name, bird_rights, years_left, free_agent_type, source, rights_team_code, notes
+                FROM free_agents
+                WHERE profile_id = ?
+                """,
+                (profile_id,),
+            ).fetchone()
+            self.assertIsNotNone(free_agent)
+            self.assertEqual("Legacy Hawk", free_agent["name"])
+            self.assertIsNone(free_agent["bird_rights"])
+            self.assertIsNone(free_agent["years_left"])
+            self.assertEqual("No restringido", free_agent["free_agent_type"])
+            self.assertEqual("uncontracted_profile", free_agent["source"])
+            self.assertIsNone(free_agent["rights_team_code"])
+            self.assertIsNone(free_agent["notes"])
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM dead_contracts WHERE profile_id = ?",
+                    (profile_id,),
+                ).fetchone()[0],
+            )
+            transaction = conn.execute(
+                """
+                SELECT action, free_agent_id, dead_contract_id, from_team_code
+                FROM player_transactions
+                WHERE profile_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (profile_id,),
+            ).fetchone()
+            self.assertIsNotNone(transaction)
+            self.assertEqual("remove", transaction["action"])
+            self.assertEqual(result["free_agent_id"], transaction["free_agent_id"])
+            self.assertIsNone(transaction["dead_contract_id"])
+            self.assertEqual("ATL", transaction["from_team_code"])
+        self.db.assert_player_identity_integrity()
+
     def test_delete_player_profile_removes_linked_rows(self) -> None:
         profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
         now = now_iso()

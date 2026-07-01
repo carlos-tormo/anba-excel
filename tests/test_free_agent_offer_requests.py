@@ -214,6 +214,58 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(players))
 
+    def test_renewal_discord_notification_uses_offer_years(self) -> None:
+        handler = object.__new__(Handler)
+        captured = {}
+
+        def fake_news_image_prompt(*_args, **_kwargs):
+            return "prompt"
+
+        def fake_notify_discord(title, description, **kwargs):
+            captured["title"] = title
+            captured["description"] = description
+            captured["fields"] = kwargs.get("fields") or []
+            return True
+
+        handler._news_image_prompt = fake_news_image_prompt
+        handler._notify_discord = fake_notify_discord
+
+        sent = handler._notify_free_agent_signed(
+            {
+                "team_code": "ATL",
+                "team_name": "Atlanta Hawks",
+                "name": "Bird Rights Free Agent",
+                "position": "SG",
+                "bird_rights": "Reg",
+                "salary_2025_text": "1.4674E7",
+                "salary_2026_text": "21.000.000",
+                "salary_2027_text": "22.680.000",
+                "salary_2028_text": "24.360.000",
+            },
+            offer_payload={
+                "salary_by_season": {
+                    "2026": "21.000.000",
+                    "2027": "22.680.000",
+                    "2028": "24.360.000",
+                },
+                "option_by_season": {
+                    "2028": "PO",
+                },
+            },
+            offer_type="renewal",
+            generate_image=False,
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual("ATL renueva a Bird Rights Free Agent", captured["title"])
+        salary_field = next(field for field in captured["fields"] if field["name"] == "Salario")
+        self.assertEqual(
+            "2026-27: 21.000.000\n2027-28: 22.680.000\n2028-29: 24.360.000 (PO)",
+            salary_field["value"],
+        )
+        self.assertNotIn("2025-26", salary_field["value"])
+        self.assertNotIn("1.4674E7", salary_field["value"])
+
     def test_signing_free_agent_with_active_contract_on_other_team_still_fails(self) -> None:
         player_id = self.db.create_player(
             "BKN",
