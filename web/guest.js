@@ -9,6 +9,7 @@ const state = {
   trackerEconomySeasons: [],
   leaguePlayers: [],
   freeAgents: [],
+  gmNotifications: [],
   coadminVotes: [],
   draftOrder: {
     draft_year: null,
@@ -94,6 +95,7 @@ const state = {
 
 let draftLiveTimer = null;
 let draftLivePollTimer = null;
+let gmNotificationsPollTimer = null;
 
 const SEASON_WINDOW_SIZE = 6;
 const TRADE_MACHINE_MIN_TEAMS = 2;
@@ -591,6 +593,84 @@ function visibleSeasonYears() {
 
 function hasGmLevelRole(role) {
   return ['gm', 'co_admin'].includes(String(role || '').trim().toLowerCase());
+}
+
+function canViewGmNotifications() {
+  return Boolean(state.auth?.authenticated && hasGmLevelRole(state.auth?.role));
+}
+
+function gmNotificationHtml(notification) {
+  const id = escapeHtml(notification?.id);
+  const kind = escapeHtml(notification?.kind || 'info');
+  const title = escapeHtml(notification?.title || 'Notificación');
+  const body = String(notification?.body || '').trim();
+  return `
+    <article class="gm-notification-card gm-notification-card--${kind}">
+      <div class="gm-notification-copy">
+        <strong>${title}</strong>
+        ${body ? `<p>${escapeHtml(body)}</p>` : ''}
+      </div>
+      <button type="button" data-gm-notification-read="${id}">Cerrar</button>
+    </article>
+  `;
+}
+
+function renderGmNotifications() {
+  const panel = document.getElementById('gmNotificationsPanel');
+  if (!panel) return;
+  const notifications = Array.isArray(state.gmNotifications) ? state.gmNotifications : [];
+  panel.classList.toggle('section-hidden', !notifications.length);
+  if (!notifications.length) {
+    panel.innerHTML = '';
+    return;
+  }
+  panel.innerHTML = `
+    <div class="gm-notifications-head">
+      <strong>Notificaciones</strong>
+      <span>${notifications.length} pendiente${notifications.length === 1 ? '' : 's'}</span>
+    </div>
+    <div class="gm-notifications-list">
+      ${notifications.map((notification) => gmNotificationHtml(notification)).join('')}
+    </div>
+  `;
+  panel.querySelectorAll('[data-gm-notification-read]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const id = Number(button.dataset.gmNotificationRead);
+      if (!Number.isFinite(id)) return;
+      button.disabled = true;
+      try {
+        await api(`/api/me/notifications/${id}/read`, { method: 'POST', body: '{}' });
+        state.gmNotifications = notifications.filter((notification) => Number(notification.id) !== id);
+        renderGmNotifications();
+      } catch (err) {
+        console.error(err);
+        button.disabled = false;
+      }
+    });
+  });
+}
+
+async function loadGmNotifications() {
+  if (!canViewGmNotifications()) {
+    state.gmNotifications = [];
+    renderGmNotifications();
+    return;
+  }
+  const data = await api('/api/me/notifications?unread=1&limit=10');
+  state.gmNotifications = Array.isArray(data.notifications) ? data.notifications : [];
+  renderGmNotifications();
+}
+
+function startGmNotificationsPolling() {
+  if (gmNotificationsPollTimer) {
+    clearInterval(gmNotificationsPollTimer);
+    gmNotificationsPollTimer = null;
+  }
+  if (!canViewGmNotifications()) return;
+  gmNotificationsPollTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadGmNotifications().catch((err) => console.warn('Could not refresh GM notifications', err));
+  }, 45000);
 }
 
 function isCoAdminRole(role) {
@@ -1717,12 +1797,54 @@ function teamSeasonBalances(data, season) {
     gasto_total: Number(serverSummary?.payroll || 0),
     apron_account: Number(serverSummary?.apron_account || 0),
     luxury_tax: Number(serverSummary?.luxury_tax || 0),
+    breakdowns: serverSummary?.balance_breakdowns || {},
     missing_server_summary: !serverSummary,
   };
 }
 
 function seasonBalances(season) {
   return teamSeasonBalances(state.teamData, season);
+}
+
+function balanceBreakdownLines(balances, key) {
+  const lines = balances?.breakdowns?.[key];
+  return Array.isArray(lines) ? lines : [];
+}
+
+function balanceBreakdownTooltip(label, value, lines) {
+  const output = [`${label}: ${formatMoneyDots(value)}`];
+  if (!lines.length) {
+    output.push('', 'Desglose no disponible para esta temporada.');
+    return output.join('\n');
+  }
+  output.push('', keyLabelForBreakdown(label));
+  lines.forEach((line) => {
+    const lineLabel = String(line?.label || '').trim() || 'Partida';
+    if (line && Object.prototype.hasOwnProperty.call(line, 'text')) {
+      output.push(`- ${lineLabel}: ${line.text || ''}`);
+    } else {
+      output.push(`- ${lineLabel}: ${formatMoneyDots(line?.amount || 0)}`);
+    }
+  });
+  return output.join('\n');
+}
+
+function keyLabelForBreakdown(label) {
+  return String(label || '').toLowerCase().includes('luxury')
+    ? 'Cálculo:'
+    : 'Desglose:';
+}
+
+function balanceInfoControlHtml(tooltip) {
+  const safeTooltip = escapeHtml(tooltip);
+  return `
+    <button class="balance-info-btn" type="button" title="${safeTooltip}" aria-label="${safeTooltip}" data-balance-info-toggle>i</button>
+    <span class="balance-info-popover" role="tooltip">${safeTooltip}</span>
+  `;
+}
+
+function closeBalanceInfoPopovers() {
+  document.querySelectorAll('.balance-info-btn.is-open').forEach((btn) => btn.classList.remove('is-open'));
 }
 
 function displayBalanceSeason() {
@@ -6151,9 +6273,13 @@ function renderImportantFigures() {
             const valueClass = isLiability
               ? (value > 0 ? 'is-negative' : '')
               : (value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '');
+            const breakdownText = balanceBreakdownTooltip(label, value, balanceBreakdownLines(balances, key));
             return `
               <td class="${season === selectedYear ? 'is-current-year' : ''}">
-                <span class="balance-value ${valueClass}"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>${formatMoneyDots(value)}</span>
+                <span class="balance-value-wrap">
+                  <span class="balance-value ${valueClass}"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>${formatMoneyDots(value)}</span>
+                  ${balanceInfoControlHtml(breakdownText)}
+                </span>
               </td>
             `;
           }).join('')}
@@ -6161,6 +6287,15 @@ function renderImportantFigures() {
       `).join('')}
     </tbody>
   `;
+  table.querySelectorAll('[data-balance-info-toggle]').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const shouldOpen = !btn.classList.contains('is-open');
+      closeBalanceInfoPopovers();
+      btn.classList.toggle('is-open', shouldOpen);
+    });
+  });
 
   const appendix = document.getElementById('importantFiguresAppendix');
   if (!appendix) return;
@@ -7854,12 +7989,17 @@ function setupMobileNav() {
 
 async function init() {
   ensurePlayerMetaModal();
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.balance-value-wrap')) closeBalanceInfoPopovers();
+  });
   state.auth = await api('/api/auth/status');
   state.csrfToken = state.auth?.csrf_token || null;
   const settingsRes = await api('/api/settings');
   state.settings = settingsRes.settings || state.settings;
   state.ui.seasonViewStart = normalizeSeasonViewStart(readInitialSeasonStart());
   renderAuthControls();
+  await loadGmNotifications().catch((err) => console.warn('Could not load GM notifications', err));
+  startGmNotificationsPolling();
 
   document.getElementById('logoutBtn').addEventListener('click', async () => {
     await api('/api/auth/logout', { method: 'POST', body: '{}' });

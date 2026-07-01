@@ -107,6 +107,57 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("approved", updated["status"])
         self.assertEqual("admin@example.com", updated["admin_email"])
 
+    def test_rejected_offer_notification_is_visible_and_dismissible_for_requesting_gm(self) -> None:
+        user = self.db.upsert_google_user(
+            "google-atl-gm",
+            "atl-gm@example.com",
+            "ATL GM",
+            None,
+        )
+        request = self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {"contract_type": "Min", "years": 1},
+            {
+                "user_id": user["id"],
+                "email": "atl-gm@example.com",
+                "name": "ATL GM",
+                "role": "gm",
+            },
+        )
+        self.assertIsNotNone(request)
+
+        notification_id = self.db.create_user_notification(
+            user_id=request.get("requester_user_id"),
+            email=request.get("requester_email"),
+            title="Oferta rechazada: Test Free Agent",
+            body="La administración ha rechazado la oferta de ATL por Test Free Agent.",
+            kind="free_agent_offer_rejected",
+            entity_type="gm_free_agent_offer_request",
+            entity_id=request["id"],
+        )
+        self.assertIsNotNone(notification_id)
+
+        notifications = self.db.list_user_notifications_for_session(
+            {"user_id": user["id"], "email": "atl-gm@example.com", "role": "gm"},
+        )
+        self.assertEqual(1, len(notifications))
+        self.assertEqual("Oferta rechazada: Test Free Agent", notifications[0]["title"])
+        self.assertEqual("free_agent_offer_rejected", notifications[0]["kind"])
+
+        self.assertTrue(
+            self.db.mark_user_notification_read(
+                int(notification_id),
+                {"user_id": user["id"], "email": "atl-gm@example.com", "role": "gm"},
+            )
+        )
+        self.assertEqual(
+            [],
+            self.db.list_user_notifications_for_session(
+                {"user_id": user["id"], "email": "atl-gm@example.com", "role": "gm"},
+            ),
+        )
+
     def test_free_agent_offer_request_survives_signing_player(self) -> None:
         request = self.db.create_gm_free_agent_offer_request(
             self.free_agent_id,

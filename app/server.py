@@ -1324,6 +1324,34 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS user_notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    email TEXT,
+                    title TEXT NOT NULL,
+                    body TEXT,
+                    kind TEXT NOT NULL DEFAULT 'info',
+                    entity_type TEXT,
+                    entity_id TEXT,
+                    read_at TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_notifications_user_read
+                ON user_notifications (user_id, read_at, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_notifications_email_read
+                ON user_notifications (email, read_at, created_at)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -3102,6 +3130,48 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "created_future_draft_assets": created,
         }
 
+    def _cleanup_inactive_dead_contracts_conn(
+        self,
+        conn: sqlite3.Connection,
+        current_year: int,
+    ) -> Dict[str, Any]:
+        active_seasons = [season for season in PLAYER_CONTRACT_SEASONS if season >= int(current_year)]
+        cur = conn.execute(
+            """
+            SELECT d.*, t.code AS team_code
+            FROM dead_contracts d
+            JOIN teams t ON t.id = d.team_id
+            ORDER BY d.id
+            """
+        )
+        removed: List[Dict[str, Any]] = []
+        for row in cur.fetchall():
+            dead_contract = row_to_dict(cur, row)
+            has_active_salary = any(
+                dead_contract_salary_num(dead_contract, season) > 0
+                for season in active_seasons
+            )
+            if has_active_salary:
+                continue
+            removed.append(
+                {
+                    "id": int(dead_contract["id"]),
+                    "team_code": dead_contract.get("team_code"),
+                    "label": dead_contract.get("label"),
+                }
+            )
+
+        if removed:
+            conn.executemany(
+                "DELETE FROM dead_contracts WHERE id = ?",
+                [(item["id"],) for item in removed],
+            )
+
+        return {
+            "count": len(removed),
+            "dead_contracts": removed,
+        }
+
     def update_current_year(self, next_year: int) -> Dict[str, Any]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
@@ -3128,6 +3198,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 if delta > 0
                 else 0
             )
+            dead_contract_cleanup = self._cleanup_inactive_dead_contracts_conn(conn, int(next_year))
             conn.commit()
             return {
                 "previous_year": previous_year,
@@ -3135,6 +3206,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "bird_year_steps": delta,
                 "bird_year_players_updated": updated_bird_years,
                 "players_moved_to_free_agents": moved_free_agents,
+                "dead_contracts_removed": int(dead_contract_cleanup["count"]),
+                "removed_dead_contracts": dead_contract_cleanup["dead_contracts"],
                 "deleted_draft_assets": int(draft_rollover["deleted_draft_assets"]),
                 "deleted_draft_asset_years": draft_rollover["deleted_draft_asset_years"],
                 "future_draft_asset_years": draft_rollover["future_draft_asset_years"],
@@ -3175,6 +3248,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             frozen_picks = self._freeze_second_apron_pick_rollover(conn, current_year, next_year, settings, timestamp)
             draft_rollover = self._rollover_draft_assets_conn(conn, current_year, next_year, timestamp)
             moved_free_agents = self._move_expired_players_to_free_agents(conn, next_year, timestamp)
+            dead_contract_cleanup = self._cleanup_inactive_dead_contracts_conn(conn, next_year)
             conn.commit()
             return {
                 "previous_year": current_year,
@@ -3187,6 +3261,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "bird_year_steps": 1,
                 "bird_year_players_updated": updated_bird_years,
                 "players_moved_to_free_agents": moved_free_agents,
+                "dead_contracts_removed": int(dead_contract_cleanup["count"]),
+                "removed_dead_contracts": dead_contract_cleanup["dead_contracts"],
                 "frozen_picks_created": len(frozen_picks),
                 "frozen_picks": frozen_picks,
             }
@@ -4471,6 +4547,128 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if cur.rowcount < 1:
                 return None
         return self.get_gm_option_request(request_id)
+
+    def create_user_notification(
+        self,
+        *,
+        user_id: Any = None,
+        email: Any = None,
+        title: str,
+        body: str = "",
+        kind: str = "info",
+        entity_type: str = "",
+        entity_id: Any = None,
+    ) -> Optional[int]:
+        parsed_user_id = parse_int(user_id)
+        normalized_email = str(email or "").strip().lower()
+        clean_title = str(title or "").strip()
+        if not clean_title or (parsed_user_id is None and not normalized_email):
+            return None
+        timestamp = now_iso()
+        with self.connect() as conn:
+            if parsed_user_id is not None:
+                user_row = conn.execute("SELECT id FROM users WHERE id = ?", (parsed_user_id,)).fetchone()
+                if not user_row:
+                    parsed_user_id = None
+            entity_type_value = str(entity_type or "").strip() or None
+            entity_id_value = str(entity_id) if entity_id is not None else None
+            if entity_type_value and entity_id_value:
+                existing = conn.execute(
+                    """
+                    SELECT id
+                    FROM user_notifications
+                    WHERE COALESCE(user_id, -1) = COALESCE(?, -1)
+                      AND COALESCE(lower(email), '') = COALESCE(?, '')
+                      AND entity_type = ?
+                      AND entity_id = ?
+                      AND read_at IS NULL
+                    LIMIT 1
+                    """,
+                    (parsed_user_id, normalized_email or None, entity_type_value, entity_id_value),
+                ).fetchone()
+                if existing:
+                    return int(existing["id"])
+            cur = conn.execute(
+                """
+                INSERT INTO user_notifications (
+                    user_id, email, title, body, kind, entity_type, entity_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    parsed_user_id,
+                    normalized_email or None,
+                    clean_title,
+                    str(body or "").strip() or None,
+                    str(kind or "info").strip() or "info",
+                    entity_type_value,
+                    entity_id_value,
+                    timestamp,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def list_user_notifications_for_session(
+        self,
+        session: Dict[str, Any],
+        *,
+        unread_only: bool = True,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        parsed_user_id = parse_int((session or {}).get("user_id"))
+        normalized_email = str((session or {}).get("email") or "").strip().lower()
+        if parsed_user_id is None and not normalized_email:
+            return []
+        clauses: List[str] = []
+        params: List[Any] = []
+        if parsed_user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(parsed_user_id)
+        if normalized_email:
+            clauses.append("lower(email) = ?")
+            params.append(normalized_email)
+        where = f"({' OR '.join(clauses)})"
+        if unread_only:
+            where = f"{where} AND read_at IS NULL"
+        safe_limit = max(1, min(parse_int(limit) or 20, 100))
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                SELECT id, title, body, kind, entity_type, entity_id, read_at, created_at
+                FROM user_notifications
+                WHERE {where}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                [*params, safe_limit],
+            )
+            return [row_to_dict(cur, row) for row in cur.fetchall()]
+
+    def mark_user_notification_read(self, notification_id: int, session: Dict[str, Any]) -> bool:
+        parsed_user_id = parse_int((session or {}).get("user_id"))
+        normalized_email = str((session or {}).get("email") or "").strip().lower()
+        if parsed_user_id is None and not normalized_email:
+            return False
+        clauses: List[str] = []
+        params: List[Any] = []
+        if parsed_user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(parsed_user_id)
+        if normalized_email:
+            clauses.append("lower(email) = ?")
+            params.append(normalized_email)
+        timestamp = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                UPDATE user_notifications
+                SET read_at = COALESCE(read_at, ?)
+                WHERE id = ? AND ({' OR '.join(clauses)})
+                """,
+                [timestamp, int(notification_id), *params],
+            )
+            conn.commit()
+            return cur.rowcount > 0
 
     def create_session(self, token: str, payload: Dict[str, Any], created_at: str, expires_at: int) -> bool:
         with self.connect() as conn:
@@ -9286,6 +9484,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         luxury = salary_cap * 1.215
         luxury_overage = max(0.0, cap_figure - luxury)
+        luxury_tax = luxury_tax_amount(luxury_overage, luxury_repeater)
         first_apron = (
             parse_float(settings.get(f"first_apron_{current_year}"))
             or parse_float(settings.get("first_apron"))
@@ -9299,6 +9498,37 @@ class LeagueDB(DatabaseMaintenanceMixin):
         cash_limit_total = parse_float(settings.get("cash_limit_total")) or 0.0
         cash_received = float(team.get("cash_received") or 0.0)
         cash_sent = float(team.get("cash_sent") or 0.0)
+
+        def breakdown_amount(label: str, amount: float) -> Dict[str, Any]:
+            return {"label": label, "amount": float(amount or 0.0)}
+
+        def breakdown_text(label: str, text: str) -> Dict[str, Any]:
+            return {"label": label, "text": text}
+
+        balance_breakdowns = {
+            "cap_total": [
+                breakdown_amount("Jugadores y cap holds computables", cap_figure_players),
+                breakdown_amount("Dead contracts y rookie scale holds", dead_cap_team_salary),
+                breakdown_amount("Open roster spot cap holds", open_roster_hold_amount),
+                breakdown_amount("Ajuste Salary Floor", salary_floor_adjustment),
+            ],
+            "gasto_total": [
+                breakdown_amount("Salarios de jugadores", player_payroll),
+                breakdown_amount("Dead contracts", dead_gasto_normal),
+                breakdown_amount("Dead contracts Two-Way", dead_gasto_two_way),
+            ],
+            "apron_account": [
+                breakdown_amount("Jugadores sin cap holds", apron_figure_players),
+                breakdown_amount("Dead contracts computables", dead_cap_apron),
+            ],
+            "luxury_tax": [
+                breakdown_amount("CAP TOTAL", cap_figure),
+                breakdown_amount("Luxury cap", luxury),
+                breakdown_amount("Exceso sobre luxury", luxury_overage),
+                breakdown_text("Tipo de luxury", "Reincidente" if luxury_repeater else "No reincidente"),
+                breakdown_amount("Luxury tax calculada", luxury_tax),
+            ],
+        }
 
         return {
             "player_payroll": player_payroll,
@@ -9329,7 +9559,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "room_to_luxury": luxury - cap_figure,
             "room_to_first_apron": first_apron - apron_figure,
             "room_to_second_apron": second_apron - apron_figure,
-            "luxury_tax": luxury_tax_amount(luxury_overage, luxury_repeater),
+            "luxury_tax": luxury_tax,
+            "balance_breakdowns": balance_breakdowns,
             "cash_received": cash_received,
             "cash_sent": cash_sent,
             "cash_limit_total": cash_limit_total,
@@ -16470,6 +16701,30 @@ QUALITY REQUIREMENTS
             )
             return
 
+        if parsed.path == "/api/me/notifications":
+            if not self._require_authenticated():
+                return
+            sess = self._current_session() or {}
+            role = str(sess.get("role") or "").strip().lower()
+            if role not in {"gm", "co_admin"}:
+                self._json(200, {"notifications": []})
+                return
+            qs = parse_qs(parsed.query)
+            unread_raw = str((qs.get("unread") or ["1"])[0] or "").strip().lower()
+            unread_only = unread_raw not in {"0", "false", "no"}
+            limit = parse_int((qs.get("limit") or ["20"])[0]) or 20
+            self._json(
+                200,
+                {
+                    "notifications": self.db.list_user_notifications_for_session(
+                        sess,
+                        unread_only=unread_only,
+                        limit=limit,
+                    )
+                },
+            )
+            return
+
         if parsed.path == "/api/teams":
             self._json(200, {"teams": self.db.list_teams()})
             return
@@ -16756,6 +17011,27 @@ QUALITY REQUIREMENTS
             return
 
         payload = self._read_json()
+
+        if parsed.path.startswith("/api/me/notifications/") and parsed.path.endswith("/read"):
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 5:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                notification_id = int(parts[3])
+            except ValueError:
+                self._json(400, {"error": "invalid_notification_id"})
+                return
+            ok = self.db.mark_user_notification_read(notification_id, self._current_session() or {})
+            if not ok:
+                self._json(404, {"error": "notification_not_found"})
+                return
+            self._json(200, {"ok": True})
+            return
 
         if parsed.path == "/api/auth/login":
             ip = self._client_ip()
@@ -18297,6 +18573,23 @@ QUALITY REQUIREMENTS
                 if not updated:
                     self._json(409, {"error": "request_already_decided"})
                     return
+                player_name = str(request.get("player_name") or "el agente libre").strip()
+                team_code = normalize_team_code(request.get("team_code")) or str(request.get("team_code") or "").upper()
+                offer_type = str(request.get("offer_type") or "").strip().lower()
+                offer_label = "oferta de renovación" if offer_type == "renewal" else "oferta"
+                note = str(payload.get("note") or "").strip()
+                notification_body = f"La administración ha rechazado la {offer_label} de {team_code} por {player_name}."
+                if note:
+                    notification_body = f"{notification_body} Nota: {note}"
+                self.db.create_user_notification(
+                    user_id=request.get("requester_user_id"),
+                    email=request.get("requester_email"),
+                    title=f"Oferta rechazada: {player_name}",
+                    body=notification_body,
+                    kind="free_agent_offer_rejected",
+                    entity_type="gm_free_agent_offer_request",
+                    entity_id=request_id,
+                )
                 self._log_admin_action(
                     "reject",
                     "gm_free_agent_offer_request",

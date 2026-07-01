@@ -134,6 +134,14 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(50_000_000, round(float(summary["payroll"])))
         self.assertEqual(50_000_000, round(float(summary["apron_account"])))
         self.assertEqual(90_000_000, round(float(tracker_row["cap_total"])))
+        breakdowns = summary["balance_breakdowns"]
+        self.assertIn("cap_total", breakdowns)
+        self.assertIn("gasto_total", breakdowns)
+        self.assertIn("apron_account", breakdowns)
+        self.assertIn("luxury_tax", breakdowns)
+        cap_total_lines = {line["label"]: round(float(line.get("amount") or 0)) for line in breakdowns["cap_total"]}
+        self.assertEqual(50_000_000, cap_total_lines["Jugadores y cap holds computables"])
+        self.assertEqual(40_000_000, cap_total_lines["Ajuste Salary Floor"])
 
     def test_salary_floor_does_not_apply_in_free_agency_mode(self) -> None:
         self.db.update_setting("current_year", "2025")
@@ -411,6 +419,47 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertIsNotNone(team)
         self.assertEqual(123_456, round(float(team["team"]["cash_received"])))
         self.assertEqual(654_321, round(float(team["team"]["cash_sent"])))
+
+    def test_progress_to_next_year_removes_dead_contracts_without_remaining_salary(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        expired_dead_id = self.db.create_dead_contract(
+            "ATL",
+            {
+                "label": "Expired Dead Money",
+                "dead_type": "normal",
+                "salary_2025_text": "1000000",
+            },
+        )
+        current_dead_id = self.db.create_dead_contract(
+            "ATL",
+            {
+                "label": "Current Dead Money",
+                "dead_type": "normal",
+                "salary_2026_text": "2000000",
+            },
+        )
+        future_dead_id = self.db.create_dead_contract(
+            "ATL",
+            {
+                "label": "Future Dead Money",
+                "dead_type": "normal",
+                "salary_2027_text": "3000000",
+            },
+        )
+        self.assertIsNotNone(expired_dead_id)
+        self.assertIsNotNone(current_dead_id)
+        self.assertIsNotNone(future_dead_id)
+
+        result = self.db.progress_to_next_year()
+        team = self.db.get_team("ATL")
+        labels = {dead["label"] for dead in team["dead_contracts"]}
+
+        self.assertEqual(2026, result["current_year"])
+        self.assertEqual(1, result["dead_contracts_removed"])
+        self.assertEqual("Expired Dead Money", result["removed_dead_contracts"][0]["label"])
+        self.assertNotIn("Expired Dead Money", labels)
+        self.assertIn("Current Dead Money", labels)
+        self.assertIn("Future Dead Money", labels)
 
     def test_progress_to_next_year_rolls_draft_assets_by_later_season_year(self) -> None:
         self.db.update_setting("current_year", "2025")

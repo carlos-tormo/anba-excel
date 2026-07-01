@@ -1344,12 +1344,54 @@ function teamSeasonBalances(data, season) {
     gasto_total: Number(serverSummary?.payroll || 0),
     apron_account: Number(serverSummary?.apron_account || 0),
     luxury_tax: Number(serverSummary?.luxury_tax || 0),
+    breakdowns: serverSummary?.balance_breakdowns || {},
     missing_server_summary: !serverSummary,
   };
 }
 
 function seasonBalances(season) {
   return teamSeasonBalances(state.teamData, season);
+}
+
+function balanceBreakdownLines(balances, key) {
+  const lines = balances?.breakdowns?.[key];
+  return Array.isArray(lines) ? lines : [];
+}
+
+function keyLabelForBreakdown(label) {
+  return String(label || '').toLowerCase().includes('luxury')
+    ? 'Cálculo:'
+    : 'Desglose:';
+}
+
+function balanceBreakdownTooltip(label, value, lines) {
+  const output = [`${label}: ${formatMoneyDots(value)}`];
+  if (!lines.length) {
+    output.push('', 'Desglose no disponible para esta temporada.');
+    return output.join('\n');
+  }
+  output.push('', keyLabelForBreakdown(label));
+  lines.forEach((line) => {
+    const lineLabel = String(line?.label || '').trim() || 'Partida';
+    if (line && Object.prototype.hasOwnProperty.call(line, 'text')) {
+      output.push(`- ${lineLabel}: ${line.text || ''}`);
+    } else {
+      output.push(`- ${lineLabel}: ${formatMoneyDots(line?.amount || 0)}`);
+    }
+  });
+  return output.join('\n');
+}
+
+function balanceInfoControlHtml(tooltip) {
+  const safeTooltip = escapeHtml(tooltip);
+  return `
+    <button class="balance-info-btn" type="button" title="${safeTooltip}" aria-label="${safeTooltip}" data-balance-info-toggle>i</button>
+    <span class="balance-info-popover" role="tooltip">${safeTooltip}</span>
+  `;
+}
+
+function closeBalanceInfoPopovers() {
+  document.querySelectorAll('.balance-info-btn.is-open').forEach((btn) => btn.classList.remove('is-open'));
 }
 
 function displayBalanceSeason() {
@@ -7023,9 +7065,13 @@ function renderImportantFigures() {
             const valueClass = isLiability
               ? (value > 0 ? 'is-negative' : '')
               : (value < 0 ? 'is-negative' : value > 0 ? 'is-positive' : '');
+            const breakdownText = balanceBreakdownTooltip(label, value, balanceBreakdownLines(balances, key));
             return `
               <td class="${season === selectedYear ? 'is-current-year' : ''}">
-                <span class="balance-value ${valueClass}"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>${formatMoneyDots(value)}</span>
+                <span class="balance-value-wrap">
+                  <span class="balance-value ${valueClass}"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>${formatMoneyDots(value)}</span>
+                  ${balanceInfoControlHtml(breakdownText)}
+                </span>
               </td>
             `;
           }).join('')}
@@ -7033,6 +7079,15 @@ function renderImportantFigures() {
       `).join('')}
     </tbody>
   `;
+  table.querySelectorAll('[data-balance-info-toggle]').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const shouldOpen = !btn.classList.contains('is-open');
+      closeBalanceInfoPopovers();
+      btn.classList.toggle('is-open', shouldOpen);
+    });
+  });
 
   const appendix = document.getElementById('importantFiguresAppendix');
   if (!appendix) return;
@@ -11695,6 +11750,9 @@ function setupEconomySettingsControls() {
 }
 
 async function init() {
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.balance-value-wrap')) closeBalanceInfoPopovers();
+  });
   const auth = await api('/api/auth/status');
   state.csrfToken = auth.csrf_token || null;
   if (!auth.authenticated) {
@@ -12123,7 +12181,7 @@ async function init() {
     const toLabel = seasonLabel(previousYear + 1);
     const newDraftAssetYear = previousYear + 8;
     const confirmed = confirm(
-      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- add +1 to every player bird-year counter\n- delete ${previousYear + 1} draft assets\n- add missing ${newDraftAssetYear} 1st/2nd round draft assets\n- hide ${fromLabel} salary columns across the site`
+      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- add +1 to every player bird-year counter\n- delete ${previousYear + 1} draft assets\n- add missing ${newDraftAssetYear} 1st/2nd round draft assets\n- remove dead contracts with no salary left in current or future seasons\n- hide ${fromLabel} salary columns across the site`
     );
     if (!confirmed) return;
 
