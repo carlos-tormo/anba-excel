@@ -9505,21 +9505,166 @@ class LeagueDB(DatabaseMaintenanceMixin):
         def breakdown_text(label: str, text: str) -> Dict[str, Any]:
             return {"label": label, "text": text}
 
+        def player_name(player: Dict[str, Any]) -> str:
+            return str(player.get("name") or "Jugador sin nombre").strip() or "Jugador sin nombre"
+
+        def dead_contract_label(dead_contract: Dict[str, Any]) -> str:
+            return str(dead_contract.get("label") or "Dead contract").strip() or "Dead contract"
+
+        def season_marker(player: Dict[str, Any]) -> str:
+            salary_marker = str(player.get(f"salary_{current_year}_text") or "").strip().upper()
+            option_marker = str(player.get(f"option_{current_year}") or "").strip().upper()
+            if salary_marker in {"NB", "EB", "FB", "QO"}:
+                return salary_marker
+            if option_marker in {"NB", "EB", "FB", "QO", "GAP"}:
+                return option_marker
+            return "cap hold"
+
+        def cap_player_detail_lines() -> List[Dict[str, Any]]:
+            lines: List[Dict[str, Any]] = []
+            for player in players:
+                hold = cap_hold_amount(player, current_year, settings, salary_cap)
+                if hold > 0:
+                    lines.append(
+                        breakdown_amount(
+                            f"Jugador - {player_name(player)} ({season_marker(player)} hold)",
+                            hold,
+                        )
+                    )
+                    continue
+                if is_two_way_player(player) or is_exhibit10_player(player):
+                    continue
+                salary = row_salary_num(player, current_year)
+                if salary > 0:
+                    lines.append(breakdown_amount(f"Jugador - {player_name(player)}", salary))
+            return lines
+
+        def payroll_player_detail_lines() -> List[Dict[str, Any]]:
+            lines: List[Dict[str, Any]] = []
+            for player in players:
+                if is_exhibit10_player(player):
+                    continue
+                salary = row_salary_num(player, current_year)
+                if salary > 0:
+                    label = f"Jugador - {player_name(player)}"
+                    if is_two_way_player(player):
+                        label = f"{label} (Two-Way)"
+                    lines.append(breakdown_amount(label, salary))
+            return lines
+
+        def apron_player_detail_lines() -> List[Dict[str, Any]]:
+            lines: List[Dict[str, Any]] = []
+            for player in players:
+                hold = cap_hold_amount(player, current_year, settings, salary_cap)
+                if hold > 0:
+                    lines.append(
+                        breakdown_text(
+                            f"Excluido - {player_name(player)}",
+                            f"{season_marker(player)} hold no cuenta para apron",
+                        )
+                    )
+                    continue
+                if is_two_way_player(player) or is_exhibit10_player(player):
+                    continue
+                salary = row_salary_num(player, current_year)
+                if salary > 0:
+                    lines.append(breakdown_amount(f"Jugador - {player_name(player)}", salary))
+                yos_adjustment = apron_yos_adjustment(player, current_year, salary_cap)
+                if yos_adjustment > 0:
+                    lines.append(breakdown_amount(f"Ajuste 0-1 YOS - {player_name(player)}", yos_adjustment))
+            return lines
+
+        def dead_contract_detail_lines(*, cap_types: set[str], exclude_field: str) -> List[Dict[str, Any]]:
+            lines: List[Dict[str, Any]] = []
+            for dead_contract in dead_contracts:
+                dead_type = normalize_dead_type(dead_contract.get("dead_type"))
+                if dead_type not in cap_types:
+                    continue
+                if exclude_field == "cap" and dead_contract_excluded_from_cap(dead_contract):
+                    lines.append(breakdown_text(f"Excluido CAP - {dead_contract_label(dead_contract)}", "Marcado como excluido de CAP"))
+                    continue
+                if exclude_field == "gasto" and dead_contract_excluded_from_gasto(dead_contract):
+                    lines.append(breakdown_text(f"Excluido gasto - {dead_contract_label(dead_contract)}", "Marcado como excluido de gasto"))
+                    continue
+                amount = dead_contract_salary_num(dead_contract, current_year)
+                if amount > 0:
+                    lines.append(breakdown_amount(f"Dead contract - {dead_contract_label(dead_contract)}", amount))
+            return lines
+
+        def luxury_tax_detail_lines(overage: float, repeater: bool) -> List[Dict[str, Any]]:
+            lines: List[Dict[str, Any]] = []
+            remaining = max(0.0, float(overage or 0.0))
+            if remaining <= 0:
+                return lines
+            tier_size = 5_000_000.0
+            rates = [2.5, 2.75, 3.5, 4.25] if repeater else [1.5, 1.75, 2.5, 3.25]
+            tier_index = 0
+            lower_bound = 0.0
+            while remaining > 0:
+                taxable = min(tier_size, remaining)
+                if tier_index < len(rates):
+                    rate = rates[tier_index]
+                else:
+                    rate = rates[-1] + ((tier_index - len(rates) + 1) * 0.5)
+                upper_bound = lower_bound + taxable
+                lines.append(
+                    breakdown_amount(
+                        f"Tramo luxury {int(lower_bound / 1_000_000)}-{int(math.ceil(upper_bound / 1_000_000))}M x{rate:g}",
+                        taxable * rate,
+                    )
+                )
+                remaining -= taxable
+                lower_bound += taxable
+                tier_index += 1
+            return lines
+
+        cap_player_lines = cap_player_detail_lines()
+        payroll_player_lines = payroll_player_detail_lines()
+        apron_player_lines = apron_player_detail_lines()
+        dead_cap_team_salary_lines = dead_contract_detail_lines(cap_types={"normal", "draft_hold"}, exclude_field="cap")
+        dead_cap_apron_lines = dead_contract_detail_lines(cap_types={"normal"}, exclude_field="cap")
+        dead_gasto_normal_lines = dead_contract_detail_lines(cap_types={"normal"}, exclude_field="gasto")
+        dead_gasto_two_way_lines = dead_contract_detail_lines(cap_types={"two_way"}, exclude_field="gasto")
+        open_roster_lines = (
+            [
+                breakdown_amount(
+                    f"{int(open_roster_hold.get('open_spots') or 0)} plazas x minimo rookie",
+                    open_roster_hold_amount,
+                )
+            ]
+            if open_roster_hold_amount > 0
+            else []
+        )
+        salary_floor_lines = (
+            [breakdown_amount("Ajuste para llegar al Salary Floor", salary_floor_adjustment)]
+            if salary_floor_adjustment > 0
+            else []
+        )
+
         balance_breakdowns = {
             "cap_total": [
                 breakdown_amount("Jugadores y cap holds computables", cap_figure_players),
+                *cap_player_lines,
                 breakdown_amount("Dead contracts y rookie scale holds", dead_cap_team_salary),
+                *dead_cap_team_salary_lines,
                 breakdown_amount("Open roster spot cap holds", open_roster_hold_amount),
+                *open_roster_lines,
                 breakdown_amount("Ajuste Salary Floor", salary_floor_adjustment),
+                *salary_floor_lines,
             ],
             "gasto_total": [
                 breakdown_amount("Salarios de jugadores", player_payroll),
+                *payroll_player_lines,
                 breakdown_amount("Dead contracts", dead_gasto_normal),
+                *dead_gasto_normal_lines,
                 breakdown_amount("Dead contracts Two-Way", dead_gasto_two_way),
+                *dead_gasto_two_way_lines,
             ],
             "apron_account": [
                 breakdown_amount("Jugadores sin cap holds", apron_figure_players),
+                *apron_player_lines,
                 breakdown_amount("Dead contracts computables", dead_cap_apron),
+                *dead_cap_apron_lines,
             ],
             "luxury_tax": [
                 breakdown_amount("CAP TOTAL", cap_figure),
@@ -9527,6 +9672,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 breakdown_amount("Exceso sobre luxury", luxury_overage),
                 breakdown_text("Tipo de luxury", "Reincidente" if luxury_repeater else "No reincidente"),
                 breakdown_amount("Luxury tax calculada", luxury_tax),
+                *luxury_tax_detail_lines(luxury_overage, luxury_repeater),
             ],
         }
 

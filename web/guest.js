@@ -1838,7 +1838,7 @@ function keyLabelForBreakdown(label) {
 function balanceInfoControlHtml(tooltip) {
   const safeTooltip = escapeHtml(tooltip);
   return `
-    <button class="balance-info-btn" type="button" title="${safeTooltip}" aria-label="${safeTooltip}" data-balance-info-toggle>i</button>
+    <button class="balance-info-btn" type="button" aria-label="Ver desglose de balance" data-balance-info-toggle>i</button>
     <span class="balance-info-popover" role="tooltip">${safeTooltip}</span>
   `;
 }

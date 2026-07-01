@@ -77,6 +77,10 @@ class SeasonSummaryServerTests(unittest.TestCase):
             float(summary_2026["room_to_cap"]),
             float(summary_2026["salary_cap"]) - float(summary_2026["cap_figure"]),
         )
+        cap_breakdown_labels = {line["label"] for line in summary_2026["balance_breakdowns"]["cap_total"]}
+        apron_breakdown_labels = {line["label"] for line in summary_2026["balance_breakdowns"]["apron_account"]}
+        self.assertIn("Jugador - QO Hold Player (QO hold)", cap_breakdown_labels)
+        self.assertIn("Excluido - QO Hold Player", apron_breakdown_labels)
 
     def test_tracker_uses_same_current_summary_as_team_payload(self) -> None:
         self.db.update_setting("current_year", "2025")
@@ -141,6 +145,7 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertIn("luxury_tax", breakdowns)
         cap_total_lines = {line["label"]: round(float(line.get("amount") or 0)) for line in breakdowns["cap_total"]}
         self.assertEqual(50_000_000, cap_total_lines["Jugadores y cap holds computables"])
+        self.assertEqual(50_000_000, cap_total_lines["Jugador - Below Floor Player"])
         self.assertEqual(40_000_000, cap_total_lines["Ajuste Salary Floor"])
 
     def test_salary_floor_does_not_apply_in_free_agency_mode(self) -> None:
