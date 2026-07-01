@@ -1289,7 +1289,7 @@ function isRestrictedRightsPlayer(player) {
 }
 
 function capHoldTargetSeason() {
-  return currentSeasonStart() + 1;
+  return currentSeasonStart();
 }
 
 function pendingCapHold(shortLabel, message, options = {}) {
