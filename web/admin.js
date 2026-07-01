@@ -111,6 +111,7 @@ const state = {
     freeAgentsPageSize: 50,
     leaguePlayersPage: 1,
     leaguePlayersPageSize: 50,
+    expandedLeaguePlayerProfiles: new Set(),
   },
   sort: {
     tracker: { key: 'team_code', dir: 'asc' },
@@ -6094,6 +6095,80 @@ function leaguePlayerLogsHtml(player) {
   `;
 }
 
+function leaguePlayerLogsSummaryHtml(player) {
+  const logs = Array.isArray(player?.transaction_logs) ? player.transaction_logs : [];
+  if (!logs.length) return '<span class="muted-text">Sin movimientos</span>';
+  return `
+    <div class="league-player-log-summary">
+      ${logs.slice(0, 2).map((log) => `
+        <span>${escapeHtml(shortDateTime(log.created_at))} · ${escapeHtml(log.summary || 'Movimiento registrado')}</span>
+      `).join('')}
+      ${logs.length > 2 ? `<small>+${logs.length - 2} más</small>` : ''}
+    </div>
+  `;
+}
+
+function leaguePlayerSalaryHistoryValue(row) {
+  const text = String(row?.salary_text || '').trim();
+  const parsed = parseAmount(text);
+  if (parsed !== null) return formatDots(parsed);
+  const num = Number(row?.salary_num);
+  if (Number.isFinite(num)) return formatDots(num);
+  return text;
+}
+
+function leaguePlayerSalaryHistoryTeamOptions(selected = '') {
+  const selectedCode = String(selected || '').trim().toUpperCase();
+  return `
+    <option value=""></option>
+    ${(state.teams || []).map((team) => `
+      <option value="${escapeHtml(team.code)}"${team.code === selectedCode ? ' selected' : ''}>${escapeHtml(team.code)}</option>
+    `).join('')}
+  `;
+}
+
+function leaguePlayerSalaryHistoryHtml(player) {
+  const profileId = player?.profile_id || '';
+  const rows = Array.isArray(player?.salary_history) ? [...player.salary_history] : [];
+  rows.sort((a, b) => Number(b.season_year || 0) - Number(a.season_year || 0));
+  const rowsHtml = rows.length ? rows.map((row) => `
+    <tr data-player-salary-history-row="${escapeHtml(row.id || '')}">
+      <td><input class="player-salary-history-input player-salary-history-input--year" data-player-salary-history-id="${escapeHtml(row.id || '')}" data-player-salary-history-field="season_year" type="number" min="1900" max="2200" value="${escapeHtml(row.season_year || '')}"></td>
+      <td><input class="player-salary-history-input" data-player-salary-history-id="${escapeHtml(row.id || '')}" data-player-salary-history-field="salary_text" inputmode="numeric" value="${escapeHtml(leaguePlayerSalaryHistoryValue(row))}"></td>
+      <td><input class="player-salary-history-input player-salary-history-input--type" data-player-salary-history-id="${escapeHtml(row.id || '')}" data-player-salary-history-field="salary_type" value="${escapeHtml(row.salary_type || '')}" placeholder="Reg, Min..."></td>
+      <td><select class="player-salary-history-input player-salary-history-input--team" data-player-salary-history-id="${escapeHtml(row.id || '')}" data-player-salary-history-field="team_code">${leaguePlayerSalaryHistoryTeamOptions(row.team_code)}</select></td>
+      <td><button type="button" class="player-log-delete-btn" data-player-salary-history-delete="${escapeHtml(row.id || '')}">Eliminar</button></td>
+    </tr>
+  `).join('') : `
+    <tr><td colspan="5"><span class="muted-text">Sin historial contractual guardado.</span></td></tr>
+  `;
+  return `
+    <div class="player-salary-history-editor">
+      <table class="player-salary-history-table">
+        <thead>
+          <tr>
+            <th>Año</th>
+            <th>Salario</th>
+            <th>Tipo</th>
+            <th>Último equipo</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+          <tr class="player-salary-history-new-row" data-player-salary-history-new="${escapeHtml(profileId)}">
+            <td><input class="player-salary-history-input player-salary-history-input--year" data-new-salary-history-field="season_year" type="number" min="1900" max="2200" placeholder="2026"></td>
+            <td><input class="player-salary-history-input" data-new-salary-history-field="salary_text" inputmode="numeric" placeholder="0"></td>
+            <td><input class="player-salary-history-input player-salary-history-input--type" data-new-salary-history-field="salary_type" placeholder="Reg"></td>
+            <td><select class="player-salary-history-input player-salary-history-input--team" data-new-salary-history-field="team_code">${leaguePlayerSalaryHistoryTeamOptions(player?.team_code)}</select></td>
+            <td><button type="button" class="player-log-add-btn" data-player-salary-history-add="${escapeHtml(profileId)}"${profileId ? '' : ' disabled'}>Añadir</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function playerIdentityTitle(player) {
   const profileId = player?.profile_id || '';
   const hasProfileListShape = Object.prototype.hasOwnProperty.call(player || {}, 'active_contract');
@@ -6192,9 +6267,146 @@ function leaguePlayerDeleteSummary(player) {
   if (Number(player.free_agent_id || 0)) parts.push('entrada de agente libre');
   const deadCount = Number(player.dead_contract_count || 0);
   if (deadCount) parts.push(`${deadCount} dead contract${deadCount === 1 ? '' : 's'}`);
+  const salaryHistoryCount = Array.isArray(player.salary_history) ? player.salary_history.length : 0;
+  if (salaryHistoryCount) parts.push(`${salaryHistoryCount} salario${salaryHistoryCount === 1 ? '' : 's'} histórico${salaryHistoryCount === 1 ? '' : 's'}`);
   const logCount = Array.isArray(player.transaction_logs) ? player.transaction_logs.length : 0;
   if (logCount) parts.push(`${logCount} movimiento${logCount === 1 ? '' : 's'}`);
   return parts.length ? parts.join(', ') : 'solo el perfil';
+}
+
+function bindLeaguePlayerProfileEditors(root, player, profileId, contractRowId) {
+  root.querySelectorAll('[data-player-profile-field]').forEach((el) => {
+    const key = el.dataset.playerProfileField;
+    attachInlineEditor(el, async () => {
+      const value = String(el.value || '').trim();
+      const payload = { [key]: value === '' ? null : value };
+      const url = profileId
+        ? `/api/player-profiles/${profileId}`
+        : (contractRowId ? `/api/players/${contractRowId}` : '');
+      if (!url) throw new Error('No player identity available for profile update');
+      await api(url, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+      player[key] = payload[key];
+      if (!profileId && contractRowId) {
+        await loadLeaguePlayers();
+      }
+    });
+  });
+}
+
+function bindLeaguePlayerTransactionEditors(root, player, profileId) {
+  root.querySelectorAll('[data-player-transaction-field]').forEach((el) => {
+    const transactionId = el.dataset.playerTransactionId;
+    const field = el.dataset.playerTransactionField;
+    if (!transactionId) return;
+    attachInlineEditor(el, async () => {
+      const value = String(el.value || '').trim();
+      if (field === 'summary' && !value) return;
+      await api(`/api/player-transactions/${transactionId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [field]: value || null }),
+      });
+      const log = (player.transaction_logs || []).find((item) => String(item.id) === String(transactionId));
+      if (log) log[field] = value || null;
+    });
+  });
+  root.querySelectorAll('[data-player-transaction-delete]').forEach((btn) => {
+    const transactionId = btn.dataset.playerTransactionDelete;
+    if (!transactionId) return;
+    btn.addEventListener('click', async () => {
+      const confirmed = window.confirm('¿Eliminar este movimiento del historial?');
+      if (!confirmed) return;
+      await api(`/api/player-transactions/${transactionId}`, { method: 'DELETE' });
+      player.transaction_logs = (player.transaction_logs || []).filter((item) => String(item.id) !== String(transactionId));
+      const row = btn.closest('[data-player-transaction-row]');
+      if (row) row.remove();
+    });
+  });
+  const addLogBtn = root.querySelector('[data-player-log-add]');
+  if (addLogBtn) {
+    addLogBtn.addEventListener('click', async () => {
+      if (!profileId) {
+        alert('Guarda primero un dato del perfil para crear el perfil del jugador.');
+        return;
+      }
+      const summary = window.prompt('Movimiento a añadir');
+      const trimmed = String(summary || '').trim();
+      if (!trimmed) return;
+      await api(`/api/player-profiles/${profileId}/transactions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          summary: trimmed,
+          action: 'manual',
+          team_code: player.team_code || null,
+        }),
+      });
+      await loadLeaguePlayers();
+    });
+  }
+}
+
+function bindLeaguePlayerSalaryHistoryEditors(root, player, profileId) {
+  root.querySelectorAll('[data-player-salary-history-field]').forEach((el) => {
+    const salaryHistoryId = el.dataset.playerSalaryHistoryId;
+    const field = el.dataset.playerSalaryHistoryField;
+    if (!salaryHistoryId || !field) return;
+    attachInlineEditor(el, async () => {
+      const value = String(el.value || '').trim();
+      await api(`/api/player-salary-history/${salaryHistoryId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [field]: value || null }),
+      });
+      const row = (player.salary_history || []).find((item) => String(item.id) === String(salaryHistoryId));
+      if (row) row[field] = value || null;
+    });
+    if (el.tagName === 'SELECT') {
+      el.addEventListener('change', () => {
+        el.dispatchEvent(new Event('blur'));
+      });
+    }
+  });
+  root.querySelectorAll('[data-player-salary-history-delete]').forEach((btn) => {
+    const salaryHistoryId = btn.dataset.playerSalaryHistoryDelete;
+    if (!salaryHistoryId) return;
+    btn.addEventListener('click', async () => {
+      if (!window.confirm('¿Eliminar esta fila del historial contractual?')) return;
+      await api(`/api/player-salary-history/${salaryHistoryId}`, { method: 'DELETE' });
+      player.salary_history = (player.salary_history || []).filter((item) => String(item.id) !== String(salaryHistoryId));
+      renderLeaguePlayers();
+    });
+  });
+  root.querySelectorAll('[data-player-salary-history-add]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!profileId) {
+        alert('Este jugador no tiene perfil global.');
+        return;
+      }
+      const row = btn.closest('[data-player-salary-history-new]');
+      if (!row) return;
+      const payload = {};
+      row.querySelectorAll('[data-new-salary-history-field]').forEach((el) => {
+        const key = el.dataset.newSalaryHistoryField;
+        payload[key] = String(el.value || '').trim() || null;
+      });
+      if (!payload.season_year || !payload.salary_text) {
+        alert('Añade año y salario para guardar el historial.');
+        return;
+      }
+      const result = await api(`/api/player-profiles/${profileId}/salary-history`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (result?.salary_history) {
+        player.salary_history = [
+          ...(player.salary_history || []).filter((item) => String(item.season_year) !== String(result.salary_history.season_year)),
+          result.salary_history,
+        ];
+        renderLeaguePlayers();
+      }
+    });
+  });
 }
 
 function renderLeaguePlayers() {
@@ -6206,7 +6418,7 @@ function renderLeaguePlayers() {
   renderPaginationControls('leaguePlayers', pagination);
   if (!allRows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="9">No hay jugadores cargados.</td>';
+    tr.innerHTML = '<td colspan="8">No hay jugadores cargados.</td>';
     tbody.appendChild(tr);
     return;
   }
@@ -6219,19 +6431,26 @@ function renderLeaguePlayers() {
   pagination.rows.forEach((player) => {
     const profileId = player.profile_id || null;
     const contractRowId = player.player_id || player.id || null;
+    const expandKey = String(profileId || contractRowId || '');
+    const isExpanded = Boolean(expandKey && state.ui.expandedLeaguePlayerProfiles.has(expandKey));
     const duplicateName = (nameCounts.get(leaguePlayerDuplicateNameKey(player.name)) || 0) > 1;
     const tr = document.createElement('tr');
+    tr.className = 'league-player-summary-row';
     tr.dataset.id = profileId || contractRowId || '';
     if (duplicateName) tr.classList.add('league-player-row--duplicate');
     tr.innerHTML = `
-      <td><input class="player-profile-input" data-player-profile-field="name" title="${escapeHtml(playerIdentityTitle(player))}" value="${escapeHtml(player.name || '')}"></td>
+      <td>
+        <div class="league-player-main-cell">
+          <button type="button" class="league-player-expand-btn" data-league-player-expand="${escapeHtml(expandKey)}" aria-expanded="${isExpanded ? 'true' : 'false'}">${isExpanded ? '▾' : '▸'}</button>
+          <input class="player-profile-input" data-player-profile-field="name" title="${escapeHtml(playerIdentityTitle(player))}" value="${escapeHtml(player.name || '')}">
+        </div>
+      </td>
       <td>${leaguePlayerStatusHtml(player)}</td>
       <td>${leaguePlayerTeamHtml(player)}</td>
       <td><input class="player-profile-input player-profile-input--tiny" data-player-profile-field="experience_years" type="number" min="0" max="50" value="${player.experience_years == null ? '' : escapeHtml(player.experience_years)}"></td>
       <td><input class="player-profile-input player-profile-input--tiny" data-player-profile-field="happiness" type="number" min="-10" max="10" step="any" value="${player.happiness == null ? '0' : escapeHtml(player.happiness)}" aria-label="Felicidad"></td>
-      <td>${leaguePlayerProfileFieldsHtml(player)}</td>
       <td>${leaguePlayerContractHtml(player)}</td>
-      <td>${leaguePlayerLogsHtml(player)}</td>
+      <td>${leaguePlayerLogsSummaryHtml(player)}</td>
       <td class="league-player-actions">
         <button type="button" class="danger player-profile-delete-btn" data-player-profile-delete="${escapeHtml(profileId || '')}"${profileId ? '' : ' disabled'}>Eliminar</button>
       </td>
@@ -6242,73 +6461,13 @@ function renderLeaguePlayers() {
         await loadTeam(teamBtn.dataset.teamCode);
       });
     }
-    tr.querySelectorAll('[data-player-profile-field]').forEach((el) => {
-      const key = el.dataset.playerProfileField;
-      attachInlineEditor(el, async () => {
-        const value = String(el.value || '').trim();
-        const payload = { [key]: value === '' ? null : value };
-        const url = profileId
-          ? `/api/player-profiles/${profileId}`
-          : (contractRowId ? `/api/players/${contractRowId}` : '');
-        if (!url) throw new Error('No player identity available for profile update');
-        await api(url, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
-        });
-        player[key] = payload[key];
-        if (!profileId && contractRowId) {
-          await loadLeaguePlayers();
-        }
-      });
+    bindLeaguePlayerProfileEditors(tr, player, profileId, contractRowId);
+    tr.querySelector('[data-league-player-expand]')?.addEventListener('click', () => {
+      if (!expandKey) return;
+      if (state.ui.expandedLeaguePlayerProfiles.has(expandKey)) state.ui.expandedLeaguePlayerProfiles.delete(expandKey);
+      else state.ui.expandedLeaguePlayerProfiles.add(expandKey);
+      renderLeaguePlayers();
     });
-    tr.querySelectorAll('[data-player-transaction-field]').forEach((el) => {
-      const transactionId = el.dataset.playerTransactionId;
-      const field = el.dataset.playerTransactionField;
-      if (!transactionId) return;
-      attachInlineEditor(el, async () => {
-        const value = String(el.value || '').trim();
-        if (field === 'summary' && !value) return;
-        await api(`/api/player-transactions/${transactionId}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ [field]: value || null }),
-        });
-        const log = (player.transaction_logs || []).find((item) => String(item.id) === String(transactionId));
-        if (log) log[field] = value || null;
-      });
-    });
-    tr.querySelectorAll('[data-player-transaction-delete]').forEach((btn) => {
-      const transactionId = btn.dataset.playerTransactionDelete;
-      if (!transactionId) return;
-      btn.addEventListener('click', async () => {
-        const confirmed = window.confirm('¿Eliminar este movimiento del historial?');
-        if (!confirmed) return;
-        await api(`/api/player-transactions/${transactionId}`, { method: 'DELETE' });
-        player.transaction_logs = (player.transaction_logs || []).filter((item) => String(item.id) !== String(transactionId));
-        const row = btn.closest('[data-player-transaction-row]');
-        if (row) row.remove();
-      });
-    });
-    const addLogBtn = tr.querySelector('[data-player-log-add]');
-    if (addLogBtn) {
-      addLogBtn.addEventListener('click', async () => {
-        if (!profileId) {
-          alert('Guarda primero un dato del perfil para crear el perfil del jugador.');
-          return;
-        }
-        const summary = window.prompt('Movimiento a añadir');
-        const trimmed = String(summary || '').trim();
-        if (!trimmed) return;
-        await api(`/api/player-profiles/${profileId}/transactions`, {
-          method: 'POST',
-          body: JSON.stringify({
-            summary: trimmed,
-            action: 'manual',
-            team_code: player.team_code || null,
-          }),
-        });
-        await loadLeaguePlayers();
-      });
-    }
     const deleteBtn = tr.querySelector('[data-player-profile-delete]');
     if (deleteBtn) {
       deleteBtn.addEventListener('click', async () => {
@@ -6332,6 +6491,33 @@ function renderLeaguePlayers() {
       });
     }
     tbody.appendChild(tr);
+    if (isExpanded) {
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'league-player-detail-row';
+      if (duplicateName) detailTr.classList.add('league-player-row--duplicate');
+      detailTr.innerHTML = `
+        <td colspan="8">
+          <div class="league-player-detail-panel">
+            <section class="league-player-detail-card">
+              <h3>Perfil</h3>
+              ${leaguePlayerProfileFieldsHtml(player)}
+            </section>
+            <section class="league-player-detail-card">
+              <h3>Historial contractual</h3>
+              ${leaguePlayerSalaryHistoryHtml(player)}
+            </section>
+            <section class="league-player-detail-card league-player-detail-card--wide">
+              <h3>Últimos movimientos</h3>
+              ${leaguePlayerLogsHtml(player)}
+            </section>
+          </div>
+        </td>
+      `;
+      bindLeaguePlayerProfileEditors(detailTr, player, profileId, contractRowId);
+      bindLeaguePlayerTransactionEditors(detailTr, player, profileId);
+      bindLeaguePlayerSalaryHistoryEditors(detailTr, player, profileId);
+      tbody.appendChild(detailTr);
+    }
   });
 }
 

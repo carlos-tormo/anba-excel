@@ -1774,6 +1774,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     season_year INTEGER NOT NULL,
                     salary_text TEXT,
                     salary_num REAL,
+                    salary_type TEXT,
                     source TEXT NOT NULL DEFAULT 'season_rollover',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -2031,6 +2032,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE player_profiles ADD COLUMN transaction_notes TEXT")
             if "happiness" not in profile_cols:
                 conn.execute("ALTER TABLE player_profiles ADD COLUMN happiness REAL NOT NULL DEFAULT 0")
+            salary_history_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(player_salary_history)").fetchall()
+            }
+            if "salary_type" not in salary_history_cols:
+                conn.execute("ALTER TABLE player_salary_history ADD COLUMN salary_type TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_players_profile_id ON players(profile_id)")
             duplicate_active_profile = conn.execute(
                 """
@@ -2353,6 +2360,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         salary_text: Any,
         salary_num: Any,
         source: str,
+        salary_type: Any = None,
         timestamp: Optional[str] = None,
     ) -> bool:
         parsed_profile_id = parse_int(profile_id)
@@ -2369,14 +2377,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
             """
             INSERT INTO player_salary_history (
                 profile_id, player_id, team_code, season_year, salary_text,
-                salary_num, source, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                salary_num, salary_type, source, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(profile_id, season_year)
             DO UPDATE SET
                 player_id = COALESCE(excluded.player_id, player_salary_history.player_id),
                 team_code = COALESCE(excluded.team_code, player_salary_history.team_code),
                 salary_text = COALESCE(excluded.salary_text, player_salary_history.salary_text),
                 salary_num = COALESCE(excluded.salary_num, player_salary_history.salary_num),
+                salary_type = COALESCE(excluded.salary_type, player_salary_history.salary_type),
                 source = excluded.source,
                 updated_at = excluded.updated_at
             """,
@@ -2387,6 +2396,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 parsed_season_year,
                 cleaned["text"],
                 cleaned["num"],
+                str(salary_type or "").strip() or None,
                 str(source or "unknown").strip() or "unknown",
                 now,
                 now,
@@ -2412,6 +2422,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 p.id,
                 p.profile_id,
                 t.code AS team_code,
+                p.bird_rights AS salary_type,
                 {text_col if text_col in player_cols else "NULL"} AS salary_text,
                 {num_col if num_col in player_cols else "NULL"} AS salary_num
             FROM players p
@@ -2432,6 +2443,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 season_year=season_year,
                 salary_text=row["salary_text"],
                 salary_num=row["salary_num"],
+                salary_type=row["salary_type"],
                 source=source,
                 timestamp=timestamp,
             ):
@@ -2513,6 +2525,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         season_year=snapshot_season,
                         salary_text=player.get(f"salary_{snapshot_season}_text"),
                         salary_num=player.get(f"salary_{snapshot_season}_num"),
+                        salary_type=player.get("bird_rights"),
                         source="season_snapshot",
                         timestamp=str(row["created_at"] or "") or now_iso(),
                     ):
@@ -2534,7 +2547,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         placeholders = ",".join("?" for _ in profile_ids)
         rows = conn.execute(
             f"""
-            SELECT profile_id, season_year, salary_text, salary_num
+            SELECT profile_id, season_year, salary_text, salary_num, salary_type, team_code
             FROM player_salary_history
             WHERE profile_id IN ({placeholders})
             """,
@@ -2554,6 +2567,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for season_year, row in history.get(profile_id, {}).items():
                 player[f"salary_{season_year}_history_text"] = row["salary_text"]
                 player[f"salary_{season_year}_history_num"] = row["salary_num"]
+                player[f"salary_{season_year}_history_type"] = row["salary_type"]
+                player[f"salary_{season_year}_history_team_code"] = row["team_code"]
         return players
 
     def _find_profile_id(
@@ -6919,6 +6934,27 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     continue
                 logs.append(tx)
 
+            if include_private and profiles:
+                profile_ids = sorted(profiles.keys())
+                placeholders = ",".join("?" for _ in profile_ids)
+                salary_history_cur = conn.execute(
+                    f"""
+                    SELECT
+                        id, profile_id, player_id, team_code, season_year, salary_text,
+                        salary_num, salary_type, source, created_at, updated_at
+                    FROM player_salary_history
+                    WHERE profile_id IN ({placeholders})
+                    ORDER BY profile_id, season_year DESC, id DESC
+                    """,
+                    profile_ids,
+                )
+                for row in salary_history_cur.fetchall():
+                    item = row_to_dict(salary_history_cur, row)
+                    profile_id = parse_int(item.get("profile_id"))
+                    if profile_id is None or profile_id not in profiles:
+                        continue
+                    profiles[profile_id].setdefault("salary_history", []).append(item)
+
             return sorted(profiles.values(), key=lambda item: str(item.get("name") or "").lower())
 
     def player_identity_integrity_report(self) -> Dict[str, Any]:
@@ -7010,6 +7046,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 LEFT JOIN player_profiles pp ON pp.id = tx.profile_id
                 WHERE pp.id IS NULL
                 ORDER BY tx.id
+                """,
+            ),
+            (
+                "salary_history_orphan_profiles",
+                """
+                SELECT h.id
+                FROM player_salary_history h
+                LEFT JOIN player_profiles pp ON pp.id = h.profile_id
+                WHERE h.profile_id IS NOT NULL AND pp.id IS NULL
+                ORDER BY h.id
                 """,
             ),
             (
@@ -10530,6 +10576,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "active_contracts": int(conn.execute("SELECT COUNT(*) FROM players WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "free_agents": int(conn.execute("SELECT COUNT(*) FROM free_agents WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "dead_contracts": int(conn.execute("SELECT COUNT(*) FROM dead_contracts WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
+                "salary_history": int(conn.execute("SELECT COUNT(*) FROM player_salary_history WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "transactions": int(conn.execute("SELECT COUNT(*) FROM player_transactions WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "discord_offer_threads": int(conn.execute("SELECT COUNT(*) FROM discord_free_agent_offer_threads WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "free_agent_offer_requests": free_agent_request_count,
@@ -10613,6 +10660,92 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def delete_player_transaction(self, transaction_id: int) -> bool:
         with self.connect() as conn:
             cur = conn.execute("DELETE FROM player_transactions WHERE id = ?", (transaction_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def create_player_salary_history(self, profile_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        season_year = parse_int(payload.get("season_year"))
+        if season_year is None or season_year < 1900 or season_year > 2200:
+            raise ValueError("invalid_season_year")
+        salary_text = str(payload.get("salary_text") or payload.get("salary") or "").strip()
+        salary_num = parse_float(payload.get("salary_num"))
+        if salary_num is None and salary_text:
+            salary_num = parse_amount_like(salary_text)
+        if not salary_text and salary_num is None:
+            raise ValueError("salary_required")
+        salary_type = str(payload.get("salary_type") or payload.get("type") or "").strip() or None
+        team_code = normalize_team_code(payload.get("team_code") or payload.get("last_team"))
+        timestamp = now_iso()
+        with self.connect() as conn:
+            exists = conn.execute("SELECT id FROM player_profiles WHERE id = ?", (profile_id,)).fetchone()
+            if not exists:
+                return None
+            self._upsert_player_salary_history_row_conn(
+                conn,
+                profile_id=profile_id,
+                player_id=payload.get("player_id"),
+                team_code=team_code,
+                season_year=season_year,
+                salary_text=salary_text,
+                salary_num=salary_num,
+                source="manual",
+                salary_type=salary_type,
+                timestamp=timestamp,
+            )
+            row_cur = conn.execute(
+                """
+                SELECT
+                    id, profile_id, player_id, team_code, season_year, salary_text,
+                    salary_num, salary_type, source, created_at, updated_at
+                FROM player_salary_history
+                WHERE profile_id = ? AND season_year = ?
+                """,
+                (profile_id, season_year),
+            )
+            row = row_cur.fetchone()
+            conn.commit()
+            return row_to_dict(row_cur, row) if row else None
+
+    def update_player_salary_history(self, salary_history_id: int, payload: Dict[str, Any]) -> bool:
+        fields: Dict[str, Any] = {}
+        if "season_year" in payload:
+            season_year = parse_int(payload.get("season_year"))
+            if season_year is None or season_year < 1900 or season_year > 2200:
+                raise ValueError("invalid_season_year")
+            fields["season_year"] = season_year
+        if "salary_text" in payload or "salary" in payload:
+            raw_salary = payload.get("salary_text") if "salary_text" in payload else payload.get("salary")
+            salary_text = str(raw_salary or "").strip() or None
+            fields["salary_text"] = salary_text
+            fields["salary_num"] = parse_amount_like(salary_text) if salary_text else None
+        if "salary_num" in payload and "salary_text" not in payload and "salary" not in payload:
+            fields["salary_num"] = parse_float(payload.get("salary_num"))
+        if "salary_type" in payload or "type" in payload:
+            raw_salary_type = payload.get("salary_type") if "salary_type" in payload else payload.get("type")
+            fields["salary_type"] = str(raw_salary_type or "").strip() or None
+        if "team_code" in payload or "last_team" in payload:
+            fields["team_code"] = normalize_team_code(payload.get("team_code") if "team_code" in payload else payload.get("last_team"))
+        if not fields:
+            return False
+        fields["source"] = "manual"
+        fields["updated_at"] = now_iso()
+        assignments = [f"{key} = ?" for key in fields]
+        values = list(fields.values())
+        values.append(salary_history_id)
+        with self.connect() as conn:
+            try:
+                cur = conn.execute(
+                    f"UPDATE player_salary_history SET {', '.join(assignments)} WHERE id = ?",
+                    values,
+                )
+            except sqlite3.IntegrityError as err:
+                raise ValueError("duplicate_salary_history") from err
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_player_salary_history(self, salary_history_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM player_salary_history WHERE id = ?", (salary_history_id,))
             conn.commit()
             return cur.rowcount > 0
 
@@ -18376,6 +18509,34 @@ QUALITY REQUIREMENTS
             self._json(200, {"ok": True, "result": result})
             return
 
+        if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/salary-history"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                profile_id = int(parts[2])
+            except ValueError:
+                self._json(400, {"error": "invalid_profile_id"})
+                return
+            try:
+                row = self.db.create_player_salary_history(profile_id, payload)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_salary_history"})
+                return
+            if not row:
+                self._json(404, {"error": "profile_not_found"})
+                return
+            self._log_admin_action(
+                "create",
+                "player_salary_history",
+                str(row.get("id") or ""),
+                row.get("team_code"),
+                {"profile_id": profile_id, "season_year": row.get("season_year")},
+            )
+            self._json(201, {"salary_history": row})
+            return
+
         if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/transactions"):
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
@@ -19699,6 +19860,28 @@ QUALITY REQUIREMENTS
             self._json(200 if ok else 404, {"ok": ok})
             return
 
+        if parsed.path.startswith("/api/player-salary-history/"):
+            try:
+                salary_history_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_salary_history_id"})
+                return
+            try:
+                ok = self.db.update_player_salary_history(salary_history_id, payload)
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_salary_history"})
+                return
+            if ok:
+                self._log_admin_action(
+                    "update",
+                    "player_salary_history",
+                    str(salary_history_id),
+                    payload.get("team_code") or payload.get("last_team"),
+                    {"fields": sorted(payload.keys())},
+                )
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
         if parsed.path.startswith("/api/player-profiles/"):
             try:
                 profile_id = int(parsed.path.split("/")[-1])
@@ -20075,6 +20258,18 @@ QUALITY REQUIREMENTS
             ok = self.db.delete_player_transaction(transaction_id)
             if ok:
                 self._log_admin_action("delete", "player_transaction", str(transaction_id))
+            self._json(200 if ok else 404, {"ok": ok})
+            return
+
+        if parsed.path.startswith("/api/player-salary-history/"):
+            try:
+                salary_history_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_salary_history_id"})
+                return
+            ok = self.db.delete_player_salary_history(salary_history_id)
+            if ok:
+                self._log_admin_action("delete", "player_salary_history", str(salary_history_id))
             self._json(200 if ok else 404, {"ok": ok})
             return
 

@@ -254,6 +254,55 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(10_000_000, round(float(player["salary_2025_history_num"])))
         self.assertEqual(19_000_000, cap_lines["Jugador - Historical Hold Player (FB hold)"])
 
+    def test_cap_hold_uses_manual_profile_salary_history(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        self.db.update_setting("free_agency_mode", "1")
+        self.db.update_setting("salary_cap_2025", "100000000")
+        self.db.update_setting("salary_cap_2026", "100000000")
+        self.db.update_setting("average_salary_2025", "15000000")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Manual History Hold Player",
+                "bird_rights": "Reg",
+                "position": "PG",
+                "salary_2026_text": "FB",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        with sqlite3.connect(self.db_path) as conn:
+            profile_id = conn.execute(
+                "SELECT profile_id FROM players WHERE id = ?",
+                (int(player_id),),
+            ).fetchone()[0]
+
+        created = self.db.create_player_salary_history(
+            int(profile_id),
+            {
+                "season_year": 2025,
+                "salary_text": "12000000",
+                "salary_type": "Reg",
+                "team_code": "ATL",
+            },
+        )
+        self.assertIsNotNone(created)
+
+        players = self.db.list_players(include_private=True)
+        profile = next(item for item in players if int(item["profile_id"]) == int(profile_id))
+        self.assertEqual("Reg", profile["salary_history"][0]["salary_type"])
+        self.assertEqual("ATL", profile["salary_history"][0]["team_code"])
+
+        team = self.db.get_team("ATL")
+        player = next(row for row in team["players"] if row["id"] == int(player_id))
+        summary = team["season_summaries"]["2026"]
+        cap_lines = {
+            line["label"]: round(float(line.get("amount") or 0))
+            for line in summary["balance_breakdowns"]["cap_total"]
+        }
+
+        self.assertEqual(12_000_000, round(float(player["salary_2025_history_num"])))
+        self.assertEqual(22_800_000, cap_lines["Jugador - Manual History Hold Player (FB hold)"])
+
     def test_tracker_can_select_future_season_and_hard_cap(self) -> None:
         self.db.update_setting("current_year", "2025")
         self.assertTrue(self.db.update_team_apron_hard_cap("ATL", 2026, "second"))

@@ -8200,6 +8200,29 @@ td.salary-option--nb .salary-pct {
   gap: 7px;
   padding: 4px 8px;
 }
+.league-player-main-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 250px;
+}
+.league-player-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-weight: 950;
+  line-height: 1;
+}
+.league-player-expand-btn:hover {
+  background: #e2e8f0;
+}
 .league-player-team-logo,
 .league-player-team-logo-fallback {
   display: inline-flex;
@@ -8283,6 +8306,42 @@ td.salary-option--nb .salary-pct {
   font-size: 0.82rem;
   font-weight: 800;
 }
+.league-player-log-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 170px;
+  color: #334155;
+  font-size: 0.86rem;
+}
+.league-player-log-summary small {
+  color: #64748b;
+  font-weight: 800;
+}
+.league-player-detail-row > td {
+  background: #f8fafc;
+  padding: 14px 18px;
+}
+.league-player-detail-panel {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 14px;
+  align-items: start;
+}
+.league-player-detail-card {
+  border: 1px solid #dbe5f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 12px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
+}
+.league-player-detail-card--wide {
+  grid-column: 1 / -1;
+}
+.league-player-detail-card h3 {
+  margin: 0 0 10px;
+  color: #1f2937;
+  font-size: 1rem;
+}
 .league-player-profile-grid,
 .league-player-profile-summary {
   display: grid;
@@ -8361,6 +8420,44 @@ td.salary-option--nb .salary-pct {
   color: #b91c1c;
   font-size: 0.76rem;
 }
+.player-salary-history-editor {
+  overflow-x: auto;
+}
+.player-salary-history-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.player-salary-history-table th,
+.player-salary-history-table td {
+  padding: 6px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+  vertical-align: middle;
+}
+.player-salary-history-table th {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.player-salary-history-new-row td {
+  background: #f8fafc;
+}
+.player-salary-history-input {
+  width: 100%;
+  min-width: 120px;
+}
+.player-salary-history-input--year {
+  width: 90px;
+  min-width: 82px;
+}
+.player-salary-history-input--type,
+.player-salary-history-input--team {
+  min-width: 92px;
+}
 .player-profile-input {
   width: 100%;
   min-width: 150px;
@@ -8375,6 +8472,14 @@ td.salary-option--nb .salary-pct {
 .player-profile-check-cell input {
   width: 18px;
   height: 18px;
+}
+@media (max-width: 860px) {
+  .league-player-detail-panel {
+    grid-template-columns: 1fr;
+  }
+  .league-player-main-cell {
+    min-width: 220px;
+  }
 }
 .inline-editor.pos-edit {
   background: #d6dde7;
