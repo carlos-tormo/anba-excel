@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import sqlite3
 import tempfile
@@ -223,6 +224,20 @@ class SeasonSummaryServerTests(unittest.TestCase):
 
         self.db.progress_to_next_year()
         with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            snapshot_row = conn.execute(
+                "SELECT id, payload_json FROM season_snapshots ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(snapshot_row)
+            payload = json.loads(snapshot_row["payload_json"])
+            for team_payload in payload.get("teams") or []:
+                for player_payload in team_payload.get("players") or []:
+                    if int(player_payload.get("id") or 0) == int(player_id):
+                        player_payload["profile_id"] = 999999999
+            conn.execute(
+                "UPDATE season_snapshots SET payload_json = ? WHERE id = ?",
+                (json.dumps(payload), int(snapshot_row["id"])),
+            )
             conn.execute("DELETE FROM player_salary_history")
             conn.execute(
                 "UPDATE players SET salary_2025_text = NULL, salary_2025_num = NULL WHERE id = ?",

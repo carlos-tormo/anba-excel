@@ -2336,6 +2336,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "num": float(numeric) if numeric is not None else None,
         }
 
+    def _player_profile_exists_conn(self, conn: sqlite3.Connection, profile_id: Any) -> bool:
+        parsed_profile_id = parse_int(profile_id)
+        if parsed_profile_id is None:
+            return False
+        return conn.execute("SELECT 1 FROM player_profiles WHERE id = ? LIMIT 1", (parsed_profile_id,)).fetchone() is not None
+
     def _upsert_player_salary_history_row_conn(
         self,
         conn: sqlite3.Connection,
@@ -2352,6 +2358,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         parsed_profile_id = parse_int(profile_id)
         parsed_season_year = parse_int(season_year)
         if parsed_profile_id is None or parsed_season_year is None:
+            return False
+        if not self._player_profile_exists_conn(conn, parsed_profile_id):
             return False
         cleaned = self._clean_salary_history_value(salary_text, salary_num)
         if cleaned["text"] is None and cleaned["num"] is None:
@@ -2454,7 +2462,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         active_profile_by_player_id = {
             int(row["id"]): int(row["profile_id"])
-            for row in conn.execute("SELECT id, profile_id FROM players WHERE profile_id IS NOT NULL").fetchall()
+            for row in conn.execute(
+                """
+                SELECT p.id, p.profile_id
+                FROM players p
+                JOIN player_profiles pp ON pp.id = p.profile_id
+                WHERE p.profile_id IS NOT NULL
+                """
+            ).fetchall()
         }
         profile_by_name = self._unique_profile_name_map_conn(conn)
         rows = conn.execute("SELECT season_year, payload_json, created_at FROM season_snapshots ORDER BY id").fetchall()
@@ -2483,6 +2498,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         continue
                     profile_id = parse_int(player.get("profile_id"))
                     player_id = parse_int(player.get("id"))
+                    if profile_id is not None and not self._player_profile_exists_conn(conn, profile_id):
+                        profile_id = None
                     if profile_id is None and player_id is not None:
                         profile_id = active_profile_by_player_id.get(player_id)
                     if profile_id is None:
