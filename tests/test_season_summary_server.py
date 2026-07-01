@@ -303,6 +303,48 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(12_000_000, round(float(player["salary_2025_history_num"])))
         self.assertEqual(22_800_000, cap_lines["Jugador - Manual History Hold Player (FB hold)"])
 
+    def test_cap_hold_free_agent_payload_includes_manual_salary_history(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        self.db.update_setting("free_agency_mode", "1")
+        self.db.update_setting("salary_cap_2025", "100000000")
+        self.db.update_setting("salary_cap_2026", "100000000")
+        self.db.update_setting("average_salary_2025", "15000000")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Manual History Free Agent",
+                "bird_rights": "Reg",
+                "position": "PF",
+                "salary_2026_text": "FB",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        with sqlite3.connect(self.db_path) as conn:
+            profile_id = conn.execute(
+                "SELECT profile_id FROM players WHERE id = ?",
+                (int(player_id),),
+            ).fetchone()[0]
+
+        created = self.db.create_player_salary_history(
+            int(profile_id),
+            {
+                "season_year": 2025,
+                "salary_text": "12000000",
+                "salary_type": "Reg",
+                "team_code": "ATL",
+            },
+        )
+        self.assertIsNotNone(created)
+
+        free_agents = self.db.list_free_agents()
+        free_agent = next(item for item in free_agents if item["profile_id"] == int(profile_id))
+
+        self.assertEqual("cap_hold", free_agent["source"])
+        self.assertEqual("ATL", free_agent["rights_team_code"])
+        self.assertEqual(12_000_000, round(float(free_agent["salary_2025_history_num"])))
+        self.assertEqual("Reg", free_agent["salary_2025_history_type"])
+        self.assertEqual("ATL", free_agent["salary_2025_history_team_code"])
+
     def test_tracker_can_select_future_season_and_hard_cap(self) -> None:
         self.db.update_setting("current_year", "2025")
         self.assertTrue(self.db.update_team_apron_hard_cap("ATL", 2026, "second"))

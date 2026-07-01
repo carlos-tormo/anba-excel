@@ -11463,7 +11463,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 ORDER BY COALESCE(pp.name, f.name) COLLATE NOCASE, f.id
                 """
             )
-            return [self._merge_player_profile(row_to_dict(cur, row)) for row in cur.fetchall()]
+            free_agents = [self._merge_player_profile(row_to_dict(cur, row)) for row in cur.fetchall()]
+            return self._attach_player_salary_history_conn(conn, free_agents)
 
     def get_free_agent(self, free_agent_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
@@ -11486,7 +11487,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 (free_agent_id,),
             )
             row = cur.fetchone()
-            return self._merge_player_profile(row_to_dict(cur, row)) if row else None
+            if not row:
+                return None
+            free_agent = self._merge_player_profile(row_to_dict(cur, row))
+            enriched = self._attach_player_salary_history_conn(conn, [free_agent])
+            return enriched[0] if enriched else free_agent
 
     def create_free_agent(self, payload: Dict[str, Any]) -> Optional[int]:
         name = str(payload.get("name") or "").strip()
