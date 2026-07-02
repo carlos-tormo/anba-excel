@@ -16816,20 +16816,12 @@ QUALITY REQUIREMENTS
         offer_label = "Oferta de renovación" if is_renewal else "Oferta"
         agent_name = str(free_agent.get("agent") or "").strip() or "Agente sin asignar"
         public_embed: Dict[str, Any] = {
-            "title": self._discord_text(
-                f"{team} envía una oferta de renovación por {player_name}"
-                if is_renewal
-                else f"{team} envía una oferta por {player_name}",
-                256,
+            "title": "Oferta recibida",
+            "description": (
+                "Se ha creado este hilo automáticamente al recibir una oferta por el jugador. "
+                "El agente posteará aquí los detalles cuando lo considere necesario."
             ),
-            "description": "Una oferta ha sido enviada al agente. Los detalles quedan privados entre equipo, agente y administración.",
             "color": 0x0F766E,
-            "fields": [
-                {"name": "Equipo", "value": team, "inline": True},
-                {"name": "Jugador", "value": self._discord_text(player_name, 1024), "inline": True},
-                {"name": "Modalidad", "value": offer_label, "inline": True},
-                {"name": "Agente", "value": self._discord_text(agent_name, 1024), "inline": True},
-            ],
         }
         private_embed: Dict[str, Any] = {
             "title": self._discord_text(
