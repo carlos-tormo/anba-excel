@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import tempfile
@@ -388,8 +389,10 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         handler.discord_webhook_url = ""
         handler.discord_free_agent_offers_forum_tag_ids = []
         handler.discord_free_agent_offers_role_id = "485913691045494785"
+        handler.discord_bot_token = "discord-bot-token"
 
         calls = []
+        dms = []
 
         def fake_post_discord_json(payload, **kwargs):
             calls.append({"payload": payload, "kwargs": kwargs})
@@ -397,30 +400,45 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
                 return {"channel_id": "1520310271862902864"}
             return {}
 
+        def fake_send_discord_dm(user_id, payload):
+            dms.append({"user_id": user_id, "payload": payload})
+            return True
+
         handler._post_discord_json = fake_post_discord_json
+        handler._send_discord_dm = fake_send_discord_dm
+        self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})
+        self.db.update_setting("free_agent_rep_discord_ids", json.dumps({"Agent Smith": "123456789012345678"}))
         free_agent = self.db.get_free_agent(self.free_agent_id)
+        agent_discord_id = handler._free_agent_agent_discord_id(free_agent)
+        self.assertEqual("123456789012345678", agent_discord_id)
         offer_payload = {
             "contract_type": "Reg",
             "years": 1,
             "salary_by_season": {"2026": "10.000.000"},
+            "notes": "Private offer details",
         }
 
-        first_sent = handler._notify_free_agent_offer(
+        first_result = handler._notify_free_agent_offer(
             free_agent,
             "ATL",
             offer_payload,
             "free_agent_offer",
+            agent_discord_id,
         )
-        second_sent = handler._notify_free_agent_offer(
+        second_result = handler._notify_free_agent_offer(
             free_agent,
             "ATL",
             offer_payload,
             "free_agent_offer",
+            agent_discord_id,
         )
 
-        self.assertTrue(first_sent)
-        self.assertTrue(second_sent)
+        self.assertTrue(first_result["thread_sent"])
+        self.assertTrue(first_result["agent_dm_sent"])
+        self.assertTrue(second_result["thread_sent"])
+        self.assertTrue(second_result["agent_dm_sent"])
         self.assertEqual(2, len(calls))
+        self.assertEqual(2, len(dms))
         self.assertEqual("Test Free Agent", calls[0]["kwargs"].get("thread_name"))
         self.assertEqual("<@&485913691045494785>", calls[0]["payload"].get("content"))
         self.assertEqual(
@@ -429,6 +447,16 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertEqual("1520310271862902864", calls[1]["kwargs"].get("thread_id"))
         self.assertNotIn("content", calls[1]["payload"])
+        public_payload_text = json.dumps(calls[0]["payload"], ensure_ascii=False)
+        self.assertIn("Una oferta ha sido enviada al agente", public_payload_text)
+        self.assertNotIn("10.000.000", public_payload_text)
+        self.assertNotIn("Private offer details", public_payload_text)
+        self.assertNotIn("Reg", public_payload_text)
+        private_payload_text = json.dumps(dms[0]["payload"], ensure_ascii=False)
+        self.assertEqual("123456789012345678", dms[0]["user_id"])
+        self.assertIn("10.000.000", private_payload_text)
+        self.assertIn("Private offer details", private_payload_text)
+        self.assertIn("Reg", private_payload_text)
 
 
 if __name__ == "__main__":

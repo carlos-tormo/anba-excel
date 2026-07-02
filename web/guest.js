@@ -4965,7 +4965,13 @@ async function submitFreeAgentOffer() {
     });
     const requestKind = result.offer_type === 'renewal' ? 'Oferta de renovación' : 'Oferta';
     if (result.discord_sent) {
-      setFreeAgentActionStatus('offer', `${requestKind} enviada a la administración y publicada en Discord. Quedará pendiente de aprobación.`);
+      setFreeAgentActionStatus('offer', `${requestKind} enviada a la administración y comunicada por Discord al agente. Quedará pendiente de aprobación.`);
+    } else if (result.discord_thread_sent) {
+      setFreeAgentActionStatus(
+        'offer',
+        `${requestKind} enviada a la administración. Se avisó en el hilo público, pero el DM privado al agente no está configurado o falló.`,
+        true,
+      );
     } else {
       setFreeAgentActionStatus(
         'offer',

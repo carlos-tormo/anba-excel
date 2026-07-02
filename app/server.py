@@ -16617,10 +16617,16 @@ QUALITY REQUIREMENTS
         team_code: str,
         payload: Dict[str, Any],
         offer_type: Optional[str] = None,
-    ) -> bool:
+        agent_discord_id: Optional[str] = None,
+    ) -> Dict[str, bool]:
+        result = {
+            "thread_sent": False,
+            "agent_dm_sent": False,
+            "agent_discord_configured": False,
+        }
         webhook_url = self.discord_free_agent_offers_webhook_url or self.discord_webhook_url
-        if not self.discord_notifications_enabled or not webhook_url:
-            return False
+        if not self.discord_notifications_enabled:
+            return result
         player_name = str(free_agent.get("name") or "Jugador")
         team = normalize_team_code(team_code) or str(team_code or "").upper()
         contract_type = str(payload.get("contract_type") or "").strip() or "Sin tipo definido"
@@ -16636,22 +16642,36 @@ QUALITY REQUIREMENTS
             not normalized_offer_type and self._free_agent_offer_is_renewal(free_agent, team)
         )
         offer_label = "Oferta de renovación" if is_renewal else "Oferta"
-        embed: Dict[str, Any] = {
+        agent_name = str(free_agent.get("agent") or "").strip() or "Agente sin asignar"
+        public_embed: Dict[str, Any] = {
             "title": self._discord_text(
-                f"{team} presenta una oferta de renovación a {player_name}"
+                f"{team} envía una oferta de renovación por {player_name}"
                 if is_renewal
-                else f"{team} presenta una oferta a {player_name}",
+                else f"{team} envía una oferta por {player_name}",
                 256,
             ),
-            "description": (
-                "Oferta de renovación registrada desde la agencia libre."
-                if is_renewal
-                else "Oferta contractual registrada desde la agencia libre."
-            ),
+            "description": "Una oferta ha sido enviada al agente. Los detalles quedan privados entre equipo, agente y administración.",
             "color": 0x0F766E,
             "fields": [
                 {"name": "Equipo", "value": team, "inline": True},
                 {"name": "Jugador", "value": self._discord_text(player_name, 1024), "inline": True},
+                {"name": "Modalidad", "value": offer_label, "inline": True},
+                {"name": "Agente", "value": self._discord_text(agent_name, 1024), "inline": True},
+            ],
+        }
+        private_embed: Dict[str, Any] = {
+            "title": self._discord_text(
+                f"Oferta de renovación de {team} por {player_name}"
+                if is_renewal
+                else f"Oferta de {team} por {player_name}",
+                256,
+            ),
+            "description": "Detalles privados de la oferta enviada desde agentes libres.",
+            "color": 0x0F766E,
+            "fields": [
+                {"name": "Equipo", "value": team, "inline": True},
+                {"name": "Jugador", "value": self._discord_text(player_name, 1024), "inline": True},
+                {"name": "Agente", "value": self._discord_text(agent_name, 1024), "inline": True},
                 {"name": "Modalidad", "value": offer_label, "inline": True},
                 {"name": "Tipo", "value": self._discord_text(contract_type, 1024), "inline": True},
                 {"name": "Duración", "value": years_text, "inline": True},
@@ -16660,64 +16680,96 @@ QUALITY REQUIREMENTS
             ],
         }
         if notes:
-            embed["fields"].append({"name": "Comentarios", "value": self._discord_text(notes, 1024), "inline": False})
+            private_embed["fields"].append({"name": "Comentarios", "value": self._discord_text(notes, 1024), "inline": False})
         payload_json = {
-            "embeds": [embed],
+            "embeds": [public_embed],
             "allowed_mentions": {"parse": []},
         }
         if self.discord_free_agent_offers_forum_tag_ids:
             payload_json["applied_tags"] = self.discord_free_agent_offers_forum_tag_ids
-        try:
-            existing_thread = self.db.get_free_agent_offer_thread(free_agent)
-            if existing_thread and existing_thread.get("thread_id"):
-                try:
-                    thread_payload_json = dict(payload_json)
-                    thread_payload_json.pop("applied_tags", None)
-                    self._post_discord_json(
-                        thread_payload_json,
-                        webhook_url=webhook_url,
-                        thread_id=str(existing_thread.get("thread_id")),
-                    )
-                    return True
-                except HTTPError as err:
-                    if err.code not in {400, 404, 405}:
-                        raise
-                    self.log_error(
-                        "Discord offer thread reuse failed; creating new thread: %s",
-                        self._http_error_excerpt(err),
-                    )
+        if webhook_url:
             try:
-                creation_payload_json = {
-                    **payload_json,
-                    "allowed_mentions": dict(payload_json.get("allowed_mentions") or {}),
-                }
-                offer_role_id = re.sub(r"\D+", "", str(self.discord_free_agent_offers_role_id or ""))
-                if offer_role_id:
-                    creation_payload_json["content"] = f"<@&{offer_role_id}>"
-                    creation_payload_json["allowed_mentions"]["parse"] = []
-                    creation_payload_json["allowed_mentions"]["roles"] = [offer_role_id]
-                response = self._post_discord_json(
-                    creation_payload_json,
-                    webhook_url=webhook_url,
-                    thread_name=thread_name,
-                    wait=True,
-                )
-                if isinstance(response, dict):
-                    thread_id = response.get("channel_id")
-                    if thread_id:
-                        self.db.upsert_free_agent_offer_thread(free_agent, str(thread_id), thread_name)
-            except HTTPError as err:
-                if err.code not in {400, 404, 405}:
-                    raise
-                self.log_error("Discord offer thread creation failed: %s", self._http_error_excerpt(err))
-                return False
-            return True
-        except (HTTPError, URLError, TimeoutError, OSError) as err:
-            if isinstance(err, HTTPError):
-                self.log_error("Discord free-agent offer notification failed: %s", self._http_error_excerpt(err))
+                existing_thread = self.db.get_free_agent_offer_thread(free_agent)
+                if existing_thread and existing_thread.get("thread_id"):
+                    try:
+                        thread_payload_json = dict(payload_json)
+                        thread_payload_json.pop("applied_tags", None)
+                        self._post_discord_json(
+                            thread_payload_json,
+                            webhook_url=webhook_url,
+                            thread_id=str(existing_thread.get("thread_id")),
+                        )
+                        result["thread_sent"] = True
+                    except HTTPError as err:
+                        if err.code not in {400, 404, 405}:
+                            raise
+                        self.log_error(
+                            "Discord offer thread reuse failed; creating new thread: %s",
+                            self._http_error_excerpt(err),
+                        )
+                if not result["thread_sent"]:
+                    try:
+                        creation_payload_json = {
+                            **payload_json,
+                            "allowed_mentions": dict(payload_json.get("allowed_mentions") or {}),
+                        }
+                        offer_role_id = re.sub(r"\D+", "", str(self.discord_free_agent_offers_role_id or ""))
+                        if offer_role_id:
+                            creation_payload_json["content"] = f"<@&{offer_role_id}>"
+                            creation_payload_json["allowed_mentions"]["parse"] = []
+                            creation_payload_json["allowed_mentions"]["roles"] = [offer_role_id]
+                        response = self._post_discord_json(
+                            creation_payload_json,
+                            webhook_url=webhook_url,
+                            thread_name=thread_name,
+                            wait=True,
+                        )
+                        if isinstance(response, dict):
+                            thread_id = response.get("channel_id")
+                            if thread_id:
+                                self.db.upsert_free_agent_offer_thread(free_agent, str(thread_id), thread_name)
+                        result["thread_sent"] = True
+                    except HTTPError as err:
+                        if err.code not in {400, 404, 405}:
+                            raise
+                        self.log_error("Discord offer thread creation failed: %s", self._http_error_excerpt(err))
+            except (HTTPError, URLError, TimeoutError, OSError) as err:
+                if isinstance(err, HTTPError):
+                    self.log_error("Discord free-agent offer notification failed: %s", self._http_error_excerpt(err))
+                else:
+                    self.log_error("Discord free-agent offer notification failed: %s", err)
+        clean_agent_discord_id = re.sub(r"\D+", "", str(agent_discord_id or ""))
+        result["agent_discord_configured"] = bool(clean_agent_discord_id)
+        if clean_agent_discord_id:
+            if not self.discord_bot_token:
+                self.log_error("Discord free-agent offer DM failed: DISCORD_BOT_TOKEN is not configured")
             else:
-                self.log_error("Discord free-agent offer notification failed: %s", err)
-            return False
+                try:
+                    result["agent_dm_sent"] = self._send_discord_dm(
+                        clean_agent_discord_id,
+                        {
+                            "embeds": [private_embed],
+                            "allowed_mentions": {"parse": []},
+                        },
+                    )
+                except (HTTPError, URLError, TimeoutError, OSError) as err:
+                    if isinstance(err, HTTPError):
+                        self.log_error("Discord free-agent offer DM failed: %s", self._http_error_excerpt(err))
+                    else:
+                        self.log_error("Discord free-agent offer DM failed: %s", err)
+                except RuntimeError as err:
+                    self.log_error("Discord free-agent offer DM failed: %s", err)
+        return result
+
+    def _free_agent_agent_discord_id(self, free_agent: Dict[str, Any]) -> Optional[str]:
+        settings_payload = public_settings_payload(self.db.get_settings())
+        rep_map = settings_payload.get("free_agent_rep_discord_ids")
+        agent_name = str(free_agent.get("agent") or "").strip()
+        if isinstance(rep_map, dict) and agent_name:
+            for configured_name, configured_id in rep_map.items():
+                if str(configured_name).strip().casefold() == agent_name.casefold():
+                    return str(configured_id)
+        return None
 
     def _notify_free_agent_negotiation(
         self,
@@ -18009,7 +18061,15 @@ QUALITY REQUIREMENTS
                 if not request:
                     self._json(404, {"error": "free_agent_not_found"})
                     return
-                sent = self._notify_free_agent_offer(free_agent, team_code, payload, offer_type)
+                agent_discord_id = self._free_agent_agent_discord_id(free_agent)
+                discord_result = self._notify_free_agent_offer(
+                    free_agent,
+                    team_code,
+                    payload,
+                    offer_type,
+                    agent_discord_id,
+                )
+                sent = bool(discord_result.get("thread_sent") and discord_result.get("agent_dm_sent"))
                 self._json(
                     201,
                     {
@@ -18017,19 +18077,15 @@ QUALITY REQUIREMENTS
                         "request": request,
                         "offer_type": offer_type,
                         "discord_sent": sent,
+                        "discord_thread_sent": bool(discord_result.get("thread_sent")),
+                        "agent_dm_sent": bool(discord_result.get("agent_dm_sent")),
+                        "agent_discord_configured": bool(discord_result.get("agent_discord_configured")),
                     },
                 )
                 return
             if action == "negotiate":
-                settings_payload = public_settings_payload(self.db.get_settings())
-                rep_map = settings_payload.get("free_agent_rep_discord_ids")
                 agent_name = str(free_agent.get("agent") or "").strip()
-                agent_discord_id = None
-                if isinstance(rep_map, dict) and agent_name:
-                    for configured_name, configured_id in rep_map.items():
-                        if str(configured_name).strip().casefold() == agent_name.casefold():
-                            agent_discord_id = str(configured_id)
-                            break
+                agent_discord_id = self._free_agent_agent_discord_id(free_agent)
                 sent = self._notify_free_agent_negotiation(free_agent, team_code, payload, agent_discord_id)
                 self._log_admin_action(
                     "negotiate",
