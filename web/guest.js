@@ -16,6 +16,13 @@ const state = {
     season: null,
     seasons: [],
     rows: [],
+    clients: [],
+    clientsPage: 1,
+    expandedClientIds: new Set(),
+    agentName: '',
+    missingAgent: false,
+    clientsLoading: false,
+    clientsError: '',
     loading: false,
     error: '',
   },
@@ -68,6 +75,11 @@ const state = {
     trackerSeason: null,
     trackerEconomySeason: null,
     freeAgentSearch: '',
+    contractCalculator: {
+      firstAmount: '',
+      years: 5,
+      raisePct: 8,
+    },
     freeAgentsPage: 1,
     freeAgentsPageSize: 50,
     leaguePlayersPage: 1,
@@ -2128,9 +2140,9 @@ function figuresSeasonYears() {
 
 function maximumSalaryRows() {
   return [
-    { label: 'Salario máximo 0-6 años', value: (season) => capForSeason(season) * 0.25 },
-    { label: 'Salario máximo 7-9 años', value: (season) => capForSeason(season) * 0.30 },
-    { label: 'Salario máximo 10+ años', value: (season) => capForSeason(season) * 0.35 },
+    { label: '0-6 años', value: (season) => capForSeason(season) * 0.25 },
+    { label: '7-9 años', value: (season) => capForSeason(season) * 0.30 },
+    { label: '10+ años', value: (season) => capForSeason(season) * 0.35 },
   ];
 }
 
@@ -2168,8 +2180,162 @@ function figureValueHtml(row, season) {
   return `<span>${formatMoneyDots(value)}</span>`;
 }
 
+function contractCalculatorState() {
+  if (!state.ui.contractCalculator) {
+    state.ui.contractCalculator = { firstAmount: '', years: 5, raisePct: 8 };
+  }
+  return state.ui.contractCalculator;
+}
+
+function normalizeContractCalculatorYears(value) {
+  const years = Number(value || 5);
+  return Math.min(5, Math.max(1, Number.isFinite(years) ? Math.round(years) : 5));
+}
+
+function contractCalculatorYears() {
+  return normalizeContractCalculatorYears(contractCalculatorState().years);
+}
+
+function normalizeContractCalculatorRaisePct(value) {
+  const pct = Number(value || 0);
+  if (!Number.isFinite(pct)) return 0;
+  return Math.min(8, Math.max(0, pct));
+}
+
+function contractCalculatorRaisePct() {
+  return normalizeContractCalculatorRaisePct(contractCalculatorState().raisePct);
+}
+
+function contractCalculatorRows() {
+  const firstAmount = parseAmountLike(contractCalculatorState().firstAmount);
+  const years = contractCalculatorYears();
+  const raisePct = contractCalculatorRaisePct() / 100;
+  if (!firstAmount || firstAmount <= 0) {
+    return Array.from({ length: years }, (_, idx) => ({
+      year: idx + 1,
+      amount: null,
+    }));
+  }
+  const annualRaise = firstAmount * raisePct;
+  return Array.from({ length: years }, (_, idx) => ({
+    year: idx + 1,
+    amount: Math.round(firstAmount + (annualRaise * idx)),
+  }));
+}
+
+function contractCalculatorSummary() {
+  const amounts = contractCalculatorRows()
+    .map((row) => row.amount)
+    .filter((amount) => Number.isFinite(Number(amount)));
+  const total = amounts.reduce((sum, amount) => sum + Number(amount), 0);
+  return {
+    total: amounts.length ? total : null,
+    average: amounts.length ? Math.round(total / amounts.length) : null,
+  };
+}
+
+function contractCalculatorValueHtml(value) {
+  return Number.isFinite(Number(value))
+    ? formatMoneyDots(value)
+    : '<span class="figures-pending">Pendiente</span>';
+}
+
+function renderContractCalculatorResults() {
+  const tbody = document.getElementById('contractCalculatorResults');
+  const totalEl = document.getElementById('contractCalculatorTotal');
+  const averageEl = document.getElementById('contractCalculatorAverage');
+  if (!tbody || !totalEl || !averageEl) return;
+  const rows = contractCalculatorRows();
+  tbody.innerHTML = rows.map((row) => `
+    <tr>
+      <th>${row.year}º año</th>
+      <td>${contractCalculatorValueHtml(row.amount)}</td>
+    </tr>
+  `).join('');
+  const summary = contractCalculatorSummary();
+  totalEl.innerHTML = contractCalculatorValueHtml(summary.total);
+  averageEl.innerHTML = contractCalculatorValueHtml(summary.average);
+}
+
+function setupContractCalculator() {
+  const root = document.getElementById('contractCalculator');
+  if (!root) return;
+  const calculator = contractCalculatorState();
+  const firstAmountInput = document.getElementById('contractCalculatorFirstAmount');
+  const yearsInput = document.getElementById('contractCalculatorYears');
+  const raiseInput = document.getElementById('contractCalculatorRaisePct');
+  if (firstAmountInput) firstAmountInput.value = calculator.firstAmount || '';
+  if (yearsInput) yearsInput.value = String(contractCalculatorYears());
+  if (raiseInput) raiseInput.value = String(contractCalculatorRaisePct());
+  const sync = () => {
+    calculator.firstAmount = String(firstAmountInput?.value || '');
+    calculator.years = normalizeContractCalculatorYears(yearsInput?.value);
+    calculator.raisePct = normalizeContractCalculatorRaisePct(raiseInput?.value);
+    if (yearsInput && yearsInput.value !== String(calculator.years)) yearsInput.value = String(calculator.years);
+    if (raiseInput && raiseInput.value !== String(calculator.raisePct)) raiseInput.value = String(calculator.raisePct);
+    renderContractCalculatorResults();
+  };
+  [firstAmountInput, yearsInput, raiseInput].forEach((input) => {
+    input?.addEventListener('input', sync);
+    input?.addEventListener('change', sync);
+  });
+  renderContractCalculatorResults();
+}
+
+function contractCalculatorHtml() {
+  const calculator = contractCalculatorState();
+  return `
+    <section id="contractCalculator" class="figures-group contract-calculator-card">
+      <div class="figures-group-head">
+        <h3>Calculadora de contrato</h3>
+        <p>Calcula importes por año, total y media desde el primer salario.</p>
+      </div>
+      <div class="contract-calculator-grid">
+        <label>
+          <span>Importe 1er año</span>
+          <input id="contractCalculatorFirstAmount" type="text" inputmode="numeric" placeholder="49.488.300" value="${escapeHtml(calculator.firstAmount || '')}">
+        </label>
+        <label>
+          <span>Años</span>
+          <select id="contractCalculatorYears">
+            ${[1, 2, 3, 4, 5].map((year) => `<option value="${year}"${year === contractCalculatorYears() ? ' selected' : ''}>${year}</option>`).join('')}
+          </select>
+        </label>
+        <label>
+          <span>Subida anual (%)</span>
+          <input id="contractCalculatorRaisePct" type="number" min="0" max="8" step="0.5" value="${escapeHtml(contractCalculatorRaisePct())}">
+        </label>
+      </div>
+      <div class="contract-calculator-output">
+        <div class="table-wrap contract-calculator-table-wrap">
+          <table class="contract-calculator-table">
+            <thead>
+              <tr>
+                <th>Año</th>
+                <th>Importe</th>
+              </tr>
+            </thead>
+            <tbody id="contractCalculatorResults"></tbody>
+            <tfoot>
+              <tr>
+                <th>Total</th>
+                <td id="contractCalculatorTotal"></td>
+              </tr>
+              <tr>
+                <th>Media</th>
+                <td id="contractCalculatorAverage"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function figuresTableHtml(title, rows, seasons, description = '') {
   const currentYear = currentSeasonStart();
+  const selectedSeason = selectedFiguresSeasonStart();
   return `
     <section class="figures-group">
       <div class="figures-group-head">
@@ -2177,28 +2343,47 @@ function figuresTableHtml(title, rows, seasons, description = '') {
         ${description ? `<p>${escapeHtml(description)}</p>` : ''}
       </div>
       <div class="table-wrap figures-table-wrap">
-      <table class="figures-table">
-        <thead>
-          <tr>
-            <th>Cifra</th>
-            ${seasons.map((season) => `
-              <th class="${season === currentYear ? 'figures-current-season' : ''}">
-                ${seasonSlashLabel(season)}
-                ${season === currentYear ? '<span>actual</span>' : ''}
-              </th>
-            `).join('')}
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map((row) => `
+        <table class="figures-table figures-table--desktop">
+          <thead>
             <tr>
-              <th>${escapeHtml(row.label)}</th>
-              ${seasons.map((season) => `<td>${figureValueHtml(row, season)}</td>`).join('')}
+              <th>Cifra</th>
+              ${seasons.map((season) => `
+                <th class="${season === currentYear ? 'figures-current-season' : ''}">
+                  ${seasonSlashLabel(season)}
+                  ${season === currentYear ? '<span>actual</span>' : ''}
+                </th>
+              `).join('')}
             </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <th>${escapeHtml(row.label)}</th>
+                ${seasons.map((season) => `<td>${figureValueHtml(row, season)}</td>`).join('')}
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        <table class="figures-table figures-table--mobile">
+          <thead>
+            <tr>
+              <th>Cifra</th>
+              <th class="${selectedSeason === currentYear ? 'figures-current-season' : ''}">
+                ${seasonSlashLabel(selectedSeason)}
+                ${selectedSeason === currentYear ? '<span>actual</span>' : ''}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <th>${escapeHtml(row.label)}</th>
+                <td>${figureValueHtml(row, selectedSeason)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
     </section>
   `;
 }
@@ -2261,14 +2446,16 @@ function renderFigures() {
   renderFiguresSeasonControl();
   board.innerHTML = `
     <div class="figures-note">
-      Las cifras derivadas se calculan desde el Salary Cap configurado por temporada. Los mínimos parten de la tabla 2025/26 y escalan con el crecimiento del cap.
+      Cifras derivadas del Salary Cap configurado. Los mínimos escalan desde la tabla 2025/26.
     </div>
+    ${contractCalculatorHtml()}
     ${figuresTableHtml('Salarios máximos', maximumSalaryRows(), seasons)}
     ${figuresTableHtml('Excepciones', exceptionRows(), seasons)}
     ${figuresTableHtml('Límites de cap, luxury, aprons y cash', capLimitRows(), seasons)}
     ${minimumSalarySectionHtml(seasons)}
     ${figuresTableHtml('Salario medio', averageSalaryRows(), seasons)}
   `;
+  setupContractCalculator();
 }
 
 function tradeMachineSeasonStart() {
@@ -5058,19 +5245,13 @@ async function submitFreeAgentNegotiation() {
     btn.textContent = 'Enviando...';
   }
   try {
-    const result = await api(`/api/free-agents/${agent.id}/negotiate`, {
+    await api(`/api/free-agents/${agent.id}/negotiate`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    if (result.discord_sent) {
-      setFreeAgentActionStatus('negotiate', 'Negociación enviada por DM al agente.');
-    } else if (!result.agent_discord_configured) {
-      setFreeAgentActionStatus('negotiate', 'Negociación registrada, pero no hay Discord ID configurado para este agente.', true);
-    } else {
-      setFreeAgentActionStatus('negotiate', 'Negociación registrada, pero no se pudo enviar el DM al agente. Revisa la configuración de Discord.', true);
-    }
+    setFreeAgentActionStatus('negotiate', 'Interés registrado en la cartera del agente.');
   } catch (err) {
-    setFreeAgentActionStatus('negotiate', `No se pudo enviar la negociación: ${err.message}`, true);
+    setFreeAgentActionStatus('negotiate', `No se pudo registrar el interés: ${err.message}`, true);
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -7648,6 +7829,166 @@ function renderWalletControls() {
   }
 }
 
+const WALLET_CLIENTS_PAGE_SIZE = 20;
+
+function walletClientRightsLabel(client) {
+  const rightsTeam = String(client?.rights_team_code || '').trim().toUpperCase();
+  if (!rightsTeam) return 'Sin derechos retenidos';
+  return `Derechos ${rightsTeam}`;
+}
+
+function walletClientInterestDetailsHtml(client) {
+  const interests = Array.isArray(client?.interests) ? client.interests : [];
+  if (!interests.length) {
+    return '<div class="wallet-interest-empty">Sin interés registrado todavía.</div>';
+  }
+  return `
+    <div class="wallet-interest-list">
+      ${interests.map((interest) => {
+        const teamCode = String(interest.team_code || '').trim().toUpperCase();
+        const teamName = String(interest.team_name || teamCode).trim();
+        const updated = interest.updated_at ? new Date(interest.updated_at).toLocaleString() : '';
+        const economic = String(interest.economic_offer || '').trim();
+        const role = String(interest.role_offer || '').trim();
+        const comments = String(interest.comments || '').trim();
+        return `
+          <article class="wallet-interest-card">
+            <div class="wallet-interest-card-head">
+              <span>${draftOrderLogoHtml(teamCode, 'wallet-interest-team-logo')}</span>
+              <strong>${escapeHtml(teamCode)}</strong>
+              <small>${escapeHtml(teamName)}</small>
+            </div>
+            <dl>
+              ${economic ? `<dt>Oferta económica</dt><dd>${escapeHtml(economic)}</dd>` : ''}
+              ${role ? `<dt>Rol</dt><dd>${escapeHtml(role)}</dd>` : ''}
+              ${comments ? `<dt>Comentarios</dt><dd>${escapeHtml(comments)}</dd>` : ''}
+            </dl>
+            ${updated ? `<div class="wallet-interest-updated">${escapeHtml(updated)}</div>` : ''}
+          </article>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderWalletClientsPagination(totalPages) {
+  const page = Math.min(Math.max(1, Number(state.wallet.clientsPage || 1)), Math.max(1, totalPages));
+  state.wallet.clientsPage = page;
+  const html = totalPages <= 1
+    ? ''
+    : `
+      <button type="button" data-wallet-clients-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Anterior</button>
+      <span>Página ${page} de ${totalPages}</span>
+      <button type="button" data-wallet-clients-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Siguiente</button>
+    `;
+  ['walletClientsPaginationTop', 'walletClientsPaginationBottom'].forEach((id) => {
+    const container = document.getElementById(id);
+    if (!container) return;
+    container.innerHTML = html;
+    container.querySelectorAll('[data-wallet-clients-page]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const nextPage = Number(button.dataset.walletClientsPage);
+        if (!Number.isFinite(nextPage)) return;
+        state.wallet.clientsPage = Math.min(Math.max(1, nextPage), totalPages);
+        renderWalletClients();
+      });
+    });
+  });
+}
+
+function renderWalletClients() {
+  const tbody = document.querySelector('#walletClientsTable tbody');
+  const status = document.getElementById('walletClientsStatus');
+  const agentLabel = document.getElementById('walletAgentLabel');
+  if (!tbody || !status || !agentLabel) return;
+
+  const clients = Array.isArray(state.wallet.clients) ? state.wallet.clients : [];
+  const agentName = String(state.wallet.agentName || '').trim();
+  agentLabel.textContent = agentName ? `Agente asignado: ${agentName}` : 'Sin agente asignado';
+  status.classList.toggle('is-error', Boolean(state.wallet.clientsError || state.wallet.missingAgent));
+
+  if (state.wallet.clientsLoading) {
+    status.textContent = 'Cargando clientes...';
+  } else if (state.wallet.clientsError) {
+    status.textContent = state.wallet.clientsError;
+  } else if (state.wallet.missingAgent) {
+    status.textContent = 'Tu usuario co-admin no tiene agente asignado todavía. Un admin puede asignarlo en Users.';
+  } else {
+    status.textContent = `${clients.length} cliente${clients.length === 1 ? '' : 's'} en cartera.`;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(clients.length / WALLET_CLIENTS_PAGE_SIZE));
+  const page = Math.min(Math.max(1, Number(state.wallet.clientsPage || 1)), totalPages);
+  state.wallet.clientsPage = page;
+  const start = (page - 1) * WALLET_CLIENTS_PAGE_SIZE;
+  const visibleClients = clients.slice(start, start + WALLET_CLIENTS_PAGE_SIZE);
+
+  if (state.wallet.clientsLoading) {
+    tbody.innerHTML = '<tr><td colspan="3">Cargando...</td></tr>';
+    renderWalletClientsPagination(totalPages);
+    return;
+  }
+  if (!visibleClients.length) {
+    tbody.innerHTML = '<tr><td colspan="3">No hay clientes para mostrar.</td></tr>';
+    renderWalletClientsPagination(totalPages);
+    return;
+  }
+
+  tbody.innerHTML = visibleClients.map((client) => {
+    const clientId = Number(client.id);
+    const interestCount = Number(client.interest_count || 0);
+    const expanded = state.wallet.expandedClientIds.has(clientId);
+    const rightsTeam = String(client.rights_team_code || '').trim().toUpperCase();
+    const interestControl = interestCount > 0
+      ? `<button type="button" class="wallet-interest-count" data-wallet-client-toggle="${clientId}" aria-expanded="${expanded ? 'true' : 'false'}">${interestCount}</button>`
+      : '<span class="wallet-interest-zero">0</span>';
+    return `
+      <tr class="wallet-client-row">
+        <td><strong>${escapeHtml(client.name || 'Jugador')}</strong></td>
+        <td>
+          ${rightsTeam ? `<span class="wallet-rights-owner">${draftOrderLogoHtml(rightsTeam, 'wallet-rights-logo')} ${escapeHtml(walletClientRightsLabel(client))}</span>` : escapeHtml(walletClientRightsLabel(client))}
+        </td>
+        <td>${interestControl}</td>
+      </tr>
+      ${expanded ? `<tr class="wallet-client-detail-row"><td colspan="3">${walletClientInterestDetailsHtml(client)}</td></tr>` : ''}
+    `;
+  }).join('');
+
+  tbody.querySelectorAll('[data-wallet-client-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const clientId = Number(button.dataset.walletClientToggle);
+      if (!Number.isFinite(clientId)) return;
+      if (state.wallet.expandedClientIds.has(clientId)) {
+        state.wallet.expandedClientIds.delete(clientId);
+      } else {
+        state.wallet.expandedClientIds.add(clientId);
+      }
+      renderWalletClients();
+    });
+  });
+  renderWalletClientsPagination(totalPages);
+}
+
+async function fetchWalletClients() {
+  state.wallet.clientsLoading = true;
+  state.wallet.clientsError = '';
+  renderWalletClients();
+  try {
+    const data = await api('/api/cartera/clients');
+    state.wallet.clients = Array.isArray(data.clients) ? data.clients : [];
+    state.wallet.agentName = String(data.agent_name || '').trim();
+    state.wallet.missingAgent = Boolean(data.missing_agent);
+    state.wallet.clientsPage = 1;
+    state.wallet.clientsError = '';
+  } catch (err) {
+    state.wallet.clients = [];
+    state.wallet.clientsError = err.message || 'No se pudo cargar la lista de clientes.';
+  } finally {
+    state.wallet.clientsLoading = false;
+    renderWalletClients();
+  }
+}
+
 function walletPathHtml(path) {
   const type = String(path?.type || '').trim();
   const label = escapeHtml(path?.label || 'Ruta');
@@ -7805,12 +8146,18 @@ async function loadWallet() {
   if (!canViewWallet()) {
     state.wallet.rows = [];
     state.wallet.error = 'Esta herramienta solo está disponible para admins y co-admins.';
+    state.wallet.clients = [];
+    state.wallet.clientsError = '';
+    state.wallet.missingAgent = false;
+    state.wallet.agentName = '';
     renderWallet();
+    renderWalletClients();
     return;
   }
   if (!state.wallet.season) state.wallet.season = currentSeasonStart();
   state.wallet.error = '';
   renderWallet();
+  await fetchWalletClients();
 }
 
 async function fetchLeaguePlayersFallback() {

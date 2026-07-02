@@ -7335,6 +7335,84 @@ td.salary-option--nb .salary-pct {
   font-size: 0.84rem;
   font-weight: 800;
 }
+.contract-calculator-card {
+  max-width: 760px;
+  padding: 14px;
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.06);
+}
+.contract-calculator-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(120px, 0.7fr) minmax(160px, 0.8fr);
+  gap: 10px;
+}
+.contract-calculator-grid label {
+  display: grid;
+  gap: 5px;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+.contract-calculator-grid input,
+.contract-calculator-grid select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+.contract-calculator-output {
+  margin-top: 12px;
+}
+.contract-calculator-table-wrap {
+  max-width: 520px;
+  overflow: hidden;
+}
+.contract-calculator-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.contract-calculator-table th,
+.contract-calculator-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #dbe3ee;
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+}
+.contract-calculator-table thead th {
+  background: #0f766e;
+  color: #ffffff;
+  text-align: left;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.contract-calculator-table tbody th,
+.contract-calculator-table tfoot th {
+  background: #ecfdf5;
+  color: #134e4a;
+  text-align: left;
+  font-weight: 900;
+}
+.contract-calculator-table td {
+  background: #ffffff;
+  color: #0f172a;
+  text-align: right;
+  font-weight: 900;
+}
+.contract-calculator-table tfoot th,
+.contract-calculator-table tfoot td {
+  border-top: 2px solid #99f6e4;
+}
+.contract-calculator-table tfoot td {
+  background: #f8fafc;
+}
 .figures-table-wrap {
   max-width: 100%;
 }
@@ -7342,6 +7420,9 @@ td.salary-option--nb .salary-pct {
   width: 100%;
   min-width: 900px;
   table-layout: fixed;
+}
+.figures-table--mobile {
+  display: none;
 }
 .figures-table th,
 .figures-table td {
@@ -7467,6 +7548,114 @@ td.salary-option--nb .salary-pct {
 .minimum-salary-table tbody td.figures-empty-cell {
   background: #fdecec;
   color: transparent;
+}
+@media (max-width: 720px) {
+  .figures-board {
+    gap: 16px;
+    max-width: 100%;
+  }
+  .figures-section-head {
+    align-items: flex-start;
+  }
+  .figures-section-head .section-actions,
+  .figures-section-head .season-view-control {
+    width: 100%;
+  }
+  .figures-section-head .section-actions {
+    justify-content: flex-start;
+  }
+  .figures-section-head .season-view-control {
+    justify-content: space-between;
+  }
+  .figures-section-head .season-view-control select {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 230px;
+  }
+  .figures-note {
+    max-width: none;
+    padding: 10px;
+    font-size: 0.76rem;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  .contract-calculator-card {
+    max-width: 100%;
+    padding: 12px;
+  }
+  .contract-calculator-grid {
+    grid-template-columns: 1fr;
+  }
+  .contract-calculator-table-wrap {
+    max-width: 100%;
+  }
+  .contract-calculator-table th,
+  .contract-calculator-table td {
+    padding: 8px 9px;
+    font-size: 0.78rem;
+  }
+  .figures-group {
+    gap: 7px;
+  }
+  .figures-group-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .figures-group-head h3 {
+    font-size: 0.98rem;
+  }
+  .figures-group-head p {
+    font-size: 0.7rem;
+    line-height: 1.25;
+  }
+  .figures-table-wrap {
+    overflow: hidden;
+    border-radius: 10px;
+  }
+  .figures-table--desktop {
+    display: none;
+  }
+  .figures-table--mobile {
+    display: table;
+    min-width: 0;
+    width: 100%;
+    table-layout: fixed;
+  }
+  .figures-table--mobile th,
+  .figures-table--mobile td {
+    padding: 9px 10px;
+    font-size: 0.76rem;
+    line-height: 1.15;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .figures-table--mobile thead th:first-child,
+  .figures-table--mobile tbody th {
+    width: 48%;
+  }
+  .figures-table--mobile tbody th {
+    background: #eef2f7;
+  }
+  .figures-table--mobile tbody td {
+    text-align: right;
+  }
+  .minimum-salary-grid {
+    grid-template-columns: 1fr;
+  }
+  .minimum-salary-season {
+    width: 100%;
+  }
+  .minimum-salary-season-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .minimum-salary-table-wrap {
+    overflow-x: auto;
+  }
+  .minimum-salary-table {
+    min-width: 520px;
+  }
 }
 .roster-count-section {
   display: grid;
@@ -9888,6 +10077,240 @@ select[data-new-field="years_left"],
 
 .wallet-status.is-error {
   color: #991b1b;
+}
+
+.wallet-clients-panel,
+.wallet-match-tool {
+  background: #fff;
+  border: 1px solid #d6e1ef;
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+  padding: 16px;
+}
+
+.wallet-clients-head {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.wallet-clients-head h3 {
+  margin: 0 0 4px;
+}
+
+.wallet-clients-wrap {
+  border: 1px solid #dbe4f0;
+  border-radius: 14px;
+  margin-top: 10px;
+  overflow: auto;
+}
+
+.wallet-clients-table {
+  border-collapse: collapse;
+  min-width: 680px;
+  width: 100%;
+}
+
+.wallet-clients-table th,
+.wallet-clients-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 12px 14px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.wallet-clients-table th {
+  background: #0f766e;
+  color: #fff;
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.wallet-clients-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.wallet-client-row strong {
+  color: #0f172a;
+}
+
+.wallet-rights-owner {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.wallet-rights-logo,
+.wallet-interest-team-logo {
+  background: #fff;
+  border: 1px solid #d6e1ef;
+  border-radius: 999px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+  flex: 0 0 auto;
+  height: 30px;
+  width: 30px;
+}
+
+.wallet-rights-logo img,
+.wallet-interest-team-logo img {
+  height: 100%;
+  object-fit: contain;
+  padding: 4px;
+  width: 100%;
+}
+
+.wallet-rights-logo span,
+.wallet-interest-team-logo span {
+  align-items: center;
+  color: #0f766e;
+  display: inline-flex;
+  font-size: 0.64rem;
+  font-weight: 900;
+  height: 100%;
+  justify-content: center;
+  width: 100%;
+}
+
+.wallet-interest-count,
+.wallet-interest-zero {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-weight: 900;
+  justify-content: center;
+  min-height: 32px;
+  min-width: 44px;
+  padding: 5px 12px;
+}
+
+.wallet-interest-count {
+  background: #ecfdf5;
+  border: 1px solid #86efac;
+  color: #047857;
+  cursor: pointer;
+}
+
+.wallet-interest-count:hover {
+  background: #d1fae5;
+}
+
+.wallet-interest-zero {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.wallet-client-detail-row td {
+  background: #f8fafc;
+}
+
+.wallet-interest-empty {
+  color: #64748b;
+  font-weight: 800;
+}
+
+.wallet-interest-list {
+  display: grid;
+  gap: 10px;
+}
+
+.wallet-interest-card {
+  background: #fff;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.wallet-interest-card-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wallet-interest-card-head small {
+  color: #64748b;
+  font-weight: 800;
+}
+
+.wallet-interest-card dl {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+
+.wallet-interest-card dt {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.wallet-interest-card dd {
+  color: #0f172a;
+  font-weight: 800;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.wallet-interest-updated {
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 800;
+  margin-top: 10px;
+}
+
+.wallet-pagination {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.wallet-pagination button {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  color: #334155;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 900;
+  min-height: 34px;
+  padding: 5px 10px;
+}
+
+.wallet-pagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.wallet-pagination span {
+  color: #64748b;
+  font-weight: 900;
+}
+
+.wallet-match-tool {
+  padding: 0;
+}
+
+.wallet-match-tool summary {
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 1.1rem;
+  font-weight: 900;
+  padding: 16px;
+}
+
+.wallet-match-tool[open] summary {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.wallet-match-tool .wallet-actions,
+.wallet-match-tool .wallet-status,
+.wallet-match-tool .wallet-results {
+  margin: 16px;
 }
 
 .wallet-results {

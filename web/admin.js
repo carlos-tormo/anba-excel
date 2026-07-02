@@ -99,6 +99,7 @@ const state = {
     addingFreeAgent: false,
     freeAgentActionId: null,
     freeAgentSearch: '',
+    leaguePlayerSearch: '',
     signingFreeAgentId: null,
     gmTimelineEntries: [],
     gmTimelineSvg: '',
@@ -4122,7 +4123,7 @@ function renderAdminUsers() {
   const users = state.adminUsers || [];
   tbody.innerHTML = '';
   if (!users.length) {
-    tbody.innerHTML = '<tr><td colspan="7">No signed-up users yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8">No signed-up users yet.</td></tr>';
     return;
   }
 
@@ -4149,6 +4150,15 @@ function renderAdminUsers() {
         </label>
       </td>
       <td>
+        <input
+          type="text"
+          data-admin-user-agent="${userId}"
+          value="${escapeHtml(user.agent_name || '')}"
+          placeholder="Nombre del agente"
+          ${coAdminChecked && !isAdmin ? '' : 'disabled'}
+        >
+      </td>
+      <td>
         <select data-admin-user-team="${userId}" aria-label="Team assignment for ${escapeHtml(user.email || 'user')}">
           ${adminUserTeamOptions(selectedTeam)}
         </select>
@@ -4163,6 +4173,15 @@ function renderAdminUsers() {
   tbody.querySelectorAll('[data-admin-user-save]').forEach((button) => {
     button.addEventListener('click', async () => {
       await saveAdminUserAccess(Number(button.dataset.adminUserSave), button);
+    });
+  });
+  tbody.querySelectorAll('[data-admin-user-co-admin]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const userId = Number(input.dataset.adminUserCoAdmin);
+      const agentInput = document.querySelector(`[data-admin-user-agent="${userId}"]`);
+      if (!agentInput) return;
+      agentInput.disabled = !input.checked;
+      if (!input.checked) agentInput.value = '';
     });
   });
 }
@@ -4364,8 +4383,10 @@ async function saveAdminUserAccess(userId, button) {
   if (!Number.isInteger(userId) || userId <= 0) return;
   const select = document.querySelector(`[data-admin-user-team="${userId}"]`);
   const coAdminInput = document.querySelector(`[data-admin-user-co-admin="${userId}"]`);
+  const agentInput = document.querySelector(`[data-admin-user-agent="${userId}"]`);
   const teamCode = String(select?.value || '').trim().toUpperCase();
   const isCoAdmin = Boolean(coAdminInput?.checked);
+  const agentName = isCoAdmin ? String(agentInput?.value || '').trim() : '';
   const originalText = button?.textContent || 'Save';
   if (button) {
     button.disabled = true;
@@ -4374,7 +4395,7 @@ async function saveAdminUserAccess(userId, button) {
   try {
     const result = await api(`/api/admin/users/${userId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ team_code: teamCode, is_co_admin: isCoAdmin }),
+      body: JSON.stringify({ team_code: teamCode, is_co_admin: isCoAdmin, agent_name: agentName }),
     });
     const updatedUser = result.user;
     if (updatedUser) {
@@ -5874,19 +5895,13 @@ async function submitFreeAgentNegotiation() {
     btn.textContent = 'Enviando...';
   }
   try {
-    const result = await api(`/api/free-agents/${agent.id}/negotiate`, {
+    await api(`/api/free-agents/${agent.id}/negotiate`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    if (result.discord_sent) {
-      setFreeAgentActionStatus('negotiate', 'Negociación enviada por DM al agente.');
-    } else if (!result.agent_discord_configured) {
-      setFreeAgentActionStatus('negotiate', 'Negociación registrada, pero no hay Discord ID configurado para este agente.', true);
-    } else {
-      setFreeAgentActionStatus('negotiate', 'Negociación registrada, pero no se pudo enviar el DM al agente. Revisa DISCORD_BOT_TOKEN y los logs.', true);
-    }
+    setFreeAgentActionStatus('negotiate', 'Interés registrado en la cartera del agente.');
   } catch (err) {
-    setFreeAgentActionStatus('negotiate', `No se pudo enviar la negociación: ${err.message}`, true);
+    setFreeAgentActionStatus('negotiate', `No se pudo registrar el interés: ${err.message}`, true);
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -6285,6 +6300,13 @@ function leaguePlayerDuplicateNameKey(name) {
   return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+function filteredLeaguePlayers() {
+  const query = String(state.ui.leaguePlayerSearch || '').trim().toLowerCase();
+  const rows = state.leaguePlayers || [];
+  if (!query) return rows;
+  return rows.filter((player) => String(player.name || '').toLowerCase().includes(query));
+}
+
 function leaguePlayerDeleteSummary(player) {
   const parts = [];
   if (player.active_contract) parts.push('contrato activo');
@@ -6437,17 +6459,22 @@ function renderLeaguePlayers() {
   const tbody = document.querySelector('#leaguePlayersTable tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
-  const allRows = sortedRows(state.leaguePlayers || [], state.sort.league_players);
+  const searchInput = document.getElementById('leaguePlayerSearchInput');
+  if (searchInput && searchInput.value !== String(state.ui.leaguePlayerSearch || '')) {
+    searchInput.value = state.ui.leaguePlayerSearch || '';
+  }
+  const allRows = sortedRows(filteredLeaguePlayers(), state.sort.league_players);
   const pagination = paginatedRows(allRows, 'leaguePlayers');
   renderPaginationControls('leaguePlayers', pagination);
   if (!allRows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="8">No hay jugadores cargados.</td>';
+    const hasPlayers = Boolean((state.leaguePlayers || []).length);
+    tr.innerHTML = `<td colspan="8">${hasPlayers ? 'No hay jugadores que coincidan con la búsqueda.' : 'No hay jugadores cargados.'}</td>`;
     tbody.appendChild(tr);
     return;
   }
   const nameCounts = new Map();
-  allRows.forEach((player) => {
+  (state.leaguePlayers || []).forEach((player) => {
     const key = leaguePlayerDuplicateNameKey(player.name);
     if (!key) return;
     nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
@@ -12224,6 +12251,11 @@ async function init() {
   });
   document.getElementById('leaguePlayersHomeBtn').addEventListener('click', async () => {
     await loadLeaguePlayers();
+  });
+  document.getElementById('leaguePlayerSearchInput')?.addEventListener('input', (event) => {
+    state.ui.leaguePlayerSearch = String(event.target.value || '');
+    resetPagination('leaguePlayers');
+    renderLeaguePlayers();
   });
   document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
     await loadFreeAgents();

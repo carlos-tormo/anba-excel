@@ -1159,6 +1159,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     display_name TEXT,
                     avatar_url TEXT,
                     is_co_admin INTEGER NOT NULL DEFAULT 0,
+                    agent_name TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -1314,6 +1315,30 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (vote_id, voter_user_id, target_team_id)
                 )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS free_agent_interests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    free_agent_id INTEGER NOT NULL REFERENCES free_agents(id) ON DELETE CASCADE,
+                    team_code TEXT NOT NULL,
+                    submitted_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    submitted_by_email TEXT,
+                    submitted_by_name TEXT,
+                    economic_offer TEXT,
+                    role_offer TEXT,
+                    comments TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(free_agent_id, team_code)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_free_agent_interests_agent
+                ON free_agent_interests (free_agent_id, updated_at)
                 """
             )
             conn.execute(
@@ -1908,6 +1933,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             }
             if "is_co_admin" not in user_cols:
                 conn.execute("ALTER TABLE users ADD COLUMN is_co_admin INTEGER NOT NULL DEFAULT 0")
+            if "agent_name" not in user_cols:
+                conn.execute("ALTER TABLE users ADD COLUMN agent_name TEXT")
             admin_log_add_columns = {
                 "actor_role": "TEXT",
                 "actor_user_id": "INTEGER",
@@ -3659,6 +3686,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     u.display_name,
                     u.avatar_url,
                     COALESCE(u.is_co_admin, 0) AS is_co_admin,
+                    u.agent_name,
                     u.created_at,
                     u.updated_at,
                     GROUP_CONCAT(t.code, ',') AS team_codes
@@ -3683,11 +3711,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return {"team_codes": [], "is_co_admin": False}
         with self.connect() as conn:
             user_row = conn.execute(
-                "SELECT id, COALESCE(is_co_admin, 0) AS is_co_admin FROM users WHERE lower(email) = ?",
+                "SELECT id, COALESCE(is_co_admin, 0) AS is_co_admin, agent_name FROM users WHERE lower(email) = ?",
                 (normalized,),
             ).fetchone()
             if not user_row:
-                return {"team_codes": [], "is_co_admin": False}
+                return {"team_codes": [], "is_co_admin": False, "agent_name": ""}
             rows = conn.execute(
                 """
                 SELECT t.code
@@ -3701,6 +3729,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return {
                 "team_codes": [str(row["code"]).upper() for row in rows],
                 "is_co_admin": bool(parse_bool(user_row["is_co_admin"])),
+                "agent_name": str(user_row["agent_name"] or "").strip(),
             }
 
     def replace_user_team_assignments(
@@ -3708,8 +3737,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
         user_id: int,
         team_codes: Any,
         is_co_admin: Optional[bool] = None,
+        agent_name: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         normalized_codes = normalize_team_codes(team_codes)
+        normalized_agent_name = re.sub(r"\s+", " ", str(agent_name or "").strip()) if agent_name is not None else None
         timestamp = now_iso()
         with self.connect() as conn:
             user_row = conn.execute("SELECT id FROM users WHERE id = ?", (int(user_id),)).fetchone()
@@ -3738,12 +3769,27 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     """,
                     (int(user_id), int(team_row["id"]), timestamp, timestamp),
                 )
-            if is_co_admin is None:
+            if is_co_admin is None and agent_name is None:
                 conn.execute("UPDATE users SET updated_at = ? WHERE id = ?", (timestamp, int(user_id)))
-            else:
+            elif is_co_admin is None:
+                conn.execute(
+                    "UPDATE users SET agent_name = ?, updated_at = ? WHERE id = ?",
+                    (normalized_agent_name, timestamp, int(user_id)),
+                )
+            elif agent_name is None:
                 conn.execute(
                     "UPDATE users SET is_co_admin = ?, updated_at = ? WHERE id = ?",
                     (1 if parse_bool(is_co_admin) else 0, timestamp, int(user_id)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE users SET is_co_admin = ?, agent_name = ?, updated_at = ? WHERE id = ?",
+                    (
+                        1 if parse_bool(is_co_admin) else 0,
+                        normalized_agent_name if parse_bool(is_co_admin) else "",
+                        timestamp,
+                        int(user_id),
+                    ),
                 )
             conn.commit()
 
@@ -10436,6 +10482,188 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "rows": rows,
         }
 
+    def record_free_agent_interest(
+        self,
+        free_agent_id: Any,
+        team_code: Any,
+        payload: Dict[str, Any],
+        session: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        parsed_id = parse_int(free_agent_id)
+        normalized_team = normalize_team_code(team_code)
+        if parsed_id is None or parsed_id <= 0:
+            raise ValueError("invalid_free_agent_id")
+        if not normalized_team:
+            raise ValueError("team_code_required")
+
+        economic_offer = re.sub(r"\s+", " ", str(payload.get("economic_offer") or "").strip())
+        role_offer = re.sub(r"\s+", " ", str(payload.get("role_offer") or "").strip())
+        comments = str(payload.get("comments") or "").strip()
+        if not economic_offer and not role_offer and not comments:
+            raise ValueError("empty_negotiation")
+        economic_offer = economic_offer[:1000]
+        role_offer = role_offer[:1000]
+        comments = comments[:2000]
+
+        timestamp = now_iso()
+        with self.connect() as conn:
+            free_agent = conn.execute("SELECT id FROM free_agents WHERE id = ?", (parsed_id,)).fetchone()
+            if not free_agent:
+                raise ValueError("free_agent_not_found")
+            team = conn.execute("SELECT code FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+            if not team:
+                raise ValueError("team_not_found")
+            conn.execute(
+                """
+                INSERT INTO free_agent_interests (
+                    free_agent_id, team_code, submitted_by_user_id, submitted_by_email,
+                    submitted_by_name, economic_offer, role_offer, comments, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(free_agent_id, team_code)
+                DO UPDATE SET
+                    submitted_by_user_id = excluded.submitted_by_user_id,
+                    submitted_by_email = excluded.submitted_by_email,
+                    submitted_by_name = excluded.submitted_by_name,
+                    economic_offer = excluded.economic_offer,
+                    role_offer = excluded.role_offer,
+                    comments = excluded.comments,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    parsed_id,
+                    normalized_team,
+                    parse_int(session.get("user_id")),
+                    str(session.get("email") or "").strip().lower() or None,
+                    str(session.get("name") or "").strip() or None,
+                    economic_offer,
+                    role_offer,
+                    comments,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT *
+                FROM free_agent_interests
+                WHERE free_agent_id = ? AND team_code = ?
+                """,
+                (parsed_id, normalized_team),
+            ).fetchone()
+            conn.commit()
+            if not row:
+                raise RuntimeError("free_agent_interest_not_saved")
+            return dict(row)
+
+    def list_cartera_clients_for_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        role = str(session.get("role") or "").strip().lower()
+        email = str(session.get("email") or "").strip().lower()
+        access = self.user_access_for_email(email) if email else {}
+        agent_name = re.sub(
+            r"\s+",
+            " ",
+            str(access.get("agent_name") or session.get("agent_name") or "").strip(),
+        )
+
+        if role == "co_admin" and not agent_name:
+            return {
+                "agent_name": "",
+                "clients": [],
+                "missing_agent": True,
+            }
+
+        where = "COALESCE(f.agent, '') != ''"
+        params: List[Any] = []
+        if role != "admin" or agent_name:
+            where = "lower(COALESCE(f.agent, '')) = lower(?)"
+            params.append(agent_name)
+
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                SELECT
+                    f.id,
+                    f.profile_id,
+                    f.name,
+                    f.position,
+                    f.rating,
+                    f.free_agent_type,
+                    f.rights_team_code,
+                    f.agent,
+                    COUNT(i.id) AS interest_count
+                FROM free_agents f
+                LEFT JOIN free_agent_interests i ON i.free_agent_id = f.id
+                WHERE {where}
+                GROUP BY f.id
+                ORDER BY COUNT(i.id) DESC, lower(f.name)
+                """,
+                params,
+            )
+            clients = [row_to_dict(cur, row) for row in cur.fetchall()]
+            client_ids = [int(item["id"]) for item in clients if parse_int(item.get("id")) is not None]
+            interests_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
+            if client_ids:
+                placeholders = ",".join("?" for _ in client_ids)
+                interest_cur = conn.execute(
+                    f"""
+                    SELECT
+                        i.*,
+                        t.name AS team_name
+                    FROM free_agent_interests i
+                    LEFT JOIN teams t ON t.code = i.team_code
+                    WHERE i.free_agent_id IN ({placeholders})
+                    ORDER BY i.updated_at DESC, i.team_code
+                    """,
+                    client_ids,
+                )
+                for row in interest_cur.fetchall():
+                    item = row_to_dict(interest_cur, row)
+                    free_agent_key = parse_int(item.get("free_agent_id"))
+                    if free_agent_key is None:
+                        continue
+                    interests_by_client.setdefault(free_agent_key, []).append(item)
+
+        normalized_clients: List[Dict[str, Any]] = []
+        for client in clients:
+            client_id = parse_int(client.get("id")) or 0
+            interests = interests_by_client.get(client_id, [])
+            normalized_clients.append(
+                {
+                    "id": client_id,
+                    "profile_id": parse_int(client.get("profile_id")),
+                    "name": str(client.get("name") or "").strip(),
+                    "position": str(client.get("position") or "").strip(),
+                    "rating": str(client.get("rating") or "").strip(),
+                    "free_agent_type": str(client.get("free_agent_type") or "").strip(),
+                    "rights_team_code": normalize_team_code(client.get("rights_team_code")),
+                    "agent": str(client.get("agent") or "").strip(),
+                    "interest_count": len(interests),
+                    "interests": [
+                        {
+                            "id": parse_int(item.get("id")),
+                            "team_code": normalize_team_code(item.get("team_code")),
+                            "team_name": str(item.get("team_name") or "").strip(),
+                            "economic_offer": str(item.get("economic_offer") or "").strip(),
+                            "role_offer": str(item.get("role_offer") or "").strip(),
+                            "comments": str(item.get("comments") or "").strip(),
+                            "submitted_by_name": str(item.get("submitted_by_name") or "").strip(),
+                            "updated_at": str(item.get("updated_at") or "").strip(),
+                        }
+                        for item in interests
+                    ],
+                }
+            )
+
+        normalized_clients.sort(
+            key=lambda item: (-int(item.get("interest_count") or 0), str(item.get("name") or "").casefold())
+        )
+        return {
+            "agent_name": agent_name,
+            "clients": normalized_clients,
+            "missing_agent": False,
+        }
+
     def generate_offseason_exceptions(
         self,
         season_year: int,
@@ -15165,10 +15393,13 @@ class Handler(SimpleHTTPRequestHandler):
             return None
         sess = self.db.get_session(token)
         if sess and sess.get("provider") == "google":
-            role, team_codes = self._google_role_for_email(str(sess.get("email") or ""))
+            email = str(sess.get("email") or "")
+            role, team_codes = self._google_role_for_email(email)
+            access = self.db.user_access_for_email(email)
             sess["role"] = role
             sess["team_codes"] = team_codes
             sess["team_code"] = team_codes[0] if team_codes else None
+            sess["agent_name"] = str(access.get("agent_name") or "").strip()
         return sess
 
     def _is_authenticated(self) -> bool:
@@ -17520,9 +17751,11 @@ QUALITY REQUIREMENTS
                         "email": sess.get("email"),
                         "name": sess.get("name"),
                         "provider": sess.get("provider"),
+                        "agent_name": sess.get("agent_name"),
                     },
                     "team_code": sess.get("team_code"),
                     "team_codes": sess.get("team_codes") if isinstance(sess.get("team_codes"), list) else [],
+                    "agent_name": sess.get("agent_name"),
                     "google_enabled": self._google_enabled(),
                     "csrf_token": sess.get("csrf_token"),
                 },
@@ -17623,6 +17856,12 @@ QUALITY REQUIREMENTS
                 self._json(200, self.db.list_cartera(raw_amount, season_year))
             except ValueError as exc:
                 self._json(400, {"error": str(exc)})
+            return
+
+        if parsed.path == "/api/cartera/clients":
+            if not self._require_admin_or_coadmin():
+                return
+            self._json(200, self.db.list_cartera_clients_for_session(self._current_session() or {}))
             return
 
         if parsed.path == "/api/offseason-exceptions/preview":
@@ -18265,21 +18504,37 @@ QUALITY REQUIREMENTS
                 return
             if action == "negotiate":
                 agent_name = str(free_agent.get("agent") or "").strip()
-                agent_discord_id = self._free_agent_agent_discord_id(free_agent)
-                sent = self._notify_free_agent_negotiation(free_agent, team_code, payload, agent_discord_id)
+                try:
+                    interest = self.db.record_free_agent_interest(
+                        free_agent_id,
+                        team_code,
+                        payload,
+                        self._current_session() or {},
+                    )
+                except ValueError as err:
+                    message = str(err) or "invalid_negotiation"
+                    if message == "free_agent_not_found":
+                        self._json(404, {"error": message})
+                        return
+                    if message == "team_not_found":
+                        self._json(400, {"error": message})
+                        return
+                    self._json(400, {"error": message})
+                    return
                 self._log_admin_action(
                     "negotiate",
                     "free_agent",
                     str(free_agent_id),
                     team_code,
                     {
+                        "interest_id": interest.get("id"),
                         "player_name": free_agent.get("name"),
                         "agent": agent_name,
-                        "agent_discord_configured": bool(agent_discord_id),
-                        "sent_to_discord": sent,
+                        "economic_offer": str(payload.get("economic_offer") or "").strip(),
+                        "role_offer": str(payload.get("role_offer") or "").strip(),
                     },
                 )
-                self._json(200, {"ok": True, "discord_sent": sent, "agent_discord_configured": bool(agent_discord_id)})
+                self._json(201, {"ok": True, "interest": interest, "interest_recorded": True})
                 return
 
         if parsed.path.startswith("/api/coadmin-votes/") and parsed.path.endswith("/submit"):
@@ -19796,8 +20051,14 @@ QUALITY REQUIREMENTS
                 self._json(400, {"error": "team_codes_required"})
                 return
             is_co_admin = parse_bool(payload.get("is_co_admin")) if "is_co_admin" in payload else None
+            agent_name = payload.get("agent_name") if "agent_name" in payload else None
             try:
-                user = self.db.replace_user_team_assignments(user_id, team_codes, is_co_admin=is_co_admin)
+                user = self.db.replace_user_team_assignments(
+                    user_id,
+                    team_codes,
+                    is_co_admin=is_co_admin,
+                    agent_name=agent_name,
+                )
             except ValueError as err:
                 message = str(err)
                 if message.startswith("invalid_team_code:"):
@@ -19823,7 +20084,12 @@ QUALITY REQUIREMENTS
                 "user_access",
                 str(user_id),
                 assigned_codes[0] if assigned_codes else None,
-                {"email": user.get("email"), "team_codes": assigned_codes, "is_co_admin": is_co_admin_response},
+                {
+                    "email": user.get("email"),
+                    "team_codes": assigned_codes,
+                    "is_co_admin": is_co_admin_response,
+                    "agent_name": user.get("agent_name"),
+                },
             )
             self._json(200, {"ok": True, "user": user})
             return
