@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260701d">
+  <link rel="stylesheet" href="/styles.css?v=20260702a">
 </head>
 <body class="app-layout">
   <header>
@@ -40,6 +40,7 @@
         <div class="sidebar-section-label">Mercado</div>
         <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="free-agents">Agentes libres</button>
         <button id="tradeMachineHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-machine">Máquina de traspasos</button>
+        <button id="walletHomeBtn" class="sidebar-nav-item section-hidden" type="button" data-nav-view="wallet">Cartera</button>
       </div>
       <div class="sidebar-section sidebar-account-section">
         <div class="sidebar-section-label">Cuenta</div>
@@ -75,6 +76,7 @@
         <button id="mobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
         <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Agentes libres</button>
         <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-machine">Máquina de traspasos</button>
+        <button id="mobileWalletBtn" type="button" class="mobile-nav-btn section-hidden" data-icon="▣" data-nav-view="wallet">Cartera</button>
         <button id="mobileCoadminVotesBtn" type="button" class="mobile-nav-btn section-hidden" data-icon="★" data-nav-view="coadmin-votes">Votaciones <span id="mobileCoadminVotesBadge" class="nav-badge" hidden>0</span></button>
         <button id="mobileLocatorBtn" type="button" class="mobile-nav-btn" data-icon="⌕">Buscar</button>
         <a id="mobileExportLink" href="/api/export/league.xlsx" class="mobile-nav-link" data-icon="⇩" download>Exportar datos</a>
@@ -406,6 +408,28 @@
       <aside id="tradeMachineResults" class="trade-machine-results" aria-live="polite"></aside>
     </section>
 
+    <section id="walletSection" class="wallet-section section-hidden">
+      <div class="section-head wallet-head">
+        <div>
+          <h2>Cartera</h2>
+          <div class="section-subtitle">Busca equipos que podrían firmar un importe con espacio salarial o excepciones.</div>
+        </div>
+        <div class="section-actions wallet-actions">
+          <label class="season-view-control" for="walletSeasonSelect">
+            <span>Temporada</span>
+            <select id="walletSeasonSelect"></select>
+          </label>
+          <label class="wallet-amount-control" for="walletAmountInput">
+            <span>Importe</span>
+            <input id="walletAmountInput" type="text" inputmode="decimal" placeholder="13.000.000">
+          </label>
+          <button id="walletSearchBtn" type="button">Buscar</button>
+        </div>
+      </div>
+      <div id="walletStatus" class="wallet-status" aria-live="polite"></div>
+      <div id="walletResults" class="wallet-results"></div>
+    </section>
+
     <section id="coadminVotesSection" class="coadmin-votes-section section-hidden">
       <div class="section-head">
         <div>
@@ -627,6 +651,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260701f" defer></script>
+  <script src="/guest.js?v=20260702a" defer></script>
 </body>
 </html>

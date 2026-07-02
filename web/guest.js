@@ -11,6 +11,14 @@ const state = {
   freeAgents: [],
   gmNotifications: [],
   coadminVotes: [],
+  wallet: {
+    amountText: '',
+    season: null,
+    seasons: [],
+    rows: [],
+    loading: false,
+    error: '',
+  },
   draftOrder: {
     draft_year: null,
     draft_order: [],
@@ -675,6 +683,11 @@ function startGmNotificationsPolling() {
 
 function isCoAdminRole(role) {
   return String(role || '').trim().toLowerCase() === 'co_admin';
+}
+
+function canViewWallet() {
+  const role = String(state.auth?.role || '').trim().toLowerCase();
+  return Boolean(state.auth?.authenticated && ['admin', 'co_admin'].includes(role));
 }
 
 function canViewOwnerOfficeForTeam(code = state.teamCode) {
@@ -3991,6 +4004,7 @@ function renderAuthControls() {
     logoutBtn.hidden = true;
     syncMobileAuthControls(auth);
     syncCoadminVoteNav();
+    syncWalletNav();
     return;
   }
 
@@ -4005,6 +4019,7 @@ function renderAuthControls() {
   logoutBtn.hidden = false;
   syncMobileAuthControls(auth);
   syncCoadminVoteNav();
+  syncWalletNav();
 }
 
 function setPageHeading(title, subtitle = '') {
@@ -4156,6 +4171,16 @@ function syncMobileAuthControls(auth) {
 function syncCoadminVoteNav() {
   const show = Boolean(state.auth?.authenticated && isCoAdminRole(state.auth?.role));
   ['coadminVotesHomeBtn', 'mobileCoadminVotesBtn'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.hidden = !show;
+    el.classList.toggle('section-hidden', !show);
+  });
+}
+
+function syncWalletNav() {
+  const show = canViewWallet();
+  ['walletHomeBtn', 'mobileWalletBtn'].forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.hidden = !show;
@@ -4551,6 +4576,7 @@ function setViewMode(mode) {
   const leaguePlayersSection = document.getElementById('leaguePlayersSection');
   const draftOrderSection = document.getElementById('draftOrderSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
+  const walletSection = document.getElementById('walletSection');
   const coadminVotesSection = document.getElementById('coadminVotesSection');
   const showTracker = mode === 'tracker';
   const showFigures = mode === 'figures';
@@ -4558,6 +4584,7 @@ function setViewMode(mode) {
   const showLeaguePlayers = mode === 'league-players';
   const showDraftOrder = mode === 'draft-order';
   const showTradeMachine = mode === 'trade-machine';
+  const showWallet = mode === 'wallet';
   const showCoadminVotes = mode === 'coadmin-votes';
 
   trackerSection.classList.toggle('section-hidden', !showTracker);
@@ -4566,6 +4593,7 @@ function setViewMode(mode) {
   if (leaguePlayersSection) leaguePlayersSection.classList.toggle('section-hidden', !showLeaguePlayers);
   if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
+  if (walletSection) walletSection.classList.toggle('section-hidden', !showWallet);
   if (coadminVotesSection) coadminVotesSection.classList.toggle('section-hidden', !showCoadminVotes);
   syncTrackerTabs();
   syncTeamTabs();
@@ -7588,6 +7616,203 @@ async function loadFreeAgents() {
   renderFreeAgents();
 }
 
+function walletSeasonOptions() {
+  const seasons = new Set(
+    (state.wallet.seasons || [])
+      .map((season) => Number(season))
+      .filter((season) => Number.isInteger(season) && season >= 2000 && season <= 2100)
+  );
+  availableSeasonViewStarts().forEach((season) => seasons.add(season));
+  return Array.from(seasons).sort((a, b) => a - b);
+}
+
+function selectedWalletSeason() {
+  const options = walletSeasonOptions();
+  const requested = Number(state.wallet.season ?? currentSeasonStart());
+  const selected = options.includes(requested) ? requested : (options[0] || currentSeasonStart());
+  state.wallet.season = selected;
+  return selected;
+}
+
+function renderWalletControls() {
+  const seasonSelect = document.getElementById('walletSeasonSelect');
+  const amountInput = document.getElementById('walletAmountInput');
+  if (seasonSelect) {
+    const selected = selectedWalletSeason();
+    seasonSelect.innerHTML = walletSeasonOptions()
+      .map((season) => `<option value="${season}" ${season === selected ? 'selected' : ''}>${seasonLabel(season)}</option>`)
+      .join('');
+  }
+  if (amountInput && document.activeElement !== amountInput) {
+    amountInput.value = state.wallet.amountText || '';
+  }
+}
+
+function walletPathHtml(path) {
+  const type = String(path?.type || '').trim();
+  const label = escapeHtml(path?.label || 'Ruta');
+  const source = escapeHtml(path?.source || '');
+  const details = escapeHtml(path?.details || '');
+  const amount = formatMoneyDots(path?.amount || 0);
+  return `
+    <li class="wallet-path wallet-path--${type || 'default'}">
+      <div>
+        <strong>${label}</strong>
+        ${source ? `<span>${source}</span>` : ''}
+        ${details ? `<small>${details}</small>` : ''}
+      </div>
+      <b>${amount}</b>
+    </li>
+  `;
+}
+
+function walletRightsHtml(row) {
+  const rights = Array.isArray(row?.rights_to_renounce) ? row.rights_to_renounce : [];
+  if (!rights.length) return '';
+  return `
+    <details class="wallet-rights" open>
+      <summary>
+        Derechos a revisar/renunciar
+        <span>${formatMoneyDots(row.cap_hold_total || 0)}</span>
+      </summary>
+      <ul>
+        ${rights.map((right) => `
+          <li>
+            <span>
+              <strong>${escapeHtml(right.player_name || 'Jugador')}</strong>
+              <small>${escapeHtml(right.hold_label || 'Cap hold')}</small>
+            </span>
+            <b>${formatMoneyDots(right.amount || 0)}</b>
+          </li>
+        `).join('')}
+      </ul>
+    </details>
+  `;
+}
+
+function walletResultHtml(row) {
+  const code = String(row?.team_code || '').toUpperCase();
+  const name = row?.team_name || code;
+  const paths = Array.isArray(row?.paths) ? row.paths : [];
+  const renounceNotice = row?.needs_renounce_review
+    ? '<div class="wallet-renounce-alert">Podría necesitar limpiar/renunciar derechos antes de ejecutar esta vía.</div>'
+    : '';
+  return `
+    <article class="wallet-result-card">
+      <div class="wallet-result-head">
+        <button type="button" class="wallet-team-btn" data-team-code="${escapeHtml(code)}">
+          ${draftOrderLogoHtml(code, 'wallet-team-logo')}
+          <span>
+            <strong>${escapeHtml(code)}</strong>
+            <small>${escapeHtml(name)}</small>
+          </span>
+        </button>
+        <span class="wallet-path-count">${paths.length} vía${paths.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="wallet-metrics">
+        <span><small>CAP total</small><strong>${formatMoneyDots(row.cap_total || 0)}</strong></span>
+        <span><small>Espacio CAP</small><strong class="${Number(row.cap_space || 0) >= 0 ? 'positive' : 'negative'}">${formatMoneyDots(row.cap_space || 0)}</strong></span>
+        <span><small>Cuenta APRON</small><strong>${formatMoneyDots(row.apron_account || 0)}</strong></span>
+      </div>
+      <ul class="wallet-paths">${paths.map(walletPathHtml).join('')}</ul>
+      ${renounceNotice}
+      ${walletRightsHtml(row)}
+    </article>
+  `;
+}
+
+function renderWallet() {
+  renderWalletControls();
+  const status = document.getElementById('walletStatus');
+  const results = document.getElementById('walletResults');
+  if (!status || !results) return;
+
+  const amount = parseAmountLike(state.wallet.amountText);
+  const rows = Array.isArray(state.wallet.rows) ? state.wallet.rows : [];
+  status.classList.toggle('is-error', Boolean(state.wallet.error));
+  if (state.wallet.loading) {
+    status.textContent = 'Buscando equipos...';
+  } else if (state.wallet.error) {
+    status.textContent = state.wallet.error;
+  } else if (!amount || amount <= 0) {
+    status.textContent = 'Introduce un importe para ver qué equipos podrían llegar a esa cifra.';
+  } else {
+    status.textContent = `${rows.length} equipo${rows.length === 1 ? '' : 's'} encontrado${rows.length === 1 ? '' : 's'} para ${formatMoneyDots(amount)} en ${seasonLabel(selectedWalletSeason())}.`;
+  }
+
+  if (state.wallet.loading) {
+    results.innerHTML = '<article class="wallet-empty-card">Cargando...</article>';
+  } else if (!amount || amount <= 0) {
+    results.innerHTML = '<article class="wallet-empty-card">Ejemplo: 13.000.000</article>';
+  } else if (!rows.length) {
+    results.innerHTML = '<article class="wallet-empty-card">No hay equipos con espacio o excepciones suficientes para ese importe.</article>';
+  } else {
+    results.innerHTML = rows.map(walletResultHtml).join('');
+  }
+
+  results.querySelectorAll('.wallet-team-btn').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const code = String(button.dataset.teamCode || '').trim().toUpperCase();
+      if (code) await loadTeam(code);
+    });
+  });
+}
+
+async function fetchWalletResults() {
+  const amountInput = document.getElementById('walletAmountInput');
+  if (amountInput) state.wallet.amountText = String(amountInput.value || '').trim();
+  const amount = parseAmountLike(state.wallet.amountText);
+  if (!amount || amount <= 0) {
+    state.wallet.rows = [];
+    state.wallet.error = 'Introduce un importe válido mayor que cero.';
+    renderWallet();
+    return;
+  }
+  state.wallet.loading = true;
+  state.wallet.error = '';
+  renderWallet();
+  try {
+    const season = selectedWalletSeason();
+    const data = await api(`/api/cartera?amount=${encodeURIComponent(state.wallet.amountText)}&season=${encodeURIComponent(season)}`);
+    state.wallet.rows = Array.isArray(data.rows) ? data.rows : [];
+    state.wallet.seasons = Array.isArray(data.seasons) ? data.seasons : [];
+    state.wallet.season = Number(data.season_year || season);
+    state.wallet.error = '';
+  } catch (err) {
+    state.wallet.rows = [];
+    state.wallet.error = err.message || 'No se pudo cargar Cartera.';
+  } finally {
+    state.wallet.loading = false;
+    renderWallet();
+  }
+}
+
+async function loadWallet() {
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('wallet');
+  setPageHeading('Cartera', 'Espacio salarial y excepciones disponibles');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  if (!canViewWallet()) {
+    state.wallet.rows = [];
+    state.wallet.error = 'Esta herramienta solo está disponible para admins y co-admins.';
+    renderWallet();
+    return;
+  }
+  if (!state.wallet.season) state.wallet.season = currentSeasonStart();
+  state.wallet.error = '';
+  renderWallet();
+}
+
 async function fetchLeaguePlayersFallback() {
   if (!state.teams.length) {
     const teamsRes = await api('/api/teams');
@@ -8016,6 +8241,7 @@ function setupMobileNav() {
   const leaguePlayersBtn = document.getElementById('mobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
   const tradeMachineBtn = document.getElementById('mobileTradeMachineBtn');
+  const walletBtn = document.getElementById('mobileWalletBtn');
   const coadminVotesBtn = document.getElementById('mobileCoadminVotesBtn');
   const mobileLogoutBtn = document.getElementById('mobileLogoutBtn');
   const infoBtn = document.getElementById('mobileInfoBtn');
@@ -8071,6 +8297,12 @@ function setupMobileNav() {
     tradeMachineBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadTradeMachine();
+    });
+  }
+  if (walletBtn) {
+    walletBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadWallet();
     });
   }
   if (coadminVotesBtn) {
@@ -8135,6 +8367,28 @@ async function init() {
   });
   document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
     await loadFreeAgents();
+  });
+  document.getElementById('walletHomeBtn')?.addEventListener('click', async () => {
+    await loadWallet();
+  });
+  document.getElementById('walletSearchBtn')?.addEventListener('click', () => {
+    void fetchWalletResults();
+  });
+  document.getElementById('walletAmountInput')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void fetchWalletResults();
+    }
+  });
+  document.getElementById('walletSeasonSelect')?.addEventListener('change', (event) => {
+    const amountInput = document.getElementById('walletAmountInput');
+    if (amountInput) state.wallet.amountText = String(amountInput.value || '').trim();
+    state.wallet.season = Number(event.target.value || currentSeasonStart());
+    if (parseAmountLike(state.wallet.amountText) > 0) {
+      void fetchWalletResults();
+    } else {
+      renderWallet();
+    }
   });
   document.getElementById('coadminVotesHomeBtn')?.addEventListener('click', async () => {
     await loadCoadminVotes();

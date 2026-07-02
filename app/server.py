@@ -10274,6 +10274,168 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "rows": rows,
             }
 
+    def _cartera_cap_hold_rights(
+        self,
+        players: List[Dict[str, Any]],
+        season_year: int,
+        settings: Dict[str, str],
+        salary_cap: float,
+    ) -> List[Dict[str, Any]]:
+        rights: List[Dict[str, Any]] = []
+        for player in players:
+            hold_amount = cap_hold_amount(player, season_year, settings, salary_cap)
+            if hold_amount <= 0:
+                continue
+            label = self._cap_hold_display_label(player, season_year)
+            rights.append(
+                {
+                    "player_id": parse_int(player.get("id")),
+                    "profile_id": parse_int(player.get("profile_id")),
+                    "player_name": str(player.get("name") or "Jugador").strip() or "Jugador",
+                    "hold_label": label,
+                    "amount": round(float(hold_amount or 0.0)),
+                }
+            )
+        return sorted(
+            rights,
+            key=lambda item: (-float(item.get("amount") or 0.0), str(item.get("player_name") or "").lower()),
+        )
+
+    def _cartera_exception_paths(
+        self,
+        estimate: Dict[str, Any],
+        target_amount: float,
+    ) -> List[Dict[str, Any]]:
+        paths: List[Dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add_item(item: Dict[str, Any], source_label: str, source_key: str = "") -> None:
+            key = str(item.get("key") or item.get("short_label") or item.get("label") or "").strip()
+            amount = float(item.get("amount") or 0.0)
+            if amount < target_amount:
+                return
+            dedupe_key = (key, source_key)
+            if dedupe_key in seen:
+                return
+            seen.add(dedupe_key)
+            hard_cap = str(item.get("hard_cap") or "").strip()
+            hard_cap_label = ""
+            if hard_cap == "first":
+                hard_cap_label = "Hard cap en el 1er apron si se usa."
+            elif hard_cap == "second":
+                hard_cap_label = "Hard cap en el 2do apron si se usa."
+            paths.append(
+                {
+                    "type": "exception",
+                    "key": key,
+                    "label": str(item.get("short_label") or item.get("label") or key).strip(),
+                    "amount": round(amount),
+                    "source": source_label,
+                    "hard_cap": hard_cap,
+                    "details": hard_cap_label,
+                }
+            )
+
+        for item in estimate.get("eligible") or []:
+            add_item(item, "Elegible según situación proyectada")
+
+        for path in estimate.get("paths") or []:
+            source_label = str(path.get("label") or "Ruta alternativa").strip()
+            source_key = str(path.get("key") or source_label).strip()
+            for item in path.get("eligible") or []:
+                add_item(item, source_label, source_key)
+
+        return paths
+
+    def list_cartera(self, amount: Any, season_year: Optional[int] = None) -> Dict[str, Any]:
+        target_amount = parse_amount_like(amount)
+        if target_amount is None or target_amount <= 0:
+            raise ValueError("invalid_amount")
+
+        settings = self.get_settings()
+        current_year = parse_int(settings.get("current_year")) or 2025
+        selected_year = parse_int(season_year) or current_year
+        selected_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, selected_year))
+
+        rows: List[Dict[str, Any]] = []
+        for team in self.list_teams():
+            team_code = str(team.get("code") or "").strip().upper()
+            team_data = self.get_team(team_code, move_season_year=selected_year)
+            if not team_data:
+                continue
+            summary = (team_data.get("season_summaries") or {}).get(str(selected_year))
+            if not summary:
+                continue
+
+            estimate = self._offseason_exception_estimate_from_summary(summary, team_data.get("assets") or [])
+            cap_space = float(summary.get("room_to_cap") or 0.0)
+            cap_total = float(summary.get("cap_figure") or 0.0)
+            apron_account = float(summary.get("apron_account") or 0.0)
+            salary_cap = float(summary.get("salary_cap") or 0.0)
+
+            paths: List[Dict[str, Any]] = []
+            if cap_space >= target_amount:
+                paths.append(
+                    {
+                        "type": "cap_space",
+                        "key": "cap_space",
+                        "label": "Espacio salarial",
+                        "amount": round(cap_space),
+                        "source": "Debajo del Salary Cap",
+                        "hard_cap": "",
+                        "details": "Puede absorber el importe con espacio salarial.",
+                    }
+                )
+
+            exception_paths = self._cartera_exception_paths(estimate, target_amount)
+            paths.extend(exception_paths)
+            if not paths:
+                continue
+
+            rights = self._cartera_cap_hold_rights(
+                team_data.get("players") or [],
+                selected_year,
+                settings,
+                salary_cap,
+            )
+            cap_hold_total = sum(float(item.get("amount") or 0.0) for item in rights)
+            needs_renounce_review = bool(exception_paths and cap_hold_total > 0 and cap_total > salary_cap)
+
+            rows.append(
+                {
+                    "team_code": team_code,
+                    "team_name": team.get("name"),
+                    "season_year": selected_year,
+                    "season_label": season_label(selected_year),
+                    "cap_total": round(cap_total),
+                    "salary_cap": round(salary_cap),
+                    "cap_space": round(cap_space),
+                    "apron_account": round(apron_account),
+                    "first_apron": round(float(summary.get("first_apron") or 0.0)),
+                    "second_apron": round(float(summary.get("second_apron") or 0.0)),
+                    "operating_mode": estimate.get("operating_mode"),
+                    "paths": sorted(paths, key=lambda item: (0 if item.get("type") == "cap_space" else 1, -float(item.get("amount") or 0.0))),
+                    "cap_hold_total": round(cap_hold_total),
+                    "needs_renounce_review": needs_renounce_review,
+                    "rights_to_renounce": rights if needs_renounce_review else [],
+                }
+            )
+
+        rows.sort(
+            key=lambda row: (
+                0 if any(path.get("type") == "cap_space" for path in row.get("paths") or []) else 1,
+                -max((float(path.get("amount") or 0.0) for path in row.get("paths") or []), default=0.0),
+                str(row.get("team_code") or ""),
+            )
+        )
+        return {
+            "amount": round(float(target_amount)),
+            "season_year": selected_year,
+            "season_label": season_label(selected_year),
+            "seasons": [current_year + idx for idx in range(6)],
+            "rows": rows,
+        }
+
     def generate_offseason_exceptions(
         self,
         season_year: int,
@@ -15016,6 +15178,10 @@ class Handler(SimpleHTTPRequestHandler):
         sess = self._current_session()
         return bool(sess and sess.get("role") == "admin")
 
+    def _is_admin_or_coadmin(self) -> bool:
+        sess = self._current_session()
+        return bool(sess and sess.get("role") in {"admin", "co_admin"})
+
     def _is_gm(self) -> bool:
         sess = self._current_session()
         return bool(sess and sess.get("role") in {"gm", "co_admin"})
@@ -15047,6 +15213,12 @@ class Handler(SimpleHTTPRequestHandler):
         if self._is_admin():
             return True
         self._json(401, {"error": "admin_auth_required"})
+        return False
+
+    def _require_admin_or_coadmin(self) -> bool:
+        if self._is_admin_or_coadmin():
+            return True
+        self._json(403, {"error": "admin_or_coadmin_required"})
         return False
 
     def _require_authenticated(self) -> bool:
@@ -17443,6 +17615,22 @@ QUALITY REQUIREMENTS
                 self._json(400, {"error": "invalid_season_year"})
                 return
             self._json(200, self.db.list_team_economy(season_year))
+            return
+
+        if parsed.path == "/api/cartera":
+            if not self._require_admin_or_coadmin():
+                return
+            qs = parse_qs(parsed.query)
+            raw_amount = (qs.get("amount") or [""])[0].strip()
+            raw_season = (qs.get("season") or [""])[0].strip()
+            season_year = parse_int(raw_season) if raw_season else None
+            if raw_season and season_year is None:
+                self._json(400, {"error": "invalid_season_year"})
+                return
+            try:
+                self._json(200, self.db.list_cartera(raw_amount, season_year))
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
             return
 
         if parsed.path == "/api/offseason-exceptions/preview":

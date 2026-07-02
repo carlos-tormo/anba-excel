@@ -705,6 +705,7 @@ h1 {
   #leaguePlayersHomeBtn::before { content: "◎"; }
   #freeAgentsHomeBtn::before { content: "○"; }
   #tradeMachineHomeBtn::before { content: "⇄"; }
+  #walletHomeBtn::before { content: "▣"; }
   #gmOptionRequestsBtn::before { content: "!"; }
   #adminMenuBtn::before { content: "⚙"; }
   #adminLink::before,
@@ -9849,6 +9850,273 @@ select[data-new-field="years_left"],
 .coadmin-votes-admin-board {
   display: grid;
   gap: 18px;
+}
+
+.wallet-section {
+  display: grid;
+  gap: 16px;
+}
+
+.wallet-head,
+.wallet-actions {
+  align-items: end;
+}
+
+.wallet-amount-control {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 800;
+}
+
+.wallet-amount-control input {
+  min-height: 42px;
+  min-width: 180px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 0 12px;
+  font: inherit;
+  font-weight: 800;
+  color: #0f172a;
+  background: #fff;
+}
+
+.wallet-status {
+  color: #64748b;
+  font-weight: 800;
+}
+
+.wallet-status.is-error {
+  color: #991b1b;
+}
+
+.wallet-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.wallet-result-card,
+.wallet-empty-card {
+  border: 1px solid #d6e1ef;
+  border-radius: 14px;
+  background: #f8fafc;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+}
+
+.wallet-empty-card {
+  padding: 22px;
+  color: #64748b;
+  font-weight: 800;
+}
+
+.wallet-result-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.wallet-result-head,
+.wallet-team-btn,
+.wallet-path,
+.wallet-rights li {
+  display: flex;
+  align-items: center;
+}
+
+.wallet-result-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wallet-team-btn {
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  color: #0f172a;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wallet-team-btn strong {
+  display: block;
+  font-size: 1.18rem;
+  color: #0f766e;
+}
+
+.wallet-team-btn small {
+  display: block;
+  color: #64748b;
+  font-weight: 800;
+}
+
+.wallet-team-logo {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #d6e1ef;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+}
+
+.wallet-team-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 5px;
+}
+
+.wallet-team-logo span {
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.74rem;
+  font-weight: 900;
+  color: #0f766e;
+}
+
+.wallet-path-count {
+  border: 1px solid #b7ead2;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #047857;
+  background: #ecfdf5;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.wallet-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.wallet-metrics span {
+  border: 1px solid #dce7f3;
+  border-radius: 10px;
+  background: #fff;
+  padding: 9px 10px;
+}
+
+.wallet-metrics small {
+  display: block;
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.wallet-metrics strong {
+  color: #0f172a;
+}
+
+.wallet-metrics .positive {
+  color: #15803d;
+}
+
+.wallet-metrics .negative {
+  color: #b91c1c;
+}
+
+.wallet-paths,
+.wallet-rights ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.wallet-path {
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: #eff6ff;
+  padding: 10px 12px;
+}
+
+.wallet-path--cap_space {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.wallet-path strong,
+.wallet-path span,
+.wallet-path small {
+  display: block;
+}
+
+.wallet-path strong {
+  color: #0f172a;
+}
+
+.wallet-path span,
+.wallet-path small {
+  color: #64748b;
+  font-weight: 800;
+}
+
+.wallet-path b {
+  color: #0f766e;
+  white-space: nowrap;
+}
+
+.wallet-renounce-alert {
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  background: #fff7ed;
+  color: #9a3412;
+  padding: 10px 12px;
+  font-weight: 900;
+}
+
+.wallet-rights {
+  border: 1px solid #e9d5ff;
+  border-radius: 12px;
+  background: #faf5ff;
+  padding: 10px 12px;
+}
+
+.wallet-rights summary {
+  cursor: pointer;
+  color: #6d28d9;
+  font-weight: 900;
+}
+
+.wallet-rights summary span {
+  float: right;
+}
+
+.wallet-rights ul {
+  margin-top: 10px;
+}
+
+.wallet-rights li {
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #eadcff;
+  padding-top: 8px;
+}
+
+.wallet-rights li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.wallet-rights small {
+  display: block;
+  color: #7c3aed;
+  font-weight: 800;
+}
+
+.wallet-rights b {
+  white-space: nowrap;
+  color: #581c87;
 }
 
 .coadmin-vote-card {
