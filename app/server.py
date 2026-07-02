@@ -12358,6 +12358,64 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return cur.rowcount > 0
 
+    def _player_row_is_retained_rights_only(self, player: sqlite3.Row, current_year: int) -> bool:
+        rights_markers = {"NB", "EB", "FB", "QO", "GAP"}
+        for season in PLAYER_CONTRACT_SEASONS:
+            if season < int(current_year):
+                continue
+            salary_text = str(player[f"salary_{season}_text"] or "").strip()
+            salary_marker = salary_text.upper()
+            option_marker = str(player[f"option_{season}"] or "").strip().upper()
+            salary_num = parse_float(player[f"salary_{season}_num"])
+            if salary_num is not None and abs(float(salary_num)) > 0:
+                return False
+            parsed_salary_text = parse_amount_like(salary_text)
+            if parsed_salary_text is not None and abs(float(parsed_salary_text)) > 0:
+                return False
+            if salary_text and salary_text != "-" and salary_marker not in rights_markers:
+                return False
+            if option_marker and option_marker not in rights_markers:
+                return False
+        return True
+
+    def _remove_retained_rights_player_row_for_signing(
+        self,
+        conn: sqlite3.Connection,
+        player: sqlite3.Row,
+        *,
+        free_agent_id: int,
+        signing_team_code: str,
+        player_name: str,
+    ) -> None:
+        profile_id = parse_int(player["profile_id"])
+        old_player_id = parse_int(player["id"])
+        old_team_code = normalize_team_code(player["team_code"])
+        rights_by_season: Dict[str, str] = {}
+        for season in PLAYER_CONTRACT_SEASONS:
+            salary_marker = str(player[f"salary_{season}_text"] or "").strip().upper()
+            option_marker = str(player[f"option_{season}"] or "").strip().upper()
+            marker = salary_marker or option_marker
+            if marker in {"NB", "EB", "FB", "QO", "GAP"}:
+                rights_by_season[str(season)] = marker
+
+        conn.execute("DELETE FROM players WHERE id = ?", (old_player_id,))
+        self._record_player_transaction(
+            conn,
+            profile_id,
+            "rights_removed",
+            f"Derechos eliminados por firma con {signing_team_code}",
+            player_id=old_player_id,
+            free_agent_id=free_agent_id,
+            team_code=old_team_code,
+            from_team_code=old_team_code,
+            to_team_code=signing_team_code,
+            details={
+                "player_name": player_name,
+                "rights_by_season": rights_by_season,
+                "reason": "free_agent_signed_elsewhere",
+            },
+        )
+
     def sign_free_agent(self, free_agent_id: int, team_code: str, payload: Dict[str, Any]) -> Optional[int]:
         agent = self.get_free_agent(free_agent_id)
         if not agent:
@@ -12375,9 +12433,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
         normalized_team_code = normalize_team_code(team_code)
         if profile_id is not None:
             with self.connect() as conn:
+                settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings").fetchall()}
+                current_year = parse_int(settings.get("current_year")) or PLAYER_CONTRACT_SEASONS[0]
                 active_rows = conn.execute(
                     """
-                    SELECT p.id, t.code AS team_code
+                    SELECT p.*, t.code AS team_code
                     FROM players p
                     JOIN teams t ON t.id = p.team_id
                     WHERE p.profile_id = ?
@@ -12394,15 +12454,30 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         None,
                     )
                     if not same_team_row:
-                        raise ValueError("profile_has_active_contract")
-                    return self._apply_free_agent_contract_to_active_player(
-                        conn,
-                        int(same_team_row["id"]),
-                        free_agent_id,
-                        normalized_team_code,
-                        agent,
-                        player_payload,
-                    )
+                        blocking_rows = [
+                            row for row in active_rows
+                            if not self._player_row_is_retained_rights_only(row, int(current_year))
+                        ]
+                        if blocking_rows:
+                            raise ValueError("profile_has_active_contract")
+                        for row in active_rows:
+                            self._remove_retained_rights_player_row_for_signing(
+                                conn,
+                                row,
+                                free_agent_id=free_agent_id,
+                                signing_team_code=normalized_team_code,
+                                player_name=player_payload["name"],
+                            )
+                        conn.commit()
+                    else:
+                        return self._apply_free_agent_contract_to_active_player(
+                            conn,
+                            int(same_team_row["id"]),
+                            free_agent_id,
+                            normalized_team_code,
+                            agent,
+                            player_payload,
+                        )
 
         player_id = self.create_player(team_code, player_payload)
         if not player_id:
