@@ -704,6 +704,7 @@ h1 {
   #draftHomeBtn::before { content: "◈"; }
   #leaguePlayersHomeBtn::before { content: "◎"; }
   #freeAgentsHomeBtn::before { content: "○"; }
+  #gmOfficeHomeBtn::before { content: "♡"; }
   #tradeMachineHomeBtn::before { content: "⇄"; }
   #walletHomeBtn::before { content: "▣"; }
   #gmOptionRequestsBtn::before { content: "!"; }
@@ -1120,6 +1121,22 @@ h1 {
 .free-agent-actions-cell button:disabled {
   opacity: 0.48;
   cursor: not-allowed;
+}
+.free-agent-favorite-btn {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 1.05rem;
+  justify-content: center;
+  line-height: 1;
+  min-height: 34px;
+  min-width: 38px;
+  padding: 4px 8px;
+}
+.free-agent-favorite-btn.is-favorite {
+  background: #fff1f2;
+  border-color: #fb7185;
+  color: #be123c;
 }
 .error-text {
   color: #b91c1c;
@@ -10248,6 +10265,22 @@ select[data-new-field="years_left"],
   text-transform: uppercase;
 }
 
+.wallet-sort-btn {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 900;
+  padding: 0;
+  text-transform: inherit;
+}
+
+.wallet-sort-btn.is-active {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .wallet-clients-table tbody tr:last-child td {
   border-bottom: 0;
 }
@@ -10316,6 +10349,16 @@ select[data-new-field="years_left"],
   background: #d1fae5;
 }
 
+.wallet-favorite-count {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #c2410c;
+}
+
+.wallet-favorite-count:hover {
+  background: #ffedd5;
+}
+
 .wallet-interest-zero {
   background: #f1f5f9;
   color: #64748b;
@@ -10333,6 +10376,24 @@ select[data-new-field="years_left"],
 .wallet-interest-list {
   display: grid;
   gap: 10px;
+}
+
+.wallet-favorite-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wallet-favorite-team {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 999px;
+  color: #9a3412;
+  display: inline-flex;
+  font-weight: 900;
+  gap: 7px;
+  padding: 5px 10px 5px 5px;
 }
 
 .wallet-interest-card {
@@ -10413,6 +10474,90 @@ select[data-new-field="years_left"],
 
 .wallet-match-tool {
   padding: 0;
+}
+
+.gm-office-section {
+  display: grid;
+  gap: 18px;
+}
+
+.gm-office-panel {
+  background: #fff;
+  border: 1px solid #d6e1ef;
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+  padding: 16px;
+}
+
+.gm-office-panel h3 {
+  margin: 0 0 8px;
+}
+
+.gm-office-status {
+  color: #64748b;
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.gm-office-status.is-error {
+  color: #991b1b;
+}
+
+.gm-office-table {
+  border-collapse: collapse;
+  min-width: 780px;
+  width: 100%;
+}
+
+.gm-office-table th,
+.gm-office-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 12px 14px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.gm-office-table th {
+  background: #0f766e;
+  color: #fff;
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.gm-office-table td small {
+  color: #64748b;
+  display: block;
+  font-weight: 800;
+  margin-top: 2px;
+}
+
+.gm-office-status-badge {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  color: #3730a3;
+  display: inline-flex;
+  font-weight: 900;
+  padding: 4px 10px;
+}
+
+.gm-office-status-badge--pending {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+
+.gm-office-status-badge--approved {
+  background: #ecfdf5;
+  border-color: #86efac;
+  color: #047857;
+}
+
+.gm-office-status-badge--rejected {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
 }
 
 .wallet-match-tool summary {

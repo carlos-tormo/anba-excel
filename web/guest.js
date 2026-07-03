@@ -20,10 +20,20 @@ const state = {
     clients: [],
     clientsPage: 1,
     expandedClientIds: new Set(),
+    expandedFavoriteClientIds: new Set(),
+    clientsSort: { key: 'interest_count', dir: 'desc' },
     agentName: '',
     missingAgent: false,
     clientsLoading: false,
     clientsError: '',
+    loading: false,
+    error: '',
+  },
+  gmOffice: {
+    teamCode: '',
+    teamName: '',
+    offers: [],
+    favorites: [],
     loading: false,
     error: '',
   },
@@ -701,6 +711,11 @@ function isCoAdminRole(role) {
 function canViewWallet() {
   const role = String(state.auth?.role || '').trim().toLowerCase();
   return Boolean(state.auth?.authenticated && ['admin', 'co_admin'].includes(role));
+}
+
+function canViewGmOffice() {
+  const auth = state.auth || {};
+  return Boolean(auth.authenticated && (auth.role === 'admin' || hasGmLevelRole(auth.role)) && freeAgentActionTeamCodes().length);
 }
 
 function canViewOwnerOfficeForTeam(code = state.teamCode) {
@@ -4193,6 +4208,7 @@ function renderAuthControls() {
     syncMobileAuthControls(auth);
     syncCoadminVoteNav();
     syncWalletNav();
+    syncGmOfficeNav();
     return;
   }
 
@@ -4208,6 +4224,7 @@ function renderAuthControls() {
   syncMobileAuthControls(auth);
   syncCoadminVoteNav();
   syncWalletNav();
+  syncGmOfficeNav();
 }
 
 function setPageHeading(title, subtitle = '') {
@@ -4369,6 +4386,16 @@ function syncCoadminVoteNav() {
 function syncWalletNav() {
   const show = canViewWallet();
   ['walletHomeBtn', 'mobileWalletBtn'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.hidden = !show;
+    el.classList.toggle('section-hidden', !show);
+  });
+}
+
+function syncGmOfficeNav() {
+  const show = canViewGmOffice();
+  ['gmOfficeHomeBtn', 'mobileGmOfficeBtn'].forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.hidden = !show;
@@ -4761,6 +4788,7 @@ function setViewMode(mode) {
   const trackerSection = document.getElementById('trackerSection');
   const figuresSection = document.getElementById('figuresSection');
   const freeAgentsSection = document.getElementById('freeAgentsSection');
+  const gmOfficeSection = document.getElementById('gmOfficeSection');
   const leaguePlayersSection = document.getElementById('leaguePlayersSection');
   const draftOrderSection = document.getElementById('draftOrderSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
@@ -4769,6 +4797,7 @@ function setViewMode(mode) {
   const showTracker = mode === 'tracker';
   const showFigures = mode === 'figures';
   const showFreeAgents = mode === 'free-agents';
+  const showGmOffice = mode === 'gm-office';
   const showLeaguePlayers = mode === 'league-players';
   const showDraftOrder = mode === 'draft-order';
   const showTradeMachine = mode === 'trade-machine';
@@ -4778,6 +4807,7 @@ function setViewMode(mode) {
   trackerSection.classList.toggle('section-hidden', !showTracker);
   if (figuresSection) figuresSection.classList.toggle('section-hidden', !showFigures);
   freeAgentsSection.classList.toggle('section-hidden', !showFreeAgents);
+  if (gmOfficeSection) gmOfficeSection.classList.toggle('section-hidden', !showGmOffice);
   if (leaguePlayersSection) leaguePlayersSection.classList.toggle('section-hidden', !showLeaguePlayers);
   if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
@@ -4891,6 +4921,34 @@ function canSubmitFreeAgentAction() {
       && (auth.role === 'admin' || hasGmLevelRole(auth.role))
       && freeAgentActionTeamCodes().length
   );
+}
+
+function preferredFreeAgentActionTeamCode() {
+  const codes = freeAgentActionTeamCodes();
+  return codes.length === 1 ? codes[0] : '';
+}
+
+function freeAgentRequestStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'approved') return 'Aprobada';
+  if (normalized === 'rejected') return 'Rechazada';
+  if (normalized === 'pending') return 'Pendiente';
+  return normalized || 'Sin estado';
+}
+
+function freeAgentOfferSummaryText(offer) {
+  const payload = offer?.offer_payload || {};
+  const type = payload.contract_type || offer?.offer_contract_type || 'Contrato';
+  const years = Number(payload.years || offer?.offer_years || 0);
+  const start = payload.start_season_label || payload.start_season || '';
+  const raise = payload.raise_pct !== undefined && payload.raise_pct !== null && payload.raise_pct !== ''
+    ? ` · Subidas ${payload.raise_pct}%`
+    : '';
+  const firstAmount = Array.isArray(payload.year_salaries) && payload.year_salaries.length
+    ? payload.year_salaries[0]?.amount
+    : payload.first_year_amount;
+  const amount = firstAmount ? ` · Desde ${formatMoneyDots(firstAmount)}` : '';
+  return `${type}${years ? ` · ${years} año${years === 1 ? '' : 's'}` : ''}${start ? ` · ${start}` : ''}${raise}${amount}`;
 }
 
 function updateWaiverBadges() {
@@ -5358,6 +5416,9 @@ async function submitFreeAgentOffer() {
         true,
       );
     }
+    if (document.getElementById('gmOfficeSection') && !document.getElementById('gmOfficeSection').classList.contains('section-hidden')) {
+      await fetchGmOffice();
+    }
   } catch (err) {
     setFreeAgentActionStatus('offer', `No se pudo enviar la oferta: ${err.message}`, true);
   } finally {
@@ -5607,6 +5668,14 @@ function renderFreeAgents() {
       <td class="free-agent-actions-cell">
         <button data-action="offer-free-agent" type="button" ${canAct ? '' : 'disabled'}>Ofertar</button>
         <button data-action="negotiate-free-agent" type="button" class="ghost" ${canAct ? '' : 'disabled'}>Negociar</button>
+        <button
+          data-action="favorite-free-agent"
+          type="button"
+          class="free-agent-favorite-btn ${agent.is_favorite ? 'is-favorite' : ''}"
+          title="${agent.is_favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}"
+          aria-label="${agent.is_favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}"
+          ${canAct ? '' : 'disabled'}
+        >${agent.is_favorite ? '♥' : '♡'}</button>
       </td>
       <td class="details-cell">${escapeHtml(agent.notes || '')}</td>
     `;
@@ -5616,8 +5685,196 @@ function renderFreeAgents() {
     tr.querySelector('[data-action="negotiate-free-agent"]')?.addEventListener('click', () => {
       openFreeAgentNegotiateModal(agent);
     });
+    tr.querySelector('[data-action="favorite-free-agent"]')?.addEventListener('click', () => {
+      void toggleFreeAgentFavorite(agent);
+    });
     tbody.appendChild(tr);
   });
+}
+
+async function toggleFreeAgentFavorite(agent) {
+  if (!agent || !agent.id) return;
+  const teamCode = preferredFreeAgentActionTeamCode();
+  if (!teamCode) {
+    alert('Selecciona un equipo antes de guardar favoritos.');
+    return;
+  }
+  const nextFavorite = !agent.is_favorite;
+  try {
+    await api(`/api/free-agents/${agent.id}/${nextFavorite ? 'favorite' : 'unfavorite'}`, {
+      method: 'POST',
+      body: JSON.stringify({ team_code: teamCode }),
+    });
+    state.freeAgents = (state.freeAgents || []).map((item) => (
+      Number(item.id) === Number(agent.id)
+        ? { ...item, is_favorite: nextFavorite, favorite_team_code: teamCode }
+        : item
+    ));
+    state.gmOffice.favorites = nextFavorite
+      ? state.gmOffice.favorites
+      : (state.gmOffice.favorites || []).filter((item) => Number(item.id) !== Number(agent.id));
+    renderFreeAgents();
+    if (state.ui.viewMode === 'gm-office') renderGmOffice();
+  } catch (err) {
+    alert(`No se pudo actualizar favoritos: ${err.message}`);
+  }
+}
+
+function gmOfficeStatusBadge(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  const label = freeAgentRequestStatusLabel(normalized);
+  return `<span class="gm-office-status-badge gm-office-status-badge--${escapeHtml(normalized || 'default')}">${escapeHtml(label)}</span>`;
+}
+
+function renderGmOffice() {
+  const subtitle = document.getElementById('gmOfficeSubtitle');
+  const offersStatus = document.getElementById('gmOfficeOffersStatus');
+  const favoritesStatus = document.getElementById('gmOfficeFavoritesStatus');
+  const offersBody = document.querySelector('#gmOfficeOffersTable tbody');
+  const favoritesBody = document.querySelector('#gmOfficeFavoritesTable tbody');
+  if (!offersBody || !favoritesBody) return;
+
+  const offers = Array.isArray(state.gmOffice.offers) ? state.gmOffice.offers : [];
+  const favorites = Array.isArray(state.gmOffice.favorites) ? state.gmOffice.favorites : [];
+  if (subtitle) {
+    const teamLabel = state.gmOffice.teamCode
+      ? `${state.gmOffice.teamCode}${state.gmOffice.teamName ? ` · ${state.gmOffice.teamName}` : ''}`
+      : 'Equipo GM';
+    subtitle.textContent = `Ofertas enviadas y favoritos guardados para ${teamLabel}.`;
+  }
+  if (offersStatus) {
+    offersStatus.classList.toggle('is-error', Boolean(state.gmOffice.error));
+    offersStatus.textContent = state.gmOffice.loading
+      ? 'Cargando despachos...'
+      : (state.gmOffice.error || `${offers.length} oferta${offers.length === 1 ? '' : 's'} registrada${offers.length === 1 ? '' : 's'}.`);
+  }
+  if (favoritesStatus) {
+    favoritesStatus.textContent = `${favorites.length} favorito${favorites.length === 1 ? '' : 's'} guardado${favorites.length === 1 ? '' : 's'}.`;
+  }
+
+  if (state.gmOffice.loading) {
+    offersBody.innerHTML = '<tr><td colspan="5">Cargando...</td></tr>';
+    favoritesBody.innerHTML = '<tr><td colspan="6">Cargando...</td></tr>';
+    return;
+  }
+  if (!offers.length) {
+    offersBody.innerHTML = '<tr><td colspan="5">No hay ofertas enviadas todavía.</td></tr>';
+  } else {
+    offersBody.innerHTML = offers.map((offer) => {
+      const status = String(offer.status || '').trim().toLowerCase();
+      const canCancel = status === 'pending';
+      return `
+        <tr>
+          <td>
+            <strong>${escapeHtml(offer.player_name || 'Jugador')}</strong>
+            <small>${escapeHtml(offer.option_value || '')}</small>
+          </td>
+          <td>${escapeHtml(freeAgentOfferSummaryText(offer))}</td>
+          <td>${gmOfficeStatusBadge(status)}</td>
+          <td>${escapeHtml(shortDateTime(offer.updated_at || offer.created_at || ''))}</td>
+          <td>
+            <button
+              type="button"
+              class="ghost ${canCancel ? '' : 'is-disabled'}"
+              data-gm-offer-cancel="${escapeHtml(offer.id)}"
+              ${canCancel ? '' : 'disabled'}
+            >Cancelar</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+  if (!favorites.length) {
+    favoritesBody.innerHTML = '<tr><td colspan="6">No tienes favoritos guardados.</td></tr>';
+  } else {
+    favoritesBody.innerHTML = favorites.map((agent) => {
+      const rights = String(agent.rights_team_code || '').trim().toUpperCase();
+      return `
+        <tr>
+          <td><strong>${escapeHtml(agent.name || '')}</strong></td>
+          <td>${escapeHtml(agent.position || '')}</td>
+          <td>${escapeHtml(agent.rating || '')}</td>
+          <td>${escapeHtml(agent.free_agent_type || 'No restringido')}</td>
+          <td>${rights || 'Sin derechos'}</td>
+          <td>
+            <button type="button" class="ghost" data-gm-favorite-remove="${escapeHtml(agent.id)}">Quitar</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  offersBody.querySelectorAll('[data-gm-offer-cancel]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void cancelGmOfficeOffer(button.dataset.gmOfferCancel);
+    });
+  });
+  favoritesBody.querySelectorAll('[data-gm-favorite-remove]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const agent = (state.gmOffice.favorites || []).find((item) => Number(item.id) === Number(button.dataset.gmFavoriteRemove));
+      if (agent) void toggleFreeAgentFavorite({ ...agent, is_favorite: true });
+    });
+  });
+}
+
+async function fetchGmOffice() {
+  const teamCode = preferredFreeAgentActionTeamCode();
+  if (!teamCode) {
+    state.gmOffice = { ...state.gmOffice, offers: [], favorites: [], error: 'No tienes un equipo asignado para Despachos.', loading: false };
+    renderGmOffice();
+    return;
+  }
+  state.gmOffice.loading = true;
+  state.gmOffice.error = '';
+  renderGmOffice();
+  try {
+    const data = await api(`/api/gm-office?team_code=${encodeURIComponent(teamCode)}`);
+    state.gmOffice.teamCode = String(data.team_code || teamCode).toUpperCase();
+    state.gmOffice.teamName = String(data.team_name || '').trim();
+    state.gmOffice.offers = Array.isArray(data.offers) ? data.offers : [];
+    state.gmOffice.favorites = Array.isArray(data.favorites) ? data.favorites.map((item) => ({ ...item, is_favorite: true })) : [];
+    state.gmOffice.error = '';
+  } catch (err) {
+    state.gmOffice.offers = [];
+    state.gmOffice.favorites = [];
+    state.gmOffice.error = err.message || 'No se pudo cargar Despachos.';
+  } finally {
+    state.gmOffice.loading = false;
+    renderGmOffice();
+  }
+}
+
+async function cancelGmOfficeOffer(offerId) {
+  const teamCode = state.gmOffice.teamCode || preferredFreeAgentActionTeamCode();
+  if (!offerId || !teamCode) return;
+  if (!window.confirm('¿Cancelar esta oferta? Desaparecerá de la lista de solicitudes activas.')) return;
+  try {
+    await api(`/api/gm-free-agent-offer-requests/${offerId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ team_code: teamCode }),
+    });
+    await fetchGmOffice();
+  } catch (err) {
+    alert(`No se pudo cancelar la oferta: ${err.message}`);
+  }
+}
+
+async function loadGmOffice() {
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  applyTeamTheme('');
+  setViewMode('gm-office');
+  setPageHeading('Despachos', 'Ofertas enviadas y favoritos');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  if (!canViewGmOffice()) {
+    state.gmOffice = { ...state.gmOffice, offers: [], favorites: [], error: 'Esta sección solo está disponible para GMs, co-admins y admins con equipo asignado.', loading: false };
+    renderGmOffice();
+    return;
+  }
+  await fetchGmOffice();
 }
 
 function leaguePlayerLogsHtml(player) {
@@ -8070,13 +8327,44 @@ function renderWalletClientsPagination(totalPages) {
   });
 }
 
+function sortedWalletClients() {
+  const clients = Array.isArray(state.wallet.clients) ? [...state.wallet.clients] : [];
+  const sort = state.wallet.clientsSort || { key: 'interest_count', dir: 'desc' };
+  const direction = sort.dir === 'asc' ? 1 : -1;
+  return clients.sort((a, b) => {
+    if (['interest_count', 'favorite_count'].includes(sort.key)) {
+      const diff = Number(a?.[sort.key] || 0) - Number(b?.[sort.key] || 0);
+      if (diff) return diff * direction;
+    }
+    return String(a?.name || '').localeCompare(String(b?.name || ''), 'es', { sensitivity: 'base' });
+  });
+}
+
+function walletFavoriteDetailsHtml(client) {
+  const favorites = Array.isArray(client?.favorites) ? client.favorites : [];
+  if (!favorites.length) return '<div class="wallet-interest-empty">Ningún equipo lo tiene en favoritos.</div>';
+  return `
+    <div class="wallet-favorite-list">
+      ${favorites.map((item) => {
+        const code = String(item.team_code || '').trim().toUpperCase();
+        return `
+          <span class="wallet-favorite-team" title="${escapeHtml(item.team_name || code)}">
+            ${draftOrderLogoHtml(code, 'wallet-interest-team-logo')}
+            <strong>${escapeHtml(code)}</strong>
+          </span>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 function renderWalletClients() {
   const tbody = document.querySelector('#walletClientsTable tbody');
   const status = document.getElementById('walletClientsStatus');
   const agentLabel = document.getElementById('walletAgentLabel');
   if (!tbody || !status || !agentLabel) return;
 
-  const clients = Array.isArray(state.wallet.clients) ? state.wallet.clients : [];
+  const clients = sortedWalletClients();
   const agentName = String(state.wallet.agentName || '').trim();
   agentLabel.textContent = agentName ? `Agente asignado: ${agentName}` : 'Sin agente asignado';
   status.classList.toggle('is-error', Boolean(state.wallet.clientsError || state.wallet.missingAgent));
@@ -8098,12 +8386,12 @@ function renderWalletClients() {
   const visibleClients = clients.slice(start, start + WALLET_CLIENTS_PAGE_SIZE);
 
   if (state.wallet.clientsLoading) {
-    tbody.innerHTML = '<tr><td colspan="3">Cargando...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4">Cargando...</td></tr>';
     renderWalletClientsPagination(totalPages);
     return;
   }
   if (!visibleClients.length) {
-    tbody.innerHTML = '<tr><td colspan="3">No hay clientes para mostrar.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4">No hay clientes para mostrar.</td></tr>';
     renderWalletClientsPagination(totalPages);
     return;
   }
@@ -8111,10 +8399,15 @@ function renderWalletClients() {
   tbody.innerHTML = visibleClients.map((client) => {
     const clientId = Number(client.id);
     const interestCount = Number(client.interest_count || 0);
+    const favoriteCount = Number(client.favorite_count || 0);
     const expanded = state.wallet.expandedClientIds.has(clientId);
+    const favoritesExpanded = state.wallet.expandedFavoriteClientIds.has(clientId);
     const rightsTeam = String(client.rights_team_code || '').trim().toUpperCase();
     const interestControl = interestCount > 0
       ? `<button type="button" class="wallet-interest-count" data-wallet-client-toggle="${clientId}" aria-expanded="${expanded ? 'true' : 'false'}">${interestCount}</button>`
+      : '<span class="wallet-interest-zero">0</span>';
+    const favoriteControl = favoriteCount > 0
+      ? `<button type="button" class="wallet-interest-count wallet-favorite-count" data-wallet-client-favorites-toggle="${clientId}" aria-expanded="${favoritesExpanded ? 'true' : 'false'}" title="${escapeHtml((client.favorites || []).map((item) => item.team_code).filter(Boolean).join(', '))}">${favoriteCount}</button>`
       : '<span class="wallet-interest-zero">0</span>';
     return `
       <tr class="wallet-client-row">
@@ -8123,8 +8416,10 @@ function renderWalletClients() {
           ${rightsTeam ? `<span class="wallet-rights-owner">${draftOrderLogoHtml(rightsTeam, 'wallet-rights-logo')} ${escapeHtml(walletClientRightsLabel(client))}</span>` : escapeHtml(walletClientRightsLabel(client))}
         </td>
         <td>${interestControl}</td>
+        <td>${favoriteControl}</td>
       </tr>
-      ${expanded ? `<tr class="wallet-client-detail-row"><td colspan="3">${walletClientInterestDetailsHtml(client)}</td></tr>` : ''}
+      ${expanded ? `<tr class="wallet-client-detail-row"><td colspan="4">${walletClientInterestDetailsHtml(client)}</td></tr>` : ''}
+      ${favoritesExpanded ? `<tr class="wallet-client-detail-row"><td colspan="4">${walletFavoriteDetailsHtml(client)}</td></tr>` : ''}
     `;
   }).join('');
 
@@ -8139,6 +8434,23 @@ function renderWalletClients() {
       }
       renderWalletClients();
     });
+  });
+  tbody.querySelectorAll('[data-wallet-client-favorites-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const clientId = Number(button.dataset.walletClientFavoritesToggle);
+      if (!Number.isFinite(clientId)) return;
+      if (state.wallet.expandedFavoriteClientIds.has(clientId)) {
+        state.wallet.expandedFavoriteClientIds.delete(clientId);
+      } else {
+        state.wallet.expandedFavoriteClientIds.add(clientId);
+      }
+      renderWalletClients();
+    });
+  });
+  document.querySelectorAll('[data-wallet-sort]').forEach((button) => {
+    const sort = state.wallet.clientsSort || {};
+    button.classList.toggle('is-active', sort.key === button.dataset.walletSort);
+    button.textContent = `${button.dataset.walletSort === 'favorite_count' ? 'Favoritos' : 'Interés'}${sort.key === button.dataset.walletSort ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}`;
   });
   renderWalletClientsPagination(totalPages);
 }
@@ -8761,6 +9073,7 @@ function setupMobileNav() {
   const draftBtn = document.getElementById('mobileDraftBtn');
   const leaguePlayersBtn = document.getElementById('mobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
+  const gmOfficeBtn = document.getElementById('mobileGmOfficeBtn');
   const tradeMachineBtn = document.getElementById('mobileTradeMachineBtn');
   const walletBtn = document.getElementById('mobileWalletBtn');
   const coadminVotesBtn = document.getElementById('mobileCoadminVotesBtn');
@@ -8812,6 +9125,12 @@ function setupMobileNav() {
     freeAgentsBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadFreeAgents();
+    });
+  }
+  if (gmOfficeBtn) {
+    gmOfficeBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadGmOffice();
     });
   }
   if (tradeMachineBtn) {
@@ -8890,6 +9209,9 @@ async function init() {
   document.getElementById('freeAgentsHomeBtn').addEventListener('click', async () => {
     await loadFreeAgents();
   });
+  document.getElementById('gmOfficeHomeBtn')?.addEventListener('click', async () => {
+    await loadGmOffice();
+  });
   document.getElementById('walletHomeBtn')?.addEventListener('click', async () => {
     await loadWallet();
   });
@@ -8911,6 +9233,18 @@ async function init() {
     } else {
       renderWallet();
     }
+  });
+  document.querySelectorAll('[data-wallet-sort]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const key = String(button.dataset.walletSort || 'interest_count');
+      const current = state.wallet.clientsSort || { key: 'interest_count', dir: 'desc' };
+      state.wallet.clientsSort = {
+        key,
+        dir: current.key === key && current.dir === 'desc' ? 'asc' : 'desc',
+      };
+      state.wallet.clientsPage = 1;
+      renderWalletClients();
+    });
   });
   document.getElementById('coadminVotesHomeBtn')?.addEventListener('click', async () => {
     await loadCoadminVotes();

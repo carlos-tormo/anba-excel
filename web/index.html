@@ -39,6 +39,7 @@
       <div class="sidebar-section">
         <div class="sidebar-section-label">Mercado</div>
         <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="free-agents">Agentes libres</button>
+        <button id="gmOfficeHomeBtn" class="sidebar-nav-item section-hidden" type="button" data-nav-view="gm-office">Despachos</button>
         <button id="tradeMachineHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-machine">Máquina de traspasos</button>
         <button id="walletHomeBtn" class="sidebar-nav-item section-hidden" type="button" data-nav-view="wallet">Cartera</button>
       </div>
@@ -75,6 +76,7 @@
         <button id="mobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈" data-nav-view="draft-order">Draft</button>
         <button id="mobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
         <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Agentes libres</button>
+        <button id="mobileGmOfficeBtn" type="button" class="mobile-nav-btn section-hidden" data-icon="♡" data-nav-view="gm-office">Despachos</button>
         <button id="mobileTradeMachineBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-machine">Máquina de traspasos</button>
         <button id="mobileWalletBtn" type="button" class="mobile-nav-btn section-hidden" data-icon="▣" data-nav-view="wallet">Cartera</button>
         <button id="mobileCoadminVotesBtn" type="button" class="mobile-nav-btn section-hidden" data-icon="★" data-nav-view="coadmin-votes">Votaciones <span id="mobileCoadminVotesBadge" class="nav-badge" hidden>0</span></button>
@@ -353,6 +355,52 @@
       </div>
     </section>
 
+    <section id="gmOfficeSection" class="gm-office-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Despachos</h2>
+          <div id="gmOfficeSubtitle" class="section-subtitle">Ofertas enviadas y favoritos guardados.</div>
+        </div>
+      </div>
+      <section class="gm-office-panel">
+        <h3>Ofertas enviadas</h3>
+        <div id="gmOfficeOffersStatus" class="gm-office-status" aria-live="polite"></div>
+        <div class="table-wrap">
+          <table id="gmOfficeOffersTable" class="gm-office-table">
+            <thead>
+              <tr>
+                <th>Jugador</th>
+                <th>Oferta</th>
+                <th>Estado</th>
+                <th>Fecha</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="gm-office-panel">
+        <h3>Favoritos</h3>
+        <div id="gmOfficeFavoritesStatus" class="gm-office-status" aria-live="polite"></div>
+        <div class="table-wrap">
+          <table id="gmOfficeFavoritesTable" class="gm-office-table">
+            <thead>
+              <tr>
+                <th>Jugador</th>
+                <th>Posición</th>
+                <th>Rating</th>
+                <th>Tipo FA</th>
+                <th>Derechos</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
     <section id="leaguePlayersSection" class="section-hidden">
       <h2>Jugadores</h2>
       <div class="table-wrap">
@@ -431,7 +479,8 @@
               <tr>
                 <th>Jugador</th>
                 <th>Derechos</th>
-                <th>Interés</th>
+                <th><button type="button" class="wallet-sort-btn" data-wallet-sort="interest_count">Interés</button></th>
+                <th><button type="button" class="wallet-sort-btn" data-wallet-sort="favorite_count">Favoritos</button></th>
               </tr>
             </thead>
             <tbody></tbody>

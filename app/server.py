@@ -1343,6 +1343,32 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS free_agent_favorites (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    free_agent_id INTEGER NOT NULL REFERENCES free_agents(id) ON DELETE CASCADE,
+                    team_code TEXT NOT NULL,
+                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    user_email TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(free_agent_id, team_code)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_free_agent_favorites_agent
+                ON free_agent_favorites (free_agent_id, team_code)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_free_agent_favorites_team
+                ON free_agent_favorites (team_code, updated_at)
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_coadmin_vote_scores_vote
                 ON coadmin_vote_scores (vote_id)
                 """
@@ -10743,6 +10769,187 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 raise RuntimeError("free_agent_interest_not_saved")
             return dict(row)
 
+    def set_free_agent_favorite(
+        self,
+        free_agent_id: Any,
+        team_code: Any,
+        session: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        parsed_id = parse_int(free_agent_id)
+        normalized_team = normalize_team_code(team_code)
+        if parsed_id is None or parsed_id <= 0:
+            raise ValueError("invalid_free_agent_id")
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            free_agent = conn.execute("SELECT id FROM free_agents WHERE id = ?", (parsed_id,)).fetchone()
+            if not free_agent:
+                raise ValueError("free_agent_not_found")
+            team = conn.execute("SELECT code FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+            if not team:
+                raise ValueError("team_not_found")
+            conn.execute(
+                """
+                INSERT INTO free_agent_favorites (
+                    free_agent_id, team_code, user_id, user_email, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(free_agent_id, team_code)
+                DO UPDATE SET
+                    user_id = excluded.user_id,
+                    user_email = excluded.user_email,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    parsed_id,
+                    normalized_team,
+                    parse_int(session.get("user_id")),
+                    str(session.get("email") or "").strip().lower() or None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT *
+                FROM free_agent_favorites
+                WHERE free_agent_id = ? AND team_code = ?
+                """,
+                (parsed_id, normalized_team),
+            ).fetchone()
+            conn.commit()
+            if not row:
+                raise RuntimeError("free_agent_favorite_not_saved")
+            return dict(row)
+
+    def delete_free_agent_favorite(self, free_agent_id: Any, team_code: Any) -> bool:
+        parsed_id = parse_int(free_agent_id)
+        normalized_team = normalize_team_code(team_code)
+        if parsed_id is None or parsed_id <= 0:
+            raise ValueError("invalid_free_agent_id")
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM free_agent_favorites WHERE free_agent_id = ? AND team_code = ?",
+                (parsed_id, normalized_team),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def free_agent_favorite_ids_for_team(self, team_code: Any) -> set[int]:
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            return set()
+        with self.connect() as conn:
+            cur = conn.execute(
+                "SELECT free_agent_id FROM free_agent_favorites WHERE team_code = ?",
+                (normalized_team,),
+            )
+            return {int(row["free_agent_id"]) for row in cur.fetchall() if row["free_agent_id"] is not None}
+
+    def list_gm_office(self, team_code: Any) -> Dict[str, Any]:
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        with self.connect() as conn:
+            team = conn.execute("SELECT id, code, name FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+            if not team:
+                raise ValueError("team_not_found")
+            offer_cur = conn.execute(
+                """
+                SELECT
+                    r.*,
+                    f.name AS player_name,
+                    f.profile_id,
+                    f.position,
+                    f.rating,
+                    f.free_agent_type,
+                    f.rights_team_code,
+                    t.code AS team_code,
+                    t.name AS team_name
+                FROM gm_free_agent_offer_requests r
+                LEFT JOIN free_agents f ON f.id = r.free_agent_id
+                JOIN teams t ON t.id = r.team_id
+                WHERE t.code = ?
+                ORDER BY
+                    CASE r.status WHEN 'pending' THEN 0 ELSE 1 END,
+                    r.created_at DESC,
+                    r.id DESC
+                """,
+                (normalized_team,),
+            )
+            offers = [self._gm_free_agent_offer_request_from_row(offer_cur, row) for row in offer_cur.fetchall()]
+            favorite_cur = conn.execute(
+                """
+                SELECT
+                    fav.id AS favorite_id,
+                    fav.created_at AS favorite_created_at,
+                    f.*,
+                    pp.name AS profile_name,
+                    pp.experience_years AS profile_experience_years
+                FROM free_agent_favorites fav
+                JOIN free_agents f ON f.id = fav.free_agent_id
+                LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                WHERE fav.team_code = ?
+                ORDER BY COALESCE(pp.name, f.name) COLLATE NOCASE, f.id
+                """,
+                (normalized_team,),
+            )
+            favorites = [
+                self._merge_player_profile(row_to_dict(favorite_cur, row))
+                for row in favorite_cur.fetchall()
+            ]
+            favorites = self._attach_player_salary_history_conn(conn, favorites)
+        return {
+            "team_code": normalized_team,
+            "team_name": str(team["name"] or normalized_team),
+            "offers": offers,
+            "favorites": favorites,
+        }
+
+    def cancel_gm_free_agent_offer_request(
+        self,
+        request_id: Any,
+        team_code: Any,
+    ) -> Optional[Dict[str, Any]]:
+        parsed_id = parse_int(request_id)
+        normalized_team = normalize_team_code(team_code)
+        if parsed_id is None or parsed_id <= 0:
+            raise ValueError("invalid_request_id")
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    r.*,
+                    f.name AS player_name,
+                    f.profile_id,
+                    f.position,
+                    f.rating,
+                    f.free_agent_type,
+                    f.rights_team_code,
+                    t.code AS team_code,
+                    t.name AS team_name
+                FROM gm_free_agent_offer_requests r
+                LEFT JOIN free_agents f ON f.id = r.free_agent_id
+                JOIN teams t ON t.id = r.team_id
+                WHERE r.id = ? AND t.code = ?
+                """,
+                (parsed_id, normalized_team),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            item = self._gm_free_agent_offer_request_from_row(cur, row)
+            if str(item.get("status") or "").strip().lower() != "pending":
+                raise ValueError("offer_not_pending")
+            conn.execute("DELETE FROM gm_free_agent_offer_requests WHERE id = ?", (parsed_id,))
+            conn.commit()
+            return item
+
     def list_cartera_clients_for_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
         role = str(session.get("role") or "").strip().lower()
         email = str(session.get("email") or "").strip().lower()
@@ -10778,18 +10985,21 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     f.free_agent_type,
                     f.rights_team_code,
                     f.agent,
-                    COUNT(i.id) AS interest_count
+                    COUNT(DISTINCT i.id) AS interest_count,
+                    COUNT(DISTINCT fav.team_code) AS favorite_count
                 FROM free_agents f
                 LEFT JOIN free_agent_interests i ON i.free_agent_id = f.id
+                LEFT JOIN free_agent_favorites fav ON fav.free_agent_id = f.id
                 WHERE {where}
                 GROUP BY f.id
-                ORDER BY COUNT(i.id) DESC, lower(f.name)
+                ORDER BY COUNT(DISTINCT i.id) DESC, COUNT(DISTINCT fav.team_code) DESC, lower(f.name)
                 """,
                 params,
             )
             clients = [row_to_dict(cur, row) for row in cur.fetchall()]
             client_ids = [int(item["id"]) for item in clients if parse_int(item.get("id")) is not None]
             interests_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
+            favorites_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
             if client_ids:
                 placeholders = ",".join("?" for _ in client_ids)
                 interest_cur = conn.execute(
@@ -10810,11 +11020,30 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     if free_agent_key is None:
                         continue
                     interests_by_client.setdefault(free_agent_key, []).append(item)
+                favorite_cur = conn.execute(
+                    f"""
+                    SELECT
+                        fav.*,
+                        t.name AS team_name
+                    FROM free_agent_favorites fav
+                    LEFT JOIN teams t ON t.code = fav.team_code
+                    WHERE fav.free_agent_id IN ({placeholders})
+                    ORDER BY fav.updated_at DESC, fav.team_code
+                    """,
+                    client_ids,
+                )
+                for row in favorite_cur.fetchall():
+                    item = row_to_dict(favorite_cur, row)
+                    free_agent_key = parse_int(item.get("free_agent_id"))
+                    if free_agent_key is None:
+                        continue
+                    favorites_by_client.setdefault(free_agent_key, []).append(item)
 
         normalized_clients: List[Dict[str, Any]] = []
         for client in clients:
             client_id = parse_int(client.get("id")) or 0
             interests = interests_by_client.get(client_id, [])
+            favorites = favorites_by_client.get(client_id, [])
             normalized_clients.append(
                 {
                     "id": client_id,
@@ -10826,6 +11055,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "rights_team_code": normalize_team_code(client.get("rights_team_code")),
                     "agent": str(client.get("agent") or "").strip(),
                     "interest_count": len(interests),
+                    "favorite_count": len(favorites),
                     "interests": [
                         {
                             "id": parse_int(item.get("id")),
@@ -10839,11 +11069,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         }
                         for item in interests
                     ],
+                    "favorites": [
+                        {
+                            "id": parse_int(item.get("id")),
+                            "team_code": normalize_team_code(item.get("team_code")),
+                            "team_name": str(item.get("team_name") or "").strip(),
+                            "updated_at": str(item.get("updated_at") or item.get("created_at") or "").strip(),
+                        }
+                        for item in favorites
+                    ],
                 }
             )
 
         normalized_clients.sort(
-            key=lambda item: (-int(item.get("interest_count") or 0), str(item.get("name") or "").casefold())
+            key=lambda item: (
+                -int(item.get("interest_count") or 0),
+                -int(item.get("favorite_count") or 0),
+                str(item.get("name") or "").casefold(),
+            )
         )
         return {
             "agent_name": agent_name,
@@ -19041,6 +19284,31 @@ QUALITY REQUIREMENTS
             self._json(200, self.db.list_cartera_clients_for_session(self._current_session() or {}))
             return
 
+        if parsed.path == "/api/gm-office":
+            if not self._require_authenticated():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            qs = parse_qs(parsed.query)
+            team_code = normalize_team_code((qs.get("team_code") or [""])[0])
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            if not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                self._json(200, self.db.list_gm_office(team_code))
+            except ValueError as err:
+                message = str(err) or "invalid_gm_office"
+                self._json(404 if message == "team_not_found" else 400, {"error": message})
+            return
+
         if parsed.path == "/api/offseason-exceptions/preview":
             if not self._require_admin():
                 return
@@ -19054,7 +19322,17 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/free-agents":
-            self._json(200, {"free_agents": self.db.list_free_agents()})
+            free_agents = self.db.list_free_agents()
+            team_codes = self._current_session_team_codes()
+            if len(team_codes) == 1:
+                favorite_ids = self.db.free_agent_favorite_ids_for_team(team_codes[0])
+                for item in free_agents:
+                    item["is_favorite"] = int(item.get("id") or 0) in favorite_ids
+                    item["favorite_team_code"] = team_codes[0]
+            else:
+                for item in free_agents:
+                    item["is_favorite"] = False
+            self._json(200, {"free_agents": free_agents})
             return
 
         if parsed.path == "/api/waivers":
@@ -19717,6 +19995,104 @@ QUALITY REQUIREMENTS
                 )
                 self._json(201, {"ok": True, "interest": interest, "interest_recorded": True})
                 return
+
+        if parsed.path.startswith("/api/free-agents/") and (
+            parsed.path.endswith("/favorite") or parsed.path.endswith("/unfavorite")
+        ):
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                free_agent_id = int(parts[2])
+            except ValueError:
+                self._json(400, {"error": "invalid_free_agent_id"})
+                return
+            action = parts[3]
+            team_code = normalize_team_code(payload.get("team_code"))
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            if not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                if action == "favorite":
+                    favorite = self.db.set_free_agent_favorite(
+                        free_agent_id,
+                        team_code,
+                        self._current_session() or {},
+                    )
+                    self._json(200, {"ok": True, "favorite": favorite, "is_favorite": True})
+                    return
+                self.db.delete_free_agent_favorite(free_agent_id, team_code)
+                self._json(200, {"ok": True, "is_favorite": False})
+                return
+            except ValueError as err:
+                message = str(err) or "invalid_free_agent_favorite"
+                if message == "free_agent_not_found":
+                    self._json(404, {"error": message})
+                    return
+                self._json(400, {"error": message})
+                return
+
+        if parsed.path.startswith("/api/gm-free-agent-offer-requests/") and parsed.path.endswith("/cancel"):
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            request_id = parse_int(parts[2])
+            if request_id is None:
+                self._json(400, {"error": "invalid_request_id"})
+                return
+            team_code = normalize_team_code(payload.get("team_code"))
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            if not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                canceled = self.db.cancel_gm_free_agent_offer_request(request_id, team_code)
+            except ValueError as err:
+                message = str(err) or "invalid_request"
+                status = 409 if message == "offer_not_pending" else 400
+                self._json(status, {"error": message})
+                return
+            if not canceled:
+                self._json(404, {"error": "request_not_found"})
+                return
+            self._log_admin_action(
+                "cancel",
+                "gm_free_agent_offer_request",
+                str(request_id),
+                team_code,
+                {"player_name": canceled.get("player_name"), "offer_type": canceled.get("offer_type")},
+            )
+            self._json(200, {"ok": True, "request": canceled})
+            return
 
         if parsed.path.startswith("/api/waivers/") and parsed.path.endswith("/claims"):
             if not self._require_authenticated():
