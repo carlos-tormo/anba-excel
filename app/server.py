@@ -12650,6 +12650,42 @@ class LeagueDB(DatabaseMaintenanceMixin):
         code = cap_hold_bird_code_from_years(player.get("years_left"))
         return code or None
 
+    def _cleanup_active_contract_free_agents_conn(self, conn: sqlite3.Connection, current_year: int) -> int:
+        active_profile_ids: List[int] = []
+        cur = conn.execute(
+            """
+            SELECT p.*
+            FROM players p
+            WHERE p.profile_id IS NOT NULL
+            """
+        )
+        for row in cur.fetchall():
+            profile_id = parse_int(row["profile_id"])
+            if profile_id is None:
+                continue
+            has_active_salary = False
+            for season in PLAYER_CONTRACT_SEASONS:
+                if int(season) < int(current_year):
+                    continue
+                salary_num = parse_float(row[f"salary_{season}_num"])
+                salary_text_amount = parse_amount_like(row[f"salary_{season}_text"])
+                if (salary_num is not None and abs(float(salary_num)) > 0) or (
+                    salary_text_amount is not None and abs(float(salary_text_amount)) > 0
+                ):
+                    has_active_salary = True
+                    break
+            if has_active_salary:
+                active_profile_ids.append(int(profile_id))
+        if not active_profile_ids:
+            return 0
+        unique_ids = sorted(set(active_profile_ids))
+        placeholders = ",".join("?" for _ in unique_ids)
+        delete_cur = conn.execute(
+            f"DELETE FROM free_agents WHERE profile_id IN ({placeholders})",
+            unique_ids,
+        )
+        return int(delete_cur.rowcount or 0)
+
     def _sync_cap_hold_free_agents(self, conn: sqlite3.Connection, settings: Dict[str, str]) -> int:
         timestamp = now_iso()
         if not parse_bool(settings.get("free_agency_mode")):
@@ -12785,6 +12821,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         else:
             cur = conn.execute("DELETE FROM free_agents WHERE source = ?", (FREE_AGENT_SOURCE_CAP_HOLD,))
         changed += int(cur.rowcount or 0)
+        changed += self._cleanup_active_contract_free_agents_conn(conn, int(current_year))
         return changed
 
     def _sync_uncontracted_profile_free_agents(self, conn: sqlite3.Connection) -> int:
@@ -13362,6 +13399,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
             },
         )
 
+    def _delete_free_agent_entries_for_signed_profile_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        free_agent_id: Optional[int],
+        profile_id: Optional[int],
+    ) -> int:
+        deleted = 0
+        parsed_free_agent_id = parse_int(free_agent_id)
+        parsed_profile_id = parse_int(profile_id)
+        if parsed_free_agent_id is not None:
+            cur = conn.execute("DELETE FROM free_agents WHERE id = ?", (int(parsed_free_agent_id),))
+            deleted += int(cur.rowcount or 0)
+        if parsed_profile_id is not None:
+            cur = conn.execute("DELETE FROM free_agents WHERE profile_id = ?", (int(parsed_profile_id),))
+            deleted += int(cur.rowcount or 0)
+        return deleted
+
     def sign_free_agent(self, free_agent_id: int, team_code: str, payload: Dict[str, Any]) -> Optional[int]:
         agent = self.get_free_agent(free_agent_id)
         if not agent:
@@ -13442,7 +13497,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 details={"player_name": player_payload["name"]},
             )
             conn.commit()
-        self.delete_free_agent(free_agent_id, record_transaction=False)
+        with self.connect() as conn:
+            self._delete_free_agent_entries_for_signed_profile_conn(
+                conn,
+                free_agent_id=free_agent_id,
+                profile_id=profile_id,
+            )
+            conn.commit()
         return player_id
 
     def _apply_free_agent_contract_to_active_player(
@@ -13590,7 +13651,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
             },
             created_at=timestamp,
         )
-        conn.execute("DELETE FROM free_agents WHERE id = ?", (free_agent_id,))
+        self._delete_free_agent_entries_for_signed_profile_conn(
+            conn,
+            free_agent_id=free_agent_id,
+            profile_id=parse_int(player["profile_id"]),
+        )
         conn.commit()
         return player_id
 
