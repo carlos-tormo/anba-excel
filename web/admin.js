@@ -6255,7 +6255,7 @@ async function launchPressArticleFromTool() {
     if (textInput) textInput.value = '';
     if (imageInput) imageInput.value = '';
     if (resultEl) {
-      resultEl.textContent = `Publicado en #prensa${result.message_id ? ` · mensaje ${result.message_id}` : ''}.`;
+      resultEl.textContent = `Publicado en #prensa${result.message_id ? ` · mensaje ${result.message_id}` : ''}${result.article_url ? ` · ${result.article_url}` : ''}.`;
     }
     await refreshAdminLogsSafe();
   } catch (err) {

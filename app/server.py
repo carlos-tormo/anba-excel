@@ -1625,6 +1625,29 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS news_articles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    image_blob BLOB,
+                    image_mime_type TEXT,
+                    discord_channel_id TEXT,
+                    discord_message_id TEXT,
+                    created_by_email TEXT,
+                    created_by_name TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_news_articles_created_at
+                ON news_articles (created_at DESC, id DESC)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS admin_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -3029,6 +3052,111 @@ class LeagueDB(DatabaseMaintenanceMixin):
         with self.connect() as conn:
             cur = conn.execute("SELECT key, value FROM app_settings")
             return {str(row["key"]): str(row["value"]) for row in cur.fetchall()}
+
+    def _press_article_payload(self, row: sqlite3.Row, *, include_body: bool = False) -> Dict[str, Any]:
+        article = dict(row)
+        image_mime = str(article.get("image_mime_type") or "").strip()
+        article["has_image"] = bool(image_mime)
+        article["image_url"] = f"/api/news/articles/{article['id']}/image" if image_mime else ""
+        if not include_body:
+            article.pop("body", None)
+            body = str(row["body"] or "")
+            article["excerpt"] = self._plain_excerpt(body, 220)
+        return article
+
+    def _plain_excerpt(self, text: Any, limit: int) -> str:
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[: max(0, limit - 3)].rstrip()}..."
+
+    def create_press_article(
+        self,
+        body: str,
+        image_bytes: bytes,
+        image_mime_type: str,
+        session: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        text = str(body or "").strip()
+        if not text:
+            raise ValueError("article_text_required")
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        title = self._plain_excerpt(first_line or "ANBA News", 140)
+        timestamp = now_iso()
+        sess = session or {}
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO news_articles (
+                    title, body, image_blob, image_mime_type,
+                    created_by_email, created_by_name, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    title,
+                    text,
+                    image_bytes,
+                    image_mime_type,
+                    str(sess.get("email") or "").strip() or None,
+                    str(sess.get("name") or "").strip() or None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = conn.execute("SELECT * FROM news_articles WHERE id = ?", (int(cur.lastrowid),)).fetchone()
+            if not row:
+                raise ValueError("article_create_failed")
+            return self._press_article_payload(row, include_body=True)
+
+    def update_press_article_discord(self, article_id: int, channel_id: str, message_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE news_articles
+                SET discord_channel_id = ?, discord_message_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (str(channel_id or ""), str(message_id or ""), now_iso(), int(article_id)),
+            )
+
+    def list_press_articles(self, limit: int = 50) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 50), 100))
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT id, title, body, image_mime_type, discord_channel_id,
+                       discord_message_id, created_by_name, created_at, updated_at
+                FROM news_articles
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            )
+            return [self._press_article_payload(row) for row in cur.fetchall()]
+
+    def get_press_article(self, article_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, title, body, image_mime_type, discord_channel_id,
+                       discord_message_id, created_by_name, created_at, updated_at
+                FROM news_articles
+                WHERE id = ?
+                """,
+                (int(article_id),),
+            ).fetchone()
+            return self._press_article_payload(row, include_body=True) if row else None
+
+    def get_press_article_image(self, article_id: int) -> Optional[tuple[bytes, str]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT image_blob, image_mime_type FROM news_articles WHERE id = ?",
+                (int(article_id),),
+            ).fetchone()
+            if not row or not row["image_blob"] or not row["image_mime_type"]:
+                return None
+            return bytes(row["image_blob"]), str(row["image_mime_type"])
 
     def _snapshot_payload_for_season(self, conn: sqlite3.Connection, season_year: int, settings: Dict[str, str]) -> Dict[str, Any]:
         team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
@@ -15956,6 +16084,12 @@ class Handler(SimpleHTTPRequestHandler):
     discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     discord_bot_token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
     discord_api_base_url = os.getenv("DISCORD_API_BASE_URL", "https://discord.com/api/v10").rstrip("/")
+    public_base_url = (
+        os.getenv("PUBLIC_BASE_URL")
+        or os.getenv("APP_BASE_URL")
+        or os.getenv("SITE_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
     discord_press_channel_id = re.sub(
         r"\D+",
         "",
@@ -16182,6 +16316,13 @@ class Handler(SimpleHTTPRequestHandler):
         if proto not in {"http", "https"}:
             proto = "https" if self._request_is_secure() else "http"
         return f"{proto}://{host}"
+
+    def _public_url(self, path: str) -> str:
+        clean_path = str(path or "").strip()
+        if not clean_path.startswith("/"):
+            clean_path = f"/{clean_path}"
+        base_url = self.public_base_url or self._request_origin()
+        return f"{base_url.rstrip('/')}{clean_path}" if base_url else clean_path
 
     def _same_origin_request_ok(self) -> bool:
         origin = str(self.headers.get("Origin") or "").strip().rstrip("/")
@@ -17396,26 +17537,34 @@ QUALITY REQUIREMENTS
             return None
         return parsed if isinstance(parsed, dict) else None
 
-    def _post_press_article(self, text: str, custom_image: Any) -> Dict[str, Any]:
+    def _post_press_article(
+        self,
+        text: str,
+        article_url: str,
+        image_attachment: tuple[bytes, str, str],
+    ) -> Dict[str, Any]:
         article_text = str(text or "").strip()
         if not article_text:
             raise ValueError("article_text_required")
+        full_article_url = str(article_url or "").strip()
+        if not full_article_url:
+            raise ValueError("article_url_required")
         if not self.discord_notifications_enabled:
             raise RuntimeError("discord_notifications_disabled")
         if not self.discord_bot_token:
             raise RuntimeError("discord_bot_token_required")
         if not self.discord_press_channel_id:
             raise RuntimeError("discord_press_channel_required")
-        image_attachment = self._discord_custom_image_attachment(custom_image)
-        if not image_attachment:
-            raise ValueError("article_image_required")
 
         file_bytes, filename, mime_type = image_attachment
-        first_chunk = article_text[:4096]
-        remaining = article_text[len(first_chunk) :].strip()
+        teaser = re.sub(r"\s+", " ", article_text).strip()
+        if len(teaser) > 1000:
+            teaser = f"{teaser[:997].rstrip()}..."
+        description = f"{teaser}\n\n[Accede al artículo completo]({full_article_url})"
         embed: Dict[str, Any] = {
             "title": "ANBA News",
-            "description": first_chunk,
+            "description": description,
+            "url": full_article_url,
             "color": 0x0F766E,
             "image": {"url": f"attachment://{filename}"},
         }
@@ -17431,25 +17580,10 @@ QUALITY REQUIREMENTS
             mime_type,
         )
         message_id = str((message or {}).get("id") or "")
-        extra_messages = 0
-        while remaining:
-            chunk = remaining[:1900].rstrip()
-            remaining = remaining[len(chunk) :].strip()
-            if not chunk:
-                break
-            self._post_discord_bot_json(
-                f"/channels/{self.discord_press_channel_id}/messages",
-                {
-                    "content": chunk,
-                    "allowed_mentions": {"parse": []},
-                    **({"message_reference": {"message_id": message_id}} if message_id else {}),
-                },
-            )
-            extra_messages += 1
         return {
             "channel_id": self.discord_press_channel_id,
             "message_id": message_id,
-            "extra_messages": extra_messages,
+            "article_url": full_article_url,
         }
 
     def _notify_discord(
@@ -18553,6 +18687,10 @@ QUALITY REQUIREMENTS
             self._route_html("index.html")
             return
 
+        if parsed.path == "/news":
+            self._route_html("news.html")
+            return
+
         if parsed.path == "/login":
             self._route_html("login.html")
             return
@@ -18721,6 +18859,47 @@ QUALITY REQUIREMENTS
 
         if parsed.path == "/api/teams":
             self._json(200, {"teams": self.db.list_teams()})
+            return
+
+        if parsed.path == "/api/news/articles":
+            qs = parse_qs(parsed.query)
+            limit = parse_int((qs.get("limit") or ["50"])[0]) or 50
+            self._json(200, {"articles": self.db.list_press_articles(limit=limit)})
+            return
+
+        if parsed.path.startswith("/api/news/articles/"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) not in {4, 5}:
+                self._json(404, {"error": "not_found"})
+                return
+            article_id = parse_int(parts[3])
+            if article_id is None:
+                self._json(400, {"error": "invalid_article_id"})
+                return
+            if len(parts) == 5 and parts[4] == "image":
+                image = self.db.get_press_article_image(article_id)
+                if not image:
+                    self._json(404, {"error": "not_found"})
+                    return
+                image_bytes, mime_type = image
+                self._bytes_response(
+                    200,
+                    image_bytes,
+                    mime_type,
+                    headers={
+                        "Cache-Control": "public, max-age=31536000, immutable",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+                return
+            if len(parts) == 5:
+                self._json(404, {"error": "not_found"})
+                return
+            article = self.db.get_press_article(article_id)
+            if not article:
+                self._json(404, {"error": "article_not_found"})
+                return
+            self._json(200, {"article": article})
             return
 
         if parsed.path == "/api/export/league.xlsx":
@@ -19652,7 +19831,24 @@ QUALITY REQUIREMENTS
         if parsed.path == "/api/admin/launch-article":
             article_text = str(payload.get("text") or payload.get("article_text") or "").strip()
             try:
-                result = self._post_press_article(article_text, payload.get("discord_custom_image"))
+                image_attachment = self._discord_custom_image_attachment(payload.get("discord_custom_image"))
+                if not image_attachment:
+                    raise ValueError("article_image_required")
+                file_bytes, _filename, mime_type = image_attachment
+                article = self.db.create_press_article(
+                    article_text,
+                    file_bytes,
+                    mime_type,
+                    self._current_session() or {},
+                )
+                article_id = int(article.get("id") or 0)
+                article_url = self._public_url(f"/news?article={article_id}")
+                result = self._post_press_article(article_text, article_url, image_attachment)
+                self.db.update_press_article_discord(
+                    article_id,
+                    str(result.get("channel_id") or ""),
+                    str(result.get("message_id") or ""),
+                )
             except ValueError as err:
                 self._json(400, {"error": str(err) or "invalid_article"})
                 return
@@ -19677,7 +19873,7 @@ QUALITY REQUIREMENTS
                 {
                     "channel_id": result.get("channel_id"),
                     "message_id": result.get("message_id"),
-                    "extra_messages": result.get("extra_messages"),
+                    "article_url": result.get("article_url"),
                     "text_length": len(article_text),
                     "has_image": True,
                 },
