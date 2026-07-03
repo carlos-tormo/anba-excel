@@ -437,6 +437,30 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(5, normalized["years"])
         self.assertEqual("54.126.450", normalized["salary_by_season"]["2025"])
 
+    def test_free_agent_offer_allows_salary_decreases(self) -> None:
+        handler = object.__new__(Handler)
+        handler.db = self.db
+
+        normalized = handler._validate_and_normalize_free_agent_offer_payload(
+            {
+                "name": "Declining Free Agent",
+                "source": "manual",
+                "experience_years": 6,
+            },
+            "ATL",
+            {
+                "contract_type": "Reg",
+                "years": 3,
+                "annual_raise_percent": -8,
+                "salary_by_season": {"2025": "10.000.000"},
+            },
+        )
+
+        self.assertEqual(-8.0, normalized["annual_raise_percent"])
+        self.assertEqual("10.000.000", normalized["salary_by_season"]["2025"])
+        self.assertEqual("9.200.000", normalized["salary_by_season"]["2026"])
+        self.assertEqual("8.400.000", normalized["salary_by_season"]["2027"])
+
     def test_free_agent_offer_discord_thread_mentions_role_only_on_creation(self) -> None:
         handler = object.__new__(Handler)
         handler.db = self.db
@@ -516,6 +540,78 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertIn("10.000.000", private_payload_text)
         self.assertIn("Private offer details", private_payload_text)
         self.assertIn("Reg", private_payload_text)
+
+    def test_free_agent_team_appeal_import_preview_and_apply(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            insert_team(conn, "BOS", "Boston Celtics")
+            conn.commit()
+
+        rows = [
+            [
+                "team",
+                "under_23_single",
+                "under_23_multi",
+                "age_23_26_single",
+                "age_23_26_multi",
+                "age_27_33_single",
+                "age_27_33_multi",
+                "over_34_single",
+                "over_34_multi",
+            ],
+            ["ATL", "80", "85", "70", "75", "60", "65", "50", "55"],
+            ["BKN", "81", "86", "71", "76", "61", "66", "51", "56"],
+            ["BOS", "82", "87", "72", "77", "62", "67", "52", "57"],
+        ]
+
+        preview = self.db.preview_free_agent_team_appeal_import(rows)
+        self.assertTrue(preview["ok"])
+        self.assertEqual(3, preview["summary"]["team_count"])
+
+        applied = self.db.apply_free_agent_team_appeal_import(preview["records"])
+        self.assertEqual({"record_count": 3}, applied)
+
+        appeal = self.db.list_free_agent_team_appeal()
+        atl = next(row for row in appeal["rows"] if row["team_code"] == "ATL")
+        self.assertEqual(80.0, atl["under_23_single"])
+        self.assertEqual(55.0, atl["over_34_multi"])
+
+    def test_cartera_clients_include_offer_and_interest_teams(self) -> None:
+        self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})
+        self.db.record_free_agent_interest(
+            self.free_agent_id,
+            "BKN",
+            {
+                "economic_offer": "12M",
+                "role_offer": "Titular",
+                "comments": "Interés alto",
+            },
+            {"email": "bkn-gm@example.com", "name": "BKN GM", "role": "gm"},
+        )
+        self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {
+                "contract_type": "Reg",
+                "years": 2,
+                "salary_by_season": {"2026": "10.000.000"},
+            },
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        payload = self.db.list_cartera_clients_for_session(
+            {"role": "co_admin", "email": "agent@example.com", "agent_name": "Agent Smith"}
+        )
+
+        self.assertFalse(payload.get("missing_agent"))
+        self.assertEqual("Agent Smith", payload["agent_name"])
+        self.assertEqual(1, len(payload["clients"]))
+        client = payload["clients"][0]
+        self.assertEqual("Test Free Agent", client["name"])
+        self.assertEqual(1, client["interest_count"])
+        self.assertEqual(1, client["offer_count"])
+        self.assertEqual("BKN", client["interests"][0]["team_code"])
+        self.assertEqual("ATL", client["offers"][0]["team_code"])
 
 
 if __name__ == "__main__":

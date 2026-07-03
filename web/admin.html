@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA Admin</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260701d">
+  <link rel="stylesheet" href="/styles.css?v=20260703a">
 </head>
 <body class="app-layout">
   <header>
@@ -309,6 +309,16 @@
             <button id="generateOffseasonExceptionsBtn" type="button">Generar oficiales</button>
           </div>
           <div id="offseasonExceptionsPreview" class="offseason-exceptions-preview"></div>
+        </article>
+        <article id="freeAgentAppealImportCard" class="admin-tool-card admin-tool-card-wide section-hidden">
+          <div>
+            <h3>Tablas de atractivo</h3>
+            <p>Importa la tabla de atractivo por equipo para que los agentes la consulten en Cartera durante la agencia libre.</p>
+          </div>
+          <div class="admin-tool-inline">
+            <button id="openFreeAgentAppealImportBtn" type="button">Importar atractivo</button>
+            <span class="admin-tool-result muted-text">Disponible solo con Free Agency mode activo.</span>
+          </div>
         </article>
       </div>
     </section>
@@ -1254,7 +1264,7 @@ Jrue Holiday,Agente Dos</pre>
           <option value="5">5 años</option>
         </select>
         <label for="freeAgentOfferRaisePct">Subidas interanuales</label>
-        <input id="freeAgentOfferRaisePct" type="number" min="0" max="8" step="0.5" value="0">
+        <input id="freeAgentOfferRaisePct" type="number" min="-8" max="8" step="0.5" value="0">
       </div>
       <div class="table-wrap sign-free-agent-years-wrap">
         <table id="freeAgentOfferYearsTable">
@@ -1309,6 +1319,30 @@ Jrue Holiday,Agente Dos</pre>
     </div>
   </div>
 
-  <script src="/admin.js?v=20260701f" defer></script>
+  <div id="freeAgentAppealImportModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="freeAgentAppealImportModalTitle">
+    <div class="modal-card economy-import-modal">
+      <div class="modal-header">
+        <h2 id="freeAgentAppealImportModalTitle">Importar tablas de atractivo</h2>
+        <button id="freeAgentAppealImportCloseBtn" type="button" class="danger">Cerrar</button>
+      </div>
+      <div class="economy-import-body">
+        <div class="economy-import-instructions">
+          <p>Formato recomendado:</p>
+          <pre>team,under_23_single,under_23_multi,age_23_26_single,age_23_26_multi,age_27_33_single,age_27_33_multi,over_34_single,over_34_multi
+ATL,75,82,70,77,62,68,55,60</pre>
+          <p>Debe incluir los 30 equipos. También acepta XLSX con las mismas columnas en la primera hoja.</p>
+        </div>
+        <div class="settings-row economy-import-controls">
+          <input id="freeAgentAppealImportFileInput" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+          <button id="freeAgentAppealImportPreviewBtn" type="button">Previsualizar</button>
+          <button id="freeAgentAppealImportConfirmBtn" type="button" disabled>Confirmar importación</button>
+        </div>
+        <div id="freeAgentAppealImportStatus" class="economy-import-status"></div>
+        <div id="freeAgentAppealImportPreview" class="economy-import-preview"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin.js?v=20260703a" defer></script>
 </body>
 </html>

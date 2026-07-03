@@ -1363,6 +1363,22 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS free_agent_team_appeal (
+                    team_code TEXT PRIMARY KEY REFERENCES teams(code) ON DELETE CASCADE,
+                    under_23_single REAL NOT NULL DEFAULT 0,
+                    under_23_multi REAL NOT NULL DEFAULT 0,
+                    age_23_26_single REAL NOT NULL DEFAULT 0,
+                    age_23_26_multi REAL NOT NULL DEFAULT 0,
+                    age_27_33_single REAL NOT NULL DEFAULT 0,
+                    age_27_33_multi REAL NOT NULL DEFAULT 0,
+                    over_34_single REAL NOT NULL DEFAULT 0,
+                    over_34_multi REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_free_agent_favorites_team
                 ON free_agent_favorites (team_code, updated_at)
                 """
@@ -10754,6 +10770,228 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "rows": rows,
         }
 
+    FREE_AGENT_TEAM_APPEAL_COLUMNS = [
+        ("under_23_single", "Menores de 23 · 1 año"),
+        ("under_23_multi", "Menores de 23 · multi"),
+        ("age_23_26_single", "23-26 · 1 año"),
+        ("age_23_26_multi", "23-26 · multi"),
+        ("age_27_33_single", "27-33 · 1 año"),
+        ("age_27_33_multi", "27-33 · multi"),
+        ("over_34_single", "34+ · 1 año"),
+        ("over_34_multi", "34+ · multi"),
+    ]
+
+    @staticmethod
+    def _free_agent_appeal_header_key(value: Any) -> str:
+        text = normalize_import_text(value).casefold()
+        text = re.sub(r"[^a-z0-9]+", "_", text)
+        text = re.sub(r"_+", "_", text).strip("_")
+        aliases = {
+            "team": "team_code",
+            "equipo": "team_code",
+            "franquicia": "team_code",
+            "team_code": "team_code",
+            "codigo": "team_code",
+            "under_23_single": "under_23_single",
+            "u23_single": "under_23_single",
+            "menor_23_single": "under_23_single",
+            "menores_23_single": "under_23_single",
+            "under_23_1": "under_23_single",
+            "u23_1": "under_23_single",
+            "menor_23_1": "under_23_single",
+            "menores_23_1": "under_23_single",
+            "menos_23_1": "under_23_single",
+            "under_23_multi": "under_23_multi",
+            "u23_multi": "under_23_multi",
+            "menor_23_multi": "under_23_multi",
+            "menores_23_multi": "under_23_multi",
+            "menos_23_multi": "under_23_multi",
+            "23_26_single": "age_23_26_single",
+            "age_23_26_single": "age_23_26_single",
+            "edad_23_26_single": "age_23_26_single",
+            "23_26_1": "age_23_26_single",
+            "age_23_26_1": "age_23_26_single",
+            "edad_23_26_1": "age_23_26_single",
+            "23_26_multi": "age_23_26_multi",
+            "age_23_26_multi": "age_23_26_multi",
+            "edad_23_26_multi": "age_23_26_multi",
+            "27_33_single": "age_27_33_single",
+            "age_27_33_single": "age_27_33_single",
+            "edad_27_33_single": "age_27_33_single",
+            "27_33_1": "age_27_33_single",
+            "age_27_33_1": "age_27_33_single",
+            "edad_27_33_1": "age_27_33_single",
+            "27_33_multi": "age_27_33_multi",
+            "age_27_33_multi": "age_27_33_multi",
+            "edad_27_33_multi": "age_27_33_multi",
+            "over_34_single": "over_34_single",
+            "34_single": "over_34_single",
+            "34_1": "over_34_single",
+            "mas_34_single": "over_34_single",
+            "mayor_34_single": "over_34_single",
+            "over_34_1": "over_34_single",
+            "over_34_multi": "over_34_multi",
+            "34_multi": "over_34_multi",
+            "mas_34_multi": "over_34_multi",
+            "mayor_34_multi": "over_34_multi",
+        }
+        return aliases.get(text, text)
+
+    def _free_agent_team_appeal_records_from_rows(self, rows: List[List[str]]) -> Dict[str, Any]:
+        errors: List[Dict[str, Any]] = []
+        if not rows:
+            return {
+                "ok": False,
+                "errors": [{"line": None, "message": "El archivo está vacío."}],
+                "records": [],
+                "summary": {"record_count": 0, "team_count": 0},
+                "columns": [{"key": key, "label": label} for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS],
+            }
+
+        first_non_empty_idx = next((idx for idx, row in enumerate(rows) if any(str(cell or "").strip() for cell in row)), None)
+        if first_non_empty_idx is None:
+            return {
+                "ok": False,
+                "errors": [{"line": None, "message": "El archivo está vacío."}],
+                "records": [],
+                "summary": {"record_count": 0, "team_count": 0},
+                "columns": [{"key": key, "label": label} for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS],
+            }
+
+        header = rows[first_non_empty_idx]
+        normalized_header = [self._free_agent_appeal_header_key(cell) for cell in header]
+        required_keys = ["team_code", *[key for key, _label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS]]
+        has_header = all(key in normalized_header for key in required_keys)
+        if has_header:
+            header_map = {key: normalized_header.index(key) for key in required_keys}
+            data_rows = rows[first_non_empty_idx + 1 :]
+            line_offset = first_non_empty_idx + 2
+        else:
+            header_map = {key: idx for idx, key in enumerate(required_keys)}
+            data_rows = rows[first_non_empty_idx:]
+            line_offset = first_non_empty_idx + 1
+
+        teams = {str(team.get("code") or "").upper(): team for team in self.list_teams()}
+        records: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for row_idx, row in enumerate(data_rows, start=line_offset):
+            if not any(str(cell or "").strip() for cell in row):
+                continue
+            team_raw = row[header_map["team_code"]] if header_map["team_code"] < len(row) else ""
+            team_code = normalize_team_code(team_raw)
+            if not team_code:
+                errors.append({"line": row_idx, "message": "Equipo requerido."})
+                continue
+            if team_code not in teams:
+                errors.append({"line": row_idx, "message": f"Equipo inválido: {team_code}."})
+                continue
+            if team_code in seen:
+                errors.append({"line": row_idx, "message": f"Equipo duplicado: {team_code}."})
+                continue
+            seen.add(team_code)
+            record: Dict[str, Any] = {
+                "team_code": team_code,
+                "team_name": str(teams[team_code].get("name") or team_code),
+            }
+            for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS:
+                raw_value = row[header_map[key]] if header_map[key] < len(row) else ""
+                amount = parse_amount_like(raw_value)
+                if amount is None:
+                    errors.append({"line": row_idx, "message": f"Valor inválido para {team_code} · {label}."})
+                    amount = 0.0
+                record[key] = float(amount or 0.0)
+            records.append(record)
+
+        missing = sorted(set(teams.keys()) - seen)
+        for team_code in missing:
+            errors.append({"line": None, "message": f"Falta el equipo {team_code}."})
+
+        return {
+            "ok": not errors,
+            "errors": errors,
+            "records": records,
+            "summary": {"record_count": len(records), "team_count": len(seen)},
+            "columns": [{"key": key, "label": label} for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS],
+        }
+
+    def preview_free_agent_team_appeal_import(self, rows: List[List[str]]) -> Dict[str, Any]:
+        return self._free_agent_team_appeal_records_from_rows(rows)
+
+    def apply_free_agent_team_appeal_import(self, records_payload: Any) -> Dict[str, Any]:
+        if not isinstance(records_payload, list) or not records_payload:
+            raise ValueError("records_required")
+        required_keys = [key for key, _label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS]
+        timestamp = now_iso()
+        with self.connect() as conn:
+            team_rows = conn.execute("SELECT code FROM teams").fetchall()
+            valid_teams = {str(row["code"] or "").upper() for row in team_rows}
+            imported = 0
+            for raw_record in records_payload:
+                if not isinstance(raw_record, dict):
+                    raise ValueError("invalid_records")
+                team_code = normalize_team_code(raw_record.get("team_code"))
+                if not team_code or team_code not in valid_teams:
+                    raise ValueError("invalid_records")
+                values: List[float] = []
+                for key in required_keys:
+                    amount = parse_amount_like(raw_record.get(key))
+                    if amount is None:
+                        raise ValueError("invalid_records")
+                    values.append(float(amount or 0.0))
+                conn.execute(
+                    """
+                    INSERT INTO free_agent_team_appeal (
+                        team_code, under_23_single, under_23_multi,
+                        age_23_26_single, age_23_26_multi,
+                        age_27_33_single, age_27_33_multi,
+                        over_34_single, over_34_multi, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(team_code)
+                    DO UPDATE SET
+                        under_23_single = excluded.under_23_single,
+                        under_23_multi = excluded.under_23_multi,
+                        age_23_26_single = excluded.age_23_26_single,
+                        age_23_26_multi = excluded.age_23_26_multi,
+                        age_27_33_single = excluded.age_27_33_single,
+                        age_27_33_multi = excluded.age_27_33_multi,
+                        over_34_single = excluded.over_34_single,
+                        over_34_multi = excluded.over_34_multi,
+                        updated_at = excluded.updated_at
+                    """,
+                    (team_code, *values, timestamp),
+                )
+                imported += 1
+            conn.commit()
+        return {"record_count": imported}
+
+    def list_free_agent_team_appeal(self) -> Dict[str, Any]:
+        columns = [{"key": key, "label": label} for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS]
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    t.code AS team_code,
+                    t.name AS team_name,
+                    COALESCE(a.under_23_single, 0) AS under_23_single,
+                    COALESCE(a.under_23_multi, 0) AS under_23_multi,
+                    COALESCE(a.age_23_26_single, 0) AS age_23_26_single,
+                    COALESCE(a.age_23_26_multi, 0) AS age_23_26_multi,
+                    COALESCE(a.age_27_33_single, 0) AS age_27_33_single,
+                    COALESCE(a.age_27_33_multi, 0) AS age_27_33_multi,
+                    COALESCE(a.over_34_single, 0) AS over_34_single,
+                    COALESCE(a.over_34_multi, 0) AS over_34_multi,
+                    a.updated_at
+                FROM teams t
+                LEFT JOIN free_agent_team_appeal a ON a.team_code = t.code
+                ORDER BY t.code
+                """
+            ).fetchall()
+        return {
+            "columns": columns,
+            "rows": [dict(row) for row in rows],
+        }
+
     def record_free_agent_interest(
         self,
         free_agent_id: Any,
@@ -11045,13 +11283,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     f.rights_team_code,
                     f.agent,
                     COUNT(DISTINCT i.id) AS interest_count,
-                    COUNT(DISTINCT fav.team_code) AS favorite_count
+                    COUNT(DISTINCT fav.team_code) AS favorite_count,
+                    COUNT(DISTINCT offer.team_id) AS offer_count
                 FROM free_agents f
                 LEFT JOIN free_agent_interests i ON i.free_agent_id = f.id
                 LEFT JOIN free_agent_favorites fav ON fav.free_agent_id = f.id
+                LEFT JOIN gm_free_agent_offer_requests offer
+                    ON offer.free_agent_id = f.id
+                   AND offer.status IN ('pending', 'approved')
                 WHERE {where}
                 GROUP BY f.id
-                ORDER BY COUNT(DISTINCT i.id) DESC, COUNT(DISTINCT fav.team_code) DESC, lower(f.name)
+                ORDER BY COUNT(DISTINCT i.id) DESC, COUNT(DISTINCT fav.team_code) DESC, COUNT(DISTINCT offer.team_id) DESC, lower(f.name)
                 """,
                 params,
             )
@@ -11059,6 +11301,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             client_ids = [int(item["id"]) for item in clients if parse_int(item.get("id")) is not None]
             interests_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
             favorites_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
+            offers_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
             if client_ids:
                 placeholders = ",".join("?" for _ in client_ids)
                 interest_cur = conn.execute(
@@ -11097,12 +11340,42 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     if free_agent_key is None:
                         continue
                     favorites_by_client.setdefault(free_agent_key, []).append(item)
+                offer_cur = conn.execute(
+                    f"""
+                    SELECT
+                        r.free_agent_id,
+                        r.status,
+                        r.created_at,
+                        r.updated_at,
+                        t.code AS team_code,
+                        t.name AS team_name
+                    FROM gm_free_agent_offer_requests r
+                    JOIN teams t ON t.id = r.team_id
+                    WHERE r.free_agent_id IN ({placeholders})
+                      AND r.status IN ('pending', 'approved')
+                    ORDER BY CASE r.status WHEN 'approved' THEN 0 ELSE 1 END, r.updated_at DESC, t.code
+                    """,
+                    client_ids,
+                )
+                seen_offer_teams: set[tuple[int, str]] = set()
+                for row in offer_cur.fetchall():
+                    item = row_to_dict(offer_cur, row)
+                    free_agent_key = parse_int(item.get("free_agent_id"))
+                    team_code = normalize_team_code(item.get("team_code"))
+                    if free_agent_key is None or not team_code:
+                        continue
+                    seen_key = (free_agent_key, team_code)
+                    if seen_key in seen_offer_teams:
+                        continue
+                    seen_offer_teams.add(seen_key)
+                    offers_by_client.setdefault(free_agent_key, []).append(item)
 
         normalized_clients: List[Dict[str, Any]] = []
         for client in clients:
             client_id = parse_int(client.get("id")) or 0
             interests = interests_by_client.get(client_id, [])
             favorites = favorites_by_client.get(client_id, [])
+            offers = offers_by_client.get(client_id, [])
             normalized_clients.append(
                 {
                     "id": client_id,
@@ -11115,6 +11388,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "agent": str(client.get("agent") or "").strip(),
                     "interest_count": len(interests),
                     "favorite_count": len(favorites),
+                    "offer_count": len(offers),
                     "interests": [
                         {
                             "id": parse_int(item.get("id")),
@@ -11136,6 +11410,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             "updated_at": str(item.get("updated_at") or item.get("created_at") or "").strip(),
                         }
                         for item in favorites
+                    ],
+                    "offers": [
+                        {
+                            "team_code": normalize_team_code(item.get("team_code")),
+                            "team_name": str(item.get("team_name") or "").strip(),
+                            "status": str(item.get("status") or "").strip(),
+                            "updated_at": str(item.get("updated_at") or item.get("created_at") or "").strip(),
+                        }
+                        for item in offers
                     ],
                 }
             )
@@ -18400,7 +18683,7 @@ QUALITY REQUIREMENTS
         if raise_percent is None:
             raise_percent = 0.0
         raise_percent = float(raise_percent)
-        if raise_percent < 0 or raise_percent > 8:
+        if raise_percent < -8 or raise_percent > 8:
             raise ValueError("invalid_annual_raise_percent")
         rights = self._free_agent_offer_bird_rights_code(free_agent)
         can_use_bird_raises = self._free_agent_offer_is_renewal(free_agent, team_code) and rights in {"FB", "EB"}
@@ -18511,7 +18794,12 @@ QUALITY REQUIREMENTS
         years = parse_int(payload.get("years"))
         years_text = f"{years} año(s)" if years is not None and years > 0 else "Sin duración definida"
         raise_percent = parse_amount_like(payload.get("annual_raise_percent"))
-        raise_text = f"{raise_percent:g}%" if raise_percent is not None and raise_percent > 0 else "Sin subidas"
+        if raise_percent is not None and raise_percent > 0:
+            raise_text = f"Subidas {raise_percent:g}%"
+        elif raise_percent is not None and raise_percent < 0:
+            raise_text = f"Bajadas {abs(raise_percent):g}%"
+        else:
+            raise_text = "Sin subidas"
         salary_lines = self._contract_offer_salary_lines(payload)
         notes = str(payload.get("notes") or "").strip()
         thread_name = self._discord_text(player_name, 100) or "Jugador"
@@ -19382,6 +19670,12 @@ QUALITY REQUIREMENTS
             if not self._require_admin_or_coadmin():
                 return
             self._json(200, self.db.list_cartera_clients_for_session(self._current_session() or {}))
+            return
+
+        if parsed.path == "/api/cartera/appeal":
+            if not self._require_admin_or_coadmin():
+                return
+            self._json(200, self.db.list_free_agent_team_appeal())
             return
 
         if parsed.path == "/api/gm-office":
@@ -20602,6 +20896,76 @@ QUALITY REQUIREMENTS
                     "record_count": result.get("record_count"),
                     "changed_count": result.get("changed_count"),
                     "new_agents": result.get("new_agents"),
+                    "backup_id": backup.get("id"),
+                    "backup_path": backup.get("path"),
+                    "backup_sha256": backup.get("sha256"),
+                },
+            )
+            result["backup"] = backup
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/admin/free-agent-appeal-import/preview":
+            settings = self.db.get_settings()
+            if not parse_bool(settings.get("free_agency_mode")):
+                self._json(409, {"error": "free_agency_mode_required"})
+                return
+            try:
+                rows = _spreadsheet_rows_from_payload(
+                    file_name=str(payload.get("file_name") or ""),
+                    file_data_base64=str(payload.get("file_data_base64") or ""),
+                    csv_text=str(payload.get("csv_text") or ""),
+                )
+                result = self.db.preview_free_agent_team_appeal_import(rows)
+            except ValueError as err:
+                message = str(err) or "invalid_file"
+                label = {
+                    "file_required": "Selecciona un archivo CSV o XLSX.",
+                    "file_too_large": "El archivo supera el tamaño máximo de 5 MB.",
+                    "invalid_file_data": "No se pudo leer el archivo.",
+                    "xlsx_first_sheet_missing": "No se pudo encontrar la primera hoja del XLSX.",
+                }.get(message, "No se pudo procesar el archivo.")
+                result = {
+                    "ok": False,
+                    "errors": [{"line": None, "message": label}],
+                    "records": [],
+                    "summary": {"record_count": 0, "team_count": 0},
+                    "columns": [
+                        {"key": key, "label": label}
+                        for key, label in self.db.FREE_AGENT_TEAM_APPEAL_COLUMNS
+                    ],
+                }
+            self._json(200, result)
+            return
+
+        if parsed.path == "/api/admin/free-agent-appeal-import/import":
+            settings = self.db.get_settings()
+            if not parse_bool(settings.get("free_agency_mode")):
+                self._json(409, {"error": "free_agency_mode_required"})
+                return
+            try:
+                backup = self.db.create_verified_backup("pre_free_agent_appeal_import")
+            except (OSError, sqlite3.Error, ValueError) as err:
+                self._json(500, {"error": "pre_import_backup_failed", "detail": str(err)})
+                return
+            try:
+                result = self.db.apply_free_agent_team_appeal_import(payload.get("records"))
+            except ValueError as err:
+                message = str(err)
+                if message == "records_required":
+                    self._json(400, {"error": "records_required"})
+                    return
+                if message == "invalid_records":
+                    self._json(400, {"error": "invalid_records"})
+                    return
+                raise
+            self._log_admin_action(
+                "import",
+                "free_agent_team_appeal",
+                "bulk",
+                None,
+                {
+                    "record_count": result.get("record_count"),
                     "backup_id": backup.get("id"),
                     "backup_path": backup.get("path"),
                     "backup_sha256": backup.get("sha256"),

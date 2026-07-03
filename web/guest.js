@@ -13,10 +13,16 @@ const state = {
   gmNotifications: [],
   coadminVotes: [],
   wallet: {
+    activeTab: 'clients',
     amountText: '',
     season: null,
     seasons: [],
     rows: [],
+    appealRows: [],
+    appealColumns: [],
+    appealLoading: false,
+    appealError: '',
+    appealSelectedFreeAgentId: null,
     clients: [],
     clientsPage: 1,
     expandedClientIds: new Set(),
@@ -4968,13 +4974,19 @@ function freeAgentOfferSummaryText(offer) {
   const type = payload.contract_type || offer?.offer_contract_type || 'Contrato';
   const years = Number(payload.years || offer?.offer_years || 0);
   const start = payload.start_season_label || payload.start_season || '';
-  const raise = payload.raise_pct !== undefined && payload.raise_pct !== null && payload.raise_pct !== ''
-    ? ` · Subidas ${payload.raise_pct}%`
+  const rawRaise = payload.annual_raise_percent ?? payload.raise_pct;
+  const raiseValue = rawRaise !== undefined && rawRaise !== null && rawRaise !== '' ? Number(rawRaise) : 0;
+  const raise = Number.isFinite(raiseValue) && raiseValue !== 0
+    ? ` · ${raiseValue > 0 ? 'Subidas' : 'Bajadas'} ${Math.abs(raiseValue)}%`
     : '';
-  const firstAmount = Array.isArray(payload.year_salaries) && payload.year_salaries.length
+  const salaryBySeason = payload.salary_by_season && typeof payload.salary_by_season === 'object' ? payload.salary_by_season : {};
+  const firstSalaryBySeason = Object.keys(salaryBySeason).sort().map((year) => salaryBySeason[year]).find(Boolean);
+  const firstAmount = firstSalaryBySeason || (Array.isArray(payload.year_salaries) && payload.year_salaries.length
     ? payload.year_salaries[0]?.amount
-    : payload.first_year_amount;
-  const amount = firstAmount ? ` · Desde ${formatMoneyDots(firstAmount)}` : '';
+    : payload.first_year_amount);
+  const amount = firstAmount
+    ? ` · Desde ${typeof firstAmount === 'string' ? firstAmount : formatMoneyDots(firstAmount)}`
+    : '';
   return `${type}${years ? ` · ${years} año${years === 1 ? '' : 's'}` : ''}${start ? ` · ${start}` : ''}${raise}${amount}`;
 }
 
@@ -5308,8 +5320,8 @@ function syncFreeAgentOfferAmounts() {
   if (firstAmount !== null && Number.isFinite(firstMaximum) && firstAmount > firstMaximum) {
     return setFreeAgentOfferValidation(`El importe del primer año supera el máximo permitido para este jugador: ${formatDots(firstMaximum)}.`, true);
   }
-  if (raisePercent < 0 || raisePercent > 8) {
-    return setFreeAgentOfferValidation('Las subidas interanuales deben estar entre 0% y 8%.', true);
+  if (raisePercent < -8 || raisePercent > 8) {
+    return setFreeAgentOfferValidation('Los incrementos interanuales deben estar entre -8% y 8%.', true);
   }
   if (raisePercent > 5 && !canUseBirdRaises) {
     return setFreeAgentOfferValidation('Solo los equipos con Full Bird o Early Bird pueden ofrecer subidas superiores al 5%.', true);
@@ -8298,6 +8310,110 @@ function renderWalletControls() {
 
 const WALLET_CLIENTS_PAGE_SIZE = 20;
 
+function renderWalletTabs() {
+  const activeTab = state.wallet.activeTab === 'tools' ? 'tools' : 'clients';
+  state.wallet.activeTab = activeTab;
+  document.querySelectorAll('[data-wallet-tab]').forEach((button) => {
+    const isActive = button.dataset.walletTab === activeTab;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+  document.getElementById('walletClientsPanel')?.classList.toggle('section-hidden', activeTab !== 'clients');
+  document.getElementById('walletToolsPanel')?.classList.toggle('section-hidden', activeTab !== 'tools');
+}
+
+function selectedWalletAppealClient() {
+  const clients = Array.isArray(state.wallet.clients) ? state.wallet.clients : [];
+  const selectedId = Number(state.wallet.appealSelectedFreeAgentId);
+  if (Number.isFinite(selectedId) && selectedId > 0) {
+    const selected = clients.find((client) => Number(client.id) === selectedId);
+    if (selected) return selected;
+  }
+  const fallback = clients[0] || null;
+  state.wallet.appealSelectedFreeAgentId = fallback ? Number(fallback.id) : null;
+  return fallback;
+}
+
+function renderWalletAppealPlayerSelect() {
+  const select = document.getElementById('walletAppealPlayerSelect');
+  if (!select) return;
+  const clients = sortedWalletClients();
+  const selected = selectedWalletAppealClient();
+  select.innerHTML = clients.length
+    ? clients.map((client) => {
+      const id = Number(client.id);
+      return `<option value="${id}" ${selected && Number(selected.id) === id ? 'selected' : ''}>${escapeHtml(client.name || 'Jugador')}</option>`;
+    }).join('')
+    : '<option value="">Sin jugadores</option>';
+  select.disabled = !clients.length;
+}
+
+function walletClientTeamCodes(client, key) {
+  const items = Array.isArray(client?.[key]) ? client[key] : [];
+  return new Set(items.map((item) => String(item.team_code || '').trim().toUpperCase()).filter(Boolean));
+}
+
+function renderWalletAppeal() {
+  renderWalletAppealPlayerSelect();
+  const status = document.getElementById('walletAppealStatus');
+  const table = document.getElementById('walletAppealTable');
+  const thead = table?.querySelector('thead');
+  const tbody = table?.querySelector('tbody');
+  if (!status || !thead || !tbody) return;
+
+  const columns = Array.isArray(state.wallet.appealColumns) ? state.wallet.appealColumns : [];
+  const rows = Array.isArray(state.wallet.appealRows) ? state.wallet.appealRows : [];
+  const selectedClient = selectedWalletAppealClient();
+  const offerTeams = walletClientTeamCodes(selectedClient, 'offers');
+  const interestTeams = walletClientTeamCodes(selectedClient, 'interests');
+
+  status.classList.toggle('is-error', Boolean(state.wallet.appealError));
+  if (state.wallet.appealLoading) {
+    status.textContent = 'Cargando tablas de atractivo...';
+  } else if (state.wallet.appealError) {
+    status.textContent = state.wallet.appealError;
+  } else if (!rows.length) {
+    status.textContent = 'Todavía no hay tabla de atractivo cargada por la administración.';
+  } else if (selectedClient) {
+    status.textContent = `${rows.length} equipos · ${offerTeams.size} con oferta · ${interestTeams.size} con interés para ${selectedClient.name || 'este jugador'}.`;
+  } else {
+    status.textContent = 'Selecciona un jugador representado para ver señales de mercado.';
+  }
+
+  thead.innerHTML = `
+    <tr>
+      <th>Equipo</th>
+      ${columns.map((column) => `<th>${escapeHtml(column.label || column.key)}</th>`).join('')}
+    </tr>
+  `;
+  if (state.wallet.appealLoading) {
+    tbody.innerHTML = `<tr><td colspan="${columns.length + 1}">Cargando...</td></tr>`;
+    return;
+  }
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="${columns.length + 1}">Sin datos de atractivo.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((row) => {
+    const code = String(row.team_code || '').trim().toUpperCase();
+    const hasOffer = offerTeams.has(code);
+    const hasInterest = !hasOffer && interestTeams.has(code);
+    const rowClass = hasOffer ? 'wallet-appeal-row--offer' : hasInterest ? 'wallet-appeal-row--interest' : '';
+    return `
+      <tr class="wallet-appeal-row ${rowClass}">
+        <td>
+          <span class="wallet-rights-owner">
+            ${draftOrderLogoHtml(code, 'wallet-rights-logo')}
+            <strong>${escapeHtml(code)}</strong>
+            <small>${escapeHtml(row.team_name || code)}</small>
+          </span>
+        </td>
+        ${columns.map((column) => `<td>${formatMoneyDots(row[column.key] || 0)}</td>`).join('')}
+      </tr>
+    `;
+  }).join('');
+}
+
 function walletClientRightsLabel(client) {
   const rightsTeam = String(client?.rights_team_code || '').trim().toUpperCase();
   if (!rightsTeam) return 'Sin derechos retenidos';
@@ -8508,6 +8624,26 @@ async function fetchWalletClients() {
   } finally {
     state.wallet.clientsLoading = false;
     renderWalletClients();
+    renderWalletAppeal();
+  }
+}
+
+async function fetchWalletAppeal() {
+  state.wallet.appealLoading = true;
+  state.wallet.appealError = '';
+  renderWalletAppeal();
+  try {
+    const data = await api('/api/cartera/appeal');
+    state.wallet.appealRows = Array.isArray(data.rows) ? data.rows : [];
+    state.wallet.appealColumns = Array.isArray(data.columns) ? data.columns : [];
+    state.wallet.appealError = '';
+  } catch (err) {
+    state.wallet.appealRows = [];
+    state.wallet.appealColumns = [];
+    state.wallet.appealError = err.message || 'No se pudo cargar la tabla de atractivo.';
+  } finally {
+    state.wallet.appealLoading = false;
+    renderWalletAppeal();
   }
 }
 
@@ -8585,7 +8721,9 @@ function walletResultHtml(row) {
 }
 
 function renderWallet() {
+  renderWalletTabs();
   renderWalletControls();
+  renderWalletAppeal();
   const status = document.getElementById('walletStatus');
   const results = document.getElementById('walletResults');
   if (!status || !results) return;
@@ -8679,7 +8817,7 @@ async function loadWallet() {
   if (!state.wallet.season) state.wallet.season = currentSeasonStart();
   state.wallet.error = '';
   renderWallet();
-  await fetchWalletClients();
+  await Promise.all([fetchWalletClients(), fetchWalletAppeal()]);
 }
 
 async function fetchLeaguePlayersFallback() {
@@ -9269,6 +9407,17 @@ async function init() {
     } else {
       renderWallet();
     }
+  });
+  document.querySelectorAll('[data-wallet-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.wallet.activeTab = button.dataset.walletTab === 'tools' ? 'tools' : 'clients';
+      renderWalletTabs();
+      renderWalletAppeal();
+    });
+  });
+  document.getElementById('walletAppealPlayerSelect')?.addEventListener('change', (event) => {
+    state.wallet.appealSelectedFreeAgentId = Number(event.target.value || 0) || null;
+    renderWalletAppeal();
   });
   document.querySelectorAll('[data-wallet-sort]').forEach((button) => {
     button.addEventListener('click', () => {

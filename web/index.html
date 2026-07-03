@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ANBA League Viewer</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='28' font-weight='700' fill='white'%3EAN%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260702a">
+  <link rel="stylesheet" href="/styles.css?v=20260703a">
 </head>
 <body class="app-layout">
   <header>
@@ -183,7 +183,7 @@
           <option value="5">5 años</option>
         </select>
         <label for="freeAgentOfferRaisePct">Subidas interanuales</label>
-        <input id="freeAgentOfferRaisePct" type="number" min="0" max="8" step="0.5" value="0">
+        <input id="freeAgentOfferRaisePct" type="number" min="-8" max="8" step="0.5" value="0">
       </div>
       <div class="table-wrap sign-free-agent-years-wrap">
         <table id="freeAgentOfferYearsTable">
@@ -461,46 +461,80 @@
           <div class="section-subtitle">Clientes asignados, interés recibido y herramientas de mercado.</div>
         </div>
       </div>
-      <section class="wallet-clients-panel">
-        <div class="wallet-clients-head">
-          <div>
-            <h3>Lista de clientes</h3>
-            <div id="walletAgentLabel" class="section-subtitle"></div>
+      <nav id="walletTabs" class="team-tabs wallet-tabs" role="tablist" aria-label="Cartera">
+        <button type="button" class="team-tab-btn wallet-tab-btn is-active" data-wallet-tab="clients" role="tab" aria-selected="true">
+          <span class="team-tab-icon" aria-hidden="true">▦</span>
+          <span>Tus jugadores</span>
+        </button>
+        <button type="button" class="team-tab-btn wallet-tab-btn" data-wallet-tab="tools" role="tab" aria-selected="false">
+          <span class="team-tab-icon" aria-hidden="true">⚙</span>
+          <span>Herramientas</span>
+        </button>
+      </nav>
+      <div id="walletClientsPanel" class="wallet-tab-panel">
+        <section class="wallet-clients-panel">
+          <div class="wallet-clients-head">
+            <div>
+              <h3>Lista de clientes</h3>
+              <div id="walletAgentLabel" class="section-subtitle"></div>
+            </div>
+            <div id="walletClientsPaginationTop" class="wallet-pagination"></div>
           </div>
-          <div id="walletClientsPaginationTop" class="wallet-pagination"></div>
-        </div>
-        <div id="walletClientsStatus" class="wallet-status" aria-live="polite"></div>
-        <div class="table-wrap wallet-clients-wrap">
-          <table id="walletClientsTable" class="wallet-clients-table">
-            <thead>
-              <tr>
-                <th>Jugador</th>
-                <th>Derechos</th>
-                <th><button type="button" class="wallet-sort-btn" data-wallet-sort="interest_count">Interés</button></th>
-                <th><button type="button" class="wallet-sort-btn" data-wallet-sort="favorite_count">Favoritos</button></th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <div id="walletClientsPaginationBottom" class="wallet-pagination"></div>
-      </section>
-      <details class="wallet-match-tool">
-        <summary>Match de equipos</summary>
-        <div class="section-actions wallet-actions">
-          <label class="season-view-control" for="walletSeasonSelect">
-            <span>Temporada</span>
-            <select id="walletSeasonSelect"></select>
-          </label>
-          <label class="wallet-amount-control" for="walletAmountInput">
-            <span>Importe</span>
-            <input id="walletAmountInput" type="text" inputmode="decimal" placeholder="13.000.000">
-          </label>
-          <button id="walletSearchBtn" type="button">Buscar</button>
-        </div>
-        <div id="walletStatus" class="wallet-status" aria-live="polite"></div>
-        <div id="walletResults" class="wallet-results"></div>
-      </details>
+          <div id="walletClientsStatus" class="wallet-status" aria-live="polite"></div>
+          <div class="table-wrap wallet-clients-wrap">
+            <table id="walletClientsTable" class="wallet-clients-table">
+              <thead>
+                <tr>
+                  <th>Jugador</th>
+                  <th>Derechos</th>
+                  <th><button type="button" class="wallet-sort-btn" data-wallet-sort="interest_count">Interés</button></th>
+                  <th><button type="button" class="wallet-sort-btn" data-wallet-sort="favorite_count">Favoritos</button></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="walletClientsPaginationBottom" class="wallet-pagination"></div>
+        </section>
+      </div>
+      <div id="walletToolsPanel" class="wallet-tab-panel wallet-tools-panel section-hidden">
+        <details class="wallet-match-tool">
+          <summary>Match de equipos</summary>
+          <div class="section-actions wallet-actions">
+            <label class="season-view-control" for="walletSeasonSelect">
+              <span>Temporada</span>
+              <select id="walletSeasonSelect"></select>
+            </label>
+            <label class="wallet-amount-control" for="walletAmountInput">
+              <span>Importe</span>
+              <input id="walletAmountInput" type="text" inputmode="decimal" placeholder="13.000.000">
+            </label>
+            <button id="walletSearchBtn" type="button">Buscar</button>
+          </div>
+          <div id="walletStatus" class="wallet-status" aria-live="polite"></div>
+          <div id="walletResults" class="wallet-results"></div>
+        </details>
+        <details class="wallet-match-tool wallet-appeal-tool">
+          <summary>Tablas de atractivo</summary>
+          <div class="section-actions wallet-actions">
+            <label class="season-view-control" for="walletAppealPlayerSelect">
+              <span>Jugador</span>
+              <select id="walletAppealPlayerSelect"></select>
+            </label>
+            <div class="wallet-appeal-legend" aria-label="Leyenda">
+              <span class="wallet-appeal-legend-item wallet-appeal-legend-item--offer">Oferta enviada</span>
+              <span class="wallet-appeal-legend-item wallet-appeal-legend-item--interest">Interés registrado</span>
+            </div>
+          </div>
+          <div id="walletAppealStatus" class="wallet-status" aria-live="polite"></div>
+          <div class="table-wrap wallet-appeal-wrap">
+            <table id="walletAppealTable" class="wallet-clients-table wallet-appeal-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </details>
+      </div>
     </section>
 
     <section id="coadminVotesSection" class="coadmin-votes-section section-hidden">
@@ -724,6 +758,6 @@
     </section>
   </main>
 
-  <script src="/guest.js?v=20260702a" defer></script>
+  <script src="/guest.js?v=20260703a" defer></script>
 </body>
 </html>

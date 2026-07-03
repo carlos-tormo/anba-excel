@@ -28,6 +28,7 @@ const state = {
   economyImportPreview: null,
   ownerOfficeImportPreview: null,
   freeAgentAgentImportPreview: null,
+  freeAgentAppealImportPreview: null,
   offseasonExceptionPreview: null,
   offseasonExceptionChoices: {},
   adminUsers: [],
@@ -4258,7 +4259,9 @@ function gmFreeAgentOfferContext(request) {
     .find(Boolean);
   const salaryLine = firstSalary ? `<div class="muted">Desde ${escapeHtml(firstSalary)}</div>` : '';
   const raise = Number(payload.annual_raise_percent || 0);
-  const raiseText = Number.isFinite(raise) && raise > 0 ? ` · Subidas ${raise}%` : '';
+  const raiseText = Number.isFinite(raise) && raise !== 0
+    ? ` · ${raise > 0 ? 'Subidas' : 'Bajadas'} ${Math.abs(raise)}%`
+    : '';
   return `${escapeHtml(contractType)} · ${escapeHtml(yearsText)}${escapeHtml(raiseText)}${salaryLine}`;
 }
 
@@ -5021,6 +5024,10 @@ function setupOffseasonExceptionControls() {
   renderOffseasonExceptionControls();
 }
 
+function updateFreeAgentAppealImportVisibility() {
+  document.getElementById('freeAgentAppealImportCard')?.classList.toggle('section-hidden', !freeAgencyModeActive());
+}
+
 function setAdminMobileOverlayVisible(backdropId, isVisible) {
   const backdrop = document.getElementById(backdropId);
   if (!backdrop) return;
@@ -5763,8 +5770,8 @@ function syncFreeAgentOfferAmounts() {
   if (firstAmount !== null && Number.isFinite(firstMaximum) && firstAmount > firstMaximum) {
     return setFreeAgentOfferValidation(`El importe del primer año supera el máximo permitido para este jugador: ${formatDots(firstMaximum)}.`, true);
   }
-  if (raisePercent < 0 || raisePercent > 8) {
-    return setFreeAgentOfferValidation('Las subidas interanuales deben estar entre 0% y 8%.', true);
+  if (raisePercent < -8 || raisePercent > 8) {
+    return setFreeAgentOfferValidation('Los incrementos interanuales deben estar entre -8% y 8%.', true);
   }
   if (raisePercent > 5 && !canUseBirdRaises) {
     return setFreeAgentOfferValidation('Solo los equipos con Full Bird o Early Bird pueden ofrecer subidas superiores al 5%.', true);
@@ -12273,6 +12280,155 @@ function setupFreeAgentAgentImportControls() {
   });
 }
 
+function setFreeAgentAppealImportStatus(message, kind = '') {
+  const status = document.getElementById('freeAgentAppealImportStatus');
+  if (!status) return;
+  status.textContent = message || '';
+  status.className = `economy-import-status${kind ? ` ${kind}` : ''}`;
+}
+
+function openFreeAgentAppealImportModal() {
+  const modal = document.getElementById('freeAgentAppealImportModal');
+  state.freeAgentAppealImportPreview = null;
+  const input = document.getElementById('freeAgentAppealImportFileInput');
+  if (input) input.value = '';
+  const confirm = document.getElementById('freeAgentAppealImportConfirmBtn');
+  if (confirm) confirm.disabled = true;
+  const preview = document.getElementById('freeAgentAppealImportPreview');
+  if (preview) preview.innerHTML = '';
+  setFreeAgentAppealImportStatus('');
+  modal?.classList.remove('section-hidden');
+}
+
+function closeFreeAgentAppealImportModal() {
+  document.getElementById('freeAgentAppealImportModal')?.classList.add('section-hidden');
+}
+
+function renderFreeAgentAppealImportPreview(result) {
+  const container = document.getElementById('freeAgentAppealImportPreview');
+  const confirm = document.getElementById('freeAgentAppealImportConfirmBtn');
+  if (!container) return;
+  const errors = Array.isArray(result?.errors) ? result.errors : [];
+  const records = Array.isArray(result?.records) ? result.records : [];
+  const columns = Array.isArray(result?.columns) ? result.columns : [];
+  const summary = result?.summary || {};
+  if (confirm) confirm.disabled = Boolean(errors.length) || !records.length;
+  const rowsHtml = records.length ? `
+    <div class="table-wrap">
+      <table class="economy-import-table">
+        <thead>
+          <tr>
+            <th>Equipo</th>
+            ${columns.map((column) => `<th>${escapeHtml(column.label || column.key)}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${records.map((record) => `
+            <tr>
+              <td><strong>${escapeHtml(record.team_code || '')}</strong><small>${escapeHtml(record.team_name || '')}</small></td>
+              ${columns.map((column) => `<td>${formatMoneyDots(record[column.key] || 0)}</td>`).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  ` : '';
+  container.innerHTML = `
+    ${economyImportErrorsHtml(errors)}
+    <div class="economy-import-summary">
+      <h3>Previsualización</h3>
+      <p>${escapeHtml(summary.team_count || records.length)} equipos encontrados · ${escapeHtml(summary.record_count || records.length)} filas válidas</p>
+      ${rowsHtml}
+    </div>
+  `;
+  if (errors.length) {
+    setFreeAgentAppealImportStatus('Corrige los errores antes de confirmar.', 'error');
+  } else if (records.length) {
+    setFreeAgentAppealImportStatus('Previsualización lista. Revisa los valores antes de confirmar.', 'success');
+  } else {
+    setFreeAgentAppealImportStatus('No se encontraron filas válidas.', 'error');
+  }
+}
+
+async function previewFreeAgentAppealImport() {
+  if (!freeAgencyModeActive()) {
+    alert('Activa Free Agency mode antes de importar tablas de atractivo.');
+    return;
+  }
+  const input = document.getElementById('freeAgentAppealImportFileInput');
+  const file = input?.files?.[0];
+  if (!file) {
+    alert('Selecciona un archivo CSV o XLSX.');
+    return;
+  }
+  const button = document.getElementById('freeAgentAppealImportPreviewBtn');
+  const confirm = document.getElementById('freeAgentAppealImportConfirmBtn');
+  if (button) button.disabled = true;
+  if (confirm) confirm.disabled = true;
+  setFreeAgentAppealImportStatus('Leyendo y validando archivo...');
+  try {
+    const fileDataBase64 = await fileToBase64(file);
+    const result = await api('/api/admin/free-agent-appeal-import/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        file_name: file.name,
+        file_data_base64: fileDataBase64,
+      }),
+    });
+    state.freeAgentAppealImportPreview = result;
+    renderFreeAgentAppealImportPreview(result);
+  } catch (err) {
+    state.freeAgentAppealImportPreview = null;
+    setFreeAgentAppealImportStatus('Error validando archivo.', 'error');
+    alert(`Free-agent appeal import preview failed: ${err.message || err}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function confirmFreeAgentAppealImport() {
+  const preview = state.freeAgentAppealImportPreview;
+  if (!preview || !Array.isArray(preview.records) || preview.errors?.length) return;
+  const button = document.getElementById('freeAgentAppealImportConfirmBtn');
+  if (button) button.disabled = true;
+  setFreeAgentAppealImportStatus('Importando tablas de atractivo...');
+  try {
+    const result = await api('/api/admin/free-agent-appeal-import/import', {
+      method: 'POST',
+      body: JSON.stringify({ records: preview.records }),
+    });
+    await refreshAdminLogsSafe();
+    setFreeAgentAppealImportStatus(`Importados ${result.record_count || 0} equipos.`, 'success');
+    alert('Tablas de atractivo importadas.');
+  } catch (err) {
+    setFreeAgentAppealImportStatus('Error importando tablas de atractivo.', 'error');
+    alert(`Free-agent appeal import failed: ${err.message || err}`);
+  } finally {
+    if (button && state.freeAgentAppealImportPreview && !state.freeAgentAppealImportPreview.errors?.length) button.disabled = false;
+  }
+}
+
+function setupFreeAgentAppealImportControls() {
+  document.getElementById('openFreeAgentAppealImportBtn')?.addEventListener('click', openFreeAgentAppealImportModal);
+  document.getElementById('freeAgentAppealImportCloseBtn')?.addEventListener('click', closeFreeAgentAppealImportModal);
+  document.getElementById('freeAgentAppealImportModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeFreeAgentAppealImportModal();
+  });
+  document.getElementById('freeAgentAppealImportPreviewBtn')?.addEventListener('click', () => {
+    void previewFreeAgentAppealImport();
+  });
+  document.getElementById('freeAgentAppealImportConfirmBtn')?.addEventListener('click', () => {
+    void confirmFreeAgentAppealImport();
+  });
+  document.getElementById('freeAgentAppealImportFileInput')?.addEventListener('change', () => {
+    state.freeAgentAppealImportPreview = null;
+    document.getElementById('freeAgentAppealImportConfirmBtn')?.setAttribute('disabled', 'disabled');
+    const preview = document.getElementById('freeAgentAppealImportPreview');
+    if (preview) preview.innerHTML = '';
+    setFreeAgentAppealImportStatus('');
+  });
+}
+
 function setupEconomySettingsControls() {
   document.getElementById('loadEconomySettingsBtn')?.addEventListener('click', async () => {
     const input = document.getElementById('economySettingsSeasonInput');
@@ -12363,7 +12519,9 @@ async function init() {
   setupTeamTabs();
   setupEconomySettingsControls();
   setupFreeAgentAgentImportControls();
+  setupFreeAgentAppealImportControls();
   setupOffseasonExceptionControls();
+  updateFreeAgentAppealImportVisibility();
   await loadEconomySettingsSeason(Number(state.settings.current_year || 2025));
   document.getElementById('logActionFilter').addEventListener('change', () => { void loadAdminLogs(); });
   document.getElementById('logEntityFilter').addEventListener('change', () => { void loadAdminLogs(); });
@@ -12694,6 +12852,7 @@ async function init() {
     tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
+    updateFreeAgentAppealImportVisibility();
     if (freeAgentRepsInput) freeAgentRepsInput.value = (state.settings.free_agent_reps || []).join('\n');
     if (freeAgentRepDiscordIdsInput) freeAgentRepDiscordIdsInput.value = formatFreeAgentRepDiscordIds();
     renderFreeAgentBulkControls();
