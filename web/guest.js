@@ -9,6 +9,7 @@ const state = {
   trackerEconomySeasons: [],
   leaguePlayers: [],
   freeAgents: [],
+  waivers: [],
   gmNotifications: [],
   coadminVotes: [],
   wallet: {
@@ -4892,6 +4893,32 @@ function canSubmitFreeAgentAction() {
   );
 }
 
+function updateWaiverBadges() {
+  const count = Array.isArray(state.waivers) ? state.waivers.length : 0;
+  ['freeAgentsHomeBtn', 'mobileFreeAgentsBtn'].forEach((id) => {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.querySelector('.waiver-count-badge')?.remove();
+    if (count < 1) return;
+    const badge = document.createElement('span');
+    badge.className = 'waiver-count-badge';
+    badge.textContent = String(count);
+    badge.setAttribute('aria-label', `${count} jugador${count === 1 ? '' : 'es'} en waivers`);
+    button.appendChild(badge);
+  });
+}
+
+async function refreshWaiverBadges() {
+  try {
+    const waiverRes = await api('/api/waivers');
+    state.waivers = Array.isArray(waiverRes.waivers) ? waiverRes.waivers : [];
+    updateWaiverBadges();
+  } catch {
+    state.waivers = [];
+    updateWaiverBadges();
+  }
+}
+
 function populateFreeAgentActionTeams(selectId, selected = '') {
   const select = document.getElementById(selectId);
   if (!select) return;
@@ -4912,6 +4939,143 @@ function setFreeAgentActionStatus(kind, message = '', isError = false) {
   if (!el) return;
   el.textContent = message;
   el.classList.toggle('error-text', Boolean(isError));
+}
+
+function formatWaiverExpiry(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || '');
+  return date.toLocaleString('es-ES', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function waiverEligibilityMessage(waiver) {
+  const eligibility = waiver?.eligibility || {};
+  if (waiver?.already_claimed) return 'Ya has enviado una reclamación por este jugador.';
+  if (eligibility.eligible) return '';
+  if (eligibility.requires_contingent_cut) return 'Necesitas liberar una plaza. Elige un jugador para cortar solo si la reclamación se aprueba.';
+  const reason = String(eligibility.reason || '').trim();
+  if (reason === 'same_team') return 'El equipo que cortó al jugador no puede reclamarlo.';
+  if (reason === 'salary_room_required') return 'Tu equipo no tiene espacio salarial ni excepción suficiente para absorber este contrato.';
+  if (reason === 'team_not_found') return 'No se pudo validar el equipo.';
+  return 'Tu equipo no cumple los requisitos para reclamar este jugador.';
+}
+
+async function askWaiverContingentCutPlayer(teamCode) {
+  const data = await api(`/api/teams/${encodeURIComponent(teamCode)}`);
+  const players = Array.isArray(data.players) ? data.players : [];
+  const standardPlayers = players.filter((player) => String(player.bird_rights || '').trim().toUpperCase() !== 'TW');
+  if (!standardPlayers.length) return null;
+  const options = standardPlayers
+    .map((player) => `${player.id}: ${player.name || 'Jugador sin nombre'}`)
+    .join('\n');
+  const answer = window.prompt(
+    `No hay hueco de plantilla. Escribe el ID del jugador que se cortará si la reclamación prospera:\n\n${options}`
+  );
+  if (answer === null) return null;
+  const selectedId = Number(answer.trim());
+  if (!Number.isInteger(selectedId) || !standardPlayers.some((player) => Number(player.id) === selectedId)) {
+    alert('ID de jugador no válido.');
+    return null;
+  }
+  return selectedId;
+}
+
+async function submitWaiverClaim(waiver) {
+  if (!canSubmitFreeAgentAction()) {
+    alert('Necesitas iniciar sesión como GM para reclamar waivers.');
+    return;
+  }
+  if (waiver?.already_claimed) {
+    alert('Ya has enviado una reclamación por este jugador. Las reclamaciones no se pueden retirar.');
+    return;
+  }
+  const codes = freeAgentActionTeamCodes();
+  const teamCode = codes.length === 1
+    ? codes[0]
+    : window.prompt(`Equipo que reclama (${codes.join(', ')}):`, codes[0] || '');
+  const normalizedTeam = String(teamCode || '').trim().toUpperCase();
+  if (!normalizedTeam || !codes.includes(normalizedTeam)) return;
+  const eligibility = waiver?.eligibility || {};
+  let contingentCutPlayerId = null;
+  if (eligibility.requires_contingent_cut) {
+    contingentCutPlayerId = await askWaiverContingentCutPlayer(normalizedTeam);
+    if (!contingentCutPlayerId) return;
+  } else if (!eligibility.eligible) {
+    alert(waiverEligibilityMessage(waiver));
+    return;
+  }
+  if (!window.confirm(`¿Confirmas reclamar de waivers a ${waiver.player_name || 'este jugador'}? La solicitud no se puede retirar.`)) {
+    return;
+  }
+  try {
+    await api(`/api/waivers/${waiver.id}/claims`, {
+      method: 'POST',
+      body: JSON.stringify({
+        team_code: normalizedTeam,
+        contingent_cut_player_id: contingentCutPlayerId,
+      }),
+    });
+    alert('Reclamación enviada. Quedará pendiente hasta que expire el plazo de waivers o la administración resuelva múltiples solicitudes.');
+    await loadFreeAgents();
+  } catch (err) {
+    alert(`No se pudo reclamar el jugador: ${err.message || err}`);
+  }
+}
+
+function renderWaiversPanel() {
+  const panel = document.getElementById('waiversPanel');
+  if (!panel) return;
+  const waivers = Array.isArray(state.waivers) ? state.waivers : [];
+  updateWaiverBadges();
+  if (!waivers.length) {
+    panel.innerHTML = '';
+    return;
+  }
+  panel.innerHTML = `
+    <div class="waivers-panel">
+      <div class="waivers-panel-header">
+        <h3>Waivers</h3>
+        <span class="waivers-count">${waivers.length}</span>
+      </div>
+      <div class="table-wrap waivers-table-wrap">
+        <table class="waivers-table">
+          <thead>
+            <tr>
+              <th>Jugador</th>
+              <th>Origen</th>
+              <th>Salario</th>
+              <th>Expira</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  const tbody = panel.querySelector('tbody');
+  waivers.forEach((waiver) => {
+    const message = waiverEligibilityMessage(waiver);
+    const disabled = waiver.already_claimed || (!waiver?.eligibility?.eligible && !waiver?.eligibility?.requires_contingent_cut);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${escapeHtml(waiver.player_name || '')}</strong><div class="muted">${escapeHtml(waiver.position || '')}${waiver.rating ? ` · ${escapeHtml(waiver.rating)}` : ''}</div></td>
+      <td>${escapeHtml(waiver.from_team_code || '')}</td>
+      <td>${formatMoneyDots(waiver.salary || 0)}</td>
+      <td>${escapeHtml(formatWaiverExpiry(waiver.waiver_expires_at))}</td>
+      <td>
+        <button type="button" data-waiver-claim="${escapeHtml(waiver.id)}" ${disabled ? 'disabled' : ''}>${waiver.already_claimed ? 'Reclamado' : 'Reclamar'}</button>
+        ${message ? `<div class="muted waiver-eligibility-note">${escapeHtml(message)}</div>` : ''}
+      </td>
+    `;
+    tr.querySelector('[data-waiver-claim]')?.addEventListener('click', () => submitWaiverClaim(waiver));
+    tbody.appendChild(tr);
+  });
 }
 
 function freeAgentActionSummary(agent, includeAgent = false) {
@@ -7636,10 +7800,10 @@ function renderExceptions() {
       tr.tabIndex = 0;
     }
     tr.innerHTML = `
-      <td colspan="3" class="dead-contract-meta-cell exception-meta-cell">
+      <td class="dead-contract-meta-cell exception-meta-cell">
         <div class="player-cell dead-contract-meta exception-meta">
           <span class="player-name">${escapeHtml(item.label || '')}</span>
-          ${hasDetail ? '<span class="exception-detail-icon" aria-hidden="true" title="Has details">!</span>' : ''}
+          ${hasDetail ? '<button type="button" class="exception-detail-icon" data-exception-detail-toggle aria-label="Ver detalles de la excepción">!</button>' : ''}
           <span class="player-tags">
             ${showTypeTag ? `<span class="type-pill exception-type-pill">${escapeHtml(item.exception_type)}</span>` : ''}
           </span>
@@ -7647,8 +7811,13 @@ function renderExceptions() {
         ${hasDetail ? `<div class="exception-detail-pop">${escapeHtml(item.detail || '')}</div>` : ''}
       </td>
       <td>${item.amount_num != null ? `<div class="salary-chip"><span class="salary-chip-main">${formatDots(item.amount_num)}</span></div>` : (item.amount_text || '')}</td>
+      <td class="details-cell exception-details-cell">${hasDetail ? escapeHtml(item.detail || '') : '<span class="muted">-</span>'}</td>
     `;
     if (hasDetail) {
+      tr.querySelector('[data-exception-detail-toggle]')?.addEventListener('click', (event) => {
+        event.stopPropagation();
+        tr.classList.toggle('show-detail');
+      });
       tr.addEventListener('click', () => {
         tr.classList.toggle('show-detail');
       });
@@ -7777,8 +7946,12 @@ async function loadFigures() {
 }
 
 async function loadFreeAgents() {
-  const res = await api('/api/free-agents');
+  const [res, waiverRes] = await Promise.all([
+    api('/api/free-agents'),
+    api('/api/waivers').catch(() => ({ waivers: [] })),
+  ]);
   state.freeAgents = res.free_agents || [];
+  state.waivers = Array.isArray(waiverRes.waivers) ? waiverRes.waivers : [];
   resetPagination('freeAgents');
   state.teamCode = null;
   state.teamData = null;
@@ -7794,6 +7967,7 @@ async function loadFreeAgents() {
   renderCapStatusPills({});
   renderTeamStrip();
   renderMobileTeamGrid();
+  renderWaiversPanel();
   renderFreeAgents();
 }
 
@@ -8690,6 +8864,7 @@ async function init() {
   state.settings = settingsRes.settings || state.settings;
   state.ui.seasonViewStart = normalizeSeasonViewStart(readInitialSeasonStart());
   renderAuthControls();
+  await refreshWaiverBadges();
   await loadGmNotifications().catch((err) => console.warn('Could not load GM notifications', err));
   startGmNotificationsPolling();
 

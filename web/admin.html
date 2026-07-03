@@ -282,6 +282,21 @@
         </article>
         <article class="admin-tool-card admin-tool-card-wide">
           <div>
+            <h3>Launch Article</h3>
+            <p>Publica un artículo en #prensa con el bot ANBA-News. La imagen es obligatoria.</p>
+          </div>
+          <textarea id="launchArticleTextInput" class="admin-tool-textarea" rows="10" placeholder="Texto del artículo..."></textarea>
+          <div class="admin-tool-inline">
+            <label class="admin-tool-file-label" for="launchArticleImageInput">
+              <span>Imagen</span>
+              <input id="launchArticleImageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+            </label>
+            <button id="launchArticleBtn" type="button">Publicar artículo</button>
+            <span id="launchArticleResult" class="admin-tool-result muted-text"></span>
+          </div>
+        </article>
+        <article class="admin-tool-card admin-tool-card-wide">
+          <div>
             <h3>Excepciones offseason</h3>
             <p>Previsualiza las excepciones proyectadas por temporada y genera las oficiales para los equipos sin decisión pendiente.</p>
           </div>
@@ -380,6 +395,7 @@
 
     <section id="freeAgentsSection" class="section-hidden">
       <h2>Agentes libres</h2>
+      <div id="waiversPanel"></div>
       <div class="bulk-bar">
         <button id="addFreeAgentBtn" type="button">Añadir agente libre</button>
         <button id="openFreeAgentAgentImportBtn" type="button">Importar agentes</button>

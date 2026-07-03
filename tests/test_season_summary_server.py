@@ -490,13 +490,6 @@ class SeasonSummaryServerTests(unittest.TestCase):
 
         player_before = self.db.get_player_record(int(player_id))
         self.assertIsNotNone(player_before)
-        self.assertTrue(self.db.update_player(int(player_id), {"salary_2026_text": None}))
-        renounced_free_agent_id = self.db.ensure_renounced_bird_rights_free_agent(
-            player_before,
-            2026,
-            "FB",
-        )
-        self.assertIsNotNone(renounced_free_agent_id)
         self.assertIsNotNone(
             self.db.mark_gm_option_request_decided(
                 int(request["id"]),
@@ -504,10 +497,14 @@ class SeasonSummaryServerTests(unittest.TestCase):
                 {"email": "admin@example.com", "name": "Admin"},
             )
         )
+        renounced_free_agent_id = self.db.ensure_renounced_bird_rights_free_agent(
+            player_before,
+            2026,
+            "FB",
+        )
+        self.assertIsNotNone(renounced_free_agent_id)
         player_after = self.db.get_player_record(int(player_id))
-        self.assertIsNotNone(player_after)
-        self.assertIsNone(player_after["salary_2026_text"])
-        self.assertIsNone(player_after["salary_2026_num"])
+        self.assertIsNone(player_after)
         free_agents = self.db.list_free_agents()
         renounced_agent = next(agent for agent in free_agents if agent["name"] == "Bird Hold Player")
         self.assertEqual(int(renounced_free_agent_id), int(renounced_agent["id"]))

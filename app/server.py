@@ -13,7 +13,7 @@ import sqlite3
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1535,6 +1535,64 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS waiver_players (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    player_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
+                    profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL,
+                    from_team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    from_team_code TEXT NOT NULL,
+                    player_name TEXT NOT NULL,
+                    position TEXT,
+                    rating TEXT,
+                    bird_rights TEXT,
+                    years_left REAL,
+                    contract_json TEXT NOT NULL,
+                    waiver_expires_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    claimed_team_code TEXT,
+                    free_agent_id INTEGER REFERENCES free_agents(id) ON DELETE SET NULL,
+                    dead_contract_id INTEGER REFERENCES dead_contracts(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS waiver_claims (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    waiver_player_id INTEGER NOT NULL REFERENCES waiver_players(id) ON DELETE CASCADE,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    team_code TEXT NOT NULL,
+                    requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    requester_email TEXT,
+                    requester_name TEXT,
+                    contingent_cut_player_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    admin_email TEXT,
+                    admin_name TEXT,
+                    admin_decision_note TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    UNIQUE(waiver_player_id, team_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_waiver_players_status
+                ON waiver_players (status, waiver_expires_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_waiver_claims_status
+                ON waiver_claims (status, created_at)
                 """
             )
             conn.execute(
@@ -4313,7 +4371,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 self._gm_free_agent_offer_request_from_row(free_agent_cur, row)
                 for row in free_agent_cur.fetchall()
             ]
-            requests = [*option_requests, *draft_requests, *free_agent_requests]
+            waiver_requests = self.list_waiver_claim_requests(status=status)
+            requests = [*option_requests, *draft_requests, *free_agent_requests, *waiver_requests]
             requests.sort(key=lambda item: (str(item.get("created_at") or ""), int(item.get("id") or 0)), reverse=True)
             requests.sort(key=lambda item: 0 if str(item.get("status") or "") == "pending" else 1)
             return requests
@@ -11550,6 +11609,763 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "free_agent_id": free_agent_id,
             }
 
+    def _player_contract_snapshot_payload(self, player: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        keys = [
+            "profile_id",
+            "name",
+            "position",
+            "bird_rights",
+            "rating",
+            "years_left",
+            "notes",
+            "reference_image_url",
+            "profile_notes",
+            "experience_years",
+            "signed_as_free_agent",
+            "provisional_amounts",
+            "partially_guaranteed",
+        ]
+        for key in keys:
+            payload[key] = player.get(key)
+        for season in PLAYER_CONTRACT_SEASONS:
+            for suffix in [
+                "text",
+                "guaranteed_text",
+                "provisional",
+                "partially_guaranteed",
+                "note",
+                "note_text",
+            ]:
+                field = f"salary_{season}_{suffix}"
+                if field in player:
+                    payload[field] = player.get(field)
+            option_field = f"option_{season}"
+            if option_field in player:
+                payload[option_field] = player.get(option_field)
+        return payload
+
+    def _player_is_ten_day_contract(self, player: Dict[str, Any]) -> bool:
+        raw = " ".join(
+            str(value or "").strip().upper()
+            for value in [player.get("bird_rights"), player.get("contract_type"), player.get("notes")]
+            if value not in (None, "")
+        )
+        normalized = re.sub(r"[^A-Z0-9]+", "", raw)
+        return normalized in {"10D", "10DAY", "10DIAS", "10DIAS"} or "10DAY" in normalized or "10DIAS" in normalized
+
+    def _create_waiver_player_conn(
+        self,
+        conn: sqlite3.Connection,
+        player: Dict[str, Any],
+        *,
+        created_at: str,
+    ) -> int:
+        expires_at = (datetime.fromisoformat(created_at.replace("Z", "+00:00")) + timedelta(hours=48)).astimezone(UTC)
+        expires_text = expires_at.isoformat().replace("+00:00", "Z")
+        payload = self._player_contract_snapshot_payload(player)
+        cur = conn.execute(
+            """
+            INSERT INTO waiver_players (
+                player_id, profile_id, from_team_id, from_team_code, player_name,
+                position, rating, bird_rights, years_left, contract_json,
+                waiver_expires_at, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            """,
+            (
+                parse_int(player.get("id")),
+                parse_int(player.get("profile_id")),
+                int(player["team_id"]),
+                str(player.get("team_code") or "").upper(),
+                str(player.get("name") or "Jugador").strip() or "Jugador",
+                str(player.get("position") or "").strip() or None,
+                str(player.get("rating") or "").strip() or None,
+                str(player.get("bird_rights") or "").strip() or None,
+                normalize_bird_years(player.get("years_left")),
+                json.dumps(payload, ensure_ascii=False),
+                expires_text,
+                created_at,
+                created_at,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def _insert_dead_contract_from_waiver_conn(
+        self,
+        conn: sqlite3.Connection,
+        waiver: Dict[str, Any],
+        payload: Dict[str, Any],
+        *,
+        timestamp: str,
+    ) -> int:
+        team_id = int(waiver["from_team_id"])
+        dead_mx = conn.execute(
+            "SELECT COALESCE(MAX(row_order), 0) AS mx FROM dead_contracts WHERE team_id = ?",
+            (team_id,),
+        ).fetchone()["mx"]
+        salary_texts = {season: payload.get(f"salary_{season}_text") for season in PLAYER_CONTRACT_SEASONS}
+        cur = conn.execute(
+            """
+            INSERT INTO dead_contracts (
+                team_id, profile_id, row_order, dead_type, label, amount_text, amount_num,
+                salary_2025_text, salary_2025_num,
+                salary_2026_text, salary_2026_num,
+                salary_2027_text, salary_2027_num,
+                salary_2028_text, salary_2028_num,
+                salary_2029_text, salary_2029_num,
+                salary_2030_text, salary_2030_num,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                parse_int(waiver.get("profile_id")),
+                int(dead_mx) + 1,
+                "two_way" if str(payload.get("bird_rights") or "").upper() == "TW" else "normal",
+                waiver.get("player_name") or payload.get("name") or "Cut Player",
+                salary_texts.get(PLAYER_CONTRACT_SEASONS[0]),
+                parse_float(salary_texts.get(PLAYER_CONTRACT_SEASONS[0])),
+                salary_texts.get(2025),
+                parse_float(salary_texts.get(2025)),
+                salary_texts.get(2026),
+                parse_float(salary_texts.get(2026)),
+                salary_texts.get(2027),
+                parse_float(salary_texts.get(2027)),
+                salary_texts.get(2028),
+                parse_float(salary_texts.get(2028)),
+                salary_texts.get(2029),
+                parse_float(salary_texts.get(2029)),
+                salary_texts.get(2030),
+                parse_float(salary_texts.get(2030)),
+                timestamp,
+                timestamp,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def _upsert_free_agent_from_waiver_conn(
+        self,
+        conn: sqlite3.Connection,
+        waiver: Dict[str, Any],
+        payload: Dict[str, Any],
+        *,
+        timestamp: str,
+    ) -> int:
+        profile_id = parse_int(waiver.get("profile_id"))
+        name = str(waiver.get("player_name") or payload.get("name") or "Agente libre").strip() or "Agente libre"
+        existing = conn.execute(
+            "SELECT id FROM free_agents WHERE profile_id = ? LIMIT 1",
+            (profile_id,),
+        ).fetchone() if profile_id is not None else None
+        if existing:
+            free_agent_id = int(existing["id"])
+            conn.execute(
+                """
+                UPDATE free_agents
+                SET name = ?, position = ?, bird_rights = ?, rating = ?, years_left = ?,
+                    free_agent_type = ?, source = ?, rights_team_code = NULL,
+                    notes = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    name,
+                    str(payload.get("position") or waiver.get("position") or "").strip() or None,
+                    str(payload.get("bird_rights") or waiver.get("bird_rights") or "").strip() or None,
+                    str(payload.get("rating") or waiver.get("rating") or "").strip() or None,
+                    normalize_bird_years(payload.get("years_left")),
+                    FREE_AGENT_TYPE_UNRESTRICTED,
+                    "waiver_expired",
+                    "Waivers no reclamado en 48h.",
+                    timestamp,
+                    free_agent_id,
+                ),
+            )
+            return free_agent_id
+        cur = conn.execute(
+            """
+            INSERT INTO free_agents (
+                profile_id, name, position, bird_rights, rating, years_left,
+                free_agent_type, source, rights_team_code, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+            """,
+            (
+                profile_id,
+                name,
+                str(payload.get("position") or waiver.get("position") or "").strip() or None,
+                str(payload.get("bird_rights") or waiver.get("bird_rights") or "").strip() or None,
+                str(payload.get("rating") or waiver.get("rating") or "").strip() or None,
+                normalize_bird_years(payload.get("years_left")),
+                FREE_AGENT_TYPE_UNRESTRICTED,
+                "waiver_expired",
+                "Waivers no reclamado en 48h.",
+                timestamp,
+                timestamp,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def _create_player_from_contract_payload_conn(
+        self,
+        conn: sqlite3.Connection,
+        team_code: str,
+        payload: Dict[str, Any],
+        *,
+        timestamp: str,
+    ) -> Optional[int]:
+        team = conn.execute("SELECT id FROM teams WHERE code = ?", (team_code.upper(),)).fetchone()
+        if not team:
+            return None
+        mx = conn.execute(
+            "SELECT COALESCE(MAX(row_order), 3) AS mx FROM players WHERE team_id = ?",
+            (team["id"],),
+        ).fetchone()["mx"]
+        values = {
+            "name": payload.get("name", "New Player"),
+            "bird_rights": payload.get("bird_rights"),
+            "rating": payload.get("rating"),
+            "position": payload.get("position"),
+            "years_left": normalize_bird_years(payload.get("years_left")),
+            "reference_image_url": payload.get("reference_image_url"),
+            "profile_notes": payload.get("profile_notes"),
+            "experience_years": normalize_experience_years(payload.get("experience_years")),
+            "signed_as_free_agent": 1 if parse_bool(payload.get("signed_as_free_agent")) else 0,
+            "notes": payload.get("notes"),
+            "provisional_amounts": 1 if parse_bool(payload.get("provisional_amounts")) else 0,
+            "partially_guaranteed": 1 if parse_bool(payload.get("partially_guaranteed")) else 0,
+        }
+        for season in PLAYER_CONTRACT_SEASONS:
+            values[f"salary_{season}_text"] = payload.get(f"salary_{season}_text")
+            values[f"salary_{season}_guaranteed_text"] = payload.get(f"salary_{season}_guaranteed_text")
+            values[f"option_{season}"] = payload.get(f"option_{season}")
+            values[f"salary_{season}_provisional"] = 1 if parse_bool(payload.get(f"salary_{season}_provisional")) else 0
+            values[f"salary_{season}_partially_guaranteed"] = 1 if parse_bool(payload.get(f"salary_{season}_partially_guaranteed")) else 0
+        profile_payload = dict(payload)
+        profile_payload["experience_years"] = values["experience_years"]
+        profile_id = self._resolve_profile_for_new_row(
+            conn,
+            profile_payload,
+            name=values["name"],
+            timestamp=timestamp,
+            forbid_active_contract=True,
+        )
+        cur = conn.execute(
+            """
+            INSERT INTO players (
+                team_id, profile_id, row_order, bird_rights, rating, name, position, years_left,
+                salary_2025_text, salary_2025_num,
+                salary_2026_text, salary_2026_num,
+                salary_2027_text, salary_2027_num,
+                salary_2028_text, salary_2028_num,
+                salary_2029_text, salary_2029_num,
+                salary_2030_text, salary_2030_num,
+                option_2025, option_2026, option_2027, option_2028, option_2029, option_2030,
+                provisional_amounts, partially_guaranteed,
+                salary_2025_provisional, salary_2026_provisional, salary_2027_provisional,
+                salary_2028_provisional, salary_2029_provisional, salary_2030_provisional,
+                salary_2025_partially_guaranteed, salary_2026_partially_guaranteed, salary_2027_partially_guaranteed,
+                salary_2028_partially_guaranteed, salary_2029_partially_guaranteed, salary_2030_partially_guaranteed,
+                salary_2025_guaranteed_text, salary_2026_guaranteed_text, salary_2027_guaranteed_text,
+                salary_2028_guaranteed_text, salary_2029_guaranteed_text, salary_2030_guaranteed_text,
+                notes, reference_image_url, profile_notes, experience_years, signed_as_free_agent,
+                is_two_way, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                team["id"],
+                profile_id,
+                int(mx) + 1,
+                values["bird_rights"],
+                values["rating"],
+                values["name"],
+                values["position"],
+                values["years_left"],
+                values["salary_2025_text"], parse_float(values["salary_2025_text"]),
+                values["salary_2026_text"], parse_float(values["salary_2026_text"]),
+                values["salary_2027_text"], parse_float(values["salary_2027_text"]),
+                values["salary_2028_text"], parse_float(values["salary_2028_text"]),
+                values["salary_2029_text"], parse_float(values["salary_2029_text"]),
+                values["salary_2030_text"], parse_float(values["salary_2030_text"]),
+                values["option_2025"], values["option_2026"], values["option_2027"], values["option_2028"], values["option_2029"], values["option_2030"],
+                values["provisional_amounts"], values["partially_guaranteed"],
+                values["salary_2025_provisional"], values["salary_2026_provisional"], values["salary_2027_provisional"],
+                values["salary_2028_provisional"], values["salary_2029_provisional"], values["salary_2030_provisional"],
+                values["salary_2025_partially_guaranteed"], values["salary_2026_partially_guaranteed"], values["salary_2027_partially_guaranteed"],
+                values["salary_2028_partially_guaranteed"], values["salary_2029_partially_guaranteed"], values["salary_2030_partially_guaranteed"],
+                values["salary_2025_guaranteed_text"], values["salary_2026_guaranteed_text"], values["salary_2027_guaranteed_text"],
+                values["salary_2028_guaranteed_text"], values["salary_2029_guaranteed_text"], values["salary_2030_guaranteed_text"],
+                values["notes"], values["reference_image_url"], values["profile_notes"], values["experience_years"], values["signed_as_free_agent"],
+                1 if str(values["bird_rights"] or "").upper() == "TW" else 0,
+                timestamp,
+                timestamp,
+            ),
+        )
+        player_id = int(cur.lastrowid)
+        self._record_player_transaction(
+            conn,
+            profile_id,
+            "create",
+            f"Alta en {team_code.upper()}",
+            player_id=player_id,
+            team_code=team_code,
+            details={"player_name": values["name"]},
+            created_at=timestamp,
+        )
+        return player_id
+
+    def _waive_player_row_conn(self, conn: sqlite3.Connection, player_id: int, *, timestamp: str) -> Optional[Dict[str, Any]]:
+        cur = conn.execute(
+            f"""
+            SELECT {self._player_select_columns()}, t.code AS team_code, t.name AS team_name
+            FROM players p
+            LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+            JOIN teams t ON t.id = p.team_id
+            WHERE p.id = ?
+            """,
+            (player_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        player = self._merge_player_profile(row_to_dict(cur, row))
+        profile_id = self._ensure_profile_for_player(conn, player_id, timestamp)
+        if profile_id is None:
+            return None
+        player["profile_id"] = profile_id
+        if self._player_is_ten_day_contract(player):
+            payload = self._player_contract_snapshot_payload(player)
+            waiver_like = {
+                "from_team_id": player["team_id"],
+                "from_team_code": player.get("team_code"),
+                "profile_id": profile_id,
+                "player_name": player.get("name"),
+            }
+            free_agent_id = self._upsert_free_agent_from_waiver_conn(conn, waiver_like, payload, timestamp=timestamp)
+            conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+            return {"waiver": False, "dead_contract_id": None, "free_agent_id": free_agent_id, **player}
+        waiver_id = self._create_waiver_player_conn(conn, player, created_at=timestamp)
+        waiver_row = conn.execute("SELECT waiver_expires_at FROM waiver_players WHERE id = ?", (waiver_id,)).fetchone()
+        conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+        return {
+            "waiver": True,
+            "waiver_id": waiver_id,
+            "waiver_expires_at": waiver_row["waiver_expires_at"] if waiver_row else None,
+            **player,
+        }
+
+    def _expire_waiver_without_claim_conn(
+        self,
+        conn: sqlite3.Connection,
+        waiver: Dict[str, Any],
+        *,
+        timestamp: str,
+    ) -> Dict[str, Any]:
+        payload = json.loads(waiver.get("contract_json") or "{}")
+        dead_contract_id = self._insert_dead_contract_from_waiver_conn(conn, waiver, payload, timestamp=timestamp)
+        free_agent_id = self._upsert_free_agent_from_waiver_conn(conn, waiver, payload, timestamp=timestamp)
+        conn.execute(
+            """
+            UPDATE waiver_players
+            SET status = 'expired', dead_contract_id = ?, free_agent_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (dead_contract_id, free_agent_id, timestamp, int(waiver["id"])),
+        )
+        self._record_player_transaction(
+            conn,
+            parse_int(waiver.get("profile_id")),
+            "waiver_expired",
+            f"Waivers expirado: {waiver.get('player_name')}",
+            free_agent_id=free_agent_id,
+            dead_contract_id=dead_contract_id,
+            team_code=str(waiver.get("from_team_code") or "").upper(),
+            from_team_code=str(waiver.get("from_team_code") or "").upper(),
+            details={"player_name": waiver.get("player_name"), "waiver_player_id": waiver.get("id")},
+            created_at=timestamp,
+        )
+        return {"dead_contract_id": dead_contract_id, "free_agent_id": free_agent_id}
+
+    def _approve_waiver_claim_conn(
+        self,
+        conn: sqlite3.Connection,
+        claim: Dict[str, Any],
+        *,
+        admin: Optional[Dict[str, Any]] = None,
+        timestamp: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        timestamp = timestamp or now_iso()
+        waiver = conn.execute("SELECT * FROM waiver_players WHERE id = ?", (int(claim["waiver_player_id"]),)).fetchone()
+        if not waiver:
+            return None
+        waiver_data = dict(waiver)
+        if str(waiver_data.get("status") or "") not in {"active", "pending_claims"}:
+            return None
+        payload = json.loads(waiver_data.get("contract_json") or "{}")
+        target_team_code = str(claim.get("team_code") or "").upper()
+        contingent_cut_id = parse_int(claim.get("contingent_cut_player_id"))
+        if contingent_cut_id is not None:
+            # The contingent cut opens the roster spot only if this claim wins.
+            self._waive_player_row_conn(conn, int(contingent_cut_id), timestamp=timestamp)
+        player_id = self._create_player_from_contract_payload_conn(conn, target_team_code, payload, timestamp=timestamp)
+        if not player_id:
+            return None
+        conn.execute(
+            """
+            UPDATE waiver_claims
+            SET status = CASE WHEN id = ? THEN 'approved' ELSE 'rejected' END,
+                admin_email = ?, admin_name = ?, updated_at = ?, decided_at = ?
+            WHERE waiver_player_id = ? AND status = 'pending'
+            """,
+            (
+                int(claim["id"]),
+                str((admin or {}).get("email") or "").strip() or None,
+                str((admin or {}).get("name") or "").strip() or None,
+                timestamp,
+                timestamp,
+                int(claim["waiver_player_id"]),
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE waiver_players
+            SET status = 'claimed', claimed_team_code = ?, player_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (target_team_code, player_id, timestamp, int(claim["waiver_player_id"])),
+        )
+        self._record_player_transaction(
+            conn,
+            parse_int(waiver_data.get("profile_id")),
+            "waiver_claim",
+            f"{target_team_code} reclama de waivers a {waiver_data.get('player_name')}",
+            player_id=player_id,
+            team_code=target_team_code,
+            from_team_code=str(waiver_data.get("from_team_code") or "").upper(),
+            to_team_code=target_team_code,
+            details={"player_name": waiver_data.get("player_name"), "waiver_player_id": waiver_data.get("id")},
+            created_at=timestamp,
+        )
+        return {"player_id": player_id, "team_code": target_team_code, "player_name": waiver_data.get("player_name")}
+
+    def process_expired_waivers(self) -> Dict[str, Any]:
+        timestamp = now_iso()
+        processed: List[Dict[str, Any]] = []
+        with self.connect() as conn:
+            waivers = conn.execute(
+                """
+                SELECT * FROM waiver_players
+                WHERE status IN ('active', 'pending_claims') AND waiver_expires_at <= ?
+                ORDER BY waiver_expires_at, id
+                """,
+                (timestamp,),
+            ).fetchall()
+            for waiver_row in waivers:
+                waiver = dict(waiver_row)
+                claims = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT * FROM waiver_claims WHERE waiver_player_id = ? AND status = 'pending' ORDER BY created_at, id",
+                        (int(waiver["id"]),),
+                    ).fetchall()
+                ]
+                if len(claims) == 1:
+                    result = self._approve_waiver_claim_conn(conn, claims[0], timestamp=timestamp)
+                    if result:
+                        processed.append({"waiver_player_id": int(waiver["id"]), "action": "claimed", **result})
+                elif len(claims) > 1:
+                    conn.execute(
+                        "UPDATE waiver_players SET status = 'pending_claims', updated_at = ? WHERE id = ?",
+                        (timestamp, int(waiver["id"])),
+                    )
+                    processed.append({"waiver_player_id": int(waiver["id"]), "action": "pending_admin"})
+                else:
+                    result = self._expire_waiver_without_claim_conn(conn, waiver, timestamp=timestamp)
+                    processed.append({"waiver_player_id": int(waiver["id"]), "action": "expired", **result})
+            conn.commit()
+        return {"processed": processed, "count": len(processed)}
+
+    def _waiver_salary_for_season(self, waiver: Dict[str, Any], season_year: int) -> float:
+        try:
+            payload = json.loads(waiver.get("contract_json") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        salary = parse_amount_like(payload.get(f"salary_{int(season_year)}_text"))
+        if salary is not None:
+            return float(salary)
+        for season in PLAYER_CONTRACT_SEASONS:
+            if season < int(season_year):
+                continue
+            salary = parse_amount_like(payload.get(f"salary_{season}_text"))
+            if salary is not None:
+                return float(salary)
+        return 0.0
+
+    def _team_standard_roster_count(self, team_data: Dict[str, Any]) -> int:
+        return sum(
+            1
+            for player in team_data.get("players") or []
+            if not is_two_way_player(player) and not is_exhibit10_player(player)
+        )
+
+    def _waiver_claim_eligibility(
+        self,
+        team_code: str,
+        waiver: Dict[str, Any],
+        *,
+        season_year: Optional[int] = None,
+        contingent_cut_player_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        settings = self.get_settings()
+        current_year = parse_int(settings.get("current_year")) or 2025
+        selected_year = parse_int(season_year) or current_year
+        team_data = self.get_team(team_code, move_season_year=selected_year)
+        if not team_data:
+            return {"eligible": False, "reason": "team_not_found"}
+        if str(waiver.get("from_team_code") or "").upper() == str(team_code or "").upper():
+            return {"eligible": False, "reason": "own_player"}
+        max_standard = ROSTER_STANDARD_OFFSEASON_MAX_DEFAULT if parse_bool(settings.get("free_agency_mode")) else ROSTER_STANDARD_MAX_DEFAULT
+        standard_count = self._team_standard_roster_count(team_data)
+        needs_cut = standard_count >= int(max_standard)
+        if needs_cut and contingent_cut_player_id is None:
+            return {
+                "eligible": False,
+                "reason": "roster_spot_required",
+                "requires_contingent_cut": True,
+                "standard_count": standard_count,
+                "standard_max": int(max_standard),
+            }
+        if contingent_cut_player_id is not None:
+            cut_row = next((p for p in team_data.get("players") or [] if int(p.get("id") or 0) == int(contingent_cut_player_id)), None)
+            if not cut_row:
+                return {"eligible": False, "reason": "contingent_cut_not_found"}
+        salary = self._waiver_salary_for_season(waiver, selected_year)
+        summary = (team_data.get("season_summaries") or {}).get(str(selected_year)) or team_data.get("summary") or {}
+        cap_space = float(summary.get("room_to_cap") or 0.0)
+        if salary <= cap_space:
+            return {"eligible": True, "path": "cap_space", "salary": round(salary), "cap_space": round(cap_space)}
+        estimate = self._offseason_exception_estimate_from_summary(summary, team_data.get("assets") or [])
+        exception_paths = self._cartera_exception_paths(estimate, salary)
+        if exception_paths:
+            return {
+                "eligible": True,
+                "path": "exception",
+                "salary": round(salary),
+                "exceptions": exception_paths,
+                "cap_space": round(cap_space),
+            }
+        return {
+            "eligible": False,
+            "reason": "salary_absorption_required",
+            "salary": round(salary),
+            "cap_space": round(cap_space),
+        }
+
+    def list_waivers(self, session: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self.process_expired_waivers()
+        settings = self.get_settings()
+        current_year = parse_int(settings.get("current_year")) or 2025
+        session_team_codes = [
+            str(code or "").upper()
+            for code in (session or {}).get("team_codes", [])
+            if str(code or "").strip()
+        ]
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    w.*,
+                    t.name AS from_team_name,
+                    pp.reference_image_url AS profile_reference_image_url
+                FROM waiver_players w
+                JOIN teams t ON t.id = w.from_team_id
+                LEFT JOIN player_profiles pp ON pp.id = w.profile_id
+                WHERE w.status IN ('active', 'pending_claims')
+                ORDER BY w.waiver_expires_at, w.created_at, w.id
+                """
+            )
+            rows = [row_to_dict(cur, row) for row in cur.fetchall()]
+            claim_rows = conn.execute(
+                """
+                SELECT c.waiver_player_id, c.team_code
+                FROM waiver_claims c
+                WHERE c.status = 'pending'
+                """
+            ).fetchall()
+            claimed_by_session = {
+                int(row["waiver_player_id"])
+                for row in claim_rows
+                if str(row["team_code"] or "").upper() in session_team_codes
+            }
+        waivers: List[Dict[str, Any]] = []
+        for row in rows:
+            salary = self._waiver_salary_for_season(row, current_year)
+            item = {
+                "id": row.get("id"),
+                "profile_id": row.get("profile_id"),
+                "player_name": row.get("player_name"),
+                "position": row.get("position"),
+                "rating": row.get("rating"),
+                "bird_rights": row.get("bird_rights"),
+                "years_left": row.get("years_left"),
+                "from_team_code": row.get("from_team_code"),
+                "from_team_name": row.get("from_team_name"),
+                "waiver_expires_at": row.get("waiver_expires_at"),
+                "status": row.get("status"),
+                "salary_current": round(salary),
+                "salary": round(salary),
+                "reference_image_url": row.get("profile_reference_image_url"),
+                "already_claimed_by_session": int(row.get("id") or 0) in claimed_by_session,
+                "already_claimed": int(row.get("id") or 0) in claimed_by_session,
+            }
+            if len(session_team_codes) == 1:
+                item["eligibility"] = self._waiver_claim_eligibility(session_team_codes[0], row, season_year=current_year)
+            waivers.append(item)
+        return {"waivers": waivers, "count": len(waivers)}
+
+    def create_waiver_claim(
+        self,
+        waiver_player_id: int,
+        team_code: str,
+        payload: Dict[str, Any],
+        requester: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        timestamp = now_iso()
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        contingent_cut_player_id = parse_int(payload.get("contingent_cut_player_id"))
+        with self.connect() as conn:
+            waiver = conn.execute(
+                "SELECT * FROM waiver_players WHERE id = ? AND status IN ('active', 'pending_claims')",
+                (int(waiver_player_id),),
+            ).fetchone()
+            if not waiver:
+                raise ValueError("waiver_not_found")
+            team = conn.execute("SELECT id, code, name FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+            if not team:
+                raise ValueError("team_not_found")
+            eligibility = self._waiver_claim_eligibility(
+                normalized_team,
+                dict(waiver),
+                contingent_cut_player_id=contingent_cut_player_id,
+            )
+            if not eligibility.get("eligible"):
+                raise ValueError(str(eligibility.get("reason") or "not_eligible"))
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO waiver_claims (
+                        waiver_player_id, team_id, team_code, requester_user_id,
+                        requester_email, requester_name, contingent_cut_player_id,
+                        status, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (
+                        int(waiver_player_id),
+                        int(team["id"]),
+                        normalized_team,
+                        parse_int(requester.get("user_id") or requester.get("id")),
+                        str(requester.get("email") or "").strip() or None,
+                        str(requester.get("name") or "").strip() or None,
+                        contingent_cut_player_id,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            except sqlite3.IntegrityError as err:
+                raise ValueError("claim_already_submitted") from err
+            conn.commit()
+            return {
+                "id": int(cur.lastrowid),
+                "waiver_player_id": int(waiver_player_id),
+                "team_code": normalized_team,
+                "status": "pending",
+                "eligibility": eligibility,
+            }
+
+    def list_waiver_claim_requests(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        normalized_status = str(status or "").strip().lower()
+        params: List[Any] = []
+        where = ""
+        if normalized_status and normalized_status != "all":
+            where = "WHERE c.status = ?"
+            params.append(normalized_status)
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                SELECT
+                    c.*,
+                    w.player_name,
+                    w.position,
+                    w.rating,
+                    w.from_team_code,
+                    w.waiver_expires_at,
+                    t.name AS team_name
+                FROM waiver_claims c
+                JOIN waiver_players w ON w.id = c.waiver_player_id
+                JOIN teams t ON t.id = c.team_id
+                {where}
+                ORDER BY
+                    CASE c.status WHEN 'pending' THEN 0 ELSE 1 END,
+                    c.created_at DESC,
+                    c.id DESC
+                """,
+                params,
+            )
+            rows = []
+            for row in cur.fetchall():
+                item = row_to_dict(cur, row)
+                item["request_type"] = "waiver_claim"
+                item["action"] = "claimed"
+                item["option_value"] = "Waivers"
+                item["season_label"] = f"Desde {item.get('from_team_code') or ''}"
+                rows.append(item)
+            return rows
+
+    def decide_waiver_claim_request(
+        self,
+        request_id: int,
+        decision: str,
+        admin: Optional[Dict[str, Any]] = None,
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        timestamp = now_iso()
+        normalized = str(decision or "").strip().lower()
+        if normalized not in {"approved", "rejected"}:
+            raise ValueError("invalid_decision")
+        with self.connect() as conn:
+            claim_row = conn.execute("SELECT * FROM waiver_claims WHERE id = ?", (int(request_id),)).fetchone()
+            if not claim_row:
+                return None
+            claim = dict(claim_row)
+            if str(claim.get("status") or "") != "pending":
+                raise ValueError("request_already_decided")
+            if normalized == "approved":
+                result = self._approve_waiver_claim_conn(conn, claim, admin=admin, timestamp=timestamp)
+                if not result:
+                    raise ValueError("waiver_not_available")
+            else:
+                conn.execute(
+                    """
+                    UPDATE waiver_claims
+                    SET status = 'rejected', admin_email = ?, admin_name = ?, admin_decision_note = ?, updated_at = ?, decided_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        str((admin or {}).get("email") or "").strip() or None,
+                        str((admin or {}).get("name") or "").strip() or None,
+                        str(note or "").strip() or None,
+                        timestamp,
+                        timestamp,
+                        int(request_id),
+                    ),
+                )
+                result = {"id": int(request_id), "status": "rejected"}
+            conn.commit()
+            return result
+
     def _cap_hold_free_agent_type(self, player: Dict[str, Any], season: int) -> str:
         decision = (player.get("option_decisions") or {}).get(f"option_{int(season)}") or {}
         option_value = str(decision.get("option_value") or "").strip().upper()
@@ -11693,6 +12509,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 },
                 created_at=timestamp,
             )
+            if player_id is not None:
+                conn.execute("DELETE FROM players WHERE id = ?", (int(player_id),))
             conn.commit()
             return free_agent_id
 
@@ -12650,115 +13468,40 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def cut_player(self, player_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
-            cur = conn.execute(
-                f"""
-                SELECT {self._player_select_columns()}, t.code AS team_code, t.name AS team_name
-                FROM players p
-                LEFT JOIN player_profiles pp ON pp.id = p.profile_id
-                JOIN teams t ON t.id = p.team_id
-                WHERE p.id = ?
-                """,
-                (player_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            player = self._merge_player_profile(row_to_dict(cur, row))
             now = now_iso()
-            profile_id = self._ensure_profile_for_player(conn, player_id, now)
-            if profile_id is None:
+            result = self._waive_player_row_conn(conn, int(player_id), timestamp=now)
+            if not result:
                 return None
-            player["profile_id"] = profile_id
-            team_id = int(player["team_id"])
-            team_code = str(player["team_code"])
-            dead_mx = conn.execute(
-                "SELECT COALESCE(MAX(row_order), 0) AS mx FROM dead_contracts WHERE team_id = ?",
-                (team_id,),
-            ).fetchone()["mx"]
-            salary_texts = {
-                season: player.get(f"salary_{season}_text")
-                for season in [2025, 2026, 2027, 2028, 2029, 2030]
-            }
-            amount_text = salary_texts[2025]
-            dead_cur = conn.execute(
-                """
-                INSERT INTO dead_contracts (
-                    team_id, profile_id, row_order, dead_type, label, amount_text, amount_num,
-                    salary_2025_text, salary_2025_num,
-                    salary_2026_text, salary_2026_num,
-                    salary_2027_text, salary_2027_num,
-                    salary_2028_text, salary_2028_num,
-                    salary_2029_text, salary_2029_num,
-                    salary_2030_text, salary_2030_num,
-                    created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    team_id,
-                    player.get("profile_id"),
-                    int(dead_mx) + 1,
-                    "two_way" if str(player.get("bird_rights") or "").upper() == "TW" else "normal",
-                    player.get("name") or "Cut Player",
-                    amount_text,
-                    parse_float(amount_text),
-                    salary_texts[2025],
-                    parse_float(salary_texts[2025]),
-                    salary_texts[2026],
-                    parse_float(salary_texts[2026]),
-                    salary_texts[2027],
-                    parse_float(salary_texts[2027]),
-                    salary_texts[2028],
-                    parse_float(salary_texts[2028]),
-                    salary_texts[2029],
-                    parse_float(salary_texts[2029]),
-                    salary_texts[2030],
-                    parse_float(salary_texts[2030]),
-                    now,
-                    now,
-                ),
-            )
-            free_cur = conn.execute(
-                """
-                INSERT INTO free_agents (
-                    profile_id, name, position, bird_rights, rating, years_left, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    player.get("profile_id"),
-                    player.get("name") or "Cut Player",
-                    player.get("position"),
-                    player.get("bird_rights"),
-                    player.get("rating"),
-                    player.get("years_left"),
-                    player.get("notes"),
-                    now,
-                    now,
-                ),
-            )
+            team_code = str(result.get("team_code") or "").upper()
             self._record_player_transaction(
                 conn,
-                player.get("profile_id"),
+                result.get("profile_id"),
                 "cut",
                 f"Cortado por {team_code}",
                 player_id=player_id,
-                free_agent_id=int(free_cur.lastrowid),
-                dead_contract_id=int(dead_cur.lastrowid),
+                free_agent_id=parse_int(result.get("free_agent_id")),
+                dead_contract_id=parse_int(result.get("dead_contract_id")),
                 team_code=team_code,
                 from_team_code=team_code,
-                details={"player_name": player.get("name")},
+                details={
+                    "player_name": result.get("name"),
+                    "waiver_player_id": result.get("waiver_id"),
+                    "waiver_expires_at": result.get("waiver_expires_at"),
+                },
                 created_at=now,
             )
-            conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
             conn.commit()
             return {
                 "team_code": team_code,
-                "team_name": player.get("team_name"),
-                "player_name": player.get("name"),
-                "profile_id": player.get("profile_id"),
-                "reference_image_url": player.get("reference_image_url"),
-                "dead_contract_id": int(dead_cur.lastrowid),
-                "free_agent_id": int(free_cur.lastrowid),
+                "team_name": result.get("team_name"),
+                "player_name": result.get("name"),
+                "profile_id": result.get("profile_id"),
+                "reference_image_url": result.get("reference_image_url"),
+                "dead_contract_id": result.get("dead_contract_id"),
+                "free_agent_id": result.get("free_agent_id"),
+                "waiver": bool(result.get("waiver")),
+                "waiver_id": result.get("waiver_id"),
+                "waiver_expires_at": result.get("waiver_expires_at"),
             }
 
     def create_asset(self, team_code: str, payload: Dict[str, Any]) -> Optional[int]:
@@ -15213,6 +15956,11 @@ class Handler(SimpleHTTPRequestHandler):
     discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     discord_bot_token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
     discord_api_base_url = os.getenv("DISCORD_API_BASE_URL", "https://discord.com/api/v10").rstrip("/")
+    discord_press_channel_id = re.sub(
+        r"\D+",
+        "",
+        os.getenv("DISCORD_PRESS_CHANNEL_ID", "654717136379314196"),
+    )
     discord_free_agent_offers_webhook_url = os.getenv("DISCORD_FREE_AGENT_OFFERS_WEBHOOK_URL", "").strip()
     discord_free_agent_offers_forum_tag_ids = [
         re.sub(r"\D+", "", value)
@@ -16601,6 +17349,109 @@ QUALITY REQUIREMENTS
         with urlopen(req, timeout=max(self.discord_timeout_seconds, 15)) as resp:
             resp.read()
 
+    def _post_discord_bot_multipart(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        file_bytes: bytes,
+        filename: str,
+        mime_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not self.discord_bot_token:
+            raise RuntimeError("DISCORD_BOT_TOKEN is not configured")
+        endpoint_path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        boundary = f"----anba-discord-bot-{secrets.token_hex(16)}"
+        payload_json = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        chunks = [
+            f"--{boundary}\r\n".encode("utf-8"),
+            b'Content-Disposition: form-data; name="payload_json"\r\n',
+            b"Content-Type: application/json\r\n\r\n",
+            payload_json,
+            b"\r\n",
+            f"--{boundary}\r\n".encode("utf-8"),
+            f'Content-Disposition: form-data; name="files[0]"; filename="{filename}"\r\n'.encode("utf-8"),
+            f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"),
+            file_bytes,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode("utf-8"),
+        ]
+        body = b"".join(chunks)
+        req = Request(
+            f"{self.discord_api_base_url}{endpoint_path}",
+            data=body,
+            headers={
+                "Authorization": f"Bot {self.discord_bot_token}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method="POST",
+        )
+        with urlopen(req, timeout=max(self.discord_timeout_seconds, 15)) as resp:
+            raw = resp.read()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _post_press_article(self, text: str, custom_image: Any) -> Dict[str, Any]:
+        article_text = str(text or "").strip()
+        if not article_text:
+            raise ValueError("article_text_required")
+        if not self.discord_notifications_enabled:
+            raise RuntimeError("discord_notifications_disabled")
+        if not self.discord_bot_token:
+            raise RuntimeError("discord_bot_token_required")
+        if not self.discord_press_channel_id:
+            raise RuntimeError("discord_press_channel_required")
+        image_attachment = self._discord_custom_image_attachment(custom_image)
+        if not image_attachment:
+            raise ValueError("article_image_required")
+
+        file_bytes, filename, mime_type = image_attachment
+        first_chunk = article_text[:4096]
+        remaining = article_text[len(first_chunk) :].strip()
+        embed: Dict[str, Any] = {
+            "title": "ANBA News",
+            "description": first_chunk,
+            "color": 0x0F766E,
+            "image": {"url": f"attachment://{filename}"},
+        }
+        payload: Dict[str, Any] = {
+            "embeds": [embed],
+            "allowed_mentions": {"parse": []},
+        }
+        message = self._post_discord_bot_multipart(
+            f"/channels/{self.discord_press_channel_id}/messages",
+            payload,
+            file_bytes,
+            filename,
+            mime_type,
+        )
+        message_id = str((message or {}).get("id") or "")
+        extra_messages = 0
+        while remaining:
+            chunk = remaining[:1900].rstrip()
+            remaining = remaining[len(chunk) :].strip()
+            if not chunk:
+                break
+            self._post_discord_bot_json(
+                f"/channels/{self.discord_press_channel_id}/messages",
+                {
+                    "content": chunk,
+                    "allowed_mentions": {"parse": []},
+                    **({"message_reference": {"message_id": message_id}} if message_id else {}),
+                },
+            )
+            extra_messages += 1
+        return {
+            "channel_id": self.discord_press_channel_id,
+            "message_id": message_id,
+            "extra_messages": extra_messages,
+        }
+
     def _notify_discord(
         self,
         title: str,
@@ -16743,6 +17594,10 @@ QUALITY REQUIREMENTS
         reference_url = str(result.get("reference_image_url") or "").strip()
         headline = f"{team_code} corta a {player_name}"
         description = "El jugador pasa a agentes libres y su contrato queda registrado como contrato muerto."
+        if result.get("waiver"):
+            description = "El jugador queda en waivers durante 48h. El jugador puede ser reclamado de waivers durante las siguientes 48h."
+        elif not result.get("dead_contract_id"):
+            description = "El contrato se termina de forma inmediata y el jugador pasa a agentes libres."
         generic_prompt = self._news_image_prompt(
             headline,
             description,
@@ -16759,17 +17614,20 @@ QUALITY REQUIREMENTS
             team_code=team_code,
             player_name=player_name,
             secondary_headline=description,
-            additional_details="El jugador pasa a agentes libres y su contrato queda registrado como contrato muerto.",
+            additional_details=description,
             transaction_type="Released",
             use_player_reference=bool(reference_url),
         )
+        fields = [
+            {"name": "Equipo", "value": team_code, "inline": True},
+            {"name": "Jugador", "value": player_name, "inline": True},
+        ]
+        if result.get("waiver_expires_at"):
+            fields.append({"name": "Waivers hasta", "value": str(result.get("waiver_expires_at")), "inline": True})
         self._notify_discord(
             headline,
             description,
-            fields=[
-                {"name": "Equipo", "value": team_code, "inline": True},
-                {"name": "Jugador", "value": player_name, "inline": True},
-            ],
+            fields=fields,
             color=0xB91C1C,
             image_prompt=reference_prompt,
             image_reference_url=reference_url,
@@ -17955,6 +18813,10 @@ QUALITY REQUIREMENTS
             self._json(200, {"free_agents": self.db.list_free_agents()})
             return
 
+        if parsed.path == "/api/waivers":
+            self._json(200, self.db.list_waivers(self._current_session()))
+            return
+
         if parsed.path == "/api/draft-order":
             qs = parse_qs(parsed.query)
             raw_year = (qs.get("year") or [""])[0].strip()
@@ -18612,6 +19474,45 @@ QUALITY REQUIREMENTS
                 self._json(201, {"ok": True, "interest": interest, "interest_recorded": True})
                 return
 
+        if parsed.path.startswith("/api/waivers/") and parsed.path.endswith("/claims"):
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            waiver_id = parse_int(parts[2])
+            if waiver_id is None:
+                self._json(400, {"error": "invalid_waiver_id"})
+                return
+            team_code = normalize_team_code(payload.get("team_code"))
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            if not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                claim = self.db.create_waiver_claim(waiver_id, team_code, payload, self._current_session() or {})
+            except ValueError as err:
+                message = str(err) or "not_eligible"
+                status = 409 if message in {"claim_already_submitted"} else 400
+                if message == "waiver_not_found":
+                    status = 404
+                self._json(status, {"error": message})
+                return
+            self._json(201, {"ok": True, "claim": claim})
+            return
+
         if parsed.path.startswith("/api/coadmin-votes/") and parsed.path.endswith("/submit"):
             if not self._require_authenticated():
                 return
@@ -18746,6 +19647,42 @@ QUALITY REQUIREMENTS
         if not self._require_csrf():
             return
         if not self._require_sensitive_rate_limit("admin_post"):
+            return
+
+        if parsed.path == "/api/admin/launch-article":
+            article_text = str(payload.get("text") or payload.get("article_text") or "").strip()
+            try:
+                result = self._post_press_article(article_text, payload.get("discord_custom_image"))
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_article"})
+                return
+            except RuntimeError as err:
+                self._json(503, {"error": str(err) or "discord_not_configured"})
+                return
+            except HTTPError as err:
+                detail = self._http_error_excerpt(err)
+                self.log_error("Discord press article failed: %s", detail)
+                self._json(502, {"error": "discord_post_failed", "detail": detail})
+                return
+            except (URLError, TimeoutError, OSError) as err:
+                detail = str(err)
+                self.log_error("Discord press article failed: %s", detail)
+                self._json(502, {"error": "discord_post_failed", "detail": detail})
+                return
+            self._log_admin_action(
+                "launch",
+                "press_article",
+                result.get("message_id") or "discord",
+                None,
+                {
+                    "channel_id": result.get("channel_id"),
+                    "message_id": result.get("message_id"),
+                    "extra_messages": result.get("extra_messages"),
+                    "text_length": len(article_text),
+                    "has_image": True,
+                },
+            )
+            self._json(200, {"ok": True, **result})
             return
 
         if parsed.path == "/api/admin/coadmin-votes":
@@ -19879,6 +20816,62 @@ QUALITY REQUIREMENTS
             self._json(200, {"ok": True, "request": updated, "player_id": player_id, "discord_sent": discord_sent})
             return
 
+        if parsed.path.startswith("/api/admin/waiver-claims/"):
+            try:
+                request_id = int(parsed.path.split("/")[-1])
+            except ValueError:
+                self._json(400, {"error": "invalid_request_id"})
+                return
+            admin_decision = str(payload.get("decision") or "").strip().lower()
+            if admin_decision not in {"approved", "rejected"}:
+                self._json(400, {"error": "invalid_decision"})
+                return
+            request = next(
+                (
+                    item
+                    for item in self.db.list_waiver_claim_requests(status="all")
+                    if int(item.get("id") or 0) == request_id
+                ),
+                None,
+            )
+            if not request:
+                self._json(404, {"error": "request_not_found"})
+                return
+            if str(request.get("status") or "").lower() != "pending":
+                self._json(409, {"error": "request_already_decided", "request": request})
+                return
+            if not self._require_team_write_access(request.get("team_code")):
+                return
+            try:
+                result = self.db.decide_waiver_claim_request(
+                    request_id,
+                    admin_decision,
+                    self._current_session() or {},
+                    str(payload.get("note") or "").strip() or None,
+                )
+            except ValueError as err:
+                message = str(err)
+                if message in {"request_already_decided", "waiver_not_available"}:
+                    self._json(409, {"error": message})
+                else:
+                    self._json(400, {"error": message or "waiver_claim_decision_failed"})
+                return
+            self._log_admin_action(
+                admin_decision.rstrip("d"),
+                "waiver_claim_request",
+                str(request_id),
+                request.get("team_code"),
+                {
+                    "waiver_player_id": request.get("waiver_player_id"),
+                    "player_name": request.get("player_name"),
+                    "from_team_code": request.get("from_team_code"),
+                },
+                before={"request": request},
+                after={"result": result},
+            )
+            self._json(200, {"ok": True, "result": result})
+            return
+
         if parsed.path.startswith("/api/admin/gm-option-requests/"):
             try:
                 request_id = int(parsed.path.split("/")[-1])
@@ -19968,17 +20961,6 @@ QUALITY REQUIREMENTS
                     self._json(409, {"error": "bird_rights_changed", "current_rights": current_rights})
                     return
 
-                player_payload = {option_field: None}
-                ok = self.db.update_player(player_id, player_payload)
-                if not ok:
-                    self._json(404, {"error": "player_not_found"})
-                    return
-                renounced_free_agent_id = self.db.ensure_renounced_bird_rights_free_agent(
-                    player_before,
-                    action_season,
-                    option_value,
-                )
-                player_after = self.db.get_player_record(player_id)
                 updated = self.db.mark_gm_option_request_decided(
                     request_id,
                     "approved",
@@ -19988,6 +20970,12 @@ QUALITY REQUIREMENTS
                 if not updated:
                     self._json(409, {"error": "request_already_decided"})
                     return
+                renounced_free_agent_id = self.db.ensure_renounced_bird_rights_free_agent(
+                    player_before,
+                    action_season,
+                    option_value,
+                )
+                player_after = self.db.get_player_record(player_id)
                 self._log_admin_action(
                     "approve",
                     "gm_bird_rights_renounce_request",
@@ -20000,7 +20988,7 @@ QUALITY REQUIREMENTS
                         "rights_field": option_field,
                         "rights_value": option_value,
                         "rights_season": action_season,
-                        "applied_fields": sorted(player_payload.keys()),
+                        "roster_removed": player_after is None,
                         "free_agent_id": renounced_free_agent_id,
                     },
                     before={"request": request, "player": player_before},
@@ -20614,10 +21602,12 @@ QUALITY REQUIREMENTS
                         renounce_season,
                         renounced_rights,
                     )
+                    player_after = self.db.get_player_record(player_id)
                     if renounced_free_agent_id is not None:
                         log_details.update(
                             {
                                 "bird_rights_renounced": True,
+                                "roster_removed": player_after is None,
                                 "rights_field": renounce_field,
                                 "rights_value": renounced_rights,
                                 "rights_season": renounce_season,

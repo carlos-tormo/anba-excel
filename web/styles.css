@@ -1539,6 +1539,15 @@ h1 {
   font: inherit;
   line-height: 1.45;
 }
+.admin-tool-file-label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 800;
+}
+.admin-tool-file-label input {
+  max-width: 320px;
+}
 .admin-tool-result {
   align-self: center;
   font-weight: 800;
@@ -3351,6 +3360,81 @@ h1 {
 .free-agent-actions-cell button,
 #freeAgentsTable td:has([data-action="offer-free-agent"]) button {
   margin-right: 6px;
+}
+.waiver-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  margin-left: auto;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: #b91c1c;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 800;
+  line-height: 1;
+}
+.waivers-panel {
+  margin: 0 0 1.25rem;
+  padding: 1rem;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  background: #fff7f7;
+  box-shadow: 0 8px 24px rgba(127, 29, 29, 0.08);
+}
+.waivers-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.waivers-panel-header h3 {
+  margin: 0;
+  color: #7f1d1d;
+}
+.waivers-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  background: #b91c1c;
+  color: #fff;
+  font-weight: 800;
+}
+.waivers-table-wrap {
+  margin: 0;
+}
+.waivers-table th {
+  background: #7f1d1d;
+}
+.waiver-request-pill {
+  border-color: #fecaca;
+  background: #fee2e2;
+  color: #991b1b;
+}
+.waiver-eligibility-note {
+  max-width: 18rem;
+  margin-top: 0.25rem;
+  font-size: 0.82rem;
+}
+.waivers-table button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+@media (max-width: 720px) {
+  .waivers-panel {
+    padding: 0.75rem;
+    border-radius: 10px;
+  }
+
+  .waivers-table {
+    min-width: 680px;
+  }
 }
 .free-agent-type-pill {
   display: inline-flex;
@@ -5928,8 +6012,8 @@ th {
   min-width: 1350px;
 }
 .guest-exceptions-section #exceptionsTable {
-  width: 510px;
-  min-width: 510px;
+  width: 820px;
+  min-width: 820px;
 }
 .guest-dead-contracts-section #deadContractsTable .col-meta-name,
 .guest-exceptions-section #exceptionsTable .col-meta-name {
@@ -5946,6 +6030,9 @@ th {
 .guest-dead-contracts-section #deadContractsTable .col-season,
 .guest-exceptions-section #exceptionsTable .col-season {
   width: 168px;
+}
+.guest-exceptions-section #exceptionsTable .col-details {
+  width: 310px;
 }
 .guest-dead-contracts-section #deadContractsTable th,
 .guest-dead-contracts-section #deadContractsTable td,
@@ -5989,6 +6076,12 @@ th {
   width: 168px;
   min-width: 168px;
   max-width: 168px;
+}
+.guest-exceptions-section #exceptionsTable th:nth-child(3),
+.guest-exceptions-section #exceptionsTable td:nth-child(3) {
+  width: 310px;
+  min-width: 310px;
+  max-width: 310px;
 }
 .guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(odd) td:nth-child(1),
 .guest-dead-contracts-section #deadContractsTable tbody tr:nth-child(even) td:nth-child(1),
@@ -6071,6 +6164,8 @@ th {
   justify-content: center;
 }
 .exception-detail-icon {
+  border: 0;
+  appearance: none;
   display: inline-grid;
   place-items: center;
   width: 18px;
@@ -6082,6 +6177,15 @@ th {
   font-size: 0.72rem;
   font-weight: 900;
   vertical-align: middle;
+  cursor: pointer;
+  flex: 0 0 auto;
+  padding: 0;
+}
+.exception-detail-icon:hover,
+.exception-detail-icon:focus-visible {
+  background: #d97706;
+  outline: 2px solid rgba(245, 158, 11, 0.28);
+  outline-offset: 2px;
 }
 .exception-detail-pop {
   position: absolute;
@@ -6102,6 +6206,13 @@ th {
   pointer-events: none;
   transform: translateY(4px);
   transition: opacity 120ms ease, transform 120ms ease;
+}
+.exception-details-cell {
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: normal !important;
 }
 .exception-row.has-detail:hover .exception-detail-pop,
 .exception-row.has-detail:focus-within .exception-detail-pop,
@@ -9767,7 +9878,7 @@ select[data-new-field="years_left"],
     min-width: 976px;
   }
   .guest-exceptions-section #exceptionsTable {
-    min-width: 296px;
+    min-width: 520px;
   }
   .guest-dead-contracts-section #deadContractsTable thead,
   .guest-exceptions-section #exceptionsTable thead {
@@ -9824,6 +9935,9 @@ select[data-new-field="years_left"],
   .guest-exceptions-section #exceptionsTable .col-season {
     width: 136px;
   }
+  .guest-exceptions-section #exceptionsTable .col-details {
+    width: 224px;
+  }
   .guest-dead-contracts-section #deadContractsTable th:nth-child(1),
   .guest-dead-contracts-section #deadContractsTable td:nth-child(1),
   .guest-exceptions-section #exceptionsTable th:nth-child(1),
@@ -9839,6 +9953,12 @@ select[data-new-field="years_left"],
     width: 136px !important;
     min-width: 136px !important;
     max-width: 136px !important;
+  }
+  .guest-exceptions-section #exceptionsTable th:nth-child(3),
+  .guest-exceptions-section #exceptionsTable td:nth-child(3) {
+    width: 224px !important;
+    min-width: 224px !important;
+    max-width: 224px !important;
   }
   .guest-dead-contracts-section .dead-contract-meta-cell,
   .guest-exceptions-section .exception-meta-cell {

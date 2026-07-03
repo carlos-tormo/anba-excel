@@ -30,6 +30,7 @@ const state = {
   coadminVotes: [],
   leaguePlayers: [],
   freeAgents: [],
+  waivers: [],
   draftOrder: {
     draft_year: null,
     draft_order: [],
@@ -4196,6 +4197,7 @@ function optionRequestActionLabel(action) {
   if (action === 'offered') return 'Oferta enviada';
   if (action === 'selected') return 'Elegir jugador';
   if (action === 'renounced') return 'Renunciar derechos';
+  if (action === 'claimed') return 'Reclamar waivers';
   return action === 'accepted' ? 'Aceptar opción' : 'Rechazar opción';
 }
 
@@ -4203,6 +4205,7 @@ function gmRequestTypeLabel(request) {
   if (request?.request_type === 'draft_pick') return 'Draft';
   if (request?.request_type === 'bird_rights_renounce') return 'Derechos';
   if (request?.request_type === 'free_agent_offer') return 'Oferta FA';
+  if (request?.request_type === 'waiver_claim') return 'Waivers';
   return 'Opción';
 }
 
@@ -4255,19 +4258,24 @@ function renderGmOptionRequests() {
     const isDraftRequest = requestType === 'draft_pick';
     const isBirdRenounceRequest = requestType === 'bird_rights_renounce';
     const isFreeAgentOfferRequest = requestType === 'free_agent_offer';
+    const isWaiverClaimRequest = requestType === 'waiver_claim';
     const created = request.created_at ? new Date(request.created_at).toLocaleString() : '';
     const submittedBy = request.requester_name || request.requester_email || 'GM';
-    const actionClass = request.action === 'accepted' || isDraftRequest || isFreeAgentOfferRequest ? 'gm-request-action--accept' : 'gm-request-action--reject';
+    const actionClass = request.action === 'accepted' || isDraftRequest || isFreeAgentOfferRequest || isWaiverClaimRequest ? 'gm-request-action--accept' : 'gm-request-action--reject';
     const mainItem = isDraftRequest ? escapeHtml(request.selection_text || '') : escapeHtml(request.player_name || '');
     const secondaryItem = isDraftRequest
       ? `${escapeHtml(gmDraftPickLabel(request))}<div class="muted">Vía ${escapeHtml(request.original_team_code || '')}</div>`
       : isFreeAgentOfferRequest
         ? gmFreeAgentOfferContext(request)
+      : isWaiverClaimRequest
+        ? `Desde ${escapeHtml(request.from_team_code || '')}<div class="muted">Expira ${escapeHtml(formatWaiverExpiry(request.waiver_expires_at))}</div>`
       : escapeHtml(request.season_label || '');
     const typeCell = isDraftRequest
       ? '<span class="contract-opt-pill">DRAFT</span>'
       : isFreeAgentOfferRequest
         ? `<span class="contract-opt-pill free-agent-offer-kind">${String(request.offer_type || '').toLowerCase() === 'renewal' ? 'Renovación' : 'Oferta FA'}</span>`
+      : isWaiverClaimRequest
+        ? '<span class="contract-opt-pill waiver-request-pill">WAIVERS</span>'
       : isBirdRenounceRequest
         ? `<span class="contract-opt-pill salary-chip-text ${salaryTextTagClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span>`
       : `<span class="contract-opt-pill ${contractOptionClass(request.option_value)}">${escapeHtml(request.option_value || '')}</span>`;
@@ -4318,10 +4326,13 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
     const isDraftRequest = normalizedType === 'draft_pick';
     const isBirdRenounceRequest = normalizedType === 'bird_rights_renounce';
     const isFreeAgentOfferRequest = normalizedType === 'free_agent_offer';
+    const isWaiverClaimRequest = normalizedType === 'waiver_claim';
     const message = isDraftRequest
       ? `${request.team_code} selecciona a ${request.selection_text} con el pick ${gmDraftPickLabel(request)}.\n\nAl aprobarla, la elección quedará registrada y el reloj avanzará al siguiente pick.`
       : isFreeAgentOfferRequest
         ? `${request.team_code} firma a ${request.player_name} tras una ${String(request.offer_type || '').toLowerCase() === 'renewal' ? 'oferta de renovación' : 'oferta de agente libre'}.\n\nAl aprobarla, el jugador se añadirá al roster, se eliminará de Agentes libres y, si marcas Discord, se publicará la noticia oficial.`
+      : isWaiverClaimRequest
+        ? `${request.team_code} reclama de waivers a ${request.player_name}.\n\nAl aprobarla, el contrato activo se moverá al equipo reclamante. Si hay corte condicionado, se ejecutará en ese momento.`
       : isBirdRenounceRequest
         ? `${request.team_code} renuncia a los derechos ${String(request.option_value || '').toUpperCase()} de ${request.player_name} para ${request.season_label}.\n\nAl aprobarla, se borrará la marca ${String(request.option_value || '').toUpperCase()} de la celda y desaparecerá el cap hold.`
         : `${contractOptionActionMessage(
@@ -4336,7 +4347,7 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
       message,
       confirmLabel: 'Aprobar y aplicar',
       defaultNotify: true,
-      defaultGenerateImage: !isBirdRenounceRequest && !isFreeAgentOfferRequest,
+      defaultGenerateImage: !isBirdRenounceRequest && !isFreeAgentOfferRequest && !isWaiverClaimRequest,
       danger: request.action === 'rejected' || isBirdRenounceRequest,
     });
     if (!result.confirmed) return;
@@ -4358,6 +4369,8 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
       ? `/api/admin/gm-draft-pick-requests/${requestId}`
       : normalizedType === 'free_agent_offer'
         ? `/api/admin/gm-free-agent-offer-requests/${requestId}`
+        : normalizedType === 'waiver_claim'
+          ? `/api/admin/waiver-claims/${requestId}`
         : `/api/admin/gm-option-requests/${requestId}`;
     await api(endpoint, {
       method: 'PATCH',
@@ -4368,6 +4381,9 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
       await loadDraftOrder();
     }
     if (normalizedType === 'free_agent_offer' && state.ui.viewMode === 'free-agents') {
+      await loadFreeAgents();
+    }
+    if (normalizedType === 'waiver_claim') {
       await loadFreeAgents();
     }
     if (request?.team_code && state.teamCode && String(request.team_code).toUpperCase() === String(state.teamCode).toUpperCase()) {
@@ -5927,10 +5943,92 @@ function renderFreeAgentBulkControls() {
   valueInput.placeholder = field === 'notes' ? 'Detalles' : 'Nuevo valor';
 }
 
+function updateWaiverBadges() {
+  const count = Array.isArray(state.waivers) ? state.waivers.length : 0;
+  ['freeAgentsHomeBtn', 'adminMobileFreeAgentsBtn'].forEach((id) => {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.querySelector('.waiver-count-badge')?.remove();
+    if (count < 1) return;
+    const badge = document.createElement('span');
+    badge.className = 'waiver-count-badge';
+    badge.textContent = String(count);
+    badge.setAttribute('aria-label', `${count} jugador${count === 1 ? '' : 'es'} en waivers`);
+    button.appendChild(badge);
+  });
+}
+
+async function refreshWaiverBadges() {
+  try {
+    const waiverRes = await api('/api/waivers');
+    state.waivers = Array.isArray(waiverRes.waivers) ? waiverRes.waivers : [];
+    updateWaiverBadges();
+  } catch {
+    state.waivers = [];
+    updateWaiverBadges();
+  }
+}
+
+function formatWaiverExpiry(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || '');
+  return date.toLocaleString('es-ES', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function renderWaiversPanel() {
+  const panel = document.getElementById('waiversPanel');
+  if (!panel) return;
+  const waivers = Array.isArray(state.waivers) ? state.waivers : [];
+  updateWaiverBadges();
+  if (!waivers.length) {
+    panel.innerHTML = '';
+    return;
+  }
+  panel.innerHTML = `
+    <div class="waivers-panel">
+      <div class="waivers-panel-header">
+        <h3>Waivers</h3>
+        <span class="waivers-count">${waivers.length}</span>
+      </div>
+      <div class="table-wrap waivers-table-wrap">
+        <table class="waivers-table">
+          <thead>
+            <tr>
+              <th>Jugador</th>
+              <th>Origen</th>
+              <th>Salario</th>
+              <th>Expira</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${waivers.map((waiver) => `
+              <tr>
+                <td><strong>${escapeHtml(waiver.player_name || '')}</strong><div class="muted">${escapeHtml(waiver.position || '')}${waiver.rating ? ` · ${escapeHtml(waiver.rating)}` : ''}</div></td>
+                <td>${escapeHtml(waiver.from_team_code || '')}</td>
+                <td>${formatMoneyDots(waiver.salary || 0)}</td>
+                <td>${escapeHtml(formatWaiverExpiry(waiver.waiver_expires_at))}</td>
+                <td>${escapeHtml(waiver.status || 'active')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 function renderFreeAgents() {
   const tbody = document.querySelector('#freeAgentsTable tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
+  renderWaiversPanel();
   renderFreeAgentBulkControls();
   const searchInput = document.getElementById('freeAgentSearchInput');
   if (searchInput && searchInput.value !== String(state.ui.freeAgentSearch || '')) {
@@ -6095,6 +6193,71 @@ async function bulkAddFreeAgentsFromTool() {
     const refreshed = await api('/api/free-agents');
     state.freeAgents = refreshed.free_agents || [];
     if (state.ui.viewMode === 'free-agents') renderFreeAgents();
+  } catch (err) {
+    if (resultEl) resultEl.textContent = `Error: ${err.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function readDiscordImageUpload(file) {
+  if (!file) throw new Error('Selecciona una imagen.');
+  if (file.size > 8 * 1024 * 1024) {
+    throw new Error('La imagen no puede superar 8 MB.');
+  }
+  if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+    throw new Error('Formato no válido. Usa PNG, JPG, WEBP o GIF.');
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('No se pudo leer la imagen.'));
+    reader.readAsDataURL(file);
+  });
+  return {
+    filename: file.name || 'article-image',
+    mime_type: file.type,
+    data_url: dataUrl,
+  };
+}
+
+async function launchPressArticleFromTool() {
+  const textInput = document.getElementById('launchArticleTextInput');
+  const imageInput = document.getElementById('launchArticleImageInput');
+  const resultEl = document.getElementById('launchArticleResult');
+  const button = document.getElementById('launchArticleBtn');
+  const text = String(textInput?.value || '').trim();
+  if (!text) {
+    if (resultEl) resultEl.textContent = 'Escribe el texto del artículo.';
+    textInput?.focus();
+    return;
+  }
+  const file = imageInput?.files?.[0] || null;
+  let discordCustomImage = null;
+  try {
+    discordCustomImage = await readDiscordImageUpload(file);
+  } catch (err) {
+    if (resultEl) resultEl.textContent = err.message || String(err);
+    imageInput?.focus();
+    return;
+  }
+  if (!confirm('¿Publicar este artículo en #prensa con ANBA-News?')) return;
+  if (button) button.disabled = true;
+  if (resultEl) resultEl.textContent = 'Publicando...';
+  try {
+    const result = await api('/api/admin/launch-article', {
+      method: 'POST',
+      body: JSON.stringify({
+        text,
+        discord_custom_image: discordCustomImage,
+      }),
+    });
+    if (textInput) textInput.value = '';
+    if (imageInput) imageInput.value = '';
+    if (resultEl) {
+      resultEl.textContent = `Publicado en #prensa${result.message_id ? ` · mensaje ${result.message_id}` : ''}.`;
+    }
+    await refreshAdminLogsSafe();
   } catch (err) {
     if (resultEl) resultEl.textContent = `Error: ${err.message}`;
   } finally {
@@ -10473,8 +10636,12 @@ async function loadFigures() {
 }
 
 async function loadFreeAgents() {
-  const res = await api('/api/free-agents');
+  const [res, waiverRes] = await Promise.all([
+    api('/api/free-agents'),
+    api('/api/waivers').catch(() => ({ waivers: [] })),
+  ]);
   state.freeAgents = res.free_agents || [];
+  state.waivers = Array.isArray(waiverRes.waivers) ? waiverRes.waivers : [];
   resetPagination('freeAgents');
   state.teamCode = null;
   state.teamData = null;
@@ -12129,6 +12296,7 @@ async function init() {
 
   const teamsRes = await api('/api/teams');
   state.teams = teamsRes.teams;
+  await refreshWaiverBadges();
   setupSorting();
   renderTeamStrip();
   renderTeamPicker();
@@ -12320,6 +12488,9 @@ async function init() {
   });
   document.getElementById('bulkAddFreeAgentsBtn')?.addEventListener('click', async () => {
     await bulkAddFreeAgentsFromTool();
+  });
+  document.getElementById('launchArticleBtn')?.addEventListener('click', async () => {
+    await launchPressArticleFromTool();
   });
   document.getElementById('closeSignFreeAgentModalBtn').addEventListener('click', () => {
     closeSignFreeAgentModal();
