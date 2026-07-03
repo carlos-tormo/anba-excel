@@ -927,6 +927,10 @@ function salaryNumericValue(row, season) {
   return parseAmount(row?.[`salary_${season}_text`]) || 0;
 }
 
+function deadContractHasVisibleSalary(row) {
+  return visibleSeasonYears().some((season) => salaryNumericValue(row, season) > 0);
+}
+
 function salaryHistoryNumericValue(row, season) {
   const direct = row?.[`salary_${season}_history_num`];
   if (direct !== null && direct !== undefined && direct !== '' && Number.isFinite(Number(direct))) {
@@ -10410,8 +10414,9 @@ function renderDeadContracts() {
   const tbody = document.querySelector('#deadContractsTable tbody');
   const tpl = document.getElementById('deadContractRowTemplate');
   tbody.innerHTML = '';
+  applySeasonColumnVisibility();
 
-  const rows = sortedRows(state.teamData.dead_contracts || [], state.sort.dead_contracts);
+  const rows = sortedRows((state.teamData.dead_contracts || []).filter(deadContractHasVisibleSalary), state.sort.dead_contracts);
   rows.forEach((d) => {
     const frag = tpl.content.cloneNode(true);
     const tr = frag.querySelector('tr');

@@ -2279,37 +2279,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 WHERE salary_2025_text IS NULL OR salary_2025_num IS NULL
                 """
             )
-            conn.execute(
-                """
-                INSERT INTO dead_contracts (
-                    team_id, row_order, dead_type, label, amount_text, amount_num,
-                    salary_2025_text, salary_2025_num, created_at, updated_at
-                )
-                SELECT
-                    a.team_id,
-                    a.row_order,
-                    'normal',
-                    a.label,
-                    a.amount_text,
-                    a.amount_num,
-                    a.amount_text,
-                    a.amount_num,
-                    a.created_at,
-                    a.updated_at
-                FROM assets a
-                WHERE a.asset_type = 'dead_cap'
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM dead_contracts d
-                    WHERE d.team_id = a.team_id
-                      AND d.row_order = a.row_order
-                      AND COALESCE(d.label, '') = COALESCE(a.label, '')
-                  )
-                """
-            )
+            self._migrate_legacy_dead_cap_assets(conn)
             self._backfill_dead_contract_profiles(conn)
             self._backfill_player_transactions(conn)
             self._backfill_player_salary_history_from_snapshots(conn)
+            current_year_row = conn.execute("SELECT value FROM app_settings WHERE key = 'current_year'").fetchone()
+            current_year = parse_int(current_year_row["value"] if current_year_row else None)
+            if current_year is not None:
+                self._cleanup_inactive_dead_contracts_conn(conn, current_year)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_dead_contracts_profile_id ON dead_contracts(profile_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_transactions_profile_created ON player_transactions(profile_id, created_at DESC, id DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_transactions_source_log ON player_transactions(source_log_id)")
@@ -2394,6 +2371,88 @@ class LeagueDB(DatabaseMaintenanceMixin):
             payload.get("profile_notes"),
             timestamp,
         )
+
+    def _migrate_legacy_dead_cap_assets(self, conn: sqlite3.Connection) -> None:
+        asset_cols = {row["name"] for row in conn.execute("PRAGMA table_info(assets)").fetchall()}
+        if "asset_type" not in asset_cols:
+            return
+        dead_cols = {row["name"] for row in conn.execute("PRAGMA table_info(dead_contracts)").fetchall()}
+        has_profile_id = "profile_id" in dead_cols
+        rows = conn.execute(
+            """
+            SELECT id, team_id, row_order, label, amount_text, amount_num, created_at, updated_at
+            FROM assets
+            WHERE asset_type = 'dead_cap'
+            ORDER BY id
+            """
+        ).fetchall()
+        for row in rows:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM dead_contracts
+                WHERE team_id = ?
+                  AND row_order = ?
+                  AND COALESCE(label, '') = COALESCE(?, '')
+                LIMIT 1
+                """,
+                (row["team_id"], row["row_order"], row["label"]),
+            ).fetchone()
+            if existing:
+                continue
+
+            label = str(row["label"] or "").strip() or f"Dead Contract {int(row['id'])}"
+            timestamp = row["created_at"] or row["updated_at"] or now_iso()
+            profile_id = (
+                self._find_profile_id(conn, name=label)
+                or self._create_player_profile(conn, label, timestamp=timestamp)
+            )
+            if has_profile_id:
+                conn.execute(
+                    """
+                    INSERT INTO dead_contracts (
+                        team_id, profile_id, row_order, dead_type, label, amount_text, amount_num,
+                        salary_2025_text, salary_2025_num, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, 'normal', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["team_id"],
+                        profile_id,
+                        row["row_order"],
+                        label,
+                        row["amount_text"],
+                        row["amount_num"],
+                        row["amount_text"],
+                        row["amount_num"],
+                        row["created_at"] or timestamp,
+                        row["updated_at"] or timestamp,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO dead_contracts (
+                        team_id, row_order, dead_type, label, amount_text, amount_num,
+                        salary_2025_text, salary_2025_num, created_at, updated_at
+                    )
+                    VALUES (?, ?, 'normal', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["team_id"],
+                        row["row_order"],
+                        label,
+                        row["amount_text"],
+                        row["amount_num"],
+                        row["amount_text"],
+                        row["amount_num"],
+                        row["created_at"] or timestamp,
+                        row["updated_at"] or timestamp,
+                    ),
+                )
+
+        if rows:
+            conn.execute("DELETE FROM assets WHERE asset_type = 'dead_cap'")
 
     def _install_player_identity_guards(self, conn: sqlite3.Connection) -> None:
         trigger_specs = [

@@ -8022,6 +8022,179 @@ td.salary-option--nb .salary-pct {
 .tracker-tax-value.is-neutral {
   color: #475569;
 }
+#trackerSection .table-wrap,
+#figuresSection .figures-table-wrap,
+#figuresSection .minimum-salary-table-wrap {
+  border: 1px solid #dde6f1;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+#trackerTable,
+#trackerEconomyTable,
+.figures-table,
+.minimum-salary-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  color: #334155;
+  font-variant-numeric: tabular-nums;
+}
+#trackerTable th,
+#trackerTable td,
+#trackerEconomyTable th,
+#trackerEconomyTable td,
+.figures-table th,
+.figures-table td,
+.minimum-salary-table th,
+.minimum-salary-table td {
+  padding: 12px 14px;
+  border-right: 0;
+  border-bottom: 1px solid #dbe5f1;
+  font-size: 0.92rem;
+  line-height: 1.15;
+  vertical-align: middle;
+}
+#trackerTable thead th,
+#trackerEconomyTable thead th,
+.figures-table thead th,
+.minimum-salary-table thead th {
+  background: #f4f7fb;
+  border-bottom: 3px solid #475569;
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: normal;
+}
+#trackerTable tbody tr:nth-child(even) td,
+#trackerEconomyTable tbody tr:nth-child(even) td,
+.figures-table tbody tr:nth-child(even) th,
+.figures-table tbody tr:nth-child(even) td,
+.minimum-salary-table tbody tr:nth-child(even) th,
+.minimum-salary-table tbody tr:nth-child(even) td {
+  background: #f7f9fc;
+}
+#trackerTable tbody tr:nth-child(odd) td,
+#trackerEconomyTable tbody tr:nth-child(odd) td,
+.figures-table tbody tr:nth-child(odd) th,
+.figures-table tbody tr:nth-child(odd) td,
+.minimum-salary-table tbody tr:nth-child(odd) th,
+.minimum-salary-table tbody tr:nth-child(odd) td {
+  background: #ffffff;
+}
+#trackerTable tbody tr:hover td,
+#trackerEconomyTable tbody tr:hover td,
+.figures-table tbody tr:hover th,
+.figures-table tbody tr:hover td,
+.minimum-salary-table tbody tr:hover th,
+.minimum-salary-table tbody tr:hover td {
+  background: #eef4fb;
+}
+#trackerTable td:not(:first-child),
+#trackerEconomyTable td:not(:first-child),
+.figures-table td,
+.minimum-salary-table td {
+  color: #667894;
+  text-align: right;
+  font-weight: 800;
+}
+#trackerTable th:first-child,
+#trackerTable td:first-child,
+#trackerEconomyTable th:first-child,
+#trackerEconomyTable td:first-child,
+.figures-table tbody th,
+.minimum-salary-table tbody th {
+  text-align: left;
+}
+#trackerTable th:nth-child(n+4):nth-child(-n+8),
+#trackerTable td:nth-child(n+4):nth-child(-n+8),
+.figures-table .figures-current-season,
+.minimum-salary-table .figures-current-season {
+  background: #e8eef7;
+}
+#trackerTable tbody tr:nth-child(even) td:nth-child(n+4):nth-child(-n+8),
+.figures-table tbody tr:nth-child(even) .figures-current-season,
+.minimum-salary-table tbody tr:nth-child(even) .figures-current-season {
+  background: #e1e9f4;
+}
+#trackerTable tbody tr:hover td:nth-child(n+4):nth-child(-n+8),
+.figures-table tbody tr:hover .figures-current-season,
+.minimum-salary-table tbody tr:hover .figures-current-season {
+  background: #d8e3f2;
+}
+.figures-table thead .figures-current-season,
+.minimum-salary-table thead .figures-current-season {
+  background: #dbe4f0;
+  color: #334155;
+}
+.figures-table thead span,
+.minimum-salary-table thead span {
+  color: #334155;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+.figures-table tbody th,
+.minimum-salary-table tbody th {
+  width: 260px;
+  color: #334155;
+  font-weight: 900;
+}
+#trackerTable .tracker-team-btn,
+#trackerEconomyTable .tracker-team-btn {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #d43f3a;
+  box-shadow: none;
+  font-weight: 900;
+}
+#trackerTable .tracker-team-btn:hover,
+#trackerEconomyTable .tracker-team-btn:hover {
+  color: #a52724;
+  text-decoration: underline;
+}
+#trackerTable .tracker-space-value,
+#trackerTable .tracker-tax-value {
+  color: inherit;
+  font-weight: 900;
+}
+#trackerTable .tracker-space-value.is-positive {
+  color: #15803d;
+}
+#trackerTable .tracker-space-value.is-negative,
+#trackerTable .tracker-tax-value.is-negative {
+  color: #b91c1c;
+}
+@media (max-width: 720px) {
+  .figures-table-wrap {
+    overflow: hidden;
+  }
+  .figures-table--mobile {
+    display: table;
+    min-width: 0;
+    table-layout: fixed;
+  }
+  .figures-table--mobile th,
+  .figures-table--mobile td {
+    padding: 9px 10px;
+    font-size: 0.76rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .figures-table--mobile thead th:first-child,
+  .figures-table--mobile tbody th {
+    width: 48%;
+  }
+  .figures-table--mobile td {
+    text-align: right;
+  }
+  .minimum-salary-table {
+    min-width: 520px;
+  }
+}
 .draft-count-chip {
   display: inline-flex;
   min-width: 64px;
