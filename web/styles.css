@@ -9329,8 +9329,17 @@ select[data-new-field="years_left"],
     align-items: center;
     gap: 8px;
     padding: 12px;
+    background:
+      radial-gradient(340px 140px at 14% 112%, rgba(255, 255, 255, 0.14), transparent 72%),
+      radial-gradient(440px 180px at 86% -12%, rgba(255, 255, 255, 0.12), transparent 70%),
+      linear-gradient(
+        120deg,
+        rgb(var(--team-primary-rgb)),
+        rgb(var(--team-primary-rgb))
+      );
     border-bottom: 1px solid rgba(255, 255, 255, 0.22);
     box-shadow: 0 10px 26px rgba(15, 23, 42, 0.18);
+    opacity: 1;
   }
   .page-title-wrap {
     grid-column: 2;
@@ -9353,6 +9362,70 @@ select[data-new-field="years_left"],
   }
   .page-subtitle {
     font-size: 0.78rem;
+  }
+  .free-agent-player-cell {
+    min-width: 280px;
+  }
+  .free-agent-player-row,
+  .free-agent-admin-player-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+  }
+  .free-agent-player-main,
+  .free-agent-admin-player-main {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .free-agent-player-main strong {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .free-agent-player-tags,
+  .free-agent-admin-tags {
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+  .free-agent-inline-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 5px;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+  .free-agent-inline-actions button {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    min-height: 36px;
+    padding: 0;
+    border-radius: 999px;
+    font-size: 0;
+    line-height: 1;
+  }
+  .free-agent-inline-actions button::before {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    line-height: 1;
+  }
+  .free-agent-inline-actions [data-action="offer-free-agent"]::before {
+    content: "🛒";
+  }
+  .free-agent-inline-actions [data-action="negotiate-free-agent"]::before {
+    content: "💬";
+  }
+  .free-agent-inline-actions .free-agent-favorite-btn::before {
+    content: "♡";
+    font-size: 1.25rem;
+  }
+  .free-agent-inline-actions .free-agent-favorite-btn.is-favorite::before {
+    content: "♥";
   }
   .mobile-team-nav-btn {
     display: inline-grid;
