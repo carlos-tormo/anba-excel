@@ -11312,6 +11312,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 )
         return applied
 
+    def _player_payload_affects_free_agency_sync(self, payload: Dict[str, Any]) -> bool:
+        if "bird_rights" in payload or "years_left" in payload:
+            return True
+        for season in [2025, 2026, 2027, 2028, 2029, 2030]:
+            if f"salary_{season}_text" in payload or f"option_{season}" in payload:
+                return True
+        return False
+
+    def _sync_free_agency_generated_rows_if_needed(self, conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
+        if not self._player_payload_affects_free_agency_sync(payload):
+            return
+        settings_cur = conn.execute("SELECT key, value FROM app_settings")
+        settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+        if not parse_bool(settings.get("free_agency_mode")):
+            return
+        self._sync_cap_hold_free_agents(conn, settings)
+        self._sync_uncontracted_profile_free_agents(conn)
+
     def update_player(self, player_id: int, payload: Dict[str, Any]) -> bool:
         fields = [
             "name", "bird_rights", "rating", "position", "years_left",
@@ -11437,6 +11455,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         f"UPDATE player_profiles SET {', '.join(profile_updates)} WHERE id = ?",
                         profile_values,
                     )
+            self._sync_free_agency_generated_rows_if_needed(conn, payload)
             conn.commit()
             return row_changed
 
@@ -12800,11 +12819,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
         decision = (player.get("option_decisions") or {}).get(f"option_{int(season)}") or {}
         option_value = str(decision.get("option_value") or "").strip().upper()
         option_action = str(decision.get("action") or "").strip().lower()
+        option_status = str(decision.get("status") or "").strip().lower()
         salary_text_code = str(player.get(f"salary_{int(season)}_text") or "").strip().upper()
         option_code = str(player.get(f"option_{int(season)}") or "").strip().upper()
         if salary_text_code == "QO" or option_code == "QO":
             return FREE_AGENT_TYPE_RESTRICTED
-        if option_action == "accepted" and option_value in {"QO", "GAP"}:
+        if (
+            option_code in {"QO", "GAP"}
+            and option_value == option_code
+            and option_action == "accepted"
+            and option_status == "approved"
+        ):
             return FREE_AGENT_TYPE_RESTRICTED
         return FREE_AGENT_TYPE_UNRESTRICTED
 

@@ -255,6 +255,62 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         self.assertEqual("ATL", free_agent["rights_team_code"])
         self.assertEqual("FB", free_agent["bird_rights"])
 
+    def test_manual_contract_replaces_accepted_qo_free_agent_row(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        self.db.update_setting("free_agency_mode", "1")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Manual Contract QO Player",
+                "position": "PG",
+                "rating": "73",
+                "bird_rights": "R",
+                "years_left": "2+",
+                "salary_2025_text": "2296271",
+                "salary_2026_text": "2870338",
+                "option_2026": "QO",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        request = self.db.create_gm_option_request(
+            int(player_id),
+            "option_2026",
+            "QO",
+            "accepted",
+            {"email": "gm@example.com", "name": "GM"},
+        )
+        self.assertIsNotNone(request)
+        self.assertIsNotNone(
+            self.db.mark_gm_option_request_decided(
+                int(request["id"]),
+                "approved",
+                {"email": "admin@example.com", "name": "Admin"},
+            )
+        )
+        self.assertIsNotNone(
+            next(
+                (agent for agent in self.db.list_free_agents() if agent["name"] == "Manual Contract QO Player"),
+                None,
+            )
+        )
+
+        self.assertTrue(
+            self.db.update_player(
+                int(player_id),
+                {
+                    "salary_2026_text": "5000000",
+                    "salary_2027_text": "6250000",
+                    "option_2026": None,
+                },
+            )
+        )
+
+        free_agent = next(
+            (agent for agent in self.db.list_free_agents() if agent["name"] == "Manual Contract QO Player"),
+            None,
+        )
+        self.assertIsNone(free_agent)
+
 
 if __name__ == "__main__":
     unittest.main()
