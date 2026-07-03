@@ -213,6 +213,48 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         self.assertEqual("ATL", free_agent["rights_team_code"])
         self.assertEqual("FB", free_agent["bird_rights"])
 
+    def test_accepted_qo_with_visible_value_stays_on_free_agent_list(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        self.db.update_setting("free_agency_mode", "1")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Accepted QO Player",
+                "position": "PG",
+                "rating": "73",
+                "bird_rights": "R",
+                "years_left": "2+",
+                "salary_2025_text": "2296271",
+                "salary_2026_text": "2870338",
+                "option_2026": "QO",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        request = self.db.create_gm_option_request(
+            int(player_id),
+            "option_2026",
+            "QO",
+            "accepted",
+            {"email": "gm@example.com", "name": "GM"},
+        )
+        self.assertIsNotNone(request)
+        self.assertIsNotNone(
+            self.db.mark_gm_option_request_decided(
+                int(request["id"]),
+                "approved",
+                {"email": "admin@example.com", "name": "Admin"},
+            )
+        )
+
+        free_agents = self.db.list_free_agents()
+        free_agent = next((agent for agent in free_agents if agent["name"] == "Accepted QO Player"), None)
+
+        self.assertIsNotNone(free_agent)
+        self.assertEqual("Restringido", free_agent["free_agent_type"])
+        self.assertEqual("cap_hold", free_agent["source"])
+        self.assertEqual("ATL", free_agent["rights_team_code"])
+        self.assertEqual("FB", free_agent["bird_rights"])
+
 
 if __name__ == "__main__":
     unittest.main()

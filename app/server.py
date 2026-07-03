@@ -12895,37 +12895,53 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def _cleanup_active_contract_free_agents_conn(self, conn: sqlite3.Connection, current_year: int) -> int:
         active_profile_ids: List[int] = []
-        cur = conn.execute(
-            """
-            SELECT p.*
-            FROM players p
-            WHERE p.profile_id IS NOT NULL
-            """
-        )
-        for row in cur.fetchall():
-            profile_id = parse_int(row["profile_id"])
-            if profile_id is None:
+        teams_cur = conn.execute("SELECT id FROM teams ORDER BY id")
+        for team in teams_cur.fetchall():
+            team_id = parse_int(team["id"])
+            if team_id is None:
                 continue
-            has_active_salary = False
-            for season in PLAYER_CONTRACT_SEASONS:
-                if int(season) < int(current_year):
+            players = self._select_team_players(conn, int(team_id))
+            self._attach_option_decisions(conn, players, int(team_id))
+            for player in players:
+                profile_id = parse_int(player.get("profile_id"))
+                if profile_id is None:
                     continue
-                salary_num = parse_float(row[f"salary_{season}_num"])
-                salary_text_amount = parse_amount_like(row[f"salary_{season}_text"])
-                if (salary_num is not None and abs(float(salary_num)) > 0) or (
-                    salary_text_amount is not None and abs(float(salary_text_amount)) > 0
-                ):
-                    has_active_salary = True
-                    break
-            if has_active_salary:
-                active_profile_ids.append(int(profile_id))
+                has_active_salary = False
+                for season in PLAYER_CONTRACT_SEASONS:
+                    if int(season) < int(current_year):
+                        continue
+                    option_code = str(player.get(f"option_{season}") or "").strip().upper()
+                    decision = (player.get("option_decisions") or {}).get(f"option_{season}") or {}
+                    decision_option = str(decision.get("option_value") or "").strip().upper()
+                    decision_action = str(decision.get("action") or "").strip().lower()
+                    decision_status = str(decision.get("status") or "").strip().lower()
+                    if (
+                        option_code in {"QO", "GAP"}
+                        and decision_option == option_code
+                        and decision_action == "accepted"
+                        and decision_status == "approved"
+                    ):
+                        continue
+                    salary_num = parse_float(player.get(f"salary_{season}_num"))
+                    salary_text_amount = parse_amount_like(player.get(f"salary_{season}_text"))
+                    if (salary_num is not None and abs(float(salary_num)) > 0) or (
+                        salary_text_amount is not None and abs(float(salary_text_amount)) > 0
+                    ):
+                        has_active_salary = True
+                        break
+                if has_active_salary:
+                    active_profile_ids.append(int(profile_id))
         if not active_profile_ids:
             return 0
         unique_ids = sorted(set(active_profile_ids))
         placeholders = ",".join("?" for _ in unique_ids)
         delete_cur = conn.execute(
-            f"DELETE FROM free_agents WHERE profile_id IN ({placeholders})",
-            unique_ids,
+            f"""
+            DELETE FROM free_agents
+            WHERE profile_id IN ({placeholders})
+                AND COALESCE(source, '') != ?
+            """,
+            (*unique_ids, FREE_AGENT_SOURCE_CAP_HOLD),
         )
         return int(delete_cur.rowcount or 0)
 
