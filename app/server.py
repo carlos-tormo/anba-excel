@@ -2855,24 +2855,31 @@ class LeagueDB(DatabaseMaintenanceMixin):
         dead_contract_id: Any = None,
         name: Any = None,
     ) -> Optional[int]:
+        def valid_profile_id(value: Any) -> Optional[int]:
+            parsed = parse_int(value)
+            if parsed is None:
+                return None
+            exists = conn.execute("SELECT 1 FROM player_profiles WHERE id = ? LIMIT 1", (parsed,)).fetchone()
+            return parsed if exists else None
+
         parsed_player_id = parse_int(player_id)
         if parsed_player_id is not None:
             row = conn.execute("SELECT profile_id FROM players WHERE id = ?", (parsed_player_id,)).fetchone()
-            profile_id = parse_int(row["profile_id"]) if row else None
+            profile_id = valid_profile_id(row["profile_id"]) if row else None
             if profile_id is not None:
                 return profile_id
 
         parsed_free_agent_id = parse_int(free_agent_id)
         if parsed_free_agent_id is not None:
             row = conn.execute("SELECT profile_id FROM free_agents WHERE id = ?", (parsed_free_agent_id,)).fetchone()
-            profile_id = parse_int(row["profile_id"]) if row else None
+            profile_id = valid_profile_id(row["profile_id"]) if row else None
             if profile_id is not None:
                 return profile_id
 
         parsed_dead_contract_id = parse_int(dead_contract_id)
         if parsed_dead_contract_id is not None:
             row = conn.execute("SELECT profile_id FROM dead_contracts WHERE id = ?", (parsed_dead_contract_id,)).fetchone()
-            profile_id = parse_int(row["profile_id"]) if row else None
+            profile_id = valid_profile_id(row["profile_id"]) if row else None
             if profile_id is not None:
                 return profile_id
 
@@ -2936,6 +2943,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
     ) -> None:
         parsed_profile_id = parse_int(profile_id)
         if parsed_profile_id is None:
+            return
+        profile_exists = conn.execute(
+            "SELECT 1 FROM player_profiles WHERE id = ? LIMIT 1",
+            (parsed_profile_id,),
+        ).fetchone()
+        if not profile_exists:
             return
         action_text = str(action or "").strip().lower() or "update"
         summary_text = str(summary or "").strip() or "Movimiento registrado"
@@ -3045,6 +3058,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 continue
 
             profile_id = parse_int(details.get("profile_id"))
+            if profile_id is not None:
+                profile_exists = conn.execute(
+                    "SELECT 1 FROM player_profiles WHERE id = ? LIMIT 1",
+                    (profile_id,),
+                ).fetchone()
+                if not profile_exists:
+                    profile_id = None
             if profile_id is None:
                 profile_id = self._find_profile_id(
                     conn,

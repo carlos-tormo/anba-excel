@@ -112,6 +112,33 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
                     (team_id, now_iso(), now_iso()),
                 )
 
+    def test_transaction_backfill_skips_orphan_profile_ids_from_admin_logs(self) -> None:
+        now = now_iso()
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO admin_logs (
+                    created_at, actor_email, actor_name, action, entity, entity_id,
+                    team_code, details_json
+                ) VALUES (?, 'admin@example.com', 'Admin', 'update', 'player', '999999', 'ATL', ?)
+                """,
+                (
+                    now,
+                    '{"profile_id":999999,"player_name":"Orphaned Historical Player"}',
+                ),
+            )
+            conn.commit()
+
+        with self.db.connect() as conn:
+            self.db._backfill_player_transactions(conn)
+            conn.commit()
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM player_transactions WHERE profile_id = 999999"
+                ).fetchone()[0],
+            )
+
     def test_player_happiness_is_private_admin_profile_data(self) -> None:
         profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
 
