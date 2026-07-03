@@ -1138,6 +1138,64 @@ h1 {
   border-color: #fb7185;
   color: #be123c;
 }
+.free-agent-player-cell {
+  min-width: 300px;
+}
+.free-agent-player-row,
+.free-agent-admin-player-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.free-agent-player-main,
+.free-agent-admin-player-main {
+  align-items: flex-start;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.free-agent-player-main strong {
+  color: #0f172a;
+}
+.free-agent-player-tags,
+.free-agent-admin-tags,
+.free-agent-inline-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.free-agent-inline-actions {
+  justify-content: flex-end;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.free-agent-meta-tag {
+  align-items: center;
+  background: #eef2f7;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: #334155;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 900;
+  min-height: 24px;
+  padding: 2px 8px;
+}
+.free-agent-meta-tag--position {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+.free-agent-tag-input {
+  max-width: 82px;
+  min-height: 30px;
+  padding: 3px 8px;
+}
+.free-agent-tag-input--position {
+  max-width: 64px;
+}
 .error-text {
   color: #b91c1c;
 }

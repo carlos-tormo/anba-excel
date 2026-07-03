@@ -10,6 +10,11 @@ const PAGINATED_TABLE_CONFIG = {
   freeAgents: { tableId: 'freeAgentsTable', pageKey: 'freeAgentsPage', sizeKey: 'freeAgentsPageSize' },
   leaguePlayers: { tableId: 'leaguePlayersTable', pageKey: 'leaguePlayersPage', sizeKey: 'leaguePlayersPageSize' },
 };
+const FREE_AGENT_PRIMARY_SORT_CYCLE = [
+  { key: 'name', dir: 'asc', label: 'Nombre' },
+  { key: 'rating', dir: 'desc', label: 'Rating' },
+  { key: 'position', dir: 'asc', label: 'Posición' },
+];
 
 const state = {
   teams: [],
@@ -2091,6 +2096,21 @@ function sortedRows(rows, sortCfg) {
   });
 }
 
+function nextFreeAgentPrimarySort(curr) {
+  const currentKey = String(curr?.key || '').trim();
+  const index = FREE_AGENT_PRIMARY_SORT_CYCLE.findIndex((item) => item.key === currentKey);
+  return FREE_AGENT_PRIMARY_SORT_CYCLE[(index + 1) % FREE_AGENT_PRIMARY_SORT_CYCLE.length];
+}
+
+function syncFreeAgentPrimarySortHeader(sortCfg = state.sort.free_agents) {
+  const th = document.querySelector('#freeAgentsTable thead th[data-free-agent-primary-sort]');
+  if (!th) return;
+  const selected = FREE_AGENT_PRIMARY_SORT_CYCLE.find((item) => item.key === sortCfg?.key)
+    || FREE_AGENT_PRIMARY_SORT_CYCLE[0];
+  th.dataset.sort = selected.key;
+  th.dataset.label = selected.label;
+}
+
 function normalizedPaginationSize(value) {
   const parsed = Number(value);
   return PAGINATED_TABLE_PAGE_SIZES.includes(parsed) ? parsed : PAGINATED_TABLE_PAGE_SIZES[0];
@@ -2411,14 +2431,21 @@ function setupSorting() {
     if (!th.dataset.label) th.dataset.label = th.textContent.trim();
     th.classList.add('sortable');
     th.addEventListener('click', () => {
-      const key = th.dataset.sort;
       const curr = state.sort.free_agents;
-      state.sort.free_agents = {
-        key,
-        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
-      };
+      if (th.dataset.freeAgentPrimarySort) {
+        const next = nextFreeAgentPrimarySort(curr);
+        state.sort.free_agents = { key: next.key, dir: next.dir };
+        syncFreeAgentPrimarySortHeader(state.sort.free_agents);
+      } else {
+        const key = th.dataset.sort;
+        state.sort.free_agents = {
+          key,
+          dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+        };
+      }
       resetPagination('freeAgents');
       renderFreeAgents();
+      syncFreeAgentPrimarySortHeader(state.sort.free_agents);
       updateSortIndicators('freeAgentsTable', state.sort.free_agents);
     });
   });
@@ -4151,13 +4178,12 @@ function renderAdminUsers() {
         </label>
       </td>
       <td>
-        <input
-          type="text"
+        <select
           data-admin-user-agent="${userId}"
-          value="${escapeHtml(user.agent_name || '')}"
-          placeholder="Nombre del agente"
           ${coAdminChecked && !isAdmin ? '' : 'disabled'}
         >
+          ${freeAgentAgentOptions(user.agent_name || '')}
+        </select>
       </td>
       <td>
         <select data-admin-user-team="${userId}" aria-label="Team assignment for ${escapeHtml(user.email || 'user')}">
@@ -4179,10 +4205,10 @@ function renderAdminUsers() {
   tbody.querySelectorAll('[data-admin-user-co-admin]').forEach((input) => {
     input.addEventListener('change', () => {
       const userId = Number(input.dataset.adminUserCoAdmin);
-      const agentInput = document.querySelector(`[data-admin-user-agent="${userId}"]`);
-      if (!agentInput) return;
-      agentInput.disabled = !input.checked;
-      if (!input.checked) agentInput.value = '';
+      const agentControl = document.querySelector(`[data-admin-user-agent="${userId}"]`);
+      if (!agentControl) return;
+      agentControl.disabled = !input.checked;
+      if (!input.checked) agentControl.value = '';
     });
   });
 }
@@ -4399,10 +4425,10 @@ async function saveAdminUserAccess(userId, button) {
   if (!Number.isInteger(userId) || userId <= 0) return;
   const select = document.querySelector(`[data-admin-user-team="${userId}"]`);
   const coAdminInput = document.querySelector(`[data-admin-user-co-admin="${userId}"]`);
-  const agentInput = document.querySelector(`[data-admin-user-agent="${userId}"]`);
+  const agentControl = document.querySelector(`[data-admin-user-agent="${userId}"]`);
   const teamCode = String(select?.value || '').trim().toUpperCase();
   const isCoAdmin = Boolean(coAdminInput?.checked);
-  const agentName = isCoAdmin ? String(agentInput?.value || '').trim() : '';
+  const agentName = isCoAdmin ? String(agentControl?.value || '').trim() : '';
   const originalText = button?.textContent || 'Save';
   if (button) {
     button.disabled = true;
@@ -6037,6 +6063,7 @@ function renderFreeAgents() {
   const allRows = sortedRows(filteredFreeAgents(), state.sort.free_agents);
   const pagination = paginatedRows(allRows, 'freeAgents');
   const rows = pagination.rows;
+  syncFreeAgentPrimarySortHeader(state.sort.free_agents);
   renderPaginationControls('freeAgents', pagination);
   const selectAll = document.getElementById('selectAllFreeAgents');
   if (selectAll) {
@@ -6048,15 +6075,23 @@ function renderFreeAgents() {
     tr.dataset.id = agent.id;
     tr.innerHTML = `
       <td><input data-free-agent-select type="checkbox" ${state.selectedFreeAgentIds.has(Number(agent.id)) ? 'checked' : ''} aria-label="Seleccionar ${escapeHtml(agent.name || 'agente libre')}"></td>
-      <td><input data-field="name" value="${escapeHtml(agent.name || '')}"></td>
-      <td><input data-field="position" value="${escapeHtml(agent.position || '')}"></td>
-      <td><input data-field="rating" value="${escapeHtml(agent.rating || '')}"></td>
+      <td class="free-agent-player-cell">
+        <div class="free-agent-admin-player-row">
+          <div class="free-agent-admin-player-main">
+            <input data-field="name" value="${escapeHtml(agent.name || '')}" aria-label="Nombre">
+            <div class="free-agent-admin-tags">
+              <input data-field="position" class="free-agent-tag-input free-agent-tag-input--position" value="${escapeHtml(agent.position || '')}" placeholder="POS" aria-label="Posición">
+              <input data-field="rating" class="free-agent-tag-input" value="${escapeHtml(agent.rating || '')}" placeholder="Rating" aria-label="Rating">
+            </div>
+          </div>
+          <div class="free-agent-inline-actions">
+            <button data-action="offer-free-agent" type="button">Ofertar</button>
+            <button data-action="negotiate-free-agent" type="button" class="ghost">Negociar</button>
+          </div>
+        </div>
+      </td>
       <td><select data-field="free_agent_type">${freeAgentTypeOptions(agent.free_agent_type || '')}</select></td>
       <td><select data-field="agent">${freeAgentAgentOptions(agent.agent || '')}</select></td>
-      <td>
-        <button data-action="offer-free-agent" type="button">Ofertar</button>
-        <button data-action="negotiate-free-agent" type="button" class="ghost">Negociar</button>
-      </td>
       <td class="details-cell"><input data-field="notes" value="${escapeHtml(agent.notes || '')}"></td>
     `;
     tr.querySelector('[data-free-agent-select]').addEventListener('change', (event) => {
@@ -6095,15 +6130,23 @@ function renderFreeAgents() {
     tr.className = 'table-add-editor-row';
     tr.innerHTML = `
       <td></td>
-      <td><input data-new-field="name" data-autofocus placeholder="Player name"></td>
-      <td><input data-new-field="position" placeholder="PG"></td>
-      <td><input data-new-field="rating" placeholder="Rating"></td>
+      <td class="free-agent-player-cell">
+        <div class="free-agent-admin-player-row">
+          <div class="free-agent-admin-player-main">
+            <input data-new-field="name" data-autofocus placeholder="Player name">
+            <div class="free-agent-admin-tags">
+              <input data-new-field="position" class="free-agent-tag-input free-agent-tag-input--position" placeholder="POS" aria-label="Posición">
+              <input data-new-field="rating" class="free-agent-tag-input" placeholder="Rating" aria-label="Rating">
+            </div>
+          </div>
+          <div class="table-add-actions-cell">
+            <button type="button" class="inline-save" data-action="save-draft">✓</button>
+            <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
+          </div>
+        </div>
+      </td>
       <td><select data-new-field="free_agent_type">${freeAgentTypeOptions('')}</select></td>
       <td><select data-new-field="agent">${freeAgentAgentOptions('')}</select></td>
-      <td class="table-add-actions-cell">
-        <button type="button" class="inline-save" data-action="save-draft">✓</button>
-        <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
-      </td>
       <td class="details-cell"><input data-new-field="notes" placeholder="Detalles"></td>
     `;
     const discard = () => {
@@ -6130,7 +6173,7 @@ function renderFreeAgents() {
     });
   } else if (!allRows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="8">No hay agentes libres registrados.</td>';
+    tr.innerHTML = '<td colspan="5">No hay agentes libres registrados.</td>';
     tbody.appendChild(tr);
   }
 }

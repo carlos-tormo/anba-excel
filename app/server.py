@@ -10970,7 +10970,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         where = "COALESCE(f.agent, '') != ''"
         params: List[Any] = []
         if role != "admin" or agent_name:
-            where = "lower(COALESCE(f.agent, '')) = lower(?)"
+            where = "lower(trim(COALESCE(f.agent, ''))) = lower(trim(?))"
             params.append(agent_name)
 
         with self.connect() as conn:

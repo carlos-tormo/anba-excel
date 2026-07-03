@@ -137,6 +137,11 @@ const PAGINATED_TABLE_CONFIG = {
   freeAgents: { tableId: 'freeAgentsTable', pageKey: 'freeAgentsPage', sizeKey: 'freeAgentsPageSize' },
   leaguePlayers: { tableId: 'leaguePlayersTable', pageKey: 'leaguePlayersPage', sizeKey: 'leaguePlayersPageSize' },
 };
+const FREE_AGENT_PRIMARY_SORT_CYCLE = [
+  { key: 'name', dir: 'asc', label: 'Nombre' },
+  { key: 'rating', dir: 'desc', label: 'Rating' },
+  { key: 'position', dir: 'asc', label: 'Posición' },
+];
 const TRADE_PICK_ACTION_SEND = 'send_pick';
 const TRADE_PICK_ACTION_SWAP = 'swap_rights';
 const LAST_TEAM_STORAGE_KEY = 'anba_last_team_code';
@@ -3864,6 +3869,21 @@ function sortedRows(rows, sortCfg) {
   });
 }
 
+function nextFreeAgentPrimarySort(curr) {
+  const currentKey = String(curr?.key || '').trim();
+  const index = FREE_AGENT_PRIMARY_SORT_CYCLE.findIndex((item) => item.key === currentKey);
+  return FREE_AGENT_PRIMARY_SORT_CYCLE[(index + 1) % FREE_AGENT_PRIMARY_SORT_CYCLE.length];
+}
+
+function syncFreeAgentPrimarySortHeader(sortCfg = state.sort.free_agents) {
+  const th = document.querySelector('#freeAgentsTable thead th[data-free-agent-primary-sort]');
+  if (!th) return;
+  const selected = FREE_AGENT_PRIMARY_SORT_CYCLE.find((item) => item.key === sortCfg?.key)
+    || FREE_AGENT_PRIMARY_SORT_CYCLE[0];
+  th.dataset.sort = selected.key;
+  th.dataset.label = selected.label;
+}
+
 function normalizedPaginationSize(value) {
   const parsed = Number(value);
   return PAGINATED_TABLE_PAGE_SIZES.includes(parsed) ? parsed : PAGINATED_TABLE_PAGE_SIZES[0];
@@ -4164,14 +4184,21 @@ function setupSorting() {
     if (!th.dataset.label) th.dataset.label = th.textContent.trim();
     th.classList.add('sortable');
     th.addEventListener('click', () => {
-      const key = th.dataset.sort;
       const curr = state.sort.free_agents;
-      state.sort.free_agents = {
-        key,
-        dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
-      };
+      if (th.dataset.freeAgentPrimarySort) {
+        const next = nextFreeAgentPrimarySort(curr);
+        state.sort.free_agents = { key: next.key, dir: next.dir };
+        syncFreeAgentPrimarySortHeader(state.sort.free_agents);
+      } else {
+        const key = th.dataset.sort;
+        state.sort.free_agents = {
+          key,
+          dir: curr.key === key && curr.dir === 'asc' ? 'desc' : 'asc',
+        };
+      }
       resetPagination('freeAgents');
       renderFreeAgents();
+      syncFreeAgentPrimarySortHeader(state.sort.free_agents);
       updateSortIndicators('freeAgentsTable', state.sort.free_agents);
     });
   });
@@ -5648,10 +5675,11 @@ function renderFreeAgents() {
     : (state.freeAgents || []);
   const allRows = sortedRows(filteredRows, state.sort.free_agents);
   const pagination = paginatedRows(allRows, 'freeAgents');
+  syncFreeAgentPrimarySortHeader(state.sort.free_agents);
   renderPaginationControls('freeAgents', pagination);
   if (!allRows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="7">No hay agentes libres registrados.</td>';
+    tr.innerHTML = '<td colspan="4">No hay agentes libres registrados.</td>';
     tbody.appendChild(tr);
     return;
   }
@@ -5660,23 +5688,31 @@ function renderFreeAgents() {
     const canAct = canSubmitFreeAgentAction();
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${escapeHtml(agent.name || '')}</td>
-      <td>${escapeHtml(agent.position || '')}</td>
-      <td>${escapeHtml(agent.rating || '')}</td>
+      <td class="free-agent-player-cell">
+        <div class="free-agent-player-row">
+          <div class="free-agent-player-main">
+            <strong>${escapeHtml(agent.name || '')}</strong>
+            <div class="free-agent-player-tags">
+              ${agent.position ? `<span class="free-agent-meta-tag free-agent-meta-tag--position">${escapeHtml(agent.position)}</span>` : ''}
+              ${agent.rating ? `<span class="free-agent-meta-tag">${escapeHtml(agent.rating)}</span>` : ''}
+            </div>
+          </div>
+          <div class="free-agent-inline-actions">
+            <button data-action="offer-free-agent" type="button" ${canAct ? '' : 'disabled'}>Ofertar</button>
+            <button data-action="negotiate-free-agent" type="button" class="ghost" ${canAct ? '' : 'disabled'}>Negociar</button>
+            <button
+              data-action="favorite-free-agent"
+              type="button"
+              class="free-agent-favorite-btn ${agent.is_favorite ? 'is-favorite' : ''}"
+              title="${agent.is_favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}"
+              aria-label="${agent.is_favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}"
+              ${canAct ? '' : 'disabled'}
+            >${agent.is_favorite ? '♥' : '♡'}</button>
+          </div>
+        </div>
+      </td>
       <td><span class="free-agent-type-pill ${freeAgentType === 'Restringido' ? 'free-agent-type-pill--restricted' : ''}">${escapeHtml(freeAgentType)}</span></td>
       <td>${escapeHtml(agent.agent || '')}</td>
-      <td class="free-agent-actions-cell">
-        <button data-action="offer-free-agent" type="button" ${canAct ? '' : 'disabled'}>Ofertar</button>
-        <button data-action="negotiate-free-agent" type="button" class="ghost" ${canAct ? '' : 'disabled'}>Negociar</button>
-        <button
-          data-action="favorite-free-agent"
-          type="button"
-          class="free-agent-favorite-btn ${agent.is_favorite ? 'is-favorite' : ''}"
-          title="${agent.is_favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}"
-          aria-label="${agent.is_favorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}"
-          ${canAct ? '' : 'disabled'}
-        >${agent.is_favorite ? '♥' : '♡'}</button>
-      </td>
       <td class="details-cell">${escapeHtml(agent.notes || '')}</td>
     `;
     tr.querySelector('[data-action="offer-free-agent"]')?.addEventListener('click', () => {
