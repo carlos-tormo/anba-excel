@@ -203,6 +203,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertIsNotNone(player)
         self.assertEqual("ATL", player["team_code"])
         self.assertEqual("2.296.274", player["salary_2026_text"])
+        self.assertEqual(2_296_274, round(float(player["salary_2026_num"])))
 
     def test_admin_approved_qo_rejection_removes_player_to_unrestricted_free_agency(self) -> None:
         self.db.update_setting("current_year", "2026")
@@ -310,6 +311,9 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("21.000.000", updated["salary_2026_text"])
         self.assertEqual("22.680.000", updated["salary_2027_text"])
         self.assertEqual("24.360.000", updated["salary_2028_text"])
+        self.assertEqual(21_000_000, round(float(updated["salary_2026_num"])))
+        self.assertEqual(22_680_000, round(float(updated["salary_2027_num"])))
+        self.assertEqual(24_360_000, round(float(updated["salary_2028_num"])))
         self.assertEqual("PO", updated["option_2028"])
         self.assertIsNone(updated["salary_2029_text"])
         self.assertEqual("Reg", updated["bird_rights"])

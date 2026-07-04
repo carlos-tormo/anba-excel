@@ -616,6 +616,10 @@ def normalize_exception_type(value: Any) -> Optional[str]:
     return str(value).strip() or None
 
 
+def parse_salary_amount(value: Any) -> Optional[float]:
+    return parse_amount_like(value)
+
+
 OFFSEASON_EXCEPTION_DEFINITIONS = {
     "room_mle": {
         "label": "Room Mid-Level Exception",
@@ -2227,6 +2231,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_profiles_name ON player_profiles(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_salary_history_profile_season ON player_salary_history(profile_id, season_year)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_salary_history_player_season ON player_salary_history(player_id, season_year)")
+            self._backfill_player_salary_numeric_values(conn)
             asset_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(assets)").fetchall()
@@ -2691,6 +2696,33 @@ class LeagueDB(DatabaseMaintenanceMixin):
             """
         ).fetchall()
         return {str(row["name_key"]): int(row["id"]) for row in rows if row["name_key"]}
+
+    def _backfill_player_salary_numeric_values(self, conn: sqlite3.Connection) -> int:
+        player_cols = {row["name"] for row in conn.execute("PRAGMA table_info(players)").fetchall()}
+        updated = 0
+        for season in PLAYER_CONTRACT_SEASONS:
+            text_col = f"salary_{season}_text"
+            num_col = f"salary_{season}_num"
+            if text_col not in player_cols or num_col not in player_cols:
+                continue
+            rows = conn.execute(
+                f"""
+                SELECT id, {text_col} AS salary_text
+                FROM players
+                WHERE {num_col} IS NULL
+                  AND COALESCE(TRIM({text_col}), '') != ''
+                """
+            ).fetchall()
+            for row in rows:
+                amount = parse_salary_amount(row["salary_text"])
+                if amount is None:
+                    continue
+                conn.execute(
+                    f"UPDATE players SET {num_col} = ? WHERE id = ?",
+                    (amount, int(row["id"])),
+                )
+                updated += 1
+        return updated
 
     def _backfill_player_salary_history_from_snapshots(self, conn: sqlite3.Connection) -> int:
         snapshot_table = conn.execute(
@@ -6461,19 +6493,19 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             int(max_order) + 1,
                             selection_text,
                             salary_texts[2025],
-                            parse_float(salary_texts[2025]),
+                            parse_salary_amount(salary_texts[2025]),
                             salary_texts[2025],
-                            parse_float(salary_texts[2025]),
+                            parse_salary_amount(salary_texts[2025]),
                             salary_texts[2026],
-                            parse_float(salary_texts[2026]),
+                            parse_salary_amount(salary_texts[2026]),
                             salary_texts[2027],
-                            parse_float(salary_texts[2027]),
+                            parse_salary_amount(salary_texts[2027]),
                             salary_texts[2028],
-                            parse_float(salary_texts[2028]),
+                            parse_salary_amount(salary_texts[2028]),
                             salary_texts[2029],
-                            parse_float(salary_texts[2029]),
+                            parse_salary_amount(salary_texts[2029]),
                             salary_texts[2030],
-                            parse_float(salary_texts[2030]),
+                            parse_salary_amount(salary_texts[2030]),
                             timestamp,
                             timestamp,
                         ),
@@ -12679,17 +12711,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     values["position"],
                     values["years_left"],
                     values["salary_2025_text"],
-                    parse_float(values["salary_2025_text"]),
+                    parse_salary_amount(values["salary_2025_text"]),
                     values["salary_2026_text"],
-                    parse_float(values["salary_2026_text"]),
+                    parse_salary_amount(values["salary_2026_text"]),
                     values["salary_2027_text"],
-                    parse_float(values["salary_2027_text"]),
+                    parse_salary_amount(values["salary_2027_text"]),
                     values["salary_2028_text"],
-                    parse_float(values["salary_2028_text"]),
+                    parse_salary_amount(values["salary_2028_text"]),
                     values["salary_2029_text"],
-                    parse_float(values["salary_2029_text"]),
+                    parse_salary_amount(values["salary_2029_text"]),
                     values["salary_2030_text"],
-                    parse_float(values["salary_2030_text"]),
+                    parse_salary_amount(values["salary_2030_text"]),
                     values["option_2025"],
                     values["option_2026"],
                     values["option_2027"],
@@ -12979,19 +13011,19 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "two_way" if str(payload.get("bird_rights") or "").upper() == "TW" else "normal",
                 waiver.get("player_name") or payload.get("name") or "Cut Player",
                 salary_texts.get(PLAYER_CONTRACT_SEASONS[0]),
-                parse_float(salary_texts.get(PLAYER_CONTRACT_SEASONS[0])),
+                parse_salary_amount(salary_texts.get(PLAYER_CONTRACT_SEASONS[0])),
                 salary_texts.get(2025),
-                parse_float(salary_texts.get(2025)),
+                parse_salary_amount(salary_texts.get(2025)),
                 salary_texts.get(2026),
-                parse_float(salary_texts.get(2026)),
+                parse_salary_amount(salary_texts.get(2026)),
                 salary_texts.get(2027),
-                parse_float(salary_texts.get(2027)),
+                parse_salary_amount(salary_texts.get(2027)),
                 salary_texts.get(2028),
-                parse_float(salary_texts.get(2028)),
+                parse_salary_amount(salary_texts.get(2028)),
                 salary_texts.get(2029),
-                parse_float(salary_texts.get(2029)),
+                parse_salary_amount(salary_texts.get(2029)),
                 salary_texts.get(2030),
-                parse_float(salary_texts.get(2030)),
+                parse_salary_amount(salary_texts.get(2030)),
                 timestamp,
                 timestamp,
             ),
@@ -13134,12 +13166,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 values["name"],
                 values["position"],
                 values["years_left"],
-                values["salary_2025_text"], parse_float(values["salary_2025_text"]),
-                values["salary_2026_text"], parse_float(values["salary_2026_text"]),
-                values["salary_2027_text"], parse_float(values["salary_2027_text"]),
-                values["salary_2028_text"], parse_float(values["salary_2028_text"]),
-                values["salary_2029_text"], parse_float(values["salary_2029_text"]),
-                values["salary_2030_text"], parse_float(values["salary_2030_text"]),
+                values["salary_2025_text"], parse_salary_amount(values["salary_2025_text"]),
+                values["salary_2026_text"], parse_salary_amount(values["salary_2026_text"]),
+                values["salary_2027_text"], parse_salary_amount(values["salary_2027_text"]),
+                values["salary_2028_text"], parse_salary_amount(values["salary_2028_text"]),
+                values["salary_2029_text"], parse_salary_amount(values["salary_2029_text"]),
+                values["salary_2030_text"], parse_salary_amount(values["salary_2030_text"]),
                 values["option_2025"], values["option_2026"], values["option_2027"], values["option_2028"], values["option_2029"], values["option_2030"],
                 values["provisional_amounts"], values["partially_guaranteed"],
                 values["salary_2025_provisional"], values["salary_2026_provisional"], values["salary_2027_provisional"],
@@ -14726,7 +14758,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             assignments.append(f"{salary_field} = ?")
             values.append(salary_value)
             assignments.append(f"salary_{season}_num = ?")
-            values.append(parse_float(salary_value))
+            values.append(parse_salary_amount(salary_value))
 
             guaranteed_field = f"salary_{season}_guaranteed_text"
             assignments.append(f"{guaranteed_field} = ?")
@@ -15018,17 +15050,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     1 if parse_bool(payload.get("exclude_from_gasto")) else 0,
                     1 if parse_bool(payload.get("exclude_from_cap")) else 0,
                     salary_texts[2025],
-                    parse_float(salary_texts[2025]),
+                    parse_salary_amount(salary_texts[2025]),
                     salary_texts[2026],
-                    parse_float(salary_texts[2026]),
+                    parse_salary_amount(salary_texts[2026]),
                     salary_texts[2027],
-                    parse_float(salary_texts[2027]),
+                    parse_salary_amount(salary_texts[2027]),
                     salary_texts[2028],
-                    parse_float(salary_texts[2028]),
+                    parse_salary_amount(salary_texts[2028]),
                     salary_texts[2029],
-                    parse_float(salary_texts[2029]),
+                    parse_salary_amount(salary_texts[2029]),
                     salary_texts[2030],
-                    parse_float(salary_texts[2030]),
+                    parse_salary_amount(salary_texts[2030]),
                     now,
                     now,
                 ),
