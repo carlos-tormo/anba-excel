@@ -670,6 +670,27 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("BKN", client["interests"][0]["team_code"])
         self.assertEqual("ATL", client["offers"][0]["team_code"])
 
+    def test_cartera_clients_include_persisted_ruleouts_for_agent(self) -> None:
+        self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})
+        session = {"role": "co_admin", "email": "agent@example.com", "agent_name": "Agent Smith"}
+
+        rows = self.db.set_free_agent_team_ruleout(self.free_agent_id, "BKN", session)
+        self.assertEqual("BKN", rows[0]["team_code"])
+
+        with self.assertRaises(PermissionError):
+            self.db.set_free_agent_team_ruleout(
+                self.free_agent_id,
+                "ATL",
+                {"role": "co_admin", "email": "other-agent@example.com", "agent_name": "Other Agent"},
+            )
+
+        payload = self.db.list_cartera_clients_for_session(session)
+        client = payload["clients"][0]
+        self.assertEqual("BKN", client["ruled_out_teams"][0]["team_code"])
+
+        rows = self.db.delete_free_agent_team_ruleout(self.free_agent_id, "BKN", session)
+        self.assertEqual([], rows)
+
 
 if __name__ == "__main__":
     unittest.main()

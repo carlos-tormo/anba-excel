@@ -1385,6 +1385,27 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS free_agent_team_ruleouts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    free_agent_id INTEGER NOT NULL REFERENCES free_agents(id) ON DELETE CASCADE,
+                    agent_name TEXT NOT NULL,
+                    team_code TEXT NOT NULL REFERENCES teams(code) ON DELETE CASCADE,
+                    created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    created_by_email TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(free_agent_id, agent_name, team_code)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_free_agent_team_ruleouts_client
+                ON free_agent_team_ruleouts (free_agent_id, agent_name, team_code)
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_coadmin_vote_scores_vote
                 ON coadmin_vote_scores (vote_id)
                 """
@@ -10506,6 +10527,73 @@ class LeagueDB(DatabaseMaintenanceMixin):
         def items(keys: List[str]) -> List[Dict[str, Any]]:
             return [offseason_exception_item(key, amounts.get(key, 0.0)) for key in keys]
 
+        def split_by_apron_room(keys: List[str], apron_limit: float) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+            apron_room = float(apron_limit or 0.0) - float(apron_account or 0.0)
+            available: List[Dict[str, Any]] = []
+            blocked: List[Dict[str, Any]] = []
+            for item in items(keys):
+                if float(item.get("amount") or 0.0) <= max(0.0, apron_room):
+                    available.append(item)
+                else:
+                    item = {**item, "ineligible_reason": "insufficient_apron_room", "apron_room": round(max(0.0, apron_room))}
+                    blocked.append(item)
+            return available, blocked
+
+        def apron_room(apron_limit: float) -> float:
+            return max(0.0, float(apron_limit or 0.0) - float(apron_account or 0.0))
+
+        def insufficient_apron_item(key: str, room: float, apron: str) -> Dict[str, Any]:
+            item = offseason_exception_item(key, amounts.get(key, 0.0))
+            return {
+                **item,
+                "ineligible_reason": "insufficient_apron_room",
+                "apron_room": round(max(0.0, room)),
+                "apron": apron,
+            }
+
+        def capped_exception_item(key: str, room: float, apron: str) -> Dict[str, Any]:
+            item = offseason_exception_item(key, amounts.get(key, 0.0))
+            full_amount = float(item.get("amount") or 0.0)
+            capped_amount = min(full_amount, max(0.0, room))
+            if capped_amount < full_amount:
+                item = {
+                    **item,
+                    "amount": round(capped_amount),
+                    "full_amount": round(full_amount),
+                    "capped_by": apron,
+                    "apron_room": round(max(0.0, room)),
+                }
+            return item
+
+        def below_first_apron_exception_availability() -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+            first_room = apron_room(first_apron)
+            second_room = apron_room(second_apron)
+            tmle_amount = float(amounts.get("tmle") or 0.0)
+            available: List[Dict[str, Any]] = []
+            blocked: List[Dict[str, Any]] = []
+            local_notes: List[str] = []
+
+            if first_room >= tmle_amount:
+                available.append(capped_exception_item("ntmle", first_room, "first_apron"))
+                bae_item = offseason_exception_item("bae", amounts.get("bae", 0.0))
+                if float(bae_item.get("amount") or 0.0) <= first_room:
+                    available.append(bae_item)
+                else:
+                    blocked.append(insufficient_apron_item("bae", first_room, "first_apron"))
+                if any(item.get("capped_by") for item in available):
+                    local_notes.append("La NTMLE se muestra limitada al espacio disponible hasta el 1er apron.")
+            else:
+                blocked.append(insufficient_apron_item("ntmle", first_room, "first_apron"))
+                blocked.append(insufficient_apron_item("bae", first_room, "first_apron"))
+                if tmle_amount <= second_room:
+                    available.append(offseason_exception_item("tmle", amounts.get("tmle", 0.0)))
+                    local_notes.append(
+                        "El espacio hasta el 1er apron es inferior a la TMLE; se muestra la TMLE como alternativa."
+                    )
+                else:
+                    blocked.append(insufficient_apron_item("tmle", second_room, "second_apron"))
+            return available, blocked, local_notes
+
         notes: List[str] = []
         paths: List[Dict[str, Any]] = []
         eligible: List[Dict[str, Any]] = []
@@ -10515,6 +10603,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         ntmle_amount = float(amounts.get("ntmle") or 0.0)
         if raw_cap_space > 0 and raw_cap_space < ntmle_amount:
+            over_cap_eligible, over_cap_blocked, over_cap_notes = below_first_apron_exception_availability()
             operating_mode = "choice_pending"
             status = "choice_pending"
             paths = [
@@ -10528,13 +10617,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "key": "over_cap",
                     "label": "Mantener excepciones",
                     "description": "Pierde el espacio salarial y opera como equipo over-the-cap.",
-                    "eligible": items(["ntmle", "bae"]),
+                    "eligible": over_cap_eligible,
+                    "ineligible": over_cap_blocked,
                 },
             ]
-            ineligible = []
+            ineligible = over_cap_blocked
             notes.append(
                 "El equipo tiene espacio positivo, pero menor que la NTMLE. Admin debe decidir si usa cap space o mantiene excepciones."
             )
+            notes.extend(over_cap_notes)
             notes.append("La BAE queda sujeta a revisar si fue usada la temporada anterior.")
         elif raw_cap_space > 0:
             operating_mode = "room"
@@ -10548,14 +10639,22 @@ class LeagueDB(DatabaseMaintenanceMixin):
             notes.append("Equipo proyectado por encima del 2do apron: sin excepciones principales disponibles.")
         elif apron_account >= first_apron:
             operating_mode = "above_first_below_second"
-            eligible = items(["tmle"])
-            ineligible = items(["room_mle", "ntmle", "bae"])
-            notes.append("El uso de la TMLE genera hard cap en el 2do apron.")
+            eligible, blocked_by_apron = split_by_apron_room(["tmle"], second_apron)
+            ineligible = items(["room_mle", "ntmle", "bae"]) + blocked_by_apron
+            if eligible:
+                notes.append("El uso de la TMLE genera hard cap en el 2do apron.")
+            else:
+                notes.append("La TMLE no cabe completa bajo el 2do apron.")
         else:
             operating_mode = "over_cap_below_first"
-            eligible = items(["ntmle", "bae"])
-            ineligible = items(["room_mle", "tmle"])
-            notes.append("El uso de la NTMLE o BAE genera hard cap en el 1er apron.")
+            eligible, blocked_by_apron, below_first_notes = below_first_apron_exception_availability()
+            eligible_keys = {str(item.get("key") or "").strip() for item in eligible}
+            ineligible = items(["room_mle"]) + ([] if "tmle" in eligible_keys else items(["tmle"])) + blocked_by_apron
+            if any(str(item.get("key") or "").strip() in {"ntmle", "bae"} for item in eligible):
+                notes.append("El uso de la NTMLE o BAE genera hard cap en el 1er apron.")
+            if any(str(item.get("key") or "").strip() == "tmle" for item in eligible):
+                notes.append("El uso de la TMLE genera hard cap en el 2do apron.")
+            notes.extend(below_first_notes)
             notes.append("La BAE queda sujeta a revisar si fue usada la temporada anterior.")
 
         return {
@@ -11371,6 +11470,128 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return cur.rowcount > 0
 
+    def _agent_name_for_free_agent_ruleout(
+        self,
+        free_agent: sqlite3.Row,
+        session: Dict[str, Any],
+    ) -> str:
+        role = str(session.get("role") or "").strip().lower()
+        free_agent_agent = re.sub(r"\s+", " ", str(free_agent["agent"] or "").strip())
+        session_agent = re.sub(r"\s+", " ", str(session.get("agent_name") or "").strip())
+        if role == "admin":
+            if not free_agent_agent:
+                raise ValueError("free_agent_agent_required")
+            return free_agent_agent
+        if role == "co_admin":
+            if not free_agent_agent or not session_agent:
+                raise PermissionError("agent_required")
+            if free_agent_agent.casefold() != session_agent.casefold():
+                raise PermissionError("agent_client_required")
+            return free_agent_agent
+        raise PermissionError("admin_or_coadmin_required")
+
+    def _free_agent_team_ruleouts_conn(
+        self,
+        conn: sqlite3.Connection,
+        free_agent_id: int,
+        agent_name: str,
+    ) -> List[Dict[str, Any]]:
+        cur = conn.execute(
+            """
+            SELECT
+                r.*,
+                t.name AS team_name
+            FROM free_agent_team_ruleouts r
+            LEFT JOIN teams t ON t.code = r.team_code
+            WHERE r.free_agent_id = ? AND lower(trim(r.agent_name)) = lower(trim(?))
+            ORDER BY r.team_code
+            """,
+            (free_agent_id, agent_name),
+        )
+        return [row_to_dict(cur, row) for row in cur.fetchall()]
+
+    def set_free_agent_team_ruleout(
+        self,
+        free_agent_id: Any,
+        team_code: Any,
+        session: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        parsed_id = parse_int(free_agent_id)
+        normalized_team = normalize_team_code(team_code)
+        if parsed_id is None or parsed_id <= 0:
+            raise ValueError("invalid_free_agent_id")
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            free_agent = conn.execute(
+                "SELECT id, agent FROM free_agents WHERE id = ?",
+                (parsed_id,),
+            ).fetchone()
+            if not free_agent:
+                raise ValueError("free_agent_not_found")
+            agent_name = self._agent_name_for_free_agent_ruleout(free_agent, session)
+            team = conn.execute("SELECT code FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+            if not team:
+                raise ValueError("team_not_found")
+            conn.execute(
+                """
+                INSERT INTO free_agent_team_ruleouts (
+                    free_agent_id, agent_name, team_code, created_by_user_id,
+                    created_by_email, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(free_agent_id, agent_name, team_code)
+                DO UPDATE SET
+                    created_by_user_id = excluded.created_by_user_id,
+                    created_by_email = excluded.created_by_email,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    parsed_id,
+                    agent_name,
+                    normalized_team,
+                    parse_int(session.get("user_id")),
+                    str(session.get("email") or "").strip().lower() or None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            rows = self._free_agent_team_ruleouts_conn(conn, parsed_id, agent_name)
+            conn.commit()
+            return rows
+
+    def delete_free_agent_team_ruleout(
+        self,
+        free_agent_id: Any,
+        team_code: Any,
+        session: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        parsed_id = parse_int(free_agent_id)
+        normalized_team = normalize_team_code(team_code)
+        if parsed_id is None or parsed_id <= 0:
+            raise ValueError("invalid_free_agent_id")
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        with self.connect() as conn:
+            free_agent = conn.execute(
+                "SELECT id, agent FROM free_agents WHERE id = ?",
+                (parsed_id,),
+            ).fetchone()
+            if not free_agent:
+                raise ValueError("free_agent_not_found")
+            agent_name = self._agent_name_for_free_agent_ruleout(free_agent, session)
+            conn.execute(
+                """
+                DELETE FROM free_agent_team_ruleouts
+                WHERE free_agent_id = ? AND lower(trim(agent_name)) = lower(trim(?)) AND team_code = ?
+                """,
+                (parsed_id, agent_name, normalized_team),
+            )
+            rows = self._free_agent_team_ruleouts_conn(conn, parsed_id, agent_name)
+            conn.commit()
+            return rows
+
     def free_agent_favorite_ids_for_team(self, team_code: Any) -> set[int]:
         normalized_team = normalize_team_code(team_code)
         if not normalized_team:
@@ -11538,6 +11759,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             interests_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
             favorites_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
             offers_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
+            ruleouts_by_client: Dict[int, List[Dict[str, Any]]] = {client_id: [] for client_id in client_ids}
             if client_ids:
                 placeholders = ",".join("?" for _ in client_ids)
                 interest_cur = conn.execute(
@@ -11605,6 +11827,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         continue
                     seen_offer_teams.add(seen_key)
                     offers_by_client.setdefault(free_agent_key, []).append(item)
+                ruleout_cur = conn.execute(
+                    f"""
+                    SELECT
+                        r.*,
+                        t.name AS team_name
+                    FROM free_agent_team_ruleouts r
+                    LEFT JOIN teams t ON t.code = r.team_code
+                    WHERE r.free_agent_id IN ({placeholders})
+                    ORDER BY r.updated_at DESC, r.team_code
+                    """,
+                    client_ids,
+                )
+                for row in ruleout_cur.fetchall():
+                    item = row_to_dict(ruleout_cur, row)
+                    free_agent_key = parse_int(item.get("free_agent_id"))
+                    if free_agent_key is None:
+                        continue
+                    ruleouts_by_client.setdefault(free_agent_key, []).append(item)
 
         normalized_clients: List[Dict[str, Any]] = []
         for client in clients:
@@ -11612,6 +11852,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             interests = interests_by_client.get(client_id, [])
             favorites = favorites_by_client.get(client_id, [])
             offers = offers_by_client.get(client_id, [])
+            ruleouts = [
+                item
+                for item in ruleouts_by_client.get(client_id, [])
+                if str(item.get("agent_name") or "").strip().casefold()
+                == str(client.get("agent") or "").strip().casefold()
+            ]
             normalized_clients.append(
                 {
                     "id": client_id,
@@ -11655,6 +11901,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             "updated_at": str(item.get("updated_at") or item.get("created_at") or "").strip(),
                         }
                         for item in offers
+                    ],
+                    "ruled_out_teams": [
+                        {
+                            "id": parse_int(item.get("id")),
+                            "team_code": normalize_team_code(item.get("team_code")),
+                            "team_name": str(item.get("team_name") or "").strip(),
+                            "updated_at": str(item.get("updated_at") or item.get("created_at") or "").strip(),
+                        }
+                        for item in ruleouts
                     ],
                 }
             )
@@ -11705,12 +11960,39 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     team_data.get("assets") or [],
                 )
                 mode = str(estimate.get("operating_mode") or "")
+                eligible_items = [
+                    item
+                    for item in estimate.get("eligible") or []
+                    if str(item.get("key") or "").strip() in GENERATED_OFFSEASON_EXCEPTION_KEYS
+                ]
                 if mode == "choice_pending":
                     choice = choices.get(team_code)
                     if choice == "room":
-                        exception_keys = ["room_mle"]
+                        room_path = next(
+                            (
+                                path for path in estimate.get("paths") or []
+                                if str(path.get("key") or "").strip() == "room"
+                            ),
+                            {},
+                        )
+                        exception_items = [
+                            item
+                            for item in room_path.get("eligible") or []
+                            if str(item.get("key") or "").strip() in GENERATED_OFFSEASON_EXCEPTION_KEYS
+                        ]
                     elif choice in {"over_cap", "exceptions"}:
-                        exception_keys = ["ntmle", "bae"]
+                        over_cap_path = next(
+                            (
+                                path for path in estimate.get("paths") or []
+                                if str(path.get("key") or "").strip() == "over_cap"
+                            ),
+                            {},
+                        )
+                        exception_items = [
+                            item
+                            for item in over_cap_path.get("eligible") or []
+                            if str(item.get("key") or "").strip() in GENERATED_OFFSEASON_EXCEPTION_KEYS
+                        ]
                     else:
                         skipped.append(
                             {
@@ -11721,13 +12003,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         )
                         continue
                 elif mode == "room":
-                    exception_keys = ["room_mle"]
+                    exception_items = eligible_items
                 elif mode == "over_cap_below_first":
-                    exception_keys = ["ntmle", "bae"]
+                    exception_items = eligible_items
                 elif mode == "above_first_below_second":
-                    exception_keys = ["tmle"]
+                    exception_items = eligible_items
                 else:
-                    exception_keys = []
+                    exception_items = []
 
                 placeholders = ",".join("?" for _ in GENERATED_OFFSEASON_EXCEPTION_KEYS)
                 conn.execute(
@@ -11748,9 +12030,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 ).fetchone()["mx"]
                 row_order = int(mx)
                 values = estimate.get("values") or {}
-                for key in exception_keys:
+                for item in exception_items:
+                    key = str(item.get("key") or "").strip()
+                    if key not in GENERATED_OFFSEASON_EXCEPTION_KEYS:
+                        continue
                     definition = OFFSEASON_EXCEPTION_DEFINITIONS[key]
-                    amount = round(float(values.get(key) or 0.0))
+                    amount = round(float(item.get("amount") or values.get(key) or 0.0))
                     row_order += 1
                     cur = conn.execute(
                         """
@@ -20183,6 +20468,65 @@ QUALITY REQUIREMENTS
             return
 
         payload = self._read_json()
+
+        if parsed.path.startswith("/api/cartera/clients/") and parsed.path.endswith("/ruleout"):
+            if not self._require_admin_or_coadmin():
+                return
+            if not self._require_csrf():
+                return
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 5:
+                self._json(404, {"error": "not_found"})
+                return
+            free_agent_id = parse_int(parts[3])
+            if free_agent_id is None:
+                self._json(400, {"error": "invalid_free_agent_id"})
+                return
+            team_code = normalize_team_code(payload.get("team_code"))
+            ruled_out = parse_bool(payload.get("ruled_out"))
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            try:
+                if ruled_out:
+                    rows = self.db.set_free_agent_team_ruleout(
+                        free_agent_id,
+                        team_code,
+                        self._current_session() or {},
+                    )
+                else:
+                    rows = self.db.delete_free_agent_team_ruleout(
+                        free_agent_id,
+                        team_code,
+                        self._current_session() or {},
+                    )
+            except PermissionError as err:
+                self._json(403, {"error": str(err) or "agent_client_required"})
+                return
+            except ValueError as err:
+                message = str(err) or "invalid_ruleout"
+                status = 404 if message == "free_agent_not_found" else 400
+                self._json(status, {"error": message})
+                return
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "free_agent_id": free_agent_id,
+                    "team_code": team_code,
+                    "ruled_out": bool(ruled_out),
+                    "ruled_out_teams": [
+                        {
+                            "id": parse_int(item.get("id")),
+                            "team_code": normalize_team_code(item.get("team_code")),
+                            "team_name": str(item.get("team_name") or "").strip(),
+                            "updated_at": str(item.get("updated_at") or item.get("created_at") or "").strip(),
+                        }
+                        for item in rows
+                    ],
+                },
+            )
+            return
 
         if parsed.path.startswith("/api/me/notifications/") and parsed.path.endswith("/read"):
             if not self._require_authenticated():

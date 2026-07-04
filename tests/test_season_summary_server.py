@@ -695,6 +695,80 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual("over_cap_below_first", estimate["operating_mode"])
         self.assertEqual(["ntmle", "bae"], [item["key"] for item in estimate["eligible"]])
 
+    def test_offseason_exception_estimate_caps_ntmle_to_first_apron_room(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Limited NTMLE Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2025_text": "185945000",
+            },
+        )
+
+        team = self.db.get_team("ATL")
+        estimate = team["exception_estimates"]["2025"]
+        eligible = {item["key"]: item for item in estimate["eligible"]}
+
+        self.assertEqual("over_cap_below_first", estimate["operating_mode"])
+        self.assertIn("ntmle", eligible)
+        self.assertEqual(10000000, eligible["ntmle"]["amount"])
+        self.assertGreater(eligible["ntmle"]["full_amount"], eligible["ntmle"]["amount"])
+        self.assertEqual("first_apron", eligible["ntmle"]["capped_by"])
+
+    def test_offseason_exception_estimate_falls_back_to_tmle_when_first_apron_room_is_too_small(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Near First Apron Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2025_text": "193000000",
+            },
+        )
+
+        team = self.db.get_team("ATL")
+        estimate = team["exception_estimates"]["2025"]
+
+        self.assertEqual("over_cap_below_first", estimate["operating_mode"])
+        self.assertEqual(["tmle"], [item["key"] for item in estimate["eligible"]])
+        blocked = {
+            item["key"]: item
+            for item in estimate["ineligible"]
+            if item.get("ineligible_reason") == "insufficient_apron_room"
+        }
+        self.assertIn("ntmle", blocked)
+        self.assertIn("bae", blocked)
+
+    def test_offseason_exception_estimate_blocks_tmle_that_does_not_fit_under_second_apron(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Near Second Apron Player",
+                "bird_rights": "Reg",
+                "position": "PF",
+                "salary_2025_text": "205500000",
+            },
+        )
+
+        team = self.db.get_team("ATL")
+        estimate = team["exception_estimates"]["2025"]
+
+        self.assertEqual("above_first_below_second", estimate["operating_mode"])
+        self.assertEqual([], [item["key"] for item in estimate["eligible"]])
+        blocked = {
+            item["key"]: item
+            for item in estimate["ineligible"]
+            if item.get("ineligible_reason") == "insufficient_apron_room"
+        }
+        self.assertIn("tmle", blocked)
+
     def test_offseason_exception_estimate_above_second_apron_has_no_main_exception(self) -> None:
         self.db.update_setting("current_year", "2025")
         self.db.update_setting("salary_cap_2025", "154647000")
@@ -740,6 +814,32 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertEqual(2, sum(len(row["created"]) for row in second["generated"]))
         self.assertEqual(2, len(generated))
         self.assertEqual({"ntmle", "bae"}, {asset["generated_exception_key"] for asset in generated})
+
+    def test_generate_offseason_exceptions_uses_capped_ntmle_amount(self) -> None:
+        self.db.update_setting("current_year", "2025")
+        self.db.update_setting("salary_cap_2025", "154647000")
+        self.db.create_player(
+            "ATL",
+            {
+                "name": "Capped Generated Exception Player",
+                "bird_rights": "Reg",
+                "position": "C",
+                "salary_2025_text": "185945000",
+            },
+        )
+
+        result = self.db.generate_offseason_exceptions(2025)
+        team = self.db.get_team("ATL")
+        generated = {
+            asset["generated_exception_key"]: asset
+            for asset in team["assets"]
+            if asset.get("asset_type") == "exception"
+            and asset.get("generated_exception_season") == 2025
+        }
+
+        self.assertEqual(2, sum(len(row["created"]) for row in result["generated"]))
+        self.assertIn("ntmle", generated)
+        self.assertEqual(10000000, round(float(generated["ntmle"]["amount_num"])))
 
     def test_generate_offseason_exceptions_uses_choice_for_small_cap_space_team(self) -> None:
         self.db.update_setting("current_year", "2025")

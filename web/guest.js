@@ -8351,7 +8351,63 @@ function renderWalletAppealPlayerSelect() {
 
 function walletClientTeamCodes(client, key) {
   const items = Array.isArray(client?.[key]) ? client[key] : [];
-  return new Set(items.map((item) => String(item.team_code || '').trim().toUpperCase()).filter(Boolean));
+  return new Set(items.map((item) => {
+    if (typeof item === 'string') return item.trim().toUpperCase();
+    return String(item.team_code || '').trim().toUpperCase();
+  }).filter(Boolean));
+}
+
+function walletMatchRowsByTeam() {
+  const amount = parseAmountLike(state.wallet.amountText);
+  const rows = Array.isArray(state.wallet.rows) ? state.wallet.rows : [];
+  if (!amount || amount <= 0 || state.wallet.loading || state.wallet.error) return new Map();
+  return new Map(
+    rows
+      .map((row) => [String(row?.team_code || '').trim().toUpperCase(), row])
+      .filter(([code]) => Boolean(code))
+  );
+}
+
+function walletRenounceInfoHtml(matchRow) {
+  const rights = Array.isArray(matchRow?.rights_to_renounce) ? matchRow.rights_to_renounce : [];
+  const needsReview = Boolean(matchRow?.needs_renounce_review);
+  if (!rights.length && !needsReview) return '';
+  const content = rights.length
+    ? rights.map((right) => {
+      const name = escapeHtml(right.player_name || 'Jugador');
+      const hold = escapeHtml(right.hold_label || 'Cap hold');
+      return `<li><strong>${name}</strong><span>${hold}</span></li>`;
+    }).join('')
+    : '<li><strong>Revisión necesaria</strong><span>Puede requerir renuncias o limpieza de derechos.</span></li>';
+  return `
+    <span class="wallet-team-info" tabindex="0" aria-label="Renuncias posibles">
+      i
+      <span class="wallet-team-info-popover">
+        <strong>Para llegar a este importe</strong>
+        <ul>${content}</ul>
+      </span>
+    </span>
+  `;
+}
+
+async function toggleWalletRuleoutTeam(teamCode) {
+  const selectedClient = selectedWalletAppealClient();
+  const code = String(teamCode || '').trim().toUpperCase();
+  const clientId = Number(selectedClient?.id || 0);
+  if (!clientId || !code) return;
+  const ruledOutTeams = walletClientTeamCodes(selectedClient, 'ruled_out_teams');
+  const nextRuledOut = !ruledOutTeams.has(code);
+  try {
+    const data = await api(`/api/cartera/clients/${clientId}/ruleout`, {
+      method: 'POST',
+      body: JSON.stringify({ team_code: code, ruled_out: nextRuledOut }),
+    });
+    selectedClient.ruled_out_teams = Array.isArray(data.ruled_out_teams) ? data.ruled_out_teams : [];
+    renderWalletAppeal();
+  } catch (err) {
+    state.wallet.appealError = err.message || 'No se pudo actualizar el descarte del equipo.';
+    renderWalletAppeal();
+  }
 }
 
 function renderWalletAppeal() {
@@ -8368,6 +8424,10 @@ function renderWalletAppeal() {
   const selectedClient = selectedWalletAppealClient();
   const offerTeams = walletClientTeamCodes(selectedClient, 'offers');
   const interestTeams = walletClientTeamCodes(selectedClient, 'interests');
+  const ruledOutTeams = walletClientTeamCodes(selectedClient, 'ruled_out_teams');
+  const matchRowsByTeam = walletMatchRowsByTeam();
+  const amount = parseAmountLike(state.wallet.amountText);
+  const affordabilityFilterActive = Boolean(amount && amount > 0 && !state.wallet.loading && !state.wallet.error);
 
   status.classList.toggle('is-error', Boolean(state.wallet.appealError));
   if (state.wallet.appealLoading) {
@@ -8377,7 +8437,10 @@ function renderWalletAppeal() {
   } else if (!rankings.length && !rows.length) {
     status.textContent = 'Todavía no hay tabla de atractivo cargada por la administración.';
   } else if (selectedClient) {
-    status.textContent = `${rows.length || rankings.length} equipos · ${offerTeams.size} con oferta · ${interestTeams.size} con interés para ${selectedClient.name || 'este jugador'}.`;
+    const filterText = affordabilityFilterActive
+      ? ` · ${matchRowsByTeam.size} llegan a ${formatMoneyDots(amount)}`
+      : '';
+    status.textContent = `${rows.length || rankings.length} equipos · ${offerTeams.size} con oferta · ${interestTeams.size} con interés · ${ruledOutTeams.size} descartados${filterText} para ${selectedClient.name || 'este jugador'}.`;
   } else {
     status.textContent = 'Selecciona un jugador representado para ver señales de mercado.';
   }
@@ -8419,16 +8482,50 @@ function renderWalletAppeal() {
           const code = String(cell.team_code || '').trim().toUpperCase();
           const hasOffer = offerTeams.has(code);
           const hasInterest = !hasOffer && interestTeams.has(code);
-          const cellClass = hasOffer ? 'wallet-appeal-cell--offer' : hasInterest ? 'wallet-appeal-cell--interest' : '';
+          const isRuledOut = ruledOutTeams.has(code);
+          const matchRow = code ? matchRowsByTeam.get(code) : null;
+          const isUnreachable = Boolean(code && affordabilityFilterActive && !matchRow);
+          const classes = [
+            hasOffer ? 'wallet-appeal-cell--offer' : '',
+            hasInterest ? 'wallet-appeal-cell--interest' : '',
+            isUnreachable ? 'wallet-appeal-cell--unreachable' : '',
+            isRuledOut ? 'wallet-appeal-cell--ruled-out' : '',
+          ].filter(Boolean).join(' ');
+          const titleParts = [
+            cell.team_name || code,
+            isUnreachable ? 'No llega al importe filtrado' : '',
+            isRuledOut ? 'Descartado por el agente' : '',
+          ].filter(Boolean);
           return `
-            <td class="${cellClass}" title="${escapeHtml(cell.team_name || code)}">
-              ${code ? `<span class="wallet-appeal-team">${draftOrderLogoHtml(code, 'wallet-rights-logo')}<strong>${escapeHtml(code)}</strong></span>` : '-'}
+            <td class="${classes}" title="${escapeHtml(titleParts.join(' · '))}">
+              ${code ? `
+                <span class="wallet-appeal-team">
+                  ${draftOrderLogoHtml(code, 'wallet-rights-logo')}
+                  <strong>${escapeHtml(code)}</strong>
+                  ${matchRow ? walletRenounceInfoHtml(matchRow) : ''}
+                  <button
+                    type="button"
+                    class="wallet-ruleout-btn ${isRuledOut ? 'is-active' : ''}"
+                    data-wallet-ruleout-team="${escapeHtml(code)}"
+                    title="${isRuledOut ? 'Reactivar equipo para este jugador' : 'Descartar equipo para este jugador'}"
+                    aria-label="${isRuledOut ? 'Reactivar equipo para este jugador' : 'Descartar equipo para este jugador'}"
+                  >${isRuledOut ? '↺' : '×'}</button>
+                </span>
+              ` : '-'}
             </td>
           `;
         }).join('')}
       </tr>
     `;
   }).join('');
+
+  tbody.querySelectorAll('[data-wallet-ruleout-team]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void toggleWalletRuleoutTeam(button.dataset.walletRuleoutTeam);
+    });
+  });
 }
 
 function walletClientRightsLabel(client) {
@@ -8744,38 +8841,20 @@ function renderWallet() {
   renderWalletControls();
   renderWalletAppeal();
   const status = document.getElementById('walletStatus');
-  const results = document.getElementById('walletResults');
-  if (!status || !results) return;
+  if (!status) return;
 
   const amount = parseAmountLike(state.wallet.amountText);
   const rows = Array.isArray(state.wallet.rows) ? state.wallet.rows : [];
   status.classList.toggle('is-error', Boolean(state.wallet.error));
   if (state.wallet.loading) {
-    status.textContent = 'Buscando equipos...';
+    status.textContent = 'Calculando filtro de importe...';
   } else if (state.wallet.error) {
     status.textContent = state.wallet.error;
   } else if (!amount || amount <= 0) {
-    status.textContent = 'Introduce un importe para ver qué equipos podrían llegar a esa cifra.';
+    status.textContent = 'Introduce un importe para sombrear en la tabla los equipos que no llegan a esa cifra.';
   } else {
-    status.textContent = `${rows.length} equipo${rows.length === 1 ? '' : 's'} encontrado${rows.length === 1 ? '' : 's'} para ${formatMoneyDots(amount)} en ${seasonLabel(selectedWalletSeason())}.`;
+    status.textContent = `${rows.length} equipo${rows.length === 1 ? '' : 's'} pueden llegar a ${formatMoneyDots(amount)} en ${seasonLabel(selectedWalletSeason())}. El resto aparece atenuado.`;
   }
-
-  if (state.wallet.loading) {
-    results.innerHTML = '<article class="wallet-empty-card">Cargando...</article>';
-  } else if (!amount || amount <= 0) {
-    results.innerHTML = '<article class="wallet-empty-card">Ejemplo: 13.000.000</article>';
-  } else if (!rows.length) {
-    results.innerHTML = '<article class="wallet-empty-card">No hay equipos con espacio o excepciones suficientes para ese importe.</article>';
-  } else {
-    results.innerHTML = rows.map(walletResultHtml).join('');
-  }
-
-  results.querySelectorAll('.wallet-team-btn').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const code = String(button.dataset.teamCode || '').trim().toUpperCase();
-      if (code) await loadTeam(code);
-    });
-  });
 }
 
 async function fetchWalletResults() {

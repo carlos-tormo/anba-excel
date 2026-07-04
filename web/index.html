@@ -498,25 +498,18 @@
         </section>
       </div>
       <div id="walletToolsPanel" class="wallet-tab-panel wallet-tools-panel section-hidden">
-        <details class="wallet-match-tool">
-          <summary>Match de equipos</summary>
+        <details class="wallet-match-tool wallet-appeal-tool" open>
+          <summary>Tablas de atractivo</summary>
           <div class="section-actions wallet-actions">
             <label class="season-view-control" for="walletSeasonSelect">
               <span>Temporada</span>
               <select id="walletSeasonSelect"></select>
             </label>
             <label class="wallet-amount-control" for="walletAmountInput">
-              <span>Importe</span>
+              <span>Filtro importe</span>
               <input id="walletAmountInput" type="text" inputmode="decimal" placeholder="13.000.000">
             </label>
-            <button id="walletSearchBtn" type="button">Buscar</button>
-          </div>
-          <div id="walletStatus" class="wallet-status" aria-live="polite"></div>
-          <div id="walletResults" class="wallet-results"></div>
-        </details>
-        <details class="wallet-match-tool wallet-appeal-tool">
-          <summary>Tablas de atractivo</summary>
-          <div class="section-actions wallet-actions">
+            <button id="walletSearchBtn" type="button">Filtrar</button>
             <label class="season-view-control" for="walletAppealPlayerSelect">
               <span>Jugador</span>
               <select id="walletAppealPlayerSelect"></select>
@@ -524,8 +517,10 @@
             <div class="wallet-appeal-legend" aria-label="Leyenda">
               <span class="wallet-appeal-legend-item wallet-appeal-legend-item--offer">Oferta enviada</span>
               <span class="wallet-appeal-legend-item wallet-appeal-legend-item--interest">Interés registrado</span>
+              <span class="wallet-appeal-legend-item wallet-appeal-legend-item--blocked">No disponible / descartado</span>
             </div>
           </div>
+          <div id="walletStatus" class="wallet-status" aria-live="polite"></div>
           <div id="walletAppealStatus" class="wallet-status" aria-live="polite"></div>
           <div class="table-wrap wallet-appeal-wrap">
             <table id="walletAppealTable" class="wallet-clients-table wallet-appeal-table">
