@@ -1661,11 +1661,38 @@ h1 {
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
   padding: 14px;
 }
+.exception-estimate-box--collapsible {
+  padding: 0;
+}
 .exception-estimate-head {
   align-items: flex-start;
+  cursor: pointer;
   display: flex;
   gap: 12px;
   justify-content: space-between;
+  list-style: none;
+  padding: 14px;
+}
+.exception-estimate-head::-webkit-details-marker {
+  display: none;
+}
+.exception-estimate-head::after {
+  align-self: center;
+  border: solid #64748b;
+  border-width: 0 2px 2px 0;
+  content: "";
+  height: 8px;
+  margin-left: 4px;
+  transform: rotate(45deg);
+  transition: transform 0.18s ease;
+  width: 8px;
+}
+.exception-estimate-box[open] .exception-estimate-head::after {
+  transform: rotate(-135deg);
+}
+.exception-estimate-body {
+  border-top: 1px solid #d8e4f2;
+  padding: 0 14px 14px;
 }
 .exception-estimate-head h3 {
   font-size: 1.05rem;

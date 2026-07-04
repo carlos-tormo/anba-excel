@@ -8067,22 +8067,24 @@ function renderExceptionEstimate() {
     ? `<div class="exception-estimate-official">Oficial generado: ${official.map((item) => escapeHtml(item.label || item.key || '')).join(', ') || 'sí'}</div>`
     : '<div class="exception-estimate-official is-estimate">Estimación pendiente de confirmación admin</div>';
   panel.innerHTML = `
-    <section class="exception-estimate-box">
-      <div class="exception-estimate-head">
+    <details class="exception-estimate-box exception-estimate-box--collapsible">
+      <summary class="exception-estimate-head">
         <div>
           <h3>Excepciones estimadas</h3>
           <p>${escapeHtml(seasonLabel(selected))} · ${escapeHtml(exceptionModeLabel(estimate.operating_mode))}</p>
         </div>
         <span class="exception-estimate-badge">${estimate.status === 'choice_pending' ? 'Revisión' : 'Estimación'}</span>
+      </summary>
+      <div class="exception-estimate-body">
+        <div class="exception-estimate-metrics">
+          <span>Espacio bruto CAP <strong>${formatMoneyDots(estimate.raw_cap_space)}</strong></span>
+          <span>Cuenta apron <strong>${formatMoneyDots(estimate.apron_account)}</strong></span>
+        </div>
+        ${choiceHtml}
+        ${notes.length ? `<ul class="exception-estimate-notes">${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join('')}</ul>` : ''}
+        ${officialHtml}
       </div>
-      <div class="exception-estimate-metrics">
-        <span>Espacio bruto CAP <strong>${formatMoneyDots(estimate.raw_cap_space)}</strong></span>
-        <span>Cuenta apron <strong>${formatMoneyDots(estimate.apron_account)}</strong></span>
-      </div>
-      ${choiceHtml}
-      ${notes.length ? `<ul class="exception-estimate-notes">${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join('')}</ul>` : ''}
-      ${officialHtml}
-    </section>
+    </details>
   `;
 }
 
