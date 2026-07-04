@@ -549,32 +549,35 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
 
         rows = [
             [
-                "team",
-                "under_23_single",
-                "under_23_multi",
-                "age_23_26_single",
-                "age_23_26_multi",
-                "age_27_33_single",
-                "age_27_33_multi",
-                "over_34_single",
-                "over_34_multi",
+                "RANKING ATRACTIVO <23",
+                "",
+                "RANKING ATRACTIVO <27",
+                "",
+                "RANKING ATRACTIVO 27-33",
+                "",
+                "RANKING ATRACTIVO +34",
+                "",
             ],
-            ["ATL", "80", "85", "70", "75", "60", "65", "50", "55"],
-            ["BKN", "81", "86", "71", "76", "61", "66", "51", "56"],
-            ["BOS", "82", "87", "72", "77", "62", "67", "52", "57"],
+            ["Multianual", "1 año", "Multianual", "1 año", "Multianual", "1 año", "Multianual", "1 año"],
+            ["BOS", "ATL", "BKN", "BOS", "ATL", "BKN", "BOS", "ATL"],
+            ["ATL", "BKN", "BOS", "ATL", "BKN", "BOS", "ATL", "BKN"],
+            ["BKN", "BOS", "ATL", "BKN", "BOS", "ATL", "BKN", "BOS"],
         ]
 
         preview = self.db.preview_free_agent_team_appeal_import(rows)
         self.assertTrue(preview["ok"])
         self.assertEqual(3, preview["summary"]["team_count"])
+        self.assertEqual("BOS", preview["rankings"][0]["under_23_multi"]["team_code"])
+        self.assertEqual("ATL", preview["rankings"][0]["under_23_single"]["team_code"])
 
         applied = self.db.apply_free_agent_team_appeal_import(preview["records"])
         self.assertEqual({"record_count": 3}, applied)
 
         appeal = self.db.list_free_agent_team_appeal()
         atl = next(row for row in appeal["rows"] if row["team_code"] == "ATL")
-        self.assertEqual(80.0, atl["under_23_single"])
-        self.assertEqual(55.0, atl["over_34_multi"])
+        self.assertEqual(1.0, atl["under_23_single"])
+        self.assertEqual(2.0, atl["under_23_multi"])
+        self.assertEqual("BOS", appeal["rankings"][0]["under_23_multi"]["team_code"])
 
     def test_cartera_clients_include_offer_and_interest_teams(self) -> None:
         self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})

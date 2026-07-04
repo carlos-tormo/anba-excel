@@ -12311,22 +12311,39 @@ function renderFreeAgentAppealImportPreview(result) {
   const errors = Array.isArray(result?.errors) ? result.errors : [];
   const records = Array.isArray(result?.records) ? result.records : [];
   const columns = Array.isArray(result?.columns) ? result.columns : [];
+  const rankings = Array.isArray(result?.rankings) ? result.rankings : [];
   const summary = result?.summary || {};
   if (confirm) confirm.disabled = Boolean(errors.length) || !records.length;
-  const rowsHtml = records.length ? `
+  const groupedColumns = [];
+  columns.forEach((column) => {
+    const group = String(column.group || column.label || '').trim();
+    const last = groupedColumns[groupedColumns.length - 1];
+    if (last && last.group === group) {
+      last.columns.push(column);
+    } else {
+      groupedColumns.push({ group, columns: [column] });
+    }
+  });
+  const rowsHtml = rankings.length ? `
     <div class="table-wrap">
       <table class="economy-import-table">
         <thead>
           <tr>
-            <th>Equipo</th>
-            ${columns.map((column) => `<th>${escapeHtml(column.label || column.key)}</th>`).join('')}
+            <th rowspan="2">Rank</th>
+            ${groupedColumns.map((group) => `<th colspan="${group.columns.length}">${escapeHtml(group.group || 'Ranking')}</th>`).join('')}
+          </tr>
+          <tr>
+            ${columns.map((column) => `<th>${escapeHtml(column.sub_label || column.label || column.key)}</th>`).join('')}
           </tr>
         </thead>
         <tbody>
-          ${records.map((record) => `
+          ${rankings.map((row) => `
             <tr>
-              <td><strong>${escapeHtml(record.team_code || '')}</strong><small>${escapeHtml(record.team_name || '')}</small></td>
-              ${columns.map((column) => `<td>${formatMoneyDots(record[column.key] || 0)}</td>`).join('')}
+              <td><strong>${escapeHtml(row.rank || '')}</strong></td>
+              ${columns.map((column) => {
+                const cell = row[column.key] || {};
+                return `<td><strong>${escapeHtml(cell.team_code || '')}</strong><small>${escapeHtml(cell.team_name || '')}</small></td>`;
+              }).join('')}
             </tr>
           `).join('')}
         </tbody>

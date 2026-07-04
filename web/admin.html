@@ -1328,9 +1328,11 @@ Jrue Holiday,Agente Dos</pre>
       <div class="economy-import-body">
         <div class="economy-import-instructions">
           <p>Formato recomendado:</p>
-          <pre>team,under_23_single,under_23_multi,age_23_26_single,age_23_26_multi,age_27_33_single,age_27_33_multi,over_34_single,over_34_multi
-ATL,75,82,70,77,62,68,55,60</pre>
-          <p>Debe incluir los 30 equipos. También acepta XLSX con las mismas columnas en la primera hoja.</p>
+          <pre>RANKING ATRACTIVO &lt;23,,RANKING ATRACTIVO &lt;27,,RANKING ATRACTIVO 27-33,,RANKING ATRACTIVO +34,
+Multianual,1 año,Multianual,1 año,Multianual,1 año,Multianual,1 año
+CHA,CHA,CHA,CHA,CHA,CHA,MIN,MIN
+LAL,MIN,LAL,MIN,MIN,MIN,BOS,CHA</pre>
+          <p>Cada columna es un ranking de los 30 equipos. También acepta XLSX con la misma estructura en la primera hoja.</p>
         </div>
         <div class="settings-row economy-import-controls">
           <input id="freeAgentAppealImportFileInput" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">

@@ -10801,6 +10801,23 @@ class LeagueDB(DatabaseMaintenanceMixin):
         ("over_34_multi", "34+ · multi"),
     ]
 
+    FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS = [
+        ("under_23_multi", "Ranking atractivo <23", "Multianual"),
+        ("under_23_single", "Ranking atractivo <23", "1 año"),
+        ("age_23_26_multi", "Ranking atractivo <27", "Multianual"),
+        ("age_23_26_single", "Ranking atractivo <27", "1 año"),
+        ("age_27_33_multi", "Ranking atractivo 27-33", "Multianual"),
+        ("age_27_33_single", "Ranking atractivo 27-33", "1 año"),
+        ("over_34_multi", "Ranking atractivo +34", "Multianual"),
+        ("over_34_single", "Ranking atractivo +34", "1 año"),
+    ]
+
+    def _free_agent_team_appeal_columns_payload(self) -> List[Dict[str, Any]]:
+        return [
+            {"key": key, "label": f"{group} · {sub_label}", "group": group, "sub_label": sub_label}
+            for key, group, sub_label in self.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS
+        ]
+
     @staticmethod
     def _free_agent_appeal_header_key(value: Any) -> str:
         text = normalize_import_text(value).casefold()
@@ -10857,6 +10874,84 @@ class LeagueDB(DatabaseMaintenanceMixin):
         }
         return aliases.get(text, text)
 
+    def _free_agent_appeal_ranking_header_key(self, group_value: Any, sub_value: Any = "") -> str:
+        group = self._free_agent_appeal_header_key(group_value)
+        sub = self._free_agent_appeal_header_key(sub_value)
+        combined = "_".join(part for part in [group, sub] if part)
+        aliases = {
+            "under_23_multi": "under_23_multi",
+            "u23_multi": "under_23_multi",
+            "ranking_atractivo_23_multianual": "under_23_multi",
+            "atractivo_23_multianual": "under_23_multi",
+            "menores_23_multianual": "under_23_multi",
+            "menos_23_multianual": "under_23_multi",
+            "under_23_single": "under_23_single",
+            "u23_single": "under_23_single",
+            "under_23_1": "under_23_single",
+            "u23_1": "under_23_single",
+            "ranking_atractivo_23_1_ano": "under_23_single",
+            "ranking_atractivo_23_1": "under_23_single",
+            "atractivo_23_1_ano": "under_23_single",
+            "menores_23_1_ano": "under_23_single",
+            "menos_23_1_ano": "under_23_single",
+            "age_23_26_multi": "age_23_26_multi",
+            "23_26_multi": "age_23_26_multi",
+            "ranking_atractivo_27_multianual": "age_23_26_multi",
+            "atractivo_27_multianual": "age_23_26_multi",
+            "menores_27_multianual": "age_23_26_multi",
+            "age_23_26_single": "age_23_26_single",
+            "23_26_single": "age_23_26_single",
+            "23_26_1": "age_23_26_single",
+            "ranking_atractivo_27_1_ano": "age_23_26_single",
+            "ranking_atractivo_27_1": "age_23_26_single",
+            "atractivo_27_1_ano": "age_23_26_single",
+            "menores_27_1_ano": "age_23_26_single",
+            "age_27_33_multi": "age_27_33_multi",
+            "27_33_multi": "age_27_33_multi",
+            "ranking_atractivo_27_33_multianual": "age_27_33_multi",
+            "atractivo_27_33_multianual": "age_27_33_multi",
+            "age_27_33_single": "age_27_33_single",
+            "27_33_single": "age_27_33_single",
+            "27_33_1": "age_27_33_single",
+            "ranking_atractivo_27_33_1_ano": "age_27_33_single",
+            "ranking_atractivo_27_33_1": "age_27_33_single",
+            "atractivo_27_33_1_ano": "age_27_33_single",
+            "over_34_multi": "over_34_multi",
+            "34_multi": "over_34_multi",
+            "ranking_atractivo_34_multianual": "over_34_multi",
+            "atractivo_34_multianual": "over_34_multi",
+            "mas_34_multianual": "over_34_multi",
+            "mayores_34_multianual": "over_34_multi",
+            "over_34_single": "over_34_single",
+            "34_single": "over_34_single",
+            "34_1": "over_34_single",
+            "ranking_atractivo_34_1_ano": "over_34_single",
+            "ranking_atractivo_34_1": "over_34_single",
+            "atractivo_34_1_ano": "over_34_single",
+            "mas_34_1_ano": "over_34_single",
+            "mayores_34_1_ano": "over_34_single",
+        }
+        return aliases.get(combined, aliases.get(group, combined))
+
+    def _free_agent_team_appeal_rankings_from_records(
+        self,
+        records: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        by_key = {key: sorted(records, key=lambda record: (float(record.get(key) or 0.0), str(record.get("team_code") or ""))) for key, _group, _sub in self.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS}
+        max_rows = max((len(items) for items in by_key.values()), default=0)
+        rankings: List[Dict[str, Any]] = []
+        for idx in range(max_rows):
+            row: Dict[str, Any] = {"rank": idx + 1}
+            for key, _group, _sub in self.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS:
+                item = by_key.get(key, [])[idx] if idx < len(by_key.get(key, [])) else None
+                row[key] = {
+                    "team_code": str(item.get("team_code") or "").upper() if item else "",
+                    "team_name": str(item.get("team_name") or "") if item else "",
+                    "value": float(item.get(key) or 0.0) if item else 0.0,
+                }
+            rankings.append(row)
+        return rankings
+
     def _free_agent_team_appeal_records_from_rows(self, rows: List[List[str]]) -> Dict[str, Any]:
         errors: List[Dict[str, Any]] = []
         if not rows:
@@ -10865,7 +10960,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "errors": [{"line": None, "message": "El archivo está vacío."}],
                 "records": [],
                 "summary": {"record_count": 0, "team_count": 0},
-                "columns": [{"key": key, "label": label} for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS],
+                "columns": self._free_agent_team_appeal_columns_payload(),
+                "rankings": [],
             }
 
         first_non_empty_idx = next((idx for idx, row in enumerate(rows) if any(str(cell or "").strip() for cell in row)), None)
@@ -10875,9 +10971,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "errors": [{"line": None, "message": "El archivo está vacío."}],
                 "records": [],
                 "summary": {"record_count": 0, "team_count": 0},
-                "columns": [{"key": key, "label": label} for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS],
+                "columns": self._free_agent_team_appeal_columns_payload(),
+                "rankings": [],
             }
 
+        teams = {str(team.get("code") or "").upper(): team for team in self.list_teams()}
+        ranking_keys = [key for key, _group, _sub in self.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS]
         header = rows[first_non_empty_idx]
         normalized_header = [self._free_agent_appeal_header_key(cell) for cell in header]
         required_keys = ["team_code", *[key for key, _label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS]]
@@ -10887,11 +10986,125 @@ class LeagueDB(DatabaseMaintenanceMixin):
             data_rows = rows[first_non_empty_idx + 1 :]
             line_offset = first_non_empty_idx + 2
         else:
+            canonical_ranking_header = [self._free_agent_appeal_ranking_header_key(cell) for cell in header]
+            has_ranking_header = all(key in canonical_ranking_header for key in ranking_keys)
+            if has_ranking_header:
+                column_map = {key: canonical_ranking_header.index(key) for key in ranking_keys}
+                data_rows = rows[first_non_empty_idx + 1 :]
+                line_offset = first_non_empty_idx + 2
+                records_by_team: Dict[str, Dict[str, Any]] = {
+                    team_code: {
+                        "team_code": team_code,
+                        "team_name": str(team.get("name") or team_code),
+                    }
+                    for team_code, team in teams.items()
+                }
+                seen_by_column: Dict[str, set[str]] = {key: set() for key in ranking_keys}
+                for row_idx, row in enumerate(data_rows, start=line_offset):
+                    if not any(str(cell or "").strip() for cell in row):
+                        continue
+                    rank = row_idx - line_offset + 1
+                    for key, _group, _sub in self.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS:
+                        team_raw = row[column_map[key]] if column_map[key] < len(row) else ""
+                        team_code = normalize_team_code(team_raw)
+                        if not team_code:
+                            errors.append({"line": row_idx, "message": f"Equipo requerido en {key}."})
+                            continue
+                        if team_code not in teams:
+                            errors.append({"line": row_idx, "message": f"Equipo inválido en {key}: {team_code}."})
+                            continue
+                        if team_code in seen_by_column[key]:
+                            errors.append({"line": row_idx, "message": f"Equipo duplicado en {key}: {team_code}."})
+                            continue
+                        seen_by_column[key].add(team_code)
+                        records_by_team[team_code][key] = float(rank)
+                for key, group, sub_label in self.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS:
+                    missing = sorted(set(teams.keys()) - seen_by_column[key])
+                    for team_code in missing:
+                        errors.append({"line": None, "message": f"Falta {team_code} en {group} · {sub_label}."})
+                records = []
+                for team_code in sorted(records_by_team.keys()):
+                    record = records_by_team[team_code]
+                    for key in ranking_keys:
+                        record[key] = float(record.get(key) or 0.0)
+                    records.append(record)
+                return {
+                    "ok": not errors,
+                    "errors": errors,
+                    "records": records,
+                    "summary": {"record_count": len(records), "team_count": len(teams)},
+                    "columns": self._free_agent_team_appeal_columns_payload(),
+                    "rankings": self._free_agent_team_appeal_rankings_from_records(records),
+                }
+
+            second_header = rows[first_non_empty_idx + 1] if first_non_empty_idx + 1 < len(rows) else []
+            group_values: List[str] = []
+            last_group = ""
+            max_len = max(len(header), len(second_header))
+            for idx in range(max_len):
+                group_raw = str(header[idx] if idx < len(header) else "").strip()
+                if group_raw:
+                    last_group = group_raw
+                group_values.append(last_group)
+            two_row_keys = [
+                self._free_agent_appeal_ranking_header_key(group_values[idx], second_header[idx] if idx < len(second_header) else "")
+                for idx in range(max_len)
+            ]
+            has_two_row_ranking_header = all(key in two_row_keys for key in ranking_keys)
+            if has_two_row_ranking_header:
+                column_map = {key: two_row_keys.index(key) for key in ranking_keys}
+                data_rows = rows[first_non_empty_idx + 2 :]
+                line_offset = first_non_empty_idx + 3
+                records_by_team = {
+                    team_code: {
+                        "team_code": team_code,
+                        "team_name": str(team.get("name") or team_code),
+                    }
+                    for team_code, team in teams.items()
+                }
+                seen_by_column = {key: set() for key in ranking_keys}
+                rank = 0
+                for row_idx, row in enumerate(data_rows, start=line_offset):
+                    if not any(str(cell or "").strip() for cell in row):
+                        continue
+                    rank += 1
+                    for key, group, sub_label in self.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS:
+                        team_raw = row[column_map[key]] if column_map[key] < len(row) else ""
+                        team_code = normalize_team_code(team_raw)
+                        if not team_code:
+                            errors.append({"line": row_idx, "message": f"Equipo requerido en {group} · {sub_label}."})
+                            continue
+                        if team_code not in teams:
+                            errors.append({"line": row_idx, "message": f"Equipo inválido en {group} · {sub_label}: {team_code}."})
+                            continue
+                        if team_code in seen_by_column[key]:
+                            errors.append({"line": row_idx, "message": f"Equipo duplicado en {group} · {sub_label}: {team_code}."})
+                            continue
+                        seen_by_column[key].add(team_code)
+                        records_by_team[team_code][key] = float(rank)
+                for key, group, sub_label in self.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS:
+                    missing = sorted(set(teams.keys()) - seen_by_column[key])
+                    for team_code in missing:
+                        errors.append({"line": None, "message": f"Falta {team_code} en {group} · {sub_label}."})
+                records = []
+                for team_code in sorted(records_by_team.keys()):
+                    record = records_by_team[team_code]
+                    for key in ranking_keys:
+                        record[key] = float(record.get(key) or 0.0)
+                    records.append(record)
+                return {
+                    "ok": not errors,
+                    "errors": errors,
+                    "records": records,
+                    "summary": {"record_count": len(records), "team_count": len(teams)},
+                    "columns": self._free_agent_team_appeal_columns_payload(),
+                    "rankings": self._free_agent_team_appeal_rankings_from_records(records),
+                }
+
             header_map = {key: idx for idx, key in enumerate(required_keys)}
             data_rows = rows[first_non_empty_idx:]
             line_offset = first_non_empty_idx + 1
 
-        teams = {str(team.get("code") or "").upper(): team for team in self.list_teams()}
         records: List[Dict[str, Any]] = []
         seen: set[str] = set()
         for row_idx, row in enumerate(data_rows, start=line_offset):
@@ -10931,7 +11144,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "errors": errors,
             "records": records,
             "summary": {"record_count": len(records), "team_count": len(seen)},
-            "columns": [{"key": key, "label": label} for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS],
+            "columns": self._free_agent_team_appeal_columns_payload(),
+            "rankings": self._free_agent_team_appeal_rankings_from_records(records),
         }
 
     def preview_free_agent_team_appeal_import(self, rows: List[List[str]]) -> Dict[str, Any]:
@@ -10986,7 +11200,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         return {"record_count": imported}
 
     def list_free_agent_team_appeal(self) -> Dict[str, Any]:
-        columns = [{"key": key, "label": label} for key, label in self.FREE_AGENT_TEAM_APPEAL_COLUMNS]
+        columns = self._free_agent_team_appeal_columns_payload()
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -11007,9 +11221,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 ORDER BY t.code
                 """
             ).fetchall()
+        records = [dict(row) for row in rows]
         return {
             "columns": columns,
-            "rows": [dict(row) for row in rows],
+            "rows": records,
+            "rankings": self._free_agent_team_appeal_rankings_from_records(records),
         }
 
     def record_free_agent_interest(
@@ -20951,9 +21167,10 @@ QUALITY REQUIREMENTS
                     "records": [],
                     "summary": {"record_count": 0, "team_count": 0},
                     "columns": [
-                        {"key": key, "label": label}
-                        for key, label in self.db.FREE_AGENT_TEAM_APPEAL_COLUMNS
+                        {"key": key, "label": f"{group} · {sub_label}", "group": group, "sub_label": sub_label}
+                        for key, group, sub_label in self.db.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS
                     ],
+                    "rankings": [],
                 }
             self._json(200, result)
             return

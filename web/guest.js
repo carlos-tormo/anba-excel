@@ -20,6 +20,7 @@ const state = {
     rows: [],
     appealRows: [],
     appealColumns: [],
+    appealRankings: [],
     appealLoading: false,
     appealError: '',
     appealSelectedFreeAgentId: null,
@@ -8362,6 +8363,7 @@ function renderWalletAppeal() {
   if (!status || !thead || !tbody) return;
 
   const columns = Array.isArray(state.wallet.appealColumns) ? state.wallet.appealColumns : [];
+  const rankings = Array.isArray(state.wallet.appealRankings) ? state.wallet.appealRankings : [];
   const rows = Array.isArray(state.wallet.appealRows) ? state.wallet.appealRows : [];
   const selectedClient = selectedWalletAppealClient();
   const offerTeams = walletClientTeamCodes(selectedClient, 'offers');
@@ -8372,43 +8374,58 @@ function renderWalletAppeal() {
     status.textContent = 'Cargando tablas de atractivo...';
   } else if (state.wallet.appealError) {
     status.textContent = state.wallet.appealError;
-  } else if (!rows.length) {
+  } else if (!rankings.length && !rows.length) {
     status.textContent = 'Todavía no hay tabla de atractivo cargada por la administración.';
   } else if (selectedClient) {
-    status.textContent = `${rows.length} equipos · ${offerTeams.size} con oferta · ${interestTeams.size} con interés para ${selectedClient.name || 'este jugador'}.`;
+    status.textContent = `${rows.length || rankings.length} equipos · ${offerTeams.size} con oferta · ${interestTeams.size} con interés para ${selectedClient.name || 'este jugador'}.`;
   } else {
     status.textContent = 'Selecciona un jugador representado para ver señales de mercado.';
   }
 
+  const groupedColumns = [];
+  columns.forEach((column) => {
+    const group = String(column.group || column.label || '').trim();
+    const last = groupedColumns[groupedColumns.length - 1];
+    if (last && last.group === group) {
+      last.columns.push(column);
+    } else {
+      groupedColumns.push({ group, columns: [column] });
+    }
+  });
   thead.innerHTML = `
     <tr>
-      <th>Equipo</th>
-      ${columns.map((column) => `<th>${escapeHtml(column.label || column.key)}</th>`).join('')}
+      <th rowspan="2">Rank</th>
+      ${groupedColumns.map((group) => `<th colspan="${group.columns.length}" class="wallet-appeal-group-head">${escapeHtml(group.group || 'Ranking')}</th>`).join('')}
+    </tr>
+    <tr>
+      ${columns.map((column) => `<th>${escapeHtml(column.sub_label || column.label || column.key)}</th>`).join('')}
     </tr>
   `;
   if (state.wallet.appealLoading) {
     tbody.innerHTML = `<tr><td colspan="${columns.length + 1}">Cargando...</td></tr>`;
     return;
   }
-  if (!rows.length) {
+  if (!rankings.length) {
     tbody.innerHTML = `<tr><td colspan="${columns.length + 1}">Sin datos de atractivo.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map((row) => {
-    const code = String(row.team_code || '').trim().toUpperCase();
-    const hasOffer = offerTeams.has(code);
-    const hasInterest = !hasOffer && interestTeams.has(code);
-    const rowClass = hasOffer ? 'wallet-appeal-row--offer' : hasInterest ? 'wallet-appeal-row--interest' : '';
+  tbody.innerHTML = rankings.map((row) => {
+    const rank = Number(row.rank || 0);
     return `
-      <tr class="wallet-appeal-row ${rowClass}">
-        <td>
-          <span class="wallet-rights-owner">
-            ${draftOrderLogoHtml(code, 'wallet-rights-logo')}
-            <strong>${escapeHtml(code)}</strong>
-            <small>${escapeHtml(row.team_name || code)}</small>
-          </span>
-        </td>
-        ${columns.map((column) => `<td>${formatMoneyDots(row[column.key] || 0)}</td>`).join('')}
+      <tr class="wallet-appeal-row wallet-appeal-rank-row wallet-appeal-rank-row--${rank <= 3 ? 'elite' : rank <= 9 ? 'strong' : rank <= 16 ? 'mid' : rank <= 22 ? 'low' : rank <= 25 ? 'risk' : 'bottom'}">
+        <td class="wallet-appeal-rank">${rank || ''}</td>
+        ${columns.map((column) => {
+          const cell = row[column.key] || {};
+          const code = String(cell.team_code || '').trim().toUpperCase();
+          const hasOffer = offerTeams.has(code);
+          const hasInterest = !hasOffer && interestTeams.has(code);
+          const cellClass = hasOffer ? 'wallet-appeal-cell--offer' : hasInterest ? 'wallet-appeal-cell--interest' : '';
+          return `
+            <td class="${cellClass}" title="${escapeHtml(cell.team_name || code)}">
+              ${code ? `<span class="wallet-appeal-team">${draftOrderLogoHtml(code, 'wallet-rights-logo')}<strong>${escapeHtml(code)}</strong></span>` : '-'}
+            </td>
+          `;
+        }).join('')}
       </tr>
     `;
   }).join('');
@@ -8636,10 +8653,12 @@ async function fetchWalletAppeal() {
     const data = await api('/api/cartera/appeal');
     state.wallet.appealRows = Array.isArray(data.rows) ? data.rows : [];
     state.wallet.appealColumns = Array.isArray(data.columns) ? data.columns : [];
+    state.wallet.appealRankings = Array.isArray(data.rankings) ? data.rankings : [];
     state.wallet.appealError = '';
   } catch (err) {
     state.wallet.appealRows = [];
     state.wallet.appealColumns = [];
+    state.wallet.appealRankings = [];
     state.wallet.appealError = err.message || 'No se pudo cargar la tabla de atractivo.';
   } finally {
     state.wallet.appealLoading = false;
