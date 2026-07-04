@@ -22381,6 +22381,52 @@ QUALITY REQUIREMENTS
                 self._json(409, {"error": "option_changed", "current_option": current_option})
                 return
 
+            if option_action == "rejected" and option_value == "QO":
+                updated = self.db.mark_gm_option_request_decided(
+                    request_id,
+                    "approved",
+                    self._current_session() or {},
+                    str(payload.get("note") or "").strip() or None,
+                )
+                if not updated:
+                    self._json(409, {"error": "request_already_decided"})
+                    return
+                removal = self.db.remove_player_from_roster(player_id)
+                if removal is None:
+                    self._json(404, {"error": "player_not_found"})
+                    return
+                player_after = self.db.get_player_record(player_id)
+                self._log_admin_action(
+                    "approve",
+                    "gm_option_request",
+                    str(request_id),
+                    request.get("team_code"),
+                    {
+                        "player_id": player_id,
+                        "player_name": request.get("player_name"),
+                        "option_action": option_action,
+                        "option_field": option_field,
+                        "option_value": option_value,
+                        "option_action_season": option_action_season,
+                        "roster_removed": True,
+                        "free_agent_id": removal.get("free_agent_id"),
+                        "free_agent_type": FREE_AGENT_TYPE_UNRESTRICTED,
+                    },
+                    before={"request": request, "player": player_before},
+                    after={"request": updated, "player": player_after, "free_agent": removal},
+                )
+                if self._discord_notify_requested(payload):
+                    self._notify_contract_option_action(
+                        player_before,
+                        option_action_season,
+                        option_value,
+                        option_action,
+                        generate_image=self._discord_image_requested(payload),
+                        custom_image=payload.get("discord_custom_image"),
+                    )
+                self._json(200, {"ok": True, "request": updated, "player": player_after, "free_agent": removal})
+                return
+
             player_payload: Dict[str, Any] = {}
             if option_action == "rejected" and option_value in CONTRACT_TERMINATING_OPTION_VALUES:
                 # Rejecting a TO/PO ends that contract path, so the option

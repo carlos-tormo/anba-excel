@@ -204,6 +204,60 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("ATL", player["team_code"])
         self.assertEqual("2.296.274", player["salary_2026_text"])
 
+    def test_admin_approved_qo_rejection_removes_player_to_unrestricted_free_agency(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        self.db.update_setting("free_agency_mode", "1")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Rejected QO Player",
+                "position": "PG",
+                "rating": "73",
+                "bird_rights": "R",
+                "years_left": "2+",
+                "salary_2025_text": "2296271",
+                "salary_2026_text": "2870338",
+                "option_2026": "QO",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        request = self.db.create_gm_option_request(
+            int(player_id),
+            "option_2026",
+            "QO",
+            "rejected",
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+        self.assertIsNotNone(request)
+
+        handler = object.__new__(Handler)
+        handler.db = self.db
+        handler.path = f"/api/admin/gm-option-requests/{request['id']}"
+        handler._require_admin = lambda: True
+        handler._require_csrf = lambda: True
+        handler._require_sensitive_rate_limit = lambda _bucket: True
+        handler._require_team_write_access = lambda _team_code: True
+        handler._read_json = lambda: {"decision": "approved"}
+        handler._current_session = lambda: {"email": "admin@example.com", "name": "Admin", "role": "admin"}
+        handler._discord_notify_requested = lambda _payload: False
+        handler._discord_image_requested = lambda _payload: False
+        handler._log_admin_action = lambda *args, **kwargs: None
+        captured = {}
+        handler._json = lambda status, data: captured.update({"status": status, "data": data})
+
+        Handler.do_PATCH(handler)
+
+        self.assertEqual(200, captured["status"])
+        self.assertIsNone(self.db.get_player_record(int(player_id)))
+        free_agent = next(
+            (agent for agent in self.db.list_free_agents() if agent["name"] == "Rejected QO Player"),
+            None,
+        )
+        self.assertIsNotNone(free_agent)
+        self.assertEqual("No restringido", free_agent["free_agent_type"])
+        self.assertIsNone(free_agent["rights_team_code"])
+        self.assertIsNone(free_agent["bird_rights"])
+
     def test_renewal_offer_updates_existing_active_contract_row(self) -> None:
         player_id = self.db.create_player(
             "ATL",
