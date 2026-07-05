@@ -1278,6 +1278,40 @@ h1 {
   justify-content: flex-end;
   gap: 8px;
 }
+.cut-options-modal {
+  width: min(620px, 94vw);
+  display: grid;
+  gap: 12px;
+}
+.cut-buyout-fields {
+  border: 1px solid #d6e2ee;
+  border-radius: 10px;
+  padding: 12px;
+  background: #f8fafc;
+}
+.cut-buyout-fields p,
+.cut-options-note {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.86rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+.cut-buyout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.cut-buyout-row {
+  display: grid;
+  gap: 4px;
+  color: #334155;
+  font-weight: 800;
+}
+.cut-buyout-row input {
+  width: 100%;
+}
 .locator-modal {
   width: min(720px, 94vw);
 }

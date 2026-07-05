@@ -13,7 +13,7 @@ import sqlite3
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -618,6 +618,13 @@ def normalize_exception_type(value: Any) -> Optional[str]:
 
 def parse_salary_amount(value: Any) -> Optional[float]:
     return parse_amount_like(value)
+
+
+def format_salary_amount_text(value: Any) -> Optional[str]:
+    amount = parse_salary_amount(value)
+    if amount is None:
+        return None
+    return f"{int(round(amount)):,}".replace(",", ".")
 
 
 OFFSEASON_EXCEPTION_DEFINITIONS = {
@@ -12930,6 +12937,68 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 payload[option_field] = player.get(option_field)
         return payload
 
+    def _normalize_cut_options(self, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        payload = payload or {}
+        overrides_raw = payload.get("dead_cap_overrides") or payload.get("buyout_dead_cap") or {}
+        overrides: Dict[str, str] = {}
+        if isinstance(overrides_raw, dict):
+            for key, value in overrides_raw.items():
+                season = parse_int(key)
+                if season is None:
+                    continue
+                text = format_salary_amount_text(value)
+                overrides[str(season)] = text or ""
+        return {
+            "buyout": 1 if parse_bool(payload.get("buyout")) else 0,
+            "stretch": 1 if parse_bool(payload.get("stretch")) else 0,
+            "dead_cap_overrides": overrides,
+        }
+
+    def _cut_dead_cap_schedule(
+        self,
+        payload: Dict[str, Any],
+        cut_settings: Optional[Dict[str, Any]],
+        *,
+        current_year: int,
+    ) -> tuple[Dict[int, Optional[str]], Optional[str]]:
+        cut_settings = cut_settings or {}
+        buyout = parse_bool(cut_settings.get("buyout"))
+        stretch = parse_bool(cut_settings.get("stretch"))
+        overrides = cut_settings.get("dead_cap_overrides") if isinstance(cut_settings.get("dead_cap_overrides"), dict) else {}
+
+        base_schedule: Dict[int, float] = {}
+        for season in PLAYER_CONTRACT_SEASONS:
+            raw_value = overrides.get(str(season)) if buyout and str(season) in overrides else payload.get(f"salary_{season}_text")
+            amount = parse_salary_amount(raw_value)
+            if amount is not None and amount > 0:
+                base_schedule[int(season)] = float(amount)
+
+        if not stretch:
+            return ({season: format_salary_amount_text(base_schedule.get(season)) for season in PLAYER_CONTRACT_SEASONS}, None)
+
+        before_august_31 = date.today() <= date(date.today().year, 8, 31)
+        stretch_source_years = [
+            season for season, amount in sorted(base_schedule.items())
+            if amount > 0 and season >= int(current_year) and (before_august_31 or season > int(current_year))
+        ]
+        if not stretch_source_years:
+            return ({season: format_salary_amount_text(base_schedule.get(season)) for season in PLAYER_CONTRACT_SEASONS}, "stretch sin importes futuros")
+
+        stretched_total = sum(base_schedule.get(season, 0.0) for season in stretch_source_years)
+        stretch_year_count = len(stretch_source_years) * 2 + 1
+        annual_stretch = stretched_total / stretch_year_count if stretch_year_count > 0 else 0.0
+        first_stretch_year = int(current_year) if before_august_31 else int(current_year) + 1
+        last_stretch_year = first_stretch_year + stretch_year_count - 1
+
+        final_schedule: Dict[int, float] = {}
+        if not before_august_31 and base_schedule.get(int(current_year), 0) > 0:
+            final_schedule[int(current_year)] = float(base_schedule[int(current_year)])
+        for season in range(first_stretch_year, last_stretch_year + 1):
+            final_schedule[season] = final_schedule.get(season, 0.0) + annual_stretch
+
+        note = f"stretch hasta {last_stretch_year}" if last_stretch_year > max(PLAYER_CONTRACT_SEASONS) else None
+        return ({season: format_salary_amount_text(final_schedule.get(season)) for season in PLAYER_CONTRACT_SEASONS}, note)
+
     def _player_is_ten_day_contract(self, player: Dict[str, Any]) -> bool:
         raw = " ".join(
             str(value or "").strip().upper()
@@ -12945,10 +13014,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
         player: Dict[str, Any],
         *,
         created_at: str,
+        cut_options: Optional[Dict[str, Any]] = None,
     ) -> int:
         expires_at = (datetime.fromisoformat(created_at.replace("Z", "+00:00")) + timedelta(hours=48)).astimezone(UTC)
         expires_text = expires_at.isoformat().replace("+00:00", "Z")
         payload = self._player_contract_snapshot_payload(player)
+        normalized_cut_options = self._normalize_cut_options(cut_options)
+        if normalized_cut_options.get("buyout") or normalized_cut_options.get("stretch"):
+            payload["cut_settings"] = normalized_cut_options
         cur = conn.execute(
             """
             INSERT INTO waiver_players (
@@ -12989,7 +13062,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "SELECT COALESCE(MAX(row_order), 0) AS mx FROM dead_contracts WHERE team_id = ?",
             (team_id,),
         ).fetchone()["mx"]
-        salary_texts = {season: payload.get(f"salary_{season}_text") for season in PLAYER_CONTRACT_SEASONS}
+        settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings").fetchall()}
+        current_year = parse_int(settings.get("current_year")) or PLAYER_CONTRACT_SEASONS[0]
+        salary_texts, cut_note = self._cut_dead_cap_schedule(
+            payload,
+            payload.get("cut_settings") if isinstance(payload.get("cut_settings"), dict) else None,
+            current_year=int(current_year),
+        )
+        label = waiver.get("player_name") or payload.get("name") or "Cut Player"
+        if cut_note:
+            label = f"{label} ({cut_note})"
+        first_dead_text = next((salary_texts.get(season) for season in PLAYER_CONTRACT_SEASONS if salary_texts.get(season)), None)
         cur = conn.execute(
             """
             INSERT INTO dead_contracts (
@@ -13009,9 +13092,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 parse_int(waiver.get("profile_id")),
                 int(dead_mx) + 1,
                 "two_way" if str(payload.get("bird_rights") or "").upper() == "TW" else "normal",
-                waiver.get("player_name") or payload.get("name") or "Cut Player",
-                salary_texts.get(PLAYER_CONTRACT_SEASONS[0]),
-                parse_salary_amount(salary_texts.get(PLAYER_CONTRACT_SEASONS[0])),
+                label,
+                first_dead_text,
+                parse_salary_amount(first_dead_text),
                 salary_texts.get(2025),
                 parse_salary_amount(salary_texts.get(2025)),
                 salary_texts.get(2026),
@@ -13199,7 +13282,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
         )
         return player_id
 
-    def _waive_player_row_conn(self, conn: sqlite3.Connection, player_id: int, *, timestamp: str) -> Optional[Dict[str, Any]]:
+    def _waive_player_row_conn(
+        self,
+        conn: sqlite3.Connection,
+        player_id: int,
+        *,
+        timestamp: str,
+        cut_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         cur = conn.execute(
             f"""
             SELECT {self._player_select_columns()}, t.code AS team_code, t.name AS team_name
@@ -13229,7 +13319,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             free_agent_id = self._upsert_free_agent_from_waiver_conn(conn, waiver_like, payload, timestamp=timestamp)
             conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
             return {"waiver": False, "dead_contract_id": None, "free_agent_id": free_agent_id, **player}
-        waiver_id = self._create_waiver_player_conn(conn, player, created_at=timestamp)
+        waiver_id = self._create_waiver_player_conn(conn, player, created_at=timestamp, cut_options=cut_options)
         waiver_row = conn.execute("SELECT waiver_expires_at FROM waiver_players WHERE id = ?", (waiver_id,)).fetchone()
         conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
         return {
@@ -14838,10 +14928,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
         conn.commit()
         return player_id
 
-    def cut_player(self, player_id: int) -> Optional[Dict[str, Any]]:
+    def cut_player(self, player_id: int, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             now = now_iso()
-            result = self._waive_player_row_conn(conn, int(player_id), timestamp=now)
+            result = self._waive_player_row_conn(conn, int(player_id), timestamp=now, cut_options=payload)
             if not result:
                 return None
             team_code = str(result.get("team_code") or "").upper()
@@ -21772,7 +21862,7 @@ QUALITY REQUIREMENTS
                 return
             if not self._require_team_write_access(player_before.get("team_code")):
                 return
-            result = self.db.cut_player(player_id)
+            result = self.db.cut_player(player_id, payload)
             if not result:
                 self._json(404, {"error": "player_not_found"})
                 return

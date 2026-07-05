@@ -915,6 +915,87 @@ function confirmWithDiscordNotification({
   });
 }
 
+function askCutDeadCapOptions(player) {
+  return new Promise((resolve) => {
+    const seasons = visibleSeasonYears().filter((season) => season >= currentSeasonStart());
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop cut-options-backdrop';
+    backdrop.setAttribute('role', 'dialog');
+    backdrop.setAttribute('aria-modal', 'true');
+    const rowsHtml = seasons.map((season) => {
+      const currentText = String(player?.[`salary_${season}_text`] ?? '').trim();
+      return `
+        <label class="cut-buyout-row">
+          <span>${seasonLabel(season)}</span>
+          <input type="text" data-cut-dead-cap-season="${season}" value="${escapeHtml(currentText)}" placeholder="0">
+        </label>
+      `;
+    }).join('');
+    backdrop.innerHTML = `
+      <div class="modal-card cut-options-modal">
+        <div class="modal-header">
+          <h2>Opciones de corte</h2>
+        </div>
+        <p class="notification-confirm-message">
+          Define si el corte de ${escapeHtml(player?.name || 'este jugador')} incluye buyout o stretch. Si no aplica, deja ambas opciones desactivadas.
+        </p>
+        <label class="notify-confirm-toggle">
+          <input type="checkbox" data-role="cut-buyout">
+          <span>Buyout</span>
+        </label>
+        <div class="cut-buyout-fields" data-role="cut-buyout-fields" hidden>
+          <p>Nuevo dead cap por temporada. Si también marcas stretch, estos importes serán la base a estirar.</p>
+          <div class="cut-buyout-grid">${rowsHtml}</div>
+        </div>
+        <label class="notify-confirm-toggle">
+          <input type="checkbox" data-role="cut-stretch">
+          <span>Stretch</span>
+        </label>
+        <p class="cut-options-note">
+          Antes del 31 de agosto se estira todo el contrato restante. Después del 31 de agosto, la temporada actual no se estira y solo se reparten los años posteriores.
+        </p>
+        <div class="notification-confirm-actions">
+          <button type="button" data-action="cancel">Cancelar</button>
+          <button type="button" data-action="confirm" class="danger">Continuar</button>
+        </div>
+      </div>
+    `;
+
+    const cleanup = (value) => {
+      document.removeEventListener('keydown', onKeyDown);
+      backdrop.remove();
+      resolve(value);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') cleanup(null);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) cleanup(null);
+    });
+    backdrop.querySelector('[data-action="cancel"]').addEventListener('click', () => cleanup(null));
+    const buyoutInput = backdrop.querySelector('[data-role="cut-buyout"]');
+    const buyoutFields = backdrop.querySelector('[data-role="cut-buyout-fields"]');
+    buyoutInput?.addEventListener('change', () => {
+      if (buyoutFields) buyoutFields.hidden = !buyoutInput.checked;
+    });
+    backdrop.querySelector('[data-action="confirm"]').addEventListener('click', () => {
+      const buyout = Boolean(buyoutInput?.checked);
+      const stretch = Boolean(backdrop.querySelector('[data-role="cut-stretch"]')?.checked);
+      const deadCapOverrides = {};
+      if (buyout) {
+        backdrop.querySelectorAll('[data-cut-dead-cap-season]').forEach((input) => {
+          const season = input.getAttribute('data-cut-dead-cap-season');
+          deadCapOverrides[season] = input.value;
+        });
+      }
+      cleanup({ buyout, stretch, dead_cap_overrides: deadCapOverrides });
+    });
+    document.body.appendChild(backdrop);
+    backdrop.querySelector('[data-action="confirm"]')?.focus();
+  });
+}
+
 function visibleSeasonYears() {
   const currentYear = currentSeasonStart();
   return ALL_SEASONS.filter((season) => season >= currentYear);
@@ -9254,12 +9335,15 @@ function renderPlayers() {
         defaultNotify: true,
       });
       if (!decision.confirmed) return;
+      const cutOptions = await askCutDeadCapOptions(p);
+      if (!cutOptions) return;
       await api(`/api/players/${p.id}/cut`, {
         method: 'POST',
         body: JSON.stringify({
           notify_discord: decision.notifyDiscord,
           generate_discord_image: decision.generateDiscordImage,
           discord_custom_image: decision.customDiscordImage,
+          ...cutOptions,
         }),
       });
       await loadTeam(state.teamCode);
@@ -9465,12 +9549,15 @@ async function cutSelectedPlayersAction() {
   if (!decision.confirmed) return;
 
   for (const p of players) {
+    const cutOptions = await askCutDeadCapOptions(p);
+    if (!cutOptions) return;
     await api(`/api/players/${p.id}/cut`, {
       method: 'POST',
       body: JSON.stringify({
         notify_discord: decision.notifyDiscord,
         generate_discord_image: decision.generateDiscordImage,
         discord_custom_image: decision.customDiscordImage,
+        ...cutOptions,
       }),
     });
   }
