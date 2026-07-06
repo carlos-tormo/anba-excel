@@ -10159,17 +10159,18 @@ select[data-new-field="years_left"],
     content: "";
   }
   #trackerTable td:nth-child(1)::before { content: "Team"; }
-  #trackerTable td:nth-child(2)::before { content: "CAP Total"; }
-  #trackerTable td:nth-child(3)::before { content: "GASTO Total"; }
-  #trackerTable td:nth-child(4)::before { content: "Espacio CAP"; }
-  #trackerTable td:nth-child(5)::before { content: "Espacio Luxury"; }
-  #trackerTable td:nth-child(6)::before { content: "Luxury tax"; }
-  #trackerTable td:nth-child(7)::before { content: "Espacio 1er Apron"; }
-  #trackerTable td:nth-child(8)::before { content: "Espacio 2do Apron"; }
-  #trackerTable td:nth-child(9)::before { content: "Std"; }
-  #trackerTable td:nth-child(10)::before { content: "TW"; }
-  #trackerTable td:nth-child(11)::before { content: "1st Picks"; }
-  #trackerTable td:nth-child(12)::before { content: "2nd Picks"; }
+  #trackerTable td:nth-child(2)::before { content: "Hard cap"; }
+  #trackerTable td:nth-child(3)::before { content: "CAP Total"; }
+  #trackerTable td:nth-child(4)::before { content: "GASTO Total"; }
+  #trackerTable td:nth-child(5)::before { content: "Espacio CAP"; }
+  #trackerTable td:nth-child(6)::before { content: "Espacio Luxury"; }
+  #trackerTable td:nth-child(7)::before { content: "Luxury tax"; }
+  #trackerTable td:nth-child(8)::before { content: "Espacio 1er Apron"; }
+  #trackerTable td:nth-child(9)::before { content: "Espacio 2do Apron"; }
+  #trackerTable td:nth-child(10)::before { content: "Std"; }
+  #trackerTable td:nth-child(11)::before { content: "TW"; }
+  #trackerTable td:nth-child(12)::before { content: "1st Picks"; }
+  #trackerTable td:nth-child(13)::before { content: "2nd Picks"; }
   #deadContractsTable td:nth-child(1)::before { content: "Names"; }
   #deadContractsTable td:nth-child(2)::before { content: "2025-26"; }
   #deadContractsTable td:nth-child(3)::before { content: "2026-27"; }
