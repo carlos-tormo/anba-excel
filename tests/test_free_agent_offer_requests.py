@@ -519,6 +519,41 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("9.200.000", normalized["salary_by_season"]["2026"])
         self.assertEqual("8.400.000", normalized["salary_by_season"]["2027"])
 
+    def test_free_agent_offer_requires_role_for_low_salary_or_minimum(self) -> None:
+        handler = object.__new__(Handler)
+        handler.db = self.db
+        free_agent = {
+            "name": "Low Salary Free Agent",
+            "source": "manual",
+            "experience_years": 2,
+        }
+
+        with self.assertRaisesRegex(ValueError, "offer_role_required"):
+            handler._validate_and_normalize_free_agent_offer_payload(
+                free_agent,
+                "ATL",
+                {
+                    "contract_type": "Reg",
+                    "years": 1,
+                    "annual_raise_percent": 0,
+                    "salary_by_season": {"2025": "5.000.000"},
+                },
+            )
+
+        normalized = handler._validate_and_normalize_free_agent_offer_payload(
+            free_agent,
+            "ATL",
+            {
+                "contract_type": "Min",
+                "years": 1,
+                "annual_raise_percent": 0,
+                "role": "sexto hombre",
+                "salary_by_season": {},
+            },
+        )
+
+        self.assertEqual("Sexto hombre", normalized["role"])
+
     def test_free_agent_offer_discord_thread_mentions_role_only_on_creation(self) -> None:
         handler = object.__new__(Handler)
         handler.db = self.db
@@ -673,6 +708,27 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(1, client["offer_count"])
         self.assertEqual("BKN", client["interests"][0]["team_code"])
         self.assertEqual("ATL", client["offers"][0]["team_code"])
+
+    def test_gm_spending_limits_are_persisted_and_visible_to_cartera(self) -> None:
+        saved = self.db.set_gm_free_agent_spending_limit(
+            "ATL",
+            "12.5",
+            {"email": "atl-gm@example.com", "role": "gm"},
+        )
+
+        self.assertEqual("ATL", saved["team_code"])
+        self.assertEqual(12500000, saved["amount"])
+        self.assertEqual(12.5, saved["amount_millions"])
+
+        office = self.db.list_gm_office("ATL")
+        self.assertEqual(12500000, office["free_agent_spending_limit"]["amount"])
+
+        self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})
+        payload = self.db.list_cartera_clients_for_session(
+            {"role": "co_admin", "email": "agent@example.com", "agent_name": "Agent Smith"}
+        )
+        limits = {item["team_code"]: item for item in payload["gm_spending_limits"]}
+        self.assertEqual(12500000, limits["ATL"]["amount"])
 
     def test_cartera_clients_include_persisted_ruleouts_for_agent(self) -> None:
         self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})

@@ -4343,7 +4343,9 @@ function gmFreeAgentOfferContext(request) {
   const raiseText = Number.isFinite(raise) && raise !== 0
     ? ` · ${raise > 0 ? 'Subidas' : 'Bajadas'} ${Math.abs(raise)}%`
     : '';
-  return `${escapeHtml(contractType)} · ${escapeHtml(yearsText)}${escapeHtml(raiseText)}${salaryLine}`;
+  const role = String(payload.role || '').trim();
+  const roleText = role ? ` · Rol: ${role}` : '';
+  return `${escapeHtml(contractType)} · ${escapeHtml(yearsText)}${escapeHtml(raiseText)}${escapeHtml(roleText)}${salaryLine}`;
 }
 
 function updateGmOptionRequestBadges() {
@@ -5749,6 +5751,15 @@ function freeAgentOfferRaisePercent() {
   return Number.isFinite(value) ? value : 0;
 }
 
+function freeAgentOfferRole() {
+  return String(document.getElementById('freeAgentOfferRole')?.value || '').trim();
+}
+
+function freeAgentOfferRoleIsRequired(contractType, firstAmount) {
+  return String(contractType || '').trim().toUpperCase() === 'MIN'
+    || (Number.isFinite(firstAmount) && firstAmount <= 5000000);
+}
+
 function freeAgentOfferBirdRightsCode(agent) {
   const raw = String(agent?.bird_rights || '').trim().toUpperCase().replace(/[\s_-]+/g, '');
   if (raw === 'FB' || raw === 'FULLBIRD') return 'FB';
@@ -5857,6 +5868,9 @@ function syncFreeAgentOfferAmounts() {
   if (raisePercent > 5 && !canUseBirdRaises) {
     return setFreeAgentOfferValidation('Solo los equipos con Full Bird o Early Bird pueden ofrecer subidas superiores al 5%.', true);
   }
+  if (freeAgentOfferRoleIsRequired(contractType, firstAmount) && !freeAgentOfferRole()) {
+    return setFreeAgentOfferValidation('Selecciona el rol ofrecido para ofertas de 5.000.000 o menos.', true);
+  }
   return setFreeAgentOfferValidation();
 }
 
@@ -5911,6 +5925,7 @@ function openFreeAgentOfferModal(agent) {
   document.getElementById('freeAgentOfferType').value = 'Reg';
   document.getElementById('freeAgentOfferYears').value = '1';
   document.getElementById('freeAgentOfferRaisePct').value = '0';
+  document.getElementById('freeAgentOfferRole').value = '';
   document.getElementById('freeAgentOfferNotes').value = '';
   renderFreeAgentOfferYearsTable();
   setFreeAgentActionStatus('offer');
@@ -5940,6 +5955,7 @@ function freeAgentOfferPayload() {
     contract_type: document.getElementById('freeAgentOfferType')?.value || '',
     years: Number(document.getElementById('freeAgentOfferYears')?.value || 1),
     annual_raise_percent: freeAgentOfferRaisePercent(),
+    role: freeAgentOfferRole(),
     salary_by_season: salaryBySeason,
     option_by_season: optionBySeason,
     notes: document.getElementById('freeAgentOfferNotes')?.value.trim() || '',
@@ -12822,6 +12838,7 @@ async function init() {
   });
   document.getElementById('freeAgentOfferType')?.addEventListener('change', syncFreeAgentOfferAmounts);
   document.getElementById('freeAgentOfferRaisePct')?.addEventListener('input', syncFreeAgentOfferAmounts);
+  document.getElementById('freeAgentOfferRole')?.addEventListener('change', syncFreeAgentOfferAmounts);
   document.getElementById('freeAgentOfferCloseBtn')?.addEventListener('click', closeFreeAgentOfferModal);
   document.getElementById('freeAgentOfferSubmitBtn')?.addEventListener('click', () => { void submitFreeAgentOffer(); });
   document.getElementById('freeAgentOfferModal')?.addEventListener('click', (e) => {

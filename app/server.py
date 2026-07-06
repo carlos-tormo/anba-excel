@@ -1396,6 +1396,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS gm_free_agent_spending_limits (
+                    team_code TEXT PRIMARY KEY REFERENCES teams(code) ON DELETE CASCADE,
+                    amount INTEGER NOT NULL DEFAULT 0,
+                    updated_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    updated_by_email TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS free_agent_team_ruleouts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     free_agent_id INTEGER NOT NULL REFERENCES free_agents(id) ON DELETE CASCADE,
@@ -11642,6 +11653,100 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             return {int(row["free_agent_id"]) for row in cur.fetchall() if row["free_agent_id"] is not None}
 
+    @staticmethod
+    def _gm_spending_limit_payload(row: Optional[sqlite3.Row], team: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        amount = parse_int(row["amount"]) if row and "amount" in row.keys() else 0
+        return {
+            "team_code": normalize_team_code(row["team_code"] if row and "team_code" in row.keys() else (team or {}).get("code")),
+            "team_name": str((team or {}).get("name") or (row["team_name"] if row and "team_name" in row.keys() else "") or "").strip(),
+            "amount": max(0, amount or 0),
+            "amount_millions": round(max(0, amount or 0) / 1_000_000, 3),
+            "updated_at": str(row["updated_at"] if row and "updated_at" in row.keys() else "").strip(),
+            "updated_by_email": str(row["updated_by_email"] if row and "updated_by_email" in row.keys() else "").strip(),
+        }
+
+    def get_gm_free_agent_spending_limit(self, team_code: Any) -> Dict[str, Any]:
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        with self.connect() as conn:
+            team_cur = conn.execute("SELECT code, name FROM teams WHERE code = ?", (normalized_team,))
+            team_row = team_cur.fetchone()
+            if not team_row:
+                raise ValueError("team_not_found")
+            team = row_to_dict(team_cur, team_row)
+            cur = conn.execute(
+                """
+                SELECT l.*, t.name AS team_name
+                FROM gm_free_agent_spending_limits l
+                JOIN teams t ON t.code = l.team_code
+                WHERE l.team_code = ?
+                """,
+                (normalized_team,),
+            )
+            row = cur.fetchone()
+            return self._gm_spending_limit_payload(row, team)
+
+    def set_gm_free_agent_spending_limit(
+        self,
+        team_code: Any,
+        amount_millions: Any,
+        session: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        parsed_amount = parse_float(amount_millions)
+        if parsed_amount is None:
+            raise ValueError("invalid_amount")
+        if parsed_amount < 0 or parsed_amount > 100:
+            raise ValueError("amount_out_of_range")
+        session = session or {}
+        now = now_iso()
+        full_amount = int(round(parsed_amount * 1_000_000))
+        with self.connect() as conn:
+            team = conn.execute("SELECT code FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+            if not team:
+                raise ValueError("team_not_found")
+            conn.execute(
+                """
+                INSERT INTO gm_free_agent_spending_limits
+                    (team_code, amount, updated_by_user_id, updated_by_email, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(team_code) DO UPDATE SET
+                    amount = excluded.amount,
+                    updated_by_user_id = excluded.updated_by_user_id,
+                    updated_by_email = excluded.updated_by_email,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_team,
+                    full_amount,
+                    parse_int(session.get("user_id")),
+                    str(session.get("email") or "").strip().lower(),
+                    now,
+                ),
+            )
+            conn.commit()
+        return self.get_gm_free_agent_spending_limit(normalized_team)
+
+    def list_gm_free_agent_spending_limits(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    t.code AS team_code,
+                    t.name AS team_name,
+                    l.amount,
+                    l.updated_at,
+                    l.updated_by_email
+                FROM teams t
+                LEFT JOIN gm_free_agent_spending_limits l ON l.team_code = t.code
+                ORDER BY t.code
+                """
+            )
+            return [self._gm_spending_limit_payload(row) for row in cur.fetchall()]
+
     def list_gm_office(self, team_code: Any) -> Dict[str, Any]:
         normalized_team = normalize_team_code(team_code)
         if not normalized_team:
@@ -11695,11 +11800,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 for row in favorite_cur.fetchall()
             ]
             favorites = self._attach_player_salary_history_conn(conn, favorites)
+            spending_limit = conn.execute(
+                """
+                SELECT l.*, t.name AS team_name
+                FROM gm_free_agent_spending_limits l
+                JOIN teams t ON t.code = l.team_code
+                WHERE l.team_code = ?
+                """,
+                (normalized_team,),
+            ).fetchone()
         return {
             "team_code": normalized_team,
             "team_name": str(team["name"] or normalized_team),
             "offers": offers,
             "favorites": favorites,
+            "free_agent_spending_limit": self._gm_spending_limit_payload(
+                spending_limit,
+                {"code": normalized_team, "name": str(team["name"] or normalized_team)},
+            ),
         }
 
     def cancel_gm_free_agent_offer_request(
@@ -11758,6 +11876,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "agent_name": "",
                 "clients": [],
                 "missing_agent": True,
+                "gm_spending_limits": self.list_gm_free_agent_spending_limits(),
             }
 
         where = "COALESCE(f.agent, '') != ''"
@@ -11964,6 +12083,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "agent_name": agent_name,
             "clients": normalized_clients,
             "missing_agent": False,
+            "gm_spending_limits": self.list_gm_free_agent_spending_limits(),
         }
 
     def generate_offseason_exceptions(
@@ -19285,6 +19405,24 @@ QUALITY REQUIREMENTS
         sign = "-" if amount < 0 else ""
         return f"{sign}{abs(amount):,}".replace(",", ".")
 
+    def _free_agent_offer_role_options(self) -> tuple[str, ...]:
+        return (
+            "Titular",
+            "Sexto hombre",
+            "Minutos de rotación (10-20)",
+            "Minutos de rotación (0-9)",
+            "Fuera de la rotación",
+        )
+
+    def _normalize_free_agent_offer_role(self, raw_role: Any) -> str:
+        role = str(raw_role or "").strip()
+        if not role:
+            return ""
+        for option in self._free_agent_offer_role_options():
+            if role.casefold() == option.casefold():
+                return option
+        raise ValueError("invalid_offer_role")
+
     def _validate_and_normalize_free_agent_offer_payload(
         self,
         free_agent: Dict[str, Any],
@@ -19354,6 +19492,10 @@ QUALITY REQUIREMENTS
         if math.isfinite(first_maximum) and first_amount > first_maximum + 1:
             raise ValueError("first_year_salary_above_maximum")
 
+        role = self._normalize_free_agent_offer_role(payload.get("role"))
+        if (contract_type_upper == "MIN" or first_amount <= 5_000_000) and not role:
+            raise ValueError("offer_role_required")
+
         normalized_salaries: Dict[str, str] = {}
         for idx in range(years):
             season = start_season + idx
@@ -19366,6 +19508,7 @@ QUALITY REQUIREMENTS
         normalized_payload = dict(payload)
         normalized_payload["years"] = years
         normalized_payload["annual_raise_percent"] = raise_percent
+        normalized_payload["role"] = role
         normalized_payload["salary_by_season"] = normalized_salaries
         normalized_payload["option_by_season"] = normalized_options
         return normalized_payload
@@ -19445,6 +19588,7 @@ QUALITY REQUIREMENTS
             raise_text = "Sin subidas"
         salary_lines = self._contract_offer_salary_lines(payload)
         notes = str(payload.get("notes") or "").strip()
+        role = str(payload.get("role") or "").strip()
         thread_name = self._discord_text(player_name, 100) or "Jugador"
         normalized_offer_type = str(offer_type or "").strip().lower()
         is_renewal = normalized_offer_type == "renewal" or (
@@ -19477,6 +19621,7 @@ QUALITY REQUIREMENTS
                 {"name": "Tipo", "value": self._discord_text(contract_type, 1024), "inline": True},
                 {"name": "Duración", "value": years_text, "inline": True},
                 {"name": "Subidas", "value": raise_text, "inline": True},
+                {"name": "Rol", "value": self._discord_text(role or "Sin rol definido", 1024), "inline": True},
                 {"name": "Importes", "value": self._discord_text(salary_lines, 1024), "inline": False},
             ],
         }
@@ -20648,6 +20793,39 @@ QUALITY REQUIREMENTS
                     ],
                 },
             )
+            return
+
+        if parsed.path == "/api/gm-office/free-agent-spending-limit":
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            team_code = normalize_team_code(payload.get("team_code"))
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            if not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                spending_limit = self.db.set_gm_free_agent_spending_limit(
+                    team_code,
+                    payload.get("amount_millions"),
+                    self._current_session() or {},
+                )
+            except ValueError as err:
+                message = str(err) or "invalid_spending_limit"
+                status = 404 if message == "team_not_found" else 400
+                self._json(status, {"error": message})
+                return
+            self._json(200, {"ok": True, "free_agent_spending_limit": spending_limit})
             return
 
         if parsed.path.startswith("/api/me/notifications/") and parsed.path.endswith("/read"):

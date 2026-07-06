@@ -10878,6 +10878,40 @@ select[data-new-field="years_left"],
   margin: 0 0 8px;
 }
 
+.gm-office-spending-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.gm-office-spending-control {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(240px, 1fr) minmax(140px, 220px);
+}
+
+.gm-office-spending-control span,
+.gm-office-spending-note {
+  color: #475569;
+  font-weight: 800;
+}
+
+.gm-office-spending-control input {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 900;
+  min-height: 44px;
+  padding: 8px 12px;
+}
+
+.gm-office-spending-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .gm-office-status {
   color: #64748b;
   font-weight: 800;
@@ -10945,12 +10979,35 @@ select[data-new-field="years_left"],
   color: #991b1b;
 }
 
+.wallet-spending-team {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.wallet-spending-team small {
+  color: #64748b;
+  font-weight: 800;
+}
+
 .wallet-match-tool summary {
   color: #0f172a;
   cursor: pointer;
   font-size: 1.1rem;
   font-weight: 900;
   padding: 16px;
+}
+
+@media (max-width: 700px) {
+  .gm-office-spending-control {
+    grid-template-columns: 1fr;
+  }
+
+  .wallet-spending-team {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
 }
 
 .wallet-match-tool[open] summary {

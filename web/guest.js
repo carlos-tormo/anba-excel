@@ -31,6 +31,7 @@ const state = {
     clientsSort: { key: 'interest_count', dir: 'desc' },
     agentName: '',
     missingAgent: false,
+    gmSpendingLimits: [],
     clientsLoading: false,
     clientsError: '',
     loading: false,
@@ -41,6 +42,9 @@ const state = {
     teamName: '',
     offers: [],
     favorites: [],
+    freeAgentSpendingLimit: null,
+    spendingLimitStatus: '',
+    spendingLimitSaving: false,
     loading: false,
     error: '',
   },
@@ -5219,6 +5223,15 @@ function freeAgentOfferRaisePercent() {
   return Number.isFinite(value) ? value : 0;
 }
 
+function freeAgentOfferRole() {
+  return String(document.getElementById('freeAgentOfferRole')?.value || '').trim();
+}
+
+function freeAgentOfferRoleIsRequired(contractType, firstAmount) {
+  return String(contractType || '').trim().toUpperCase() === 'MIN'
+    || (Number.isFinite(firstAmount) && firstAmount <= 5000000);
+}
+
 function freeAgentOfferBirdRightsCode(agent) {
   const raw = String(agent?.bird_rights || '').trim().toUpperCase().replace(/[\s_-]+/g, '');
   if (raw === 'FB' || raw === 'FULLBIRD') return 'FB';
@@ -5327,6 +5340,9 @@ function syncFreeAgentOfferAmounts() {
   if (raisePercent > 5 && !canUseBirdRaises) {
     return setFreeAgentOfferValidation('Solo los equipos con Full Bird o Early Bird pueden ofrecer subidas superiores al 5%.', true);
   }
+  if (freeAgentOfferRoleIsRequired(contractType, firstAmount) && !freeAgentOfferRole()) {
+    return setFreeAgentOfferValidation('Selecciona el rol ofrecido para ofertas de 5.000.000 o menos.', true);
+  }
   return setFreeAgentOfferValidation();
 }
 
@@ -5385,6 +5401,7 @@ function openFreeAgentOfferModal(agent) {
   document.getElementById('freeAgentOfferType').value = 'Reg';
   document.getElementById('freeAgentOfferYears').value = '1';
   document.getElementById('freeAgentOfferRaisePct').value = '0';
+  document.getElementById('freeAgentOfferRole').value = '';
   document.getElementById('freeAgentOfferNotes').value = '';
   renderFreeAgentOfferYearsTable();
   setFreeAgentActionStatus('offer');
@@ -5414,6 +5431,7 @@ function freeAgentOfferPayload() {
     contract_type: document.getElementById('freeAgentOfferType')?.value || '',
     years: Number(document.getElementById('freeAgentOfferYears')?.value || 1),
     annual_raise_percent: freeAgentOfferRaisePercent(),
+    role: freeAgentOfferRole(),
     salary_by_season: salaryBySeason,
     option_by_season: optionBySeason,
     notes: document.getElementById('freeAgentOfferNotes')?.value.trim() || '',
@@ -5775,10 +5793,26 @@ function gmOfficeStatusBadge(status) {
   return `<span class="gm-office-status-badge gm-office-status-badge--${escapeHtml(normalized || 'default')}">${escapeHtml(label)}</span>`;
 }
 
+function parseMillionsInput(raw) {
+  const text = String(raw ?? '').trim().replace(',', '.');
+  if (!text) return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+function spendingLimitLabel(item) {
+  const amount = Number(item?.amount || 0);
+  if (amount <= 0) return 'Solo mínimos';
+  return formatMoneyDots(amount);
+}
+
 function renderGmOffice() {
   const subtitle = document.getElementById('gmOfficeSubtitle');
   const offersStatus = document.getElementById('gmOfficeOffersStatus');
   const favoritesStatus = document.getElementById('gmOfficeFavoritesStatus');
+  const spendingInput = document.getElementById('gmOfficeSpendingLimitInput');
+  const spendingSaveBtn = document.getElementById('gmOfficeSpendingLimitSaveBtn');
+  const spendingStatus = document.getElementById('gmOfficeSpendingLimitStatus');
   const offersBody = document.querySelector('#gmOfficeOffersTable tbody');
   const favoritesBody = document.querySelector('#gmOfficeFavoritesTable tbody');
   if (!offersBody || !favoritesBody) return;
@@ -5799,6 +5833,23 @@ function renderGmOffice() {
   }
   if (favoritesStatus) {
     favoritesStatus.textContent = `${favorites.length} favorito${favorites.length === 1 ? '' : 's'} guardado${favorites.length === 1 ? '' : 's'}.`;
+  }
+  if (spendingInput) {
+    const current = state.gmOffice.freeAgentSpendingLimit || {};
+    if (document.activeElement !== spendingInput && !state.gmOffice.spendingLimitSaving) {
+      spendingInput.value = current.amount_millions != null ? String(current.amount_millions).replace('.', ',') : '0';
+    }
+    spendingInput.disabled = Boolean(state.gmOffice.loading || state.gmOffice.spendingLimitSaving || state.gmOffice.error);
+  }
+  if (spendingSaveBtn) {
+    spendingSaveBtn.disabled = Boolean(state.gmOffice.loading || state.gmOffice.spendingLimitSaving || state.gmOffice.error);
+    spendingSaveBtn.textContent = state.gmOffice.spendingLimitSaving ? 'Guardando...' : 'Guardar cantidad';
+    spendingSaveBtn.onclick = () => {
+      void saveGmOfficeSpendingLimit();
+    };
+  }
+  if (spendingStatus) {
+    spendingStatus.textContent = state.gmOffice.spendingLimitStatus || '';
   }
 
   if (state.gmOffice.loading) {
@@ -5882,13 +5933,52 @@ async function fetchGmOffice() {
     state.gmOffice.teamName = String(data.team_name || '').trim();
     state.gmOffice.offers = Array.isArray(data.offers) ? data.offers : [];
     state.gmOffice.favorites = Array.isArray(data.favorites) ? data.favorites.map((item) => ({ ...item, is_favorite: true })) : [];
+    state.gmOffice.freeAgentSpendingLimit = data.free_agent_spending_limit || null;
+    state.gmOffice.spendingLimitStatus = '';
     state.gmOffice.error = '';
   } catch (err) {
     state.gmOffice.offers = [];
     state.gmOffice.favorites = [];
+    state.gmOffice.freeAgentSpendingLimit = null;
     state.gmOffice.error = err.message || 'No se pudo cargar Despachos.';
   } finally {
     state.gmOffice.loading = false;
+    renderGmOffice();
+  }
+}
+
+async function saveGmOfficeSpendingLimit() {
+  const input = document.getElementById('gmOfficeSpendingLimitInput');
+  const teamCode = state.gmOffice.teamCode || preferredFreeAgentActionTeamCode();
+  const amount = parseMillionsInput(input?.value);
+  if (!teamCode) {
+    state.gmOffice.spendingLimitStatus = 'No hay equipo asignado.';
+    renderGmOffice();
+    return;
+  }
+  if (amount === null || amount < 0 || amount > 100) {
+    state.gmOffice.spendingLimitStatus = 'Introduce una cantidad entre 0 y 100.';
+    renderGmOffice();
+    return;
+  }
+  state.gmOffice.spendingLimitSaving = true;
+  state.gmOffice.spendingLimitStatus = '';
+  renderGmOffice();
+  try {
+    const data = await api('/api/gm-office/free-agent-spending-limit', {
+      method: 'POST',
+      body: JSON.stringify({ team_code: teamCode, amount_millions: amount }),
+    });
+    state.gmOffice.freeAgentSpendingLimit = data.free_agent_spending_limit || {
+      team_code: teamCode,
+      amount: Math.round(amount * 1_000_000),
+      amount_millions: amount,
+    };
+    state.gmOffice.spendingLimitStatus = 'Cantidad guardada.';
+  } catch (err) {
+    state.gmOffice.spendingLimitStatus = `No se pudo guardar: ${err.message}`;
+  } finally {
+    state.gmOffice.spendingLimitSaving = false;
     renderGmOffice();
   }
 }
@@ -8723,23 +8813,57 @@ function renderWalletClients() {
   renderWalletClientsPagination(totalPages);
 }
 
+function renderWalletSpendingLimits() {
+  const tbody = document.querySelector('#walletSpendingLimitsTable tbody');
+  if (!tbody) return;
+  const rows = Array.isArray(state.wallet.gmSpendingLimits) ? state.wallet.gmSpendingLimits : [];
+  if (state.wallet.clientsLoading) {
+    tbody.innerHTML = '<tr><td colspan="3">Cargando...</td></tr>';
+    return;
+  }
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="3">No hay respuestas de GMs todavía.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((item) => {
+    const code = String(item.team_code || '').trim().toUpperCase();
+    return `
+      <tr>
+        <td>
+          <span class="wallet-spending-team">
+            ${draftOrderLogoHtml(code, 'wallet-interest-team-logo')}
+            <strong>${escapeHtml(code)}</strong>
+            <small>${escapeHtml(item.team_name || '')}</small>
+          </span>
+        </td>
+        <td><strong>${escapeHtml(spendingLimitLabel(item))}</strong></td>
+        <td>${escapeHtml(shortDateTime(item.updated_at || '')) || 'Sin actualizar'}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
 async function fetchWalletClients() {
   state.wallet.clientsLoading = true;
   state.wallet.clientsError = '';
   renderWalletClients();
+  renderWalletSpendingLimits();
   try {
     const data = await api('/api/cartera/clients');
     state.wallet.clients = Array.isArray(data.clients) ? data.clients : [];
     state.wallet.agentName = String(data.agent_name || '').trim();
     state.wallet.missingAgent = Boolean(data.missing_agent);
+    state.wallet.gmSpendingLimits = Array.isArray(data.gm_spending_limits) ? data.gm_spending_limits : [];
     state.wallet.clientsPage = 1;
     state.wallet.clientsError = '';
   } catch (err) {
     state.wallet.clients = [];
+    state.wallet.gmSpendingLimits = [];
     state.wallet.clientsError = err.message || 'No se pudo cargar la lista de clientes.';
   } finally {
     state.wallet.clientsLoading = false;
     renderWalletClients();
+    renderWalletSpendingLimits();
     renderWalletAppeal();
   }
 }
@@ -8907,11 +9031,13 @@ async function loadWallet() {
     state.wallet.rows = [];
     state.wallet.error = 'Esta herramienta solo está disponible para admins y co-admins.';
     state.wallet.clients = [];
+    state.wallet.gmSpendingLimits = [];
     state.wallet.clientsError = '';
     state.wallet.missingAgent = false;
     state.wallet.agentName = '';
     renderWallet();
     renderWalletClients();
+    renderWalletSpendingLimits();
     return;
   }
   if (!state.wallet.season) state.wallet.season = currentSeasonStart();
@@ -9553,6 +9679,7 @@ async function init() {
   });
   document.getElementById('freeAgentOfferType')?.addEventListener('change', syncFreeAgentOfferAmounts);
   document.getElementById('freeAgentOfferRaisePct')?.addEventListener('input', syncFreeAgentOfferAmounts);
+  document.getElementById('freeAgentOfferRole')?.addEventListener('change', syncFreeAgentOfferAmounts);
   document.getElementById('freeAgentOfferCloseBtn')?.addEventListener('click', closeFreeAgentOfferModal);
   document.getElementById('freeAgentOfferSubmitBtn')?.addEventListener('click', () => { void submitFreeAgentOffer(); });
   document.getElementById('freeAgentOfferModal')?.addEventListener('click', (event) => {

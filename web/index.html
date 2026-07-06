@@ -184,6 +184,15 @@
         </select>
         <label for="freeAgentOfferRaisePct">Subidas interanuales</label>
         <input id="freeAgentOfferRaisePct" type="number" min="-8" max="8" step="0.5" value="0">
+        <label for="freeAgentOfferRole">Rol</label>
+        <select id="freeAgentOfferRole">
+          <option value="">Selecciona rol</option>
+          <option value="Titular">Titular</option>
+          <option value="Sexto hombre">Sexto hombre</option>
+          <option value="Minutos de rotación (10-20)">Minutos de rotación (10-20)</option>
+          <option value="Minutos de rotación (0-9)">Minutos de rotación (0-9)</option>
+          <option value="Fuera de la rotación">Fuera de la rotación</option>
+        </select>
       </div>
       <div class="table-wrap sign-free-agent-years-wrap">
         <table id="freeAgentOfferYearsTable">
@@ -359,6 +368,18 @@
           <div id="gmOfficeSubtitle" class="section-subtitle">Ofertas enviadas y favoritos guardados.</div>
         </div>
       </div>
+      <section class="gm-office-panel gm-office-spending-panel">
+        <h3>Agencia libre</h3>
+        <label class="gm-office-spending-control" for="gmOfficeSpendingLimitInput">
+          <span>Cantidad máxima que puedes y estar dispuesto a gastar en agencia actualmente:</span>
+          <input id="gmOfficeSpendingLimitInput" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="0-100">
+        </label>
+        <div class="gm-office-spending-note">Para indicar que solo mínimos, pon 0</div>
+        <div class="gm-office-spending-actions">
+          <button id="gmOfficeSpendingLimitSaveBtn" type="button">Guardar cantidad</button>
+          <div id="gmOfficeSpendingLimitStatus" class="gm-office-status" aria-live="polite"></div>
+        </div>
+      </section>
       <section class="gm-office-panel">
         <h3>Ofertas enviadas</h3>
         <div id="gmOfficeOffersStatus" class="gm-office-status" aria-live="polite"></div>
@@ -529,6 +550,26 @@
             </table>
           </div>
         </details>
+        <section class="wallet-clients-panel wallet-spending-panel">
+          <div class="wallet-clients-head">
+            <div>
+              <h3>Disponibilidad declarada por GMs</h3>
+              <div class="section-subtitle">Cantidad máxima que cada equipo dice poder y querer gastar ahora mismo. 0 indica solo mínimos.</div>
+            </div>
+          </div>
+          <div class="table-wrap wallet-clients-wrap">
+            <table id="walletSpendingLimitsTable" class="wallet-clients-table wallet-spending-table">
+              <thead>
+                <tr>
+                  <th>Equipo</th>
+                  <th>Cantidad</th>
+                  <th>Actualizado</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </section>
 
