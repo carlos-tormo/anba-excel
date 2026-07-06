@@ -1294,6 +1294,44 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS free_agent_offer_promises (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gm_free_agent_offer_request_id INTEGER NOT NULL UNIQUE
+                        REFERENCES gm_free_agent_offer_requests(id) ON DELETE CASCADE,
+                    free_agent_id INTEGER,
+                    profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL,
+                    player_name TEXT NOT NULL,
+                    team_code TEXT NOT NULL,
+                    team_name TEXT,
+                    agent_name TEXT,
+                    season_year INTEGER,
+                    season_label TEXT,
+                    role TEXT NOT NULL,
+                    offer_type TEXT,
+                    contract_type TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    admin_email TEXT,
+                    admin_name TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    decided_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_free_agent_offer_promises_status
+                ON free_agent_offer_promises (status, season_year, updated_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_free_agent_offer_promises_agent
+                ON free_agent_offer_promises (agent_name, status, updated_at)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS coadmin_votes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT NOT NULL,
@@ -5243,6 +5281,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         status: str,
         admin: Dict[str, Any],
         note: Optional[str] = None,
+        promise_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         normalized_status = str(status or "").strip().lower()
         if normalized_status not in {"approved", "rejected"}:
@@ -5271,10 +5310,294 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     int(request_id),
                 ),
             )
+            if cur.rowcount >= 1 and normalized_status == "approved":
+                self._upsert_free_agent_offer_promise_for_request_conn(
+                    conn,
+                    int(request_id),
+                    admin,
+                    timestamp,
+                    promise_context=promise_context,
+                )
             conn.commit()
             if cur.rowcount < 1:
                 return None
         return self.get_gm_free_agent_offer_request(request_id)
+
+    @staticmethod
+    def _offer_promise_status(raw_status: Any) -> str:
+        status = str(raw_status or "").strip().lower()
+        aliases = {
+            "pending": "pending",
+            "pendiente": "pending",
+            "fulfilled": "fulfilled",
+            "cumplida": "fulfilled",
+            "cumplido": "fulfilled",
+            "broken": "broken",
+            "incumplida": "broken",
+            "incumplido": "broken",
+        }
+        if status not in aliases:
+            raise ValueError("invalid_promise_status")
+        return aliases[status]
+
+    @staticmethod
+    def _free_agent_offer_payload_from_request_row(row: sqlite3.Row) -> Dict[str, Any]:
+        try:
+            payload = json.loads(str(row["offer_payload_json"] or "{}"))
+        except (KeyError, json.JSONDecodeError, TypeError):
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _upsert_free_agent_offer_promise_for_request_conn(
+        self,
+        conn: sqlite3.Connection,
+        request_id: int,
+        admin: Optional[Dict[str, Any]] = None,
+        timestamp: Optional[str] = None,
+        promise_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        timestamp = timestamp or now_iso()
+        cur = conn.execute(
+            """
+            SELECT
+                r.*,
+                f.name AS free_agent_name,
+                f.profile_id AS free_agent_profile_id,
+                f.agent AS free_agent_agent,
+                t.code AS team_code,
+                t.name AS team_name
+            FROM gm_free_agent_offer_requests r
+            LEFT JOIN free_agents f ON f.id = r.free_agent_id
+            JOIN teams t ON t.id = r.team_id
+            WHERE r.id = ? AND r.status = 'approved'
+            """,
+            (int(request_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        payload = self._free_agent_offer_payload_from_request_row(row)
+        role = re.sub(r"\s+", " ", str(payload.get("role") or "").strip())
+        if not role:
+            return None
+
+        context = promise_context or {}
+        free_agent_context = context.get("free_agent") if isinstance(context.get("free_agent"), dict) else {}
+        salary_by_season = payload.get("salary_by_season")
+        if not isinstance(salary_by_season, dict):
+            salary_by_season = {}
+        seasons = sorted(
+            season
+            for season in (parse_int(key) for key in salary_by_season.keys())
+            if season is not None
+        )
+        season_year = seasons[0] if seasons else None
+        label = season_label(season_year) if season_year is not None else ""
+        profile_id = (
+            parse_int(payload.get("profile_id"))
+            or parse_int(free_agent_context.get("profile_id"))
+            or parse_int(row["free_agent_profile_id"])
+        )
+        player_name = (
+            str(payload.get("player_name") or "").strip()
+            or str(free_agent_context.get("name") or "").strip()
+            or str(row["free_agent_name"] or "").strip()
+            or "Agente libre"
+        )
+        agent_name = re.sub(
+            r"\s+",
+            " ",
+            str(
+                payload.get("agent_name")
+                or payload.get("agent")
+                or free_agent_context.get("agent")
+                or row["free_agent_agent"]
+                or ""
+            ).strip(),
+        )
+        admin = admin or {}
+        insert_cur = conn.execute(
+            """
+            INSERT INTO free_agent_offer_promises (
+                gm_free_agent_offer_request_id,
+                free_agent_id,
+                profile_id,
+                player_name,
+                team_code,
+                team_name,
+                agent_name,
+                season_year,
+                season_label,
+                role,
+                offer_type,
+                contract_type,
+                status,
+                admin_email,
+                admin_name,
+                created_at,
+                updated_at,
+                decided_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NULL)
+            ON CONFLICT(gm_free_agent_offer_request_id)
+            DO UPDATE SET
+                free_agent_id = excluded.free_agent_id,
+                profile_id = excluded.profile_id,
+                player_name = excluded.player_name,
+                team_code = excluded.team_code,
+                team_name = excluded.team_name,
+                agent_name = excluded.agent_name,
+                season_year = excluded.season_year,
+                season_label = excluded.season_label,
+                role = excluded.role,
+                offer_type = excluded.offer_type,
+                contract_type = excluded.contract_type,
+                admin_email = excluded.admin_email,
+                admin_name = excluded.admin_name,
+                updated_at = excluded.updated_at
+            """,
+            (
+                int(request_id),
+                parse_int(row["free_agent_id"]),
+                profile_id,
+                player_name,
+                normalize_team_code(row["team_code"]) or str(row["team_code"] or "").strip().upper(),
+                str(row["team_name"] or "").strip(),
+                agent_name,
+                season_year,
+                label,
+                role,
+                str(row["offer_type"] or "").strip().lower() or "free_agent_offer",
+                str(payload.get("contract_type") or "").strip(),
+                str(admin.get("email") or "").strip().lower() or None,
+                str(admin.get("name") or "").strip() or None,
+                timestamp,
+                timestamp,
+            ),
+        )
+        if insert_cur.lastrowid:
+            return int(insert_cur.lastrowid)
+        existing = conn.execute(
+            "SELECT id FROM free_agent_offer_promises WHERE gm_free_agent_offer_request_id = ?",
+            (int(request_id),),
+        ).fetchone()
+        return int(existing["id"]) if existing else None
+
+    def _backfill_free_agent_offer_promises_conn(self, conn: sqlite3.Connection) -> None:
+        cur = conn.execute(
+            """
+            SELECT r.id
+            FROM gm_free_agent_offer_requests r
+            LEFT JOIN free_agent_offer_promises p
+                ON p.gm_free_agent_offer_request_id = r.id
+            WHERE r.status = 'approved'
+              AND p.id IS NULL
+            ORDER BY r.id
+            """
+        )
+        for row in cur.fetchall():
+            self._upsert_free_agent_offer_promise_for_request_conn(conn, int(row["id"]))
+
+    def _free_agent_offer_promise_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
+        item = row_to_dict(cursor, row)
+        item["id"] = parse_int(item.get("id"))
+        item["gm_free_agent_offer_request_id"] = parse_int(item.get("gm_free_agent_offer_request_id"))
+        item["free_agent_id"] = parse_int(item.get("free_agent_id"))
+        item["profile_id"] = parse_int(item.get("profile_id"))
+        item["season_year"] = parse_int(item.get("season_year"))
+        item["team_code"] = normalize_team_code(item.get("team_code")) or str(item.get("team_code") or "").strip().upper()
+        item["status"] = str(item.get("status") or "pending").strip().lower()
+        return item
+
+    def list_free_agent_offer_promises(
+        self,
+        session: Dict[str, Any],
+        status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        role = str(session.get("role") or "").strip().lower()
+        email = str(session.get("email") or "").strip().lower()
+        access = self.user_access_for_email(email) if email else {}
+        agent_name = re.sub(
+            r"\s+",
+            " ",
+            str(access.get("agent_name") or session.get("agent_name") or "").strip(),
+        )
+        if role not in {"admin", "co_admin"}:
+            raise PermissionError("admin_or_coadmin_required")
+        if role == "co_admin" and not agent_name:
+            return {"agent_name": "", "missing_agent": True, "promises": []}
+
+        where = ["1 = 1"]
+        params: List[Any] = []
+        normalized_status = str(status or "all").strip().lower()
+        if normalized_status and normalized_status != "all":
+            where.append("p.status = ?")
+            params.append(self._offer_promise_status(normalized_status))
+        if role == "co_admin":
+            where.append("lower(trim(COALESCE(p.agent_name, ''))) = lower(trim(?))")
+            params.append(agent_name)
+
+        with self.connect() as conn:
+            self._backfill_free_agent_offer_promises_conn(conn)
+            conn.commit()
+            cur = conn.execute(
+                f"""
+                SELECT p.*
+                FROM free_agent_offer_promises p
+                WHERE {' AND '.join(where)}
+                ORDER BY
+                    COALESCE(p.season_year, 0) DESC,
+                    CASE p.status WHEN 'pending' THEN 0 WHEN 'broken' THEN 1 WHEN 'fulfilled' THEN 2 ELSE 3 END,
+                    p.updated_at DESC,
+                    lower(p.player_name)
+                """,
+                params,
+            )
+            promises = [self._free_agent_offer_promise_from_row(cur, row) for row in cur.fetchall()]
+        return {"agent_name": agent_name, "missing_agent": False, "promises": promises}
+
+    def update_free_agent_offer_promise_status(
+        self,
+        promise_id: Any,
+        status: Any,
+        admin: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        parsed_id = parse_int(promise_id)
+        if parsed_id is None or parsed_id <= 0:
+            raise ValueError("invalid_promise_id")
+        normalized_status = self._offer_promise_status(status)
+        timestamp = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE free_agent_offer_promises
+                SET
+                    status = ?,
+                    admin_email = ?,
+                    admin_name = ?,
+                    updated_at = ?,
+                    decided_at = CASE WHEN ? = 'pending' THEN NULL ELSE ? END
+                WHERE id = ?
+                """,
+                (
+                    normalized_status,
+                    str(admin.get("email") or "").strip().lower() or None,
+                    str(admin.get("name") or "").strip() or None,
+                    timestamp,
+                    normalized_status,
+                    timestamp,
+                    parsed_id,
+                ),
+            )
+            conn.commit()
+            if cur.rowcount < 1:
+                return None
+            read_cur = conn.execute(
+                "SELECT * FROM free_agent_offer_promises WHERE id = ?",
+                (parsed_id,),
+            )
+            row = read_cur.fetchone()
+            return self._free_agent_offer_promise_from_row(read_cur, row) if row else None
 
     def mark_gm_option_request_decided(
         self,
@@ -20460,6 +20783,19 @@ QUALITY REQUIREMENTS
             self._json(200, self.db.list_cartera_clients_for_session(self._current_session() or {}))
             return
 
+        if parsed.path == "/api/cartera/promises":
+            if not self._require_admin_or_coadmin():
+                return
+            qs = parse_qs(parsed.query)
+            status = (qs.get("status") or ["all"])[0].strip().lower() or "all"
+            try:
+                self._json(200, self.db.list_free_agent_offer_promises(self._current_session() or {}, status=status))
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_status"})
+            except PermissionError as err:
+                self._json(403, {"error": str(err) or "admin_or_coadmin_required"})
+            return
+
         if parsed.path == "/api/cartera/appeal":
             if not self._require_admin_or_coadmin():
                 return
@@ -22566,6 +22902,38 @@ QUALITY REQUIREMENTS
             self._json(200, {"ok": True, "vote": vote})
             return
 
+        if parsed.path.startswith("/api/admin/free-agent-offer-promises/"):
+            promise_id = parse_int(parsed.path.split("/")[-1])
+            if promise_id is None:
+                self._json(400, {"error": "invalid_promise_id"})
+                return
+            try:
+                promise = self.db.update_free_agent_offer_promise_status(
+                    promise_id,
+                    payload.get("status"),
+                    self._current_session() or {},
+                )
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_promise_status"})
+                return
+            if not promise:
+                self._json(404, {"error": "promise_not_found"})
+                return
+            self._log_admin_action(
+                "update",
+                "free_agent_offer_promise",
+                str(promise_id),
+                promise.get("team_code"),
+                {
+                    "status": promise.get("status"),
+                    "player_name": promise.get("player_name"),
+                    "role": promise.get("role"),
+                },
+                after={"promise": promise},
+            )
+            self._json(200, {"ok": True, "promise": promise})
+            return
+
         if parsed.path.startswith("/api/admin/gm-draft-pick-requests/"):
             try:
                 request_id = int(parsed.path.split("/")[-1])
@@ -22763,6 +23131,7 @@ QUALITY REQUIREMENTS
                 "approved",
                 self._current_session() or {},
                 str(payload.get("note") or "").strip() or None,
+                promise_context={"free_agent": free_agent},
             )
             if not updated:
                 self._json(409, {"error": "request_already_decided"})

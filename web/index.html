@@ -491,6 +491,10 @@
           <span class="team-tab-icon" aria-hidden="true">⚙</span>
           <span>Herramientas</span>
         </button>
+        <button type="button" class="team-tab-btn wallet-tab-btn" data-wallet-tab="promises" role="tab" aria-selected="false">
+          <span class="team-tab-icon" aria-hidden="true">✓</span>
+          <span>Promesas</span>
+        </button>
       </nav>
       <div id="walletClientsPanel" class="wallet-tab-panel">
         <section class="wallet-clients-panel">
@@ -564,6 +568,41 @@
                   <th>Equipo</th>
                   <th>Cantidad</th>
                   <th>Actualizado</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <div id="walletPromisesPanel" class="wallet-tab-panel section-hidden">
+        <section class="wallet-clients-panel wallet-promises-panel">
+          <div class="wallet-clients-head">
+            <div>
+              <h3>Promesas</h3>
+              <div class="section-subtitle">Roles prometidos en ofertas aceptadas.</div>
+            </div>
+            <label class="season-view-control" for="walletPromiseStatusFilter">
+              <span>Estado</span>
+              <select id="walletPromiseStatusFilter">
+                <option value="all">Todas</option>
+                <option value="pending">Pendientes</option>
+                <option value="fulfilled">Cumplidas</option>
+                <option value="broken">Incumplidas</option>
+              </select>
+            </label>
+          </div>
+          <div id="walletPromisesStatus" class="wallet-status" aria-live="polite"></div>
+          <div class="table-wrap wallet-clients-wrap">
+            <table id="walletPromisesTable" class="wallet-clients-table wallet-promises-table">
+              <thead>
+                <tr>
+                  <th>Jugador</th>
+                  <th>Equipo</th>
+                  <th>Temporada</th>
+                  <th>Promesa</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody></tbody>

@@ -34,6 +34,11 @@ const state = {
     gmSpendingLimits: [],
     clientsLoading: false,
     clientsError: '',
+    promises: [],
+    promisesLoading: false,
+    promisesError: '',
+    promiseStatusFilter: 'all',
+    promiseSavingId: null,
     loading: false,
     error: '',
   },
@@ -727,6 +732,10 @@ function isCoAdminRole(role) {
 function canViewWallet() {
   const role = String(state.auth?.role || '').trim().toLowerCase();
   return Boolean(state.auth?.authenticated && ['admin', 'co_admin'].includes(role));
+}
+
+function canEditWalletPromises() {
+  return Boolean(state.auth?.authenticated && String(state.auth?.role || '').trim().toLowerCase() === 'admin');
 }
 
 function canViewGmOffice() {
@@ -8404,7 +8413,8 @@ function renderWalletControls() {
 const WALLET_CLIENTS_PAGE_SIZE = 20;
 
 function renderWalletTabs() {
-  const activeTab = state.wallet.activeTab === 'tools' ? 'tools' : 'clients';
+  const requestedTab = String(state.wallet.activeTab || 'clients');
+  const activeTab = ['clients', 'tools', 'promises'].includes(requestedTab) ? requestedTab : 'clients';
   state.wallet.activeTab = activeTab;
   document.querySelectorAll('[data-wallet-tab]').forEach((button) => {
     const isActive = button.dataset.walletTab === activeTab;
@@ -8413,6 +8423,7 @@ function renderWalletTabs() {
   });
   document.getElementById('walletClientsPanel')?.classList.toggle('section-hidden', activeTab !== 'clients');
   document.getElementById('walletToolsPanel')?.classList.toggle('section-hidden', activeTab !== 'tools');
+  document.getElementById('walletPromisesPanel')?.classList.toggle('section-hidden', activeTab !== 'promises');
 }
 
 function selectedWalletAppealClient() {
@@ -8868,6 +8879,135 @@ async function fetchWalletClients() {
   }
 }
 
+function walletPromiseStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'fulfilled') return 'Cumplida';
+  if (normalized === 'broken') return 'Incumplida';
+  return 'Pendiente';
+}
+
+function walletPromiseStatusClass(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'fulfilled') return 'wallet-promise-status--fulfilled';
+  if (normalized === 'broken') return 'wallet-promise-status--broken';
+  return 'wallet-promise-status--pending';
+}
+
+function renderWalletPromises() {
+  const tbody = document.querySelector('#walletPromisesTable tbody');
+  const status = document.getElementById('walletPromisesStatus');
+  const filter = document.getElementById('walletPromiseStatusFilter');
+  if (!tbody || !status) return;
+
+  if (filter && document.activeElement !== filter) {
+    filter.value = state.wallet.promiseStatusFilter || 'all';
+  }
+
+  const promises = Array.isArray(state.wallet.promises) ? state.wallet.promises : [];
+  status.classList.toggle('is-error', Boolean(state.wallet.promisesError || state.wallet.missingAgent));
+  if (state.wallet.promisesLoading) {
+    status.textContent = 'Cargando promesas...';
+  } else if (state.wallet.promisesError) {
+    status.textContent = state.wallet.promisesError;
+  } else if (state.wallet.missingAgent && !canEditWalletPromises()) {
+    status.textContent = 'Tu usuario co-admin no tiene agente asignado todavía. Un admin puede asignarlo en Users.';
+  } else {
+    status.textContent = `${promises.length} promesa${promises.length === 1 ? '' : 's'} encontradas.`;
+  }
+
+  if (state.wallet.promisesLoading) {
+    tbody.innerHTML = '<tr><td colspan="6">Cargando...</td></tr>';
+    return;
+  }
+  if (!promises.length) {
+    tbody.innerHTML = '<tr><td colspan="6">No hay promesas para mostrar.</td></tr>';
+    return;
+  }
+
+  const canEdit = canEditWalletPromises();
+  tbody.innerHTML = promises.map((promise) => {
+    const id = Number(promise.id);
+    const statusValue = String(promise.status || 'pending').trim().toLowerCase() || 'pending';
+    const teamCode = String(promise.team_code || '').trim().toUpperCase();
+    const saving = Number(state.wallet.promiseSavingId) === id;
+    const actions = canEdit ? `
+      <div class="wallet-promise-actions">
+        <button type="button" data-wallet-promise-id="${id}" data-wallet-promise-status="fulfilled" ${saving || statusValue === 'fulfilled' ? 'disabled' : ''}>Cumplida</button>
+        <button type="button" data-wallet-promise-id="${id}" data-wallet-promise-status="broken" ${saving || statusValue === 'broken' ? 'disabled' : ''}>Incumplida</button>
+        <button type="button" data-wallet-promise-id="${id}" data-wallet-promise-status="pending" ${saving || statusValue === 'pending' ? 'disabled' : ''}>Pendiente</button>
+      </div>
+    ` : '<span class="muted-text">Solo admin</span>';
+    return `
+      <tr>
+        <td>
+          <strong>${escapeHtml(promise.player_name || 'Jugador')}</strong>
+          ${promise.agent_name ? `<small>${escapeHtml(promise.agent_name)}</small>` : ''}
+        </td>
+        <td>
+          <span class="wallet-spending-team">
+            ${draftOrderLogoHtml(teamCode, 'wallet-interest-team-logo')}
+            <strong>${escapeHtml(teamCode || '-')}</strong>
+            <small>${escapeHtml(promise.team_name || '')}</small>
+          </span>
+        </td>
+        <td>${escapeHtml(promise.season_label || (promise.season_year ? seasonLabel(Number(promise.season_year)) : '-'))}</td>
+        <td>
+          <span class="wallet-promise-role">${escapeHtml(promise.role || '-')}</span>
+          ${promise.contract_type ? `<small>${escapeHtml(promise.contract_type)}</small>` : ''}
+        </td>
+        <td><span class="wallet-promise-status ${walletPromiseStatusClass(statusValue)}">${walletPromiseStatusLabel(statusValue)}</span></td>
+        <td>${actions}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function fetchWalletPromises() {
+  state.wallet.promisesLoading = true;
+  state.wallet.promisesError = '';
+  renderWalletPromises();
+  try {
+    const status = state.wallet.promiseStatusFilter || 'all';
+    const data = await api(`/api/cartera/promises?status=${encodeURIComponent(status)}`);
+    state.wallet.promises = Array.isArray(data.promises) ? data.promises : [];
+    state.wallet.agentName = String(data.agent_name || state.wallet.agentName || '').trim();
+    state.wallet.missingAgent = Boolean(data.missing_agent);
+    state.wallet.promisesError = '';
+  } catch (err) {
+    state.wallet.promises = [];
+    state.wallet.promisesError = err.message || 'No se pudo cargar la lista de promesas.';
+  } finally {
+    state.wallet.promisesLoading = false;
+    renderWalletPromises();
+  }
+}
+
+async function updateWalletPromiseStatus(promiseId, status) {
+  const id = Number(promiseId);
+  const normalized = String(status || '').trim().toLowerCase();
+  if (!Number.isFinite(id) || !normalized) return;
+  state.wallet.promiseSavingId = id;
+  renderWalletPromises();
+  try {
+    const data = await api(`/api/admin/free-agent-offer-promises/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: normalized }),
+    });
+    const updated = data.promise || null;
+    if (updated) {
+      state.wallet.promises = (state.wallet.promises || []).map((promise) => (
+        Number(promise.id) === id ? updated : promise
+      ));
+    }
+    state.wallet.promisesError = '';
+  } catch (err) {
+    state.wallet.promisesError = err.message || 'No se pudo actualizar la promesa.';
+  } finally {
+    state.wallet.promiseSavingId = null;
+    renderWalletPromises();
+  }
+}
+
 async function fetchWalletAppeal() {
   state.wallet.appealLoading = true;
   state.wallet.appealError = '';
@@ -8966,6 +9106,7 @@ function renderWallet() {
   renderWalletTabs();
   renderWalletControls();
   renderWalletAppeal();
+  renderWalletPromises();
   const status = document.getElementById('walletStatus');
   if (!status) return;
 
@@ -9033,17 +9174,20 @@ async function loadWallet() {
     state.wallet.clients = [];
     state.wallet.gmSpendingLimits = [];
     state.wallet.clientsError = '';
+    state.wallet.promises = [];
+    state.wallet.promisesError = '';
     state.wallet.missingAgent = false;
     state.wallet.agentName = '';
     renderWallet();
     renderWalletClients();
     renderWalletSpendingLimits();
+    renderWalletPromises();
     return;
   }
   if (!state.wallet.season) state.wallet.season = currentSeasonStart();
   state.wallet.error = '';
   renderWallet();
-  await Promise.all([fetchWalletClients(), fetchWalletAppeal()]);
+  await Promise.all([fetchWalletClients(), fetchWalletAppeal(), fetchWalletPromises()]);
 }
 
 async function fetchLeaguePlayersFallback() {
@@ -9636,10 +9780,24 @@ async function init() {
   });
   document.querySelectorAll('[data-wallet-tab]').forEach((button) => {
     button.addEventListener('click', () => {
-      state.wallet.activeTab = button.dataset.walletTab === 'tools' ? 'tools' : 'clients';
+      const requestedTab = String(button.dataset.walletTab || 'clients');
+      state.wallet.activeTab = ['clients', 'tools', 'promises'].includes(requestedTab) ? requestedTab : 'clients';
       renderWalletTabs();
       renderWalletAppeal();
+      renderWalletPromises();
+      if (state.wallet.activeTab === 'promises' && !state.wallet.promises.length && !state.wallet.promisesLoading) {
+        void fetchWalletPromises();
+      }
     });
+  });
+  document.getElementById('walletPromiseStatusFilter')?.addEventListener('change', (event) => {
+    state.wallet.promiseStatusFilter = String(event.target.value || 'all');
+    void fetchWalletPromises();
+  });
+  document.getElementById('walletPromisesTable')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-wallet-promise-status]');
+    if (!button) return;
+    void updateWalletPromiseStatus(button.dataset.walletPromiseId, button.dataset.walletPromiseStatus);
   });
   document.getElementById('walletAppealPlayerSelect')?.addEventListener('change', (event) => {
     state.wallet.appealSelectedFreeAgentId = Number(event.target.value || 0) || null;

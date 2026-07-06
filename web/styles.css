@@ -10670,6 +10670,75 @@ select[data-new-field="years_left"],
   border-bottom: 0;
 }
 
+.wallet-promises-table td small {
+  color: #64748b;
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 800;
+  margin-top: 2px;
+}
+
+.wallet-promise-role {
+  color: #0f172a;
+  display: inline-block;
+  font-weight: 900;
+}
+
+.wallet-promise-status {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 5px 10px;
+}
+
+.wallet-promise-status--pending {
+  background: #fef3c7;
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+.wallet-promise-status--fulfilled {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.wallet-promise-status--broken {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+.wallet-promise-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wallet-promise-actions button {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: #334155;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 6px 10px;
+}
+
+.wallet-promise-actions button:hover:not(:disabled) {
+  border-color: #0f766e;
+  color: #0f766e;
+}
+
+.wallet-promise-actions button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .wallet-client-row strong {
   color: #0f172a;
 }

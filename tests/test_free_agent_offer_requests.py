@@ -108,6 +108,55 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("approved", updated["status"])
         self.assertEqual("admin@example.com", updated["admin_email"])
 
+    def test_approved_offer_with_role_creates_agent_promise(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE free_agents SET agent = ? WHERE id = ?", ("Agent One", self.free_agent_id))
+            conn.commit()
+
+        request = self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {
+                "contract_type": "Min",
+                "years": 1,
+                "salary_by_season": {"2026": "2.296.274"},
+                "role": "Minutos de rotación (10-20)",
+            },
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        updated = self.db.mark_gm_free_agent_offer_request_decided(
+            int(request["id"]),
+            "approved",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+
+        self.assertIsNotNone(updated)
+        agent_view = self.db.list_free_agent_offer_promises(
+            {"email": "agent@example.com", "name": "Agent", "role": "co_admin", "agent_name": "Agent One"},
+            status="all",
+        )
+        self.assertFalse(agent_view["missing_agent"])
+        self.assertEqual(1, len(agent_view["promises"]))
+        promise = agent_view["promises"][0]
+        self.assertEqual("Test Free Agent", promise["player_name"])
+        self.assertEqual("ATL", promise["team_code"])
+        self.assertEqual("Agent One", promise["agent_name"])
+        self.assertEqual("Minutos de rotación (10-20)", promise["role"])
+        self.assertEqual("pending", promise["status"])
+
+        changed = self.db.update_free_agent_offer_promise_status(
+            int(promise["id"]),
+            "fulfilled",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+        self.assertEqual("fulfilled", changed["status"])
+        filtered = self.db.list_free_agent_offer_promises(
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            status="fulfilled",
+        )
+        self.assertEqual(1, len(filtered["promises"]))
+
     def test_rejected_offer_notification_is_visible_and_dismissible_for_requesting_gm(self) -> None:
         user = self.db.upsert_google_user(
             "google-atl-gm",
