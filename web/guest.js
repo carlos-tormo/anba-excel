@@ -49,7 +49,9 @@ const state = {
     favorites: [],
     freeAgentSpendingLimit: null,
     spendingLimitStatus: '',
+    spendingLimitStatusType: '',
     spendingLimitSaving: false,
+    spendingLimitLastSavedText: '',
     loading: false,
     error: '',
   },
@@ -5809,10 +5811,22 @@ function parseMillionsInput(raw) {
   return Number.isFinite(value) ? value : null;
 }
 
+function normalizeMillionsText(raw) {
+  const value = parseMillionsInput(raw);
+  if (value === null) return '';
+  return String(value).replace('.', ',');
+}
+
 function spendingLimitLabel(item) {
+  if (!item?.has_value) return 'Pendiente';
   const amount = Number(item?.amount || 0);
   if (amount <= 0) return 'Solo mínimos';
   return formatMoneyDots(amount);
+}
+
+function setGmOfficeSpendingStatus(message, type = '') {
+  state.gmOffice.spendingLimitStatus = message || '';
+  state.gmOffice.spendingLimitStatusType = type || '';
 }
 
 function renderGmOffice() {
@@ -5847,8 +5861,34 @@ function renderGmOffice() {
     const current = state.gmOffice.freeAgentSpendingLimit || {};
     if (document.activeElement !== spendingInput && !state.gmOffice.spendingLimitSaving) {
       spendingInput.value = current.amount_millions != null ? String(current.amount_millions).replace('.', ',') : '0';
+      state.gmOffice.spendingLimitLastSavedText = normalizeMillionsText(spendingInput.value);
     }
     spendingInput.disabled = Boolean(state.gmOffice.loading || state.gmOffice.spendingLimitSaving || state.gmOffice.error);
+    spendingInput.oninput = () => {
+      if (state.gmOffice.spendingLimitSaving) return;
+      const currentText = normalizeMillionsText(spendingInput.value);
+      const savedText = state.gmOffice.spendingLimitLastSavedText || '';
+      if (currentText && currentText !== savedText) {
+        setGmOfficeSpendingStatus('Cambios sin guardar.', 'pending');
+      } else if (!currentText) {
+        setGmOfficeSpendingStatus('Introduce una cantidad entre 0 y 100.', 'error');
+      } else if (state.gmOffice.spendingLimitStatusType === 'pending') {
+        setGmOfficeSpendingStatus('', '');
+      }
+      const status = document.getElementById('gmOfficeSpendingLimitStatus');
+      if (status) {
+        status.classList.toggle('is-error', state.gmOffice.spendingLimitStatusType === 'error');
+        status.classList.toggle('is-success', state.gmOffice.spendingLimitStatusType === 'success');
+        status.classList.toggle('is-pending', state.gmOffice.spendingLimitStatusType === 'pending');
+        status.textContent = state.gmOffice.spendingLimitStatus || '';
+      }
+    };
+    spendingInput.onchange = () => {
+      void saveGmOfficeSpendingLimit({ source: 'change' });
+    };
+    spendingInput.onblur = () => {
+      void saveGmOfficeSpendingLimit({ source: 'blur' });
+    };
   }
   if (spendingSaveBtn) {
     spendingSaveBtn.disabled = Boolean(state.gmOffice.loading || state.gmOffice.spendingLimitSaving || state.gmOffice.error);
@@ -5858,6 +5898,9 @@ function renderGmOffice() {
     };
   }
   if (spendingStatus) {
+    spendingStatus.classList.toggle('is-error', state.gmOffice.spendingLimitStatusType === 'error');
+    spendingStatus.classList.toggle('is-success', state.gmOffice.spendingLimitStatusType === 'success');
+    spendingStatus.classList.toggle('is-pending', state.gmOffice.spendingLimitStatusType === 'pending');
     spendingStatus.textContent = state.gmOffice.spendingLimitStatus || '';
   }
 
@@ -5943,7 +5986,8 @@ async function fetchGmOffice() {
     state.gmOffice.offers = Array.isArray(data.offers) ? data.offers : [];
     state.gmOffice.favorites = Array.isArray(data.favorites) ? data.favorites.map((item) => ({ ...item, is_favorite: true })) : [];
     state.gmOffice.freeAgentSpendingLimit = data.free_agent_spending_limit || null;
-    state.gmOffice.spendingLimitStatus = '';
+    state.gmOffice.spendingLimitLastSavedText = normalizeMillionsText(state.gmOffice.freeAgentSpendingLimit?.amount_millions ?? 0);
+    setGmOfficeSpendingStatus('', '');
     state.gmOffice.error = '';
   } catch (err) {
     state.gmOffice.offers = [];
@@ -5956,22 +6000,25 @@ async function fetchGmOffice() {
   }
 }
 
-async function saveGmOfficeSpendingLimit() {
+async function saveGmOfficeSpendingLimit(options = {}) {
   const input = document.getElementById('gmOfficeSpendingLimitInput');
   const teamCode = state.gmOffice.teamCode || preferredFreeAgentActionTeamCode();
+  const currentText = normalizeMillionsText(input?.value);
+  if (state.gmOffice.spendingLimitSaving) return;
+  if (options.source && currentText && currentText === (state.gmOffice.spendingLimitLastSavedText || '')) return;
   const amount = parseMillionsInput(input?.value);
   if (!teamCode) {
-    state.gmOffice.spendingLimitStatus = 'No hay equipo asignado.';
+    setGmOfficeSpendingStatus('No hay equipo asignado.', 'error');
     renderGmOffice();
     return;
   }
   if (amount === null || amount < 0 || amount > 100) {
-    state.gmOffice.spendingLimitStatus = 'Introduce una cantidad entre 0 y 100.';
+    setGmOfficeSpendingStatus('Introduce una cantidad entre 0 y 100.', 'error');
     renderGmOffice();
     return;
   }
   state.gmOffice.spendingLimitSaving = true;
-  state.gmOffice.spendingLimitStatus = '';
+  setGmOfficeSpendingStatus('Guardando...', 'pending');
   renderGmOffice();
   try {
     const data = await api('/api/gm-office/free-agent-spending-limit', {
@@ -5982,10 +6029,12 @@ async function saveGmOfficeSpendingLimit() {
       team_code: teamCode,
       amount: Math.round(amount * 1_000_000),
       amount_millions: amount,
+      has_value: true,
     };
-    state.gmOffice.spendingLimitStatus = 'Cantidad guardada.';
+    state.gmOffice.spendingLimitLastSavedText = normalizeMillionsText(state.gmOffice.freeAgentSpendingLimit.amount_millions);
+    setGmOfficeSpendingStatus('Cantidad guardada correctamente.', 'success');
   } catch (err) {
-    state.gmOffice.spendingLimitStatus = `No se pudo guardar: ${err.message}`;
+    setGmOfficeSpendingStatus(`No se pudo guardar: ${err.message}`, 'error');
   } finally {
     state.gmOffice.spendingLimitSaving = false;
     renderGmOffice();
@@ -8838,8 +8887,9 @@ function renderWalletSpendingLimits() {
   }
   tbody.innerHTML = rows.map((item) => {
     const code = String(item.team_code || '').trim().toUpperCase();
+    const missing = !item.has_value;
     return `
-      <tr>
+      <tr class="${missing ? 'wallet-spending-row--missing' : ''}">
         <td>
           <span class="wallet-spending-team">
             ${draftOrderLogoHtml(code, 'wallet-interest-team-logo')}

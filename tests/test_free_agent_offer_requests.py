@@ -768,9 +768,11 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("ATL", saved["team_code"])
         self.assertEqual(12500000, saved["amount"])
         self.assertEqual(12.5, saved["amount_millions"])
+        self.assertTrue(saved["has_value"])
 
         office = self.db.list_gm_office("ATL")
         self.assertEqual(12500000, office["free_agent_spending_limit"]["amount"])
+        self.assertTrue(office["free_agent_spending_limit"]["has_value"])
 
         self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})
         payload = self.db.list_cartera_clients_for_session(
@@ -778,6 +780,16 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         limits = {item["team_code"]: item for item in payload["gm_spending_limits"]}
         self.assertEqual(12500000, limits["ATL"]["amount"])
+        self.assertTrue(limits["ATL"]["has_value"])
+        self.assertFalse(limits["BKN"]["has_value"])
+
+        minimum_only = self.db.set_gm_free_agent_spending_limit(
+            "BKN",
+            "0",
+            {"email": "bkn-gm@example.com", "role": "gm"},
+        )
+        self.assertEqual(0, minimum_only["amount"])
+        self.assertTrue(minimum_only["has_value"])
 
     def test_cartera_clients_include_persisted_ruleouts_for_agent(self) -> None:
         self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})

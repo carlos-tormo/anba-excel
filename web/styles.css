@@ -10991,6 +10991,14 @@ select[data-new-field="years_left"],
   color: #991b1b;
 }
 
+.gm-office-status.is-success {
+  color: #047857;
+}
+
+.gm-office-status.is-pending {
+  color: #9a3412;
+}
+
 .gm-office-table {
   border-collapse: collapse;
   min-width: 780px;
@@ -11059,6 +11067,19 @@ select[data-new-field="years_left"],
   font-weight: 800;
 }
 
+.wallet-spending-row--missing {
+  background: #fff1f2;
+}
+
+.wallet-spending-row--missing td {
+  border-bottom-color: #fecdd3;
+}
+
+.wallet-spending-row--missing .wallet-spending-team strong,
+.wallet-spending-row--missing td:nth-child(2) strong {
+  color: #991b1b;
+}
+
 .wallet-match-tool summary {
   color: #0f172a;
   cursor: pointer;
@@ -11070,6 +11091,15 @@ select[data-new-field="years_left"],
 @media (max-width: 700px) {
   .gm-office-spending-control {
     grid-template-columns: 1fr;
+  }
+
+  .gm-office-spending-control input,
+  .gm-office-spending-actions button {
+    width: 100%;
+  }
+
+  .gm-office-spending-actions {
+    align-items: stretch;
   }
 
   .wallet-spending-team {

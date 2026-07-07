@@ -12012,13 +12012,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
     @staticmethod
     def _gm_spending_limit_payload(row: Optional[sqlite3.Row], team: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         amount = parse_int(row["amount"]) if row and "amount" in row.keys() else 0
+        raw_updated_at = row["updated_at"] if row and "updated_at" in row.keys() else ""
+        updated_at = str(raw_updated_at or "").strip()
+        raw_updated_by_email = row["updated_by_email"] if row and "updated_by_email" in row.keys() else ""
         return {
             "team_code": normalize_team_code(row["team_code"] if row and "team_code" in row.keys() else (team or {}).get("code")),
             "team_name": str((team or {}).get("name") or (row["team_name"] if row and "team_name" in row.keys() else "") or "").strip(),
             "amount": max(0, amount or 0),
             "amount_millions": round(max(0, amount or 0) / 1_000_000, 3),
-            "updated_at": str(row["updated_at"] if row and "updated_at" in row.keys() else "").strip(),
-            "updated_by_email": str(row["updated_by_email"] if row and "updated_by_email" in row.keys() else "").strip(),
+            "updated_at": updated_at,
+            "updated_by_email": str(raw_updated_by_email or "").strip(),
+            "has_value": bool(updated_at),
         }
 
     def get_gm_free_agent_spending_limit(self, team_code: Any) -> Dict[str, Any]:
