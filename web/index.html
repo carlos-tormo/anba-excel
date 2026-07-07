@@ -368,55 +368,82 @@
           <div id="gmOfficeSubtitle" class="section-subtitle">Ofertas enviadas y favoritos guardados.</div>
         </div>
       </div>
-      <section class="gm-office-panel gm-office-spending-panel">
-        <h3>Agencia libre</h3>
-        <label class="gm-office-spending-control" for="gmOfficeSpendingLimitInput">
-          <span>Cantidad máxima que puedes y estar dispuesto a gastar en agencia actualmente:</span>
-          <input id="gmOfficeSpendingLimitInput" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="0-100">
-        </label>
-        <div class="gm-office-spending-note">Para indicar que solo mínimos, pon 0</div>
-        <div class="gm-office-spending-actions">
-          <button id="gmOfficeSpendingLimitSaveBtn" type="button">Guardar cantidad</button>
-          <div id="gmOfficeSpendingLimitStatus" class="gm-office-status" aria-live="polite"></div>
-        </div>
-      </section>
-      <section class="gm-office-panel">
-        <h3>Ofertas enviadas</h3>
-        <div id="gmOfficeOffersStatus" class="gm-office-status" aria-live="polite"></div>
-        <div class="table-wrap">
-          <table id="gmOfficeOffersTable" class="gm-office-table">
-            <thead>
-              <tr>
-                <th>Jugador</th>
-                <th>Oferta</th>
-                <th>Estado</th>
-                <th>Fecha</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-      <section class="gm-office-panel">
-        <h3>Favoritos</h3>
-        <div id="gmOfficeFavoritesStatus" class="gm-office-status" aria-live="polite"></div>
-        <div class="table-wrap">
-          <table id="gmOfficeFavoritesTable" class="gm-office-table">
-            <thead>
-              <tr>
-                <th>Jugador</th>
-                <th>Posición</th>
-                <th>Rating</th>
-                <th>Tipo FA</th>
-                <th>Derechos</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
+      <nav id="gmOfficeTabs" class="team-tabs gm-office-tabs" role="tablist" aria-label="Despachos">
+        <button type="button" class="team-tab-btn is-active" data-gm-office-tab="overview" role="tab" aria-selected="true">
+          <span class="team-tab-icon" aria-hidden="true">▦</span>
+          <span>Resumen</span>
+        </button>
+        <button type="button" class="team-tab-btn" data-gm-office-tab="depth-chart" role="tab" aria-selected="false">
+          <span class="team-tab-icon" aria-hidden="true">⇄</span>
+          <span>Depth Chart</span>
+        </button>
+      </nav>
+      <div id="gmOfficeOverviewPanel" class="gm-office-tab-panel">
+        <section class="gm-office-panel gm-office-spending-panel">
+          <h3>Agencia libre</h3>
+          <label class="gm-office-spending-control" for="gmOfficeSpendingLimitInput">
+            <span>Cantidad máxima que puedes y estar dispuesto a gastar en agencia actualmente:</span>
+            <input id="gmOfficeSpendingLimitInput" type="number" min="0" max="100" step="0.1" inputmode="decimal" placeholder="0-100">
+          </label>
+          <div class="gm-office-spending-note">Para indicar que solo mínimos, pon 0</div>
+          <div class="gm-office-spending-actions">
+            <button id="gmOfficeSpendingLimitSaveBtn" type="button">Guardar cantidad</button>
+            <div id="gmOfficeSpendingLimitStatus" class="gm-office-status" aria-live="polite"></div>
+          </div>
+        </section>
+        <section class="gm-office-panel">
+          <h3>Ofertas enviadas</h3>
+          <div id="gmOfficeOffersStatus" class="gm-office-status" aria-live="polite"></div>
+          <div class="table-wrap">
+            <table id="gmOfficeOffersTable" class="gm-office-table">
+              <thead>
+                <tr>
+                  <th>Jugador</th>
+                  <th>Oferta</th>
+                  <th>Estado</th>
+                  <th>Fecha</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="gm-office-panel">
+          <h3>Favoritos</h3>
+          <div id="gmOfficeFavoritesStatus" class="gm-office-status" aria-live="polite"></div>
+          <div class="table-wrap">
+            <table id="gmOfficeFavoritesTable" class="gm-office-table">
+              <thead>
+                <tr>
+                  <th>Jugador</th>
+                  <th>Posición</th>
+                  <th>Rating</th>
+                  <th>Tipo FA</th>
+                  <th>Derechos</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <div id="gmOfficeDepthChartPanel" class="gm-office-tab-panel section-hidden">
+        <section class="gm-office-panel">
+          <div class="section-head compact">
+            <div>
+              <h3>Depth Chart</h3>
+              <div class="section-subtitle">Arrastra jugadores a cada posición o usa los desplegables. Máximo 6 por columna.</div>
+            </div>
+            <div class="section-actions">
+              <button id="gmOfficeDepthChartSaveBtn" type="button">Guardar depth chart</button>
+            </div>
+          </div>
+          <div id="gmOfficeDepthChartStatus" class="gm-office-status" aria-live="polite"></div>
+          <div id="gmOfficeDepthChartEditor"></div>
+        </section>
+      </div>
     </section>
 
     <section id="leaguePlayersSection" class="section-hidden">
@@ -635,6 +662,10 @@
         <span class="team-tab-icon" aria-hidden="true">✦</span>
         <span>Draft</span>
       </button>
+      <button type="button" class="team-tab-btn" data-team-tab="depth-chart" role="tab" aria-selected="false">
+        <span class="team-tab-icon" aria-hidden="true">⇄</span>
+        <span>Depth Chart</span>
+      </button>
       <button type="button" class="team-tab-btn" data-team-tab="owner-office" role="tab" aria-selected="false">
         <span class="team-tab-icon" aria-hidden="true">⌂</span>
         <span>Despacho del propietario</span>
@@ -657,6 +688,16 @@
         </div>
       </div>
       <div id="ownerOfficeContent"></div>
+    </section>
+
+    <section id="depthChartSection" class="depth-chart-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Depth Chart</h2>
+          <div id="depthChartSubtitle" class="section-subtitle"></div>
+        </div>
+      </div>
+      <div id="depthChartContent"></div>
     </section>
 
     <section id="rosterSection" class="guest-roster-section">

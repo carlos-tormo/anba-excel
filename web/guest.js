@@ -43,10 +43,18 @@ const state = {
     error: '',
   },
   gmOffice: {
+    activeTab: 'overview',
     teamCode: '',
     teamName: '',
     offers: [],
     favorites: [],
+    depthChart: null,
+    depthChartPlayers: [],
+    depthChartDraft: null,
+    depthChartDraftTeam: '',
+    depthChartSaving: false,
+    depthChartStatus: '',
+    depthChartStatusType: '',
     freeAgentSpendingLimit: null,
     spendingLimitStatus: '',
     spendingLimitStatusType: '',
@@ -169,6 +177,8 @@ const MINIMUM_SALARY_BASE_SEASON = 2025;
 const MINIMUM_SALARY_BASE_CAP = 154_647_000;
 const TWO_WAY_MINIMUM_BASE = 636_435;
 const MINIMUM_SALARY_CONTRACT_YEARS = [1, 2, 3, 4, 5];
+const DEPTH_CHART_POSITIONS = ['PG', 'SG', 'SF', 'PF', 'C'];
+const DEPTH_CHART_MAX_DEPTH = 6;
 const MINIMUM_SALARY_BASE_ROWS = [
   { experience: 0, label: '0', salaries: [1_272_870, null, null, null, null] },
   { experience: 1, label: '1', salaries: [2_048_494, 2_150_917, null, null, null] },
@@ -194,6 +204,10 @@ const TEAM_TABS = [
   {
     id: 'draft',
     sections: ['assetsSection'],
+  },
+  {
+    id: 'depth-chart',
+    sections: ['depthChartSection'],
   },
   {
     id: 'owner-office',
@@ -5834,7 +5848,251 @@ function setGmOfficeSpendingStatus(message, type = '') {
   state.gmOffice.spendingLimitStatusType = type || '';
 }
 
+function setGmOfficeDepthChartStatus(message, type = '') {
+  state.gmOffice.depthChartStatus = message || '';
+  state.gmOffice.depthChartStatusType = type || '';
+}
+
+function activeGmOfficeTab() {
+  return ['overview', 'depth-chart'].includes(state.gmOffice.activeTab)
+    ? state.gmOffice.activeTab
+    : 'overview';
+}
+
+function syncGmOfficeTabs() {
+  const active = activeGmOfficeTab();
+  document.querySelectorAll('[data-gm-office-tab]').forEach((button) => {
+    const isActive = button.dataset.gmOfficeTab === active;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+  document.getElementById('gmOfficeOverviewPanel')?.classList.toggle('section-hidden', active !== 'overview');
+  document.getElementById('gmOfficeDepthChartPanel')?.classList.toggle('section-hidden', active !== 'depth-chart');
+}
+
+function setGmOfficeTab(tabId) {
+  state.gmOffice.activeTab = ['overview', 'depth-chart'].includes(tabId) ? tabId : 'overview';
+  syncGmOfficeTabs();
+  if (state.gmOffice.activeTab === 'depth-chart') renderGmOfficeDepthChartEditor();
+}
+
+function setupGmOfficeTabs() {
+  document.querySelectorAll('[data-gm-office-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setGmOfficeTab(button.dataset.gmOfficeTab);
+    });
+  });
+  syncGmOfficeTabs();
+}
+
+function normalizeDepthChartDraft(chart) {
+  const grid = {};
+  DEPTH_CHART_POSITIONS.forEach((position) => {
+    grid[position] = Array.from({ length: DEPTH_CHART_MAX_DEPTH }, () => null);
+  });
+  const entries = Array.isArray(chart?.entries) ? chart.entries : [];
+  entries.forEach((entry) => {
+    const position = String(entry?.position || '').toUpperCase();
+    const depthOrder = Number(entry?.depth_order);
+    const playerId = Number(entry?.player?.id);
+    if (!DEPTH_CHART_POSITIONS.includes(position) || depthOrder < 1 || depthOrder > DEPTH_CHART_MAX_DEPTH || !playerId) return;
+    grid[position][depthOrder - 1] = playerId;
+  });
+  return grid;
+}
+
+function ensureGmOfficeDepthChartDraft() {
+  const teamCode = state.gmOffice.teamCode || preferredFreeAgentActionTeamCode() || '';
+  if (!state.gmOffice.depthChartDraft || state.gmOffice.depthChartDraftTeam !== teamCode) {
+    state.gmOffice.depthChartDraft = normalizeDepthChartDraft(state.gmOffice.depthChart);
+    state.gmOffice.depthChartDraftTeam = teamCode;
+  }
+  return state.gmOffice.depthChartDraft;
+}
+
+function gmOfficeDepthChartPlayerById(playerId) {
+  const id = Number(playerId);
+  return (state.gmOffice.depthChartPlayers || []).find((player) => Number(player.id) === id) || null;
+}
+
+function removePlayerFromDepthChartDraft(playerId) {
+  const id = Number(playerId);
+  const draft = ensureGmOfficeDepthChartDraft();
+  DEPTH_CHART_POSITIONS.forEach((position) => {
+    draft[position] = draft[position].map((currentId) => (Number(currentId) === id ? null : currentId));
+  });
+}
+
+function assignPlayerToDepthChartSlot(position, depthOrder, playerId) {
+  const normalizedPosition = String(position || '').toUpperCase();
+  const order = Number(depthOrder);
+  const id = Number(playerId);
+  const draft = ensureGmOfficeDepthChartDraft();
+  if (!DEPTH_CHART_POSITIONS.includes(normalizedPosition) || order < 1 || order > DEPTH_CHART_MAX_DEPTH) return;
+  if (!id) {
+    draft[normalizedPosition][order - 1] = null;
+    renderGmOfficeDepthChartEditor();
+    return;
+  }
+  removePlayerFromDepthChartDraft(id);
+  draft[normalizedPosition][order - 1] = id;
+  setGmOfficeDepthChartStatus('Cambios sin guardar.', 'pending');
+  renderGmOfficeDepthChartEditor();
+}
+
+function gmOfficeDepthChartEntriesFromDraft() {
+  const draft = ensureGmOfficeDepthChartDraft();
+  const entries = [];
+  DEPTH_CHART_POSITIONS.forEach((position) => {
+    draft[position].forEach((playerId, index) => {
+      if (!Number(playerId)) return;
+      entries.push({ position, depth_order: index + 1, player_id: Number(playerId) });
+    });
+  });
+  return entries;
+}
+
+function renderGmOfficeDepthChartChip(player, options = {}) {
+  if (!player) return '';
+  const removable = Boolean(options.removable);
+  return `
+    <div class="depth-chart-editor-chip" draggable="true" data-depth-player-id="${escapeHtml(player.id)}">
+      <strong>${escapeHtml(player.name || 'Jugador')}</strong>
+      <small>${[player.position, player.rating ? `R ${player.rating}` : ''].filter(Boolean).map(escapeHtml).join(' · ')}</small>
+      ${removable ? `<button type="button" aria-label="Quitar ${escapeHtml(player.name || 'jugador')}" data-depth-remove="${escapeHtml(player.id)}">×</button>` : ''}
+    </div>
+  `;
+}
+
+function renderGmOfficeDepthChartEditor() {
+  const editor = document.getElementById('gmOfficeDepthChartEditor');
+  const status = document.getElementById('gmOfficeDepthChartStatus');
+  const saveButton = document.getElementById('gmOfficeDepthChartSaveBtn');
+  if (!editor) return;
+  const players = Array.isArray(state.gmOffice.depthChartPlayers) ? state.gmOffice.depthChartPlayers : [];
+  const draft = ensureGmOfficeDepthChartDraft();
+  const assigned = new Set(gmOfficeDepthChartEntriesFromDraft().map((entry) => Number(entry.player_id)));
+  const availablePlayers = players.filter((player) => !assigned.has(Number(player.id)));
+  if (status) {
+    status.classList.toggle('is-error', state.gmOffice.depthChartStatusType === 'error');
+    status.classList.toggle('is-success', state.gmOffice.depthChartStatusType === 'success');
+    status.classList.toggle('is-pending', state.gmOffice.depthChartStatusType === 'pending');
+    status.textContent = state.gmOffice.depthChartStatus || '';
+  }
+  if (saveButton) {
+    saveButton.disabled = Boolean(state.gmOffice.loading || state.gmOffice.depthChartSaving || state.gmOffice.error);
+    saveButton.textContent = state.gmOffice.depthChartSaving ? 'Guardando...' : 'Guardar depth chart';
+    saveButton.onclick = () => { void saveGmOfficeDepthChart(); };
+  }
+  if (state.gmOffice.loading) {
+    editor.innerHTML = '<div class="depth-chart-empty-state">Cargando jugadores...</div>';
+    return;
+  }
+  if (state.gmOffice.error) {
+    editor.innerHTML = `<div class="depth-chart-empty-state is-error">${escapeHtml(state.gmOffice.error)}</div>`;
+    return;
+  }
+  if (!players.length) {
+    editor.innerHTML = '<div class="depth-chart-empty-state">No hay jugadores disponibles en este roster.</div>';
+    return;
+  }
+  const selectOptions = (selectedId) => `
+    <option value="">Vacío</option>
+    ${players.map((player) => `
+      <option value="${escapeHtml(player.id)}" ${Number(player.id) === Number(selectedId) ? 'selected' : ''}>
+        ${escapeHtml(player.name || 'Jugador')}
+      </option>
+    `).join('')}
+  `;
+  editor.innerHTML = `
+    <div class="depth-chart-editor">
+      <div class="depth-chart-player-pool" data-depth-pool="true">
+        <h4>Jugadores disponibles</h4>
+        <div class="depth-chart-player-pool-list">
+          ${availablePlayers.length
+            ? availablePlayers.map((player) => renderGmOfficeDepthChartChip(player)).join('')
+            : '<span class="muted-text">Todos los jugadores están colocados.</span>'}
+        </div>
+      </div>
+      <div class="depth-chart-editor-table-wrap">
+        <table class="depth-chart-table depth-chart-editor-table">
+          <thead>
+            <tr>
+              <th>Prof.</th>
+              ${DEPTH_CHART_POSITIONS.map((position) => `<th>${escapeHtml(position)}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${Array.from({ length: DEPTH_CHART_MAX_DEPTH }, (_, index) => `
+              <tr>
+                <th>${index + 1}</th>
+                ${DEPTH_CHART_POSITIONS.map((position) => {
+                  const playerId = draft[position][index];
+                  const player = gmOfficeDepthChartPlayerById(playerId);
+                  return `
+                    <td>
+                      <div class="depth-chart-dropzone" data-depth-position="${escapeHtml(position)}" data-depth-order="${index + 1}">
+                        ${player ? renderGmOfficeDepthChartChip(player, { removable: true }) : '<span class="depth-chart-empty-cell">Soltar aquí</span>'}
+                        <select data-depth-select="${escapeHtml(position)}:${index + 1}" aria-label="${escapeHtml(position)} profundidad ${index + 1}">
+                          ${selectOptions(playerId)}
+                        </select>
+                      </div>
+                    </td>
+                  `;
+                }).join('')}
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  editor.querySelectorAll('[data-depth-player-id]').forEach((chip) => {
+    chip.addEventListener('dragstart', (event) => {
+      event.dataTransfer?.setData('text/plain', chip.dataset.depthPlayerId || '');
+      event.dataTransfer?.setData('application/x-anba-player-id', chip.dataset.depthPlayerId || '');
+    });
+  });
+  editor.querySelectorAll('.depth-chart-dropzone').forEach((zone) => {
+    zone.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      zone.classList.add('is-drag-over');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('is-drag-over'));
+    zone.addEventListener('drop', (event) => {
+      event.preventDefault();
+      zone.classList.remove('is-drag-over');
+      const playerId = event.dataTransfer?.getData('application/x-anba-player-id') || event.dataTransfer?.getData('text/plain');
+      assignPlayerToDepthChartSlot(zone.dataset.depthPosition, zone.dataset.depthOrder, playerId);
+    });
+  });
+  editor.querySelector('[data-depth-pool="true"]')?.addEventListener('dragover', (event) => event.preventDefault());
+  editor.querySelector('[data-depth-pool="true"]')?.addEventListener('drop', (event) => {
+    event.preventDefault();
+    const playerId = event.dataTransfer?.getData('application/x-anba-player-id') || event.dataTransfer?.getData('text/plain');
+    if (playerId) {
+      removePlayerFromDepthChartDraft(playerId);
+      setGmOfficeDepthChartStatus('Cambios sin guardar.', 'pending');
+      renderGmOfficeDepthChartEditor();
+    }
+  });
+  editor.querySelectorAll('[data-depth-remove]').forEach((button) => {
+    button.addEventListener('click', () => {
+      removePlayerFromDepthChartDraft(button.dataset.depthRemove);
+      setGmOfficeDepthChartStatus('Cambios sin guardar.', 'pending');
+      renderGmOfficeDepthChartEditor();
+    });
+  });
+  editor.querySelectorAll('[data-depth-select]').forEach((select) => {
+    select.addEventListener('change', () => {
+      const [position, order] = String(select.dataset.depthSelect || '').split(':');
+      assignPlayerToDepthChartSlot(position, order, select.value);
+    });
+  });
+}
+
 function renderGmOffice() {
+  syncGmOfficeTabs();
   const subtitle = document.getElementById('gmOfficeSubtitle');
   const offersStatus = document.getElementById('gmOfficeOffersStatus');
   const favoritesStatus = document.getElementById('gmOfficeFavoritesStatus');
@@ -5908,6 +6166,7 @@ function renderGmOffice() {
     spendingStatus.classList.toggle('is-pending', state.gmOffice.spendingLimitStatusType === 'pending');
     spendingStatus.textContent = state.gmOffice.spendingLimitStatus || '';
   }
+  renderGmOfficeDepthChartEditor();
 
   if (state.gmOffice.loading) {
     offersBody.innerHTML = '<tr><td colspan="5">Cargando...</td></tr>';
@@ -5990,6 +6249,11 @@ async function fetchGmOffice() {
     state.gmOffice.teamName = String(data.team_name || '').trim();
     state.gmOffice.offers = Array.isArray(data.offers) ? data.offers : [];
     state.gmOffice.favorites = Array.isArray(data.favorites) ? data.favorites.map((item) => ({ ...item, is_favorite: true })) : [];
+    state.gmOffice.depthChart = data.depth_chart || null;
+    state.gmOffice.depthChartPlayers = Array.isArray(data.depth_chart_players) ? data.depth_chart_players : [];
+    state.gmOffice.depthChartDraft = normalizeDepthChartDraft(state.gmOffice.depthChart);
+    state.gmOffice.depthChartDraftTeam = state.gmOffice.teamCode;
+    setGmOfficeDepthChartStatus('', '');
     state.gmOffice.freeAgentSpendingLimit = data.free_agent_spending_limit || null;
     state.gmOffice.spendingLimitLastSavedText = normalizeMillionsText(state.gmOffice.freeAgentSpendingLimit?.amount_millions ?? 0);
     setGmOfficeSpendingStatus('', '');
@@ -5997,6 +6261,10 @@ async function fetchGmOffice() {
   } catch (err) {
     state.gmOffice.offers = [];
     state.gmOffice.favorites = [];
+    state.gmOffice.depthChart = null;
+    state.gmOffice.depthChartPlayers = [];
+    state.gmOffice.depthChartDraft = null;
+    state.gmOffice.depthChartDraftTeam = '';
     state.gmOffice.freeAgentSpendingLimit = null;
     state.gmOffice.error = err.message || 'No se pudo cargar Despachos.';
   } finally {
@@ -6043,6 +6311,33 @@ async function saveGmOfficeSpendingLimit(options = {}) {
   } finally {
     state.gmOffice.spendingLimitSaving = false;
     renderGmOffice();
+  }
+}
+
+async function saveGmOfficeDepthChart() {
+  const teamCode = state.gmOffice.teamCode || preferredFreeAgentActionTeamCode();
+  if (!teamCode) {
+    setGmOfficeDepthChartStatus('No hay equipo asignado.', 'error');
+    renderGmOfficeDepthChartEditor();
+    return;
+  }
+  state.gmOffice.depthChartSaving = true;
+  setGmOfficeDepthChartStatus('Guardando...', 'pending');
+  renderGmOfficeDepthChartEditor();
+  try {
+    const data = await api('/api/gm-office/depth-chart', {
+      method: 'POST',
+      body: JSON.stringify({ team_code: teamCode, entries: gmOfficeDepthChartEntriesFromDraft() }),
+    });
+    state.gmOffice.depthChart = data.depth_chart || null;
+    state.gmOffice.depthChartDraft = normalizeDepthChartDraft(state.gmOffice.depthChart);
+    state.gmOffice.depthChartDraftTeam = teamCode;
+    setGmOfficeDepthChartStatus('Depth chart guardado correctamente.', 'success');
+  } catch (err) {
+    setGmOfficeDepthChartStatus(`No se pudo guardar: ${err.message}`, 'error');
+  } finally {
+    state.gmOffice.depthChartSaving = false;
+    renderGmOfficeDepthChartEditor();
   }
 }
 
@@ -7644,6 +7939,7 @@ function setSeasonViewStart(startYear) {
   renderAssets();
   renderImportantFigures();
   renderOwnerOffice();
+  renderDepthChart();
 }
 
 function setupSeasonViewControl() {
@@ -7896,6 +8192,73 @@ function parseDraftConditionalTeams(value) {
     // Older/manual values may be comma-separated instead of JSON.
   }
   return Array.from(new Set(raw.split(/[,/|]/).map((code) => code.trim().toUpperCase()).filter(Boolean)));
+}
+
+function depthChartGridFromPayload(chart) {
+  const grid = {};
+  DEPTH_CHART_POSITIONS.forEach((position) => {
+    grid[position] = Array.from({ length: DEPTH_CHART_MAX_DEPTH }, () => null);
+  });
+  const entries = Array.isArray(chart?.entries) ? chart.entries : [];
+  entries.forEach((entry) => {
+    const position = String(entry?.position || '').toUpperCase();
+    const depthOrder = Number(entry?.depth_order);
+    if (!DEPTH_CHART_POSITIONS.includes(position) || depthOrder < 1 || depthOrder > DEPTH_CHART_MAX_DEPTH) return;
+    grid[position][depthOrder - 1] = entry.player || null;
+  });
+  return grid;
+}
+
+function renderDepthChartPlayer(player) {
+  if (!player) return '<span class="depth-chart-empty-cell">-</span>';
+  const details = [
+    player.position ? escapeHtml(player.position) : '',
+    player.rating ? `Rating ${escapeHtml(player.rating)}` : '',
+  ].filter(Boolean).join(' · ');
+  return `
+    <div class="depth-chart-player">
+      <strong>${escapeHtml(player.name || 'Jugador')}</strong>
+      ${details ? `<small>${details}</small>` : ''}
+    </div>
+  `;
+}
+
+function renderDepthChart() {
+  const content = document.getElementById('depthChartContent');
+  const subtitle = document.getElementById('depthChartSubtitle');
+  if (!content) return;
+  const chart = state.teamData?.depth_chart || null;
+  const teamName = state.teamData?.team?.name || state.teamData?.team?.code || '';
+  if (subtitle) subtitle.textContent = teamName ? `Rotación configurada por ${teamName}.` : '';
+  if (!chart?.configured) {
+    content.innerHTML = `
+      <div class="depth-chart-empty-state">
+        Este equipo todavía no ha configurado su depth chart.
+      </div>
+    `;
+    return;
+  }
+  const grid = depthChartGridFromPayload(chart);
+  content.innerHTML = `
+    <div class="depth-chart-table-wrap">
+      <table class="depth-chart-table">
+        <thead>
+          <tr>
+            <th>Prof.</th>
+            ${DEPTH_CHART_POSITIONS.map((position) => `<th>${escapeHtml(position)}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${Array.from({ length: DEPTH_CHART_MAX_DEPTH }, (_, index) => `
+            <tr>
+              <th>${index + 1}</th>
+              ${DEPTH_CHART_POSITIONS.map((position) => `<td>${renderDepthChartPlayer(grid[position][index])}</td>`).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function renderAssets() {
@@ -8337,6 +8700,7 @@ async function loadTeam(code) {
   renderImportantFigures();
   renderOwnerOffice();
   renderGmTimelineSection();
+  renderDepthChart();
 }
 
 async function loadTrackerEconomy(season = null) {
@@ -9915,6 +10279,7 @@ async function init() {
   setupTrackerSeasonControl();
   setupTrackerEconomySeasonControl();
   setupTeamTabs();
+  setupGmOfficeTabs();
   setupTeamNavControls();
   setupRosterViewControl();
   setupGmOptionRequestDelegation();

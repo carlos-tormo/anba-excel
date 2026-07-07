@@ -867,7 +867,7 @@ h1 {
 }
 .team-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
   align-items: center;
   margin: 0 0 18px;
@@ -923,6 +923,181 @@ h1 {
   font-weight: 900;
   line-height: 1;
   flex: 0 0 auto;
+}
+
+.depth-chart-section {
+  overflow: visible;
+}
+
+.depth-chart-table-wrap,
+.depth-chart-editor-table-wrap {
+  overflow-x: auto;
+  width: 100%;
+}
+
+.depth-chart-table {
+  border: 1px solid #d6e1ef;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 14px;
+  min-width: 760px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.depth-chart-table th,
+.depth-chart-table td {
+  border-bottom: 1px solid #e2e8f0;
+  border-right: 1px solid #e2e8f0;
+  padding: 14px 16px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.depth-chart-table th:last-child,
+.depth-chart-table td:last-child {
+  border-right: 0;
+}
+
+.depth-chart-table tbody tr:last-child th,
+.depth-chart-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.depth-chart-table thead th {
+  background: #0f766e;
+  color: #fff;
+  font-size: 0.86rem;
+  letter-spacing: 0.03em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.depth-chart-table tbody th {
+  background: #e8eef6;
+  color: #334155;
+  font-weight: 900;
+  text-align: center;
+  width: 72px;
+}
+
+.depth-chart-table tbody tr:nth-child(even) td {
+  background: #f8fafc;
+}
+
+.depth-chart-player {
+  display: grid;
+  gap: 3px;
+}
+
+.depth-chart-player strong,
+.depth-chart-editor-chip strong {
+  color: #0f172a;
+  font-weight: 900;
+}
+
+.depth-chart-player small,
+.depth-chart-editor-chip small {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.depth-chart-empty-state {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 14px;
+  color: #64748b;
+  font-weight: 900;
+  padding: 24px;
+}
+
+.depth-chart-empty-state.is-error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.depth-chart-empty-cell {
+  color: #94a3b8;
+  font-weight: 800;
+}
+
+.depth-chart-editor {
+  display: grid;
+  gap: 16px;
+}
+
+.depth-chart-player-pool {
+  background: #f8fafc;
+  border: 1px solid #d6e1ef;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.depth-chart-player-pool h4 {
+  margin: 0 0 10px;
+}
+
+.depth-chart-player-pool-list {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 48px;
+}
+
+.depth-chart-editor-chip {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  box-shadow: 0 5px 14px rgba(15, 23, 42, 0.08);
+  cursor: grab;
+  display: inline-flex;
+  gap: 8px;
+  max-width: 100%;
+  padding: 7px 10px;
+  touch-action: none;
+}
+
+.depth-chart-editor-chip:active {
+  cursor: grabbing;
+}
+
+.depth-chart-editor-chip button {
+  align-items: center;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  color: #991b1b;
+  display: inline-flex;
+  font-weight: 900;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+  width: 24px;
+}
+
+.depth-chart-dropzone {
+  display: grid;
+  gap: 8px;
+  min-height: 78px;
+}
+
+.depth-chart-dropzone.is-drag-over {
+  outline: 3px solid rgba(14, 165, 233, 0.36);
+  outline-offset: 4px;
+}
+
+.depth-chart-dropzone select {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.86rem;
+  min-height: 36px;
+  padding: 6px 8px;
+  width: 100%;
 }
 .team-tab-btn.is-active .team-tab-icon,
 .team-tab-btn[aria-selected="true"] .team-tab-icon {

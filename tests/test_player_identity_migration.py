@@ -158,6 +158,16 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.db.update_player_profile(profile_id, {"happiness": 11})
 
+    def test_list_players_tolerates_missing_salary_history_table(self) -> None:
+        with self.db.connect() as conn:
+            conn.execute("DROP TABLE IF EXISTS player_salary_history")
+            conn.commit()
+
+        players = self.db.list_players(include_private=True)
+
+        self.assertGreaterEqual(len(players), 1)
+        self.assertTrue(any(player["name"] == "Legacy Hawk" for player in players))
+
     def test_merge_player_profiles_keeps_dead_contracts_with_active_contract(self) -> None:
         active_player_id = self.db.create_player(
             "BOS",

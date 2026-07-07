@@ -160,6 +160,8 @@ STATIC_ASSET_FILES = (
     "login.js",
     "news.js",
 )
+DEPTH_CHART_POSITIONS = ("PG", "SG", "SF", "PF", "C")
+DEPTH_CHART_MAX_DEPTH = 6
 
 
 def static_asset_version() -> str:
@@ -1478,6 +1480,27 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS team_depth_charts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                    position TEXT NOT NULL,
+                    depth_order INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(team_id, position, depth_order),
+                    UNIQUE(team_id, player_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_team_depth_charts_team
+                ON team_depth_charts (team_id, position, depth_order)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS free_agent_team_ruleouts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     free_agent_id INTEGER NOT NULL REFERENCES free_agents(id) ON DELETE CASCADE,
@@ -2673,6 +2696,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return False
         return conn.execute("SELECT 1 FROM player_profiles WHERE id = ? LIMIT 1", (parsed_profile_id,)).fetchone() is not None
 
+    def _table_exists_conn(self, conn: sqlite3.Connection, table_name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone() is not None
+
     def _upsert_player_salary_history_row_conn(
         self,
         conn: sqlite3.Connection,
@@ -2894,6 +2923,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if parse_int(player.get("profile_id")) is not None
         })
         if not profile_ids:
+            return players
+        if not self._table_exists_conn(conn, "player_salary_history"):
             return players
         placeholders = ",".join("?" for _ in profile_ids)
         rows = conn.execute(
@@ -7161,6 +7192,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             move_summaries = self._team_move_summaries(conn, int(team["id"]), settings, include_year=int(requested_move_year))
             luxury_history = self._team_luxury_history(conn, int(team["id"]), int(summary["current_year"]))
             apron_hard_caps = self._team_apron_hard_caps(conn, int(team["id"]), int(summary["current_year"]), team.get("apron_hard_cap"))
+            depth_chart = self._team_depth_chart_payload(conn, int(team["id"]))
             gm_cur = conn.execute(
                 """
                 SELECT
@@ -7194,6 +7226,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "move_summaries": move_summaries,
                 "luxury_history": luxury_history,
                 "apron_hard_caps": apron_hard_caps,
+                "depth_chart": depth_chart,
                 "gm_history": gm_history,
             }
 
@@ -7861,25 +7894,26 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 logs.append(tx)
 
             if include_private and profiles:
-                profile_ids = sorted(profiles.keys())
-                placeholders = ",".join("?" for _ in profile_ids)
-                salary_history_cur = conn.execute(
-                    f"""
-                    SELECT
-                        id, profile_id, player_id, team_code, season_year, salary_text,
-                        salary_num, salary_type, source, created_at, updated_at
-                    FROM player_salary_history
-                    WHERE profile_id IN ({placeholders})
-                    ORDER BY profile_id, season_year DESC, id DESC
-                    """,
-                    profile_ids,
-                )
-                for row in salary_history_cur.fetchall():
-                    item = row_to_dict(salary_history_cur, row)
-                    profile_id = parse_int(item.get("profile_id"))
-                    if profile_id is None or profile_id not in profiles:
-                        continue
-                    profiles[profile_id].setdefault("salary_history", []).append(item)
+                if self._table_exists_conn(conn, "player_salary_history"):
+                    profile_ids = sorted(profiles.keys())
+                    placeholders = ",".join("?" for _ in profile_ids)
+                    salary_history_cur = conn.execute(
+                        f"""
+                        SELECT
+                            id, profile_id, player_id, team_code, season_year, salary_text,
+                            salary_num, salary_type, source, created_at, updated_at
+                        FROM player_salary_history
+                        WHERE profile_id IN ({placeholders})
+                        ORDER BY profile_id, season_year DESC, id DESC
+                        """,
+                        profile_ids,
+                    )
+                    for row in salary_history_cur.fetchall():
+                        item = row_to_dict(salary_history_cur, row)
+                        profile_id = parse_int(item.get("profile_id"))
+                        if profile_id is None or profile_id not in profiles:
+                            continue
+                        profiles[profile_id].setdefault("salary_history", []).append(item)
 
             return sorted(profiles.values(), key=lambda item: str(item.get("name") or "").lower())
 
@@ -12184,6 +12218,121 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             return [self._gm_spending_limit_payload(row) for row in cur.fetchall()]
 
+    @staticmethod
+    def _depth_chart_player_payload(player: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": parse_int(player.get("id")),
+            "profile_id": parse_int(player.get("profile_id")),
+            "name": str(player.get("name") or "").strip(),
+            "position": str(player.get("position") or "").strip(),
+            "rating": str(player.get("rating") or "").strip(),
+            "contract_type": str(player.get("contract_type") or "").strip(),
+        }
+
+    def _team_depth_chart_players(self, conn: sqlite3.Connection, team_id: int) -> List[Dict[str, Any]]:
+        return [
+            self._depth_chart_player_payload(player)
+            for player in self._select_team_players(conn, team_id)
+        ]
+
+    def _team_depth_chart_payload(self, conn: sqlite3.Connection, team_id: int) -> Dict[str, Any]:
+        cur = conn.execute(
+            f"""
+            SELECT
+                dc.position AS depth_position,
+                dc.depth_order,
+                {self._player_select_columns()}
+            FROM team_depth_charts dc
+            JOIN players p ON p.id = dc.player_id
+            LEFT JOIN player_profiles pp ON pp.id = p.profile_id
+            WHERE dc.team_id = ?
+            ORDER BY dc.position, dc.depth_order
+            """,
+            (team_id,),
+        )
+        rows = self._player_rows_from_cursor(cur, cur.fetchall())
+        entries = []
+        for row in rows:
+            entries.append(
+                {
+                    "position": str(row.get("depth_position") or "").strip().upper(),
+                    "depth_order": parse_int(row.get("depth_order")),
+                    "player": self._depth_chart_player_payload(row),
+                }
+            )
+        return {
+            "positions": list(DEPTH_CHART_POSITIONS),
+            "max_depth": DEPTH_CHART_MAX_DEPTH,
+            "configured": bool(entries),
+            "entries": entries,
+        }
+
+    def set_team_depth_chart(self, team_code: Any, entries: Any) -> Dict[str, Any]:
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        if not isinstance(entries, list):
+            raise ValueError("invalid_entries")
+
+        cleaned: List[Dict[str, int | str]] = []
+        seen_cells = set()
+        seen_players = set()
+        for raw in entries:
+            if not isinstance(raw, dict):
+                raise ValueError("invalid_entry")
+            position = str(raw.get("position") or "").strip().upper()
+            depth_order = parse_int(raw.get("depth_order"))
+            player_id = parse_int(raw.get("player_id"))
+            if position not in DEPTH_CHART_POSITIONS:
+                raise ValueError("invalid_position")
+            if depth_order is None or depth_order < 1 or depth_order > DEPTH_CHART_MAX_DEPTH:
+                raise ValueError("invalid_depth_order")
+            if player_id is None or player_id <= 0:
+                raise ValueError("invalid_player_id")
+            cell_key = (position, depth_order)
+            if cell_key in seen_cells:
+                raise ValueError("duplicate_depth_cell")
+            if player_id in seen_players:
+                raise ValueError("duplicate_player")
+            seen_cells.add(cell_key)
+            seen_players.add(player_id)
+            cleaned.append({"position": position, "depth_order": depth_order, "player_id": player_id})
+
+        timestamp = now_iso()
+        with self.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+            if not team:
+                raise ValueError("team_not_found")
+            team_id = int(team["id"])
+            if seen_players:
+                placeholders = ",".join("?" for _ in seen_players)
+                owned_cur = conn.execute(
+                    f"SELECT id FROM players WHERE team_id = ? AND id IN ({placeholders})",
+                    (team_id, *seen_players),
+                )
+                owned_ids = {int(row["id"]) for row in owned_cur.fetchall()}
+                if owned_ids != seen_players:
+                    raise ValueError("player_not_on_team")
+            conn.execute("DELETE FROM team_depth_charts WHERE team_id = ?", (team_id,))
+            for entry in cleaned:
+                conn.execute(
+                    """
+                    INSERT INTO team_depth_charts
+                        (team_id, player_id, position, depth_order, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        team_id,
+                        entry["player_id"],
+                        entry["position"],
+                        entry["depth_order"],
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            conn.commit()
+            return self._team_depth_chart_payload(conn, team_id)
+
     def list_gm_office(self, team_code: Any) -> Dict[str, Any]:
         normalized_team = normalize_team_code(team_code)
         if not normalized_team:
@@ -12246,6 +12395,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
                 (normalized_team,),
             ).fetchone()
+            depth_chart = self._team_depth_chart_payload(conn, int(team["id"]))
+            depth_chart_players = self._team_depth_chart_players(conn, int(team["id"]))
         return {
             "team_code": normalized_team,
             "team_name": str(team["name"] or normalized_team),
@@ -12255,6 +12406,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 spending_limit,
                 {"code": normalized_team, "name": str(team["name"] or normalized_team)},
             ),
+            "depth_chart": depth_chart,
+            "depth_chart_players": depth_chart_players,
         }
 
     def cancel_gm_free_agent_offer_request(
@@ -21664,6 +21817,35 @@ QUALITY REQUIREMENTS
                 self._json(status, {"error": message})
                 return
             self._json(200, {"ok": True, "free_agent_spending_limit": spending_limit})
+            return
+
+        if parsed.path == "/api/gm-office/depth-chart":
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            team_code = normalize_team_code(payload.get("team_code"))
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            if not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                depth_chart = self.db.set_team_depth_chart(team_code, payload.get("entries") or [])
+            except ValueError as err:
+                message = str(err) or "invalid_depth_chart"
+                status = 404 if message == "team_not_found" else 400
+                self._json(status, {"error": message})
+                return
+            self._json(200, {"ok": True, "depth_chart": depth_chart})
             return
 
         if parsed.path.startswith("/api/me/notifications/") and parsed.path.endswith("/read"):
