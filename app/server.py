@@ -7682,18 +7682,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
             free_agent_cur = conn.execute(
                 """
                 SELECT
-                    id AS free_agent_id,
-                    profile_id,
-                    position,
-                    bird_rights,
-                    rating,
-                    years_left,
-                    free_agent_type,
-                    source,
-                    rights_team_code
-                FROM free_agents
-                WHERE profile_id IS NOT NULL
-                ORDER BY profile_id, id
+                    f.id AS free_agent_id,
+                    f.profile_id,
+                    f.position,
+                    f.bird_rights,
+                    f.rating,
+                    f.years_left,
+                    f.free_agent_type,
+                    f.source,
+                    f.rights_team_code,
+                    rt.name AS rights_team_name
+                FROM free_agents f
+                LEFT JOIN teams rt ON rt.code = f.rights_team_code
+                WHERE f.profile_id IS NOT NULL
+                ORDER BY f.profile_id, f.id
                 """
             )
             for row in free_agent_cur.fetchall():
@@ -7713,6 +7715,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "free_agent_type": item.get("free_agent_type"),
                         "free_agent_source": item.get("source"),
                         "rights_team_code": rights_team_code,
+                        "team_code": rights_team_code,
+                        "team_name": item.get("rights_team_name") if rights_team_code else None,
                         "position": profiles[profile_id].get("position") or item.get("position"),
                         "bird_rights": profiles[profile_id].get("bird_rights") or item.get("bird_rights"),
                         "rating": profiles[profile_id].get("rating") or item.get("rating"),
@@ -12784,6 +12788,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def update_player_profile(self, profile_id: int, payload: Dict[str, Any]) -> bool:
         fields: Dict[str, Any] = {}
+        update_rights_team = "rights_team_code" in payload
         if "name" in payload:
             name = str(payload.get("name") or "").strip()
             if not name:
@@ -12805,31 +12810,83 @@ class LeagueDB(DatabaseMaintenanceMixin):
             fields["transaction_notes"] = str(payload.get("transaction_notes") or "").strip() or None
         if "happiness" in payload:
             fields["happiness"] = normalize_player_happiness(payload.get("happiness"))
-        if not fields:
+        if not fields and not update_rights_team:
             return False
 
         assignments = [f"{field} = ?" for field in fields]
         values = list(fields.values())
         timestamp = now_iso()
-        values.extend([timestamp, profile_id])
+        if fields:
+            values.extend([timestamp, profile_id])
         with self.connect() as conn:
-            cur = conn.execute(
-                f"UPDATE player_profiles SET {', '.join(assignments)}, updated_at = ? WHERE id = ?",
-                values,
-            )
-            if cur.rowcount:
-                if "name" in fields:
-                    conn.execute("UPDATE players SET name = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
-                    conn.execute("UPDATE free_agents SET name = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
-                    conn.execute("UPDATE dead_contracts SET label = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
-                if "experience_years" in fields:
-                    conn.execute("UPDATE players SET experience_years = ?, updated_at = ? WHERE profile_id = ?", (fields["experience_years"], timestamp, profile_id))
-                if "reference_image_url" in fields:
-                    conn.execute("UPDATE players SET reference_image_url = ?, updated_at = ? WHERE profile_id = ?", (fields["reference_image_url"], timestamp, profile_id))
-                if "profile_notes" in fields:
-                    conn.execute("UPDATE players SET profile_notes = ?, updated_at = ? WHERE profile_id = ?", (fields["profile_notes"], timestamp, profile_id))
+            changed = False
+            cur = None
+            if fields:
+                cur = conn.execute(
+                    f"UPDATE player_profiles SET {', '.join(assignments)}, updated_at = ? WHERE id = ?",
+                    values,
+                )
+                changed = bool(cur.rowcount)
+                if cur.rowcount:
+                    if "name" in fields:
+                        conn.execute("UPDATE players SET name = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
+                        conn.execute("UPDATE free_agents SET name = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
+                        conn.execute("UPDATE dead_contracts SET label = ?, updated_at = ? WHERE profile_id = ?", (fields["name"], timestamp, profile_id))
+                    if "experience_years" in fields:
+                        conn.execute("UPDATE players SET experience_years = ?, updated_at = ? WHERE profile_id = ?", (fields["experience_years"], timestamp, profile_id))
+                    if "reference_image_url" in fields:
+                        conn.execute("UPDATE players SET reference_image_url = ?, updated_at = ? WHERE profile_id = ?", (fields["reference_image_url"], timestamp, profile_id))
+                    if "profile_notes" in fields:
+                        conn.execute("UPDATE players SET profile_notes = ?, updated_at = ? WHERE profile_id = ?", (fields["profile_notes"], timestamp, profile_id))
+            else:
+                profile_exists = conn.execute("SELECT id FROM player_profiles WHERE id = ?", (profile_id,)).fetchone()
+                if not profile_exists:
+                    return False
+
+            if update_rights_team:
+                active = conn.execute("SELECT id FROM players WHERE profile_id = ? LIMIT 1", (profile_id,)).fetchone()
+                if active:
+                    raise ValueError("profile_has_active_contract")
+                team_code = normalize_team_code(payload.get("rights_team_code"))
+                if team_code:
+                    team = conn.execute("SELECT code FROM teams WHERE code = ?", (team_code,)).fetchone()
+                    if not team:
+                        raise ValueError("invalid_team_code")
+                profile_row = conn.execute("SELECT name FROM player_profiles WHERE id = ?", (profile_id,)).fetchone()
+                if not profile_row:
+                    return False
+                free_agent_row = conn.execute(
+                    "SELECT id FROM free_agents WHERE profile_id = ? ORDER BY id LIMIT 1",
+                    (profile_id,),
+                ).fetchone()
+                if free_agent_row:
+                    update_cur = conn.execute(
+                        "UPDATE free_agents SET rights_team_code = ?, updated_at = ? WHERE id = ?",
+                        (team_code, timestamp, int(free_agent_row["id"])),
+                    )
+                    changed = changed or bool(update_cur.rowcount)
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO free_agents (
+                            profile_id, name, position, bird_rights, rating, years_left,
+                            free_agent_type, source, rights_team_code, agent, notes, created_at, updated_at
+                        ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, NULL, ?, ?, ?)
+                        """,
+                        (
+                            profile_id,
+                            str(profile_row["name"] or "").strip() or "New Player",
+                            FREE_AGENT_TYPE_UNRESTRICTED,
+                            FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,
+                            team_code,
+                            "Agente libre sin contrato activo.",
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    changed = True
             conn.commit()
-            return cur.rowcount > 0
+            return changed
 
     def delete_player_profile(self, profile_id: int) -> Dict[str, Any]:
         with self.connect() as conn:

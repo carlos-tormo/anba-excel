@@ -5299,9 +5299,11 @@ function syncFreeAgentOfferAmounts() {
 
   const isMinimumContract = contractType === 'MIN';
   const isMaximumContract = contractType === 'MAX';
+  const isTwoWayContract = contractType === 'TW';
+  const isFixedScaleContract = isMinimumContract || isMaximumContract || isTwoWayContract;
   if (raiseInput) {
-    raiseInput.disabled = isMinimumContract;
-    if (isMinimumContract) raiseInput.value = '0';
+    raiseInput.disabled = isMinimumContract || isTwoWayContract;
+    if (isMinimumContract || isTwoWayContract) raiseInput.value = '0';
   }
 
   const firstInput = inputs[0];
@@ -5309,13 +5311,13 @@ function syncFreeAgentOfferAmounts() {
   const firstMinimum = freeAgentOfferMinimumAmount(agent, firstSeason, 1);
   const firstMaximum = freeAgentOfferMaximumAmount(agent, firstSeason);
   if (firstInput) {
-    if (isMinimumContract) {
+    if (isMinimumContract || isTwoWayContract) {
       firstInput.value = formatDots(firstMinimum);
     } else if (isMaximumContract && Number.isFinite(firstMaximum)) {
       firstInput.value = formatDots(firstMaximum);
     }
   }
-  if (firstInput) firstInput.readOnly = isMinimumContract || isMaximumContract;
+  if (firstInput) firstInput.readOnly = isFixedScaleContract;
 
   const firstAmount = firstInput ? freeAgentOfferParseAmount(firstInput.value) : null;
   const raisePercent = freeAgentOfferRaisePercent();
@@ -5324,7 +5326,7 @@ function syncFreeAgentOfferAmounts() {
     if (idx === 0) return;
     input.readOnly = true;
     const season = Number(input.dataset.offerSalarySeason || firstSeason + idx);
-    if (isMinimumContract) {
+    if (isMinimumContract || isTwoWayContract) {
       input.value = formatDots(freeAgentOfferMinimumAmount(agent, season, idx + 1));
       return;
     }

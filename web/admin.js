@@ -5816,9 +5816,11 @@ function syncFreeAgentOfferAmounts() {
 
   const isMinimumContract = contractType === 'MIN';
   const isMaximumContract = contractType === 'MAX';
+  const isTwoWayContract = contractType === 'TW';
+  const isFixedScaleContract = isMinimumContract || isMaximumContract || isTwoWayContract;
   if (raiseInput) {
-    raiseInput.disabled = isMinimumContract;
-    if (isMinimumContract) raiseInput.value = '0';
+    raiseInput.disabled = isMinimumContract || isTwoWayContract;
+    if (isMinimumContract || isTwoWayContract) raiseInput.value = '0';
   }
 
   const firstInput = inputs[0];
@@ -5826,13 +5828,13 @@ function syncFreeAgentOfferAmounts() {
   const firstMinimum = freeAgentOfferMinimumAmount(agent, firstSeason, 1);
   const firstMaximum = freeAgentOfferMaximumAmount(agent, firstSeason);
   if (firstInput) {
-    if (isMinimumContract) {
+    if (isMinimumContract || isTwoWayContract) {
       firstInput.value = formatDots(firstMinimum);
     } else if (isMaximumContract && Number.isFinite(firstMaximum)) {
       firstInput.value = formatDots(firstMaximum);
     }
   }
-  if (firstInput) firstInput.readOnly = isMinimumContract || isMaximumContract;
+  if (firstInput) firstInput.readOnly = isFixedScaleContract;
 
   const firstAmount = firstInput ? freeAgentOfferParseAmount(firstInput.value) : null;
   const raisePercent = freeAgentOfferRaisePercent();
@@ -5841,7 +5843,7 @@ function syncFreeAgentOfferAmounts() {
     if (idx === 0) return;
     input.readOnly = true;
     const season = Number(input.dataset.offerSalarySeason || firstSeason + idx);
-    if (isMinimumContract) {
+    if (isMinimumContract || isTwoWayContract) {
       input.value = formatDots(freeAgentOfferMinimumAmount(agent, season, idx + 1));
       return;
     }
@@ -6545,6 +6547,18 @@ function leaguePlayerLogoHtml(code) {
 
 function leaguePlayerTeamHtml(player) {
   const code = String(player?.team_code || '').trim().toUpperCase();
+  const status = String(player?.status || '').trim().toLowerCase();
+  const canAssignTeam = !player?.active_contract && ['free_agent', 'inactive'].includes(status) && player?.profile_id;
+  if (canAssignTeam) {
+    return `
+      <select class="player-profile-input league-player-team-select" data-player-profile-field="rights_team_code" aria-label="Equipo asignado">
+        <option value="">Sin equipo</option>
+        ${(state.teams || []).map((team) => `
+          <option value="${escapeHtml(team.code)}"${team.code === code ? ' selected' : ''}>${escapeHtml(team.code)} - ${escapeHtml(team.name || team.code)}</option>
+        `).join('')}
+      </select>
+    `;
+  }
   if (!code) return '<span class="muted-text">Sin equipo</span>';
   return `
     <button type="button" class="tracker-team-btn league-player-team-btn" data-team-code="${escapeHtml(code)}">
@@ -6649,6 +6663,10 @@ function bindLeaguePlayerProfileEditors(root, player, profileId, contractRowId) 
         body: JSON.stringify(payload),
       });
       player[key] = payload[key];
+      if (key === 'rights_team_code') {
+        await loadLeaguePlayers();
+        return;
+      }
       if (!profileId && contractRowId) {
         await loadLeaguePlayers();
       }
