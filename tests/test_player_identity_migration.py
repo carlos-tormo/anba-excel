@@ -347,24 +347,57 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         cut_result = self.db.cut_player(self.legacy_atl_player_id)
         self.assertIsNotNone(cut_result)
         self.assertEqual(profile_id, int(cut_result["profile_id"]))
+        self.assertTrue(cut_result["waiver"])
+        self.assertIsNotNone(cut_result["waiver_id"])
+        self.assertIsNotNone(cut_result["dead_contract_id"])
 
         with self.db.connect() as conn:
             self.assertIsNone(
                 conn.execute("SELECT id FROM players WHERE profile_id = ?", (profile_id,)).fetchone()
             )
+            waiver = conn.execute(
+                "SELECT dead_contract_id, free_agent_id, status FROM waiver_players WHERE id = ?",
+                (cut_result["waiver_id"],),
+            ).fetchone()
+            self.assertEqual("active", waiver["status"])
+            self.assertEqual(cut_result["dead_contract_id"], waiver["dead_contract_id"])
+            self.assertIsNone(waiver["free_agent_id"])
             dead = conn.execute(
-                "SELECT id, profile_id FROM dead_contracts WHERE id = ?",
+                "SELECT id, profile_id, label, salary_2025_num, salary_2026_num FROM dead_contracts WHERE id = ?",
                 (cut_result["dead_contract_id"],),
             ).fetchone()
+            self.assertEqual(profile_id, int(dead["profile_id"]))
+            self.assertEqual("Legacy Hawk", dead["label"])
+            self.assertEqual(1000000, dead["salary_2025_num"])
+            self.assertEqual(1100000, dead["salary_2026_num"])
+
+            conn.execute(
+                "UPDATE waiver_players SET waiver_expires_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+                (cut_result["waiver_id"],),
+            )
+            conn.commit()
+
+        expired = self.db.process_expired_waivers()
+        self.assertEqual(1, expired["count"])
+        self.assertEqual(cut_result["dead_contract_id"], expired["processed"][0]["dead_contract_id"])
+
+        with self.db.connect() as conn:
+            waiver = conn.execute(
+                "SELECT dead_contract_id, free_agent_id, status FROM waiver_players WHERE id = ?",
+                (cut_result["waiver_id"],),
+            ).fetchone()
+            self.assertEqual("expired", waiver["status"])
+            self.assertEqual(cut_result["dead_contract_id"], waiver["dead_contract_id"])
+            self.assertIsNotNone(waiver["free_agent_id"])
             free = conn.execute(
                 "SELECT id, profile_id FROM free_agents WHERE id = ?",
-                (cut_result["free_agent_id"],),
+                (waiver["free_agent_id"],),
             ).fetchone()
-            self.assertEqual(profile_id, int(dead["profile_id"]))
             self.assertEqual(profile_id, int(free["profile_id"]))
+            free_agent_id = int(free["id"])
 
         signed_player_id = self.db.sign_free_agent(
-            int(cut_result["free_agent_id"]),
+            free_agent_id,
             "BOS",
             {"salary_2025_text": "1200000"},
         )
@@ -383,7 +416,7 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
             self.assertEqual(profile_id, int(active["profile_id"]))
             self.assertEqual("BOS", active["team_code"])
             self.assertIsNone(
-                conn.execute("SELECT id FROM free_agents WHERE id = ?", (cut_result["free_agent_id"],)).fetchone()
+                conn.execute("SELECT id FROM free_agents WHERE id = ?", (free_agent_id,)).fetchone()
             )
             actions = [
                 row["action"]
@@ -394,6 +427,50 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
             ]
             self.assertIn("cut", actions)
             self.assertIn("sign", actions)
+
+        self.db.assert_player_identity_integrity()
+
+    def test_approved_waiver_claim_removes_temporary_dead_cap(self) -> None:
+        profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
+        cut_result = self.db.cut_player(self.legacy_atl_player_id)
+        self.assertIsNotNone(cut_result)
+        dead_contract_id = cut_result["dead_contract_id"]
+
+        with self.db.connect() as conn:
+            team = conn.execute("SELECT id FROM teams WHERE code = 'BOS'").fetchone()
+            now = now_iso()
+            claim_cur = conn.execute(
+                """
+                INSERT INTO waiver_claims (
+                    waiver_player_id, team_id, team_code, status, created_at, updated_at
+                ) VALUES (?, ?, 'BOS', 'pending', ?, ?)
+                """,
+                (cut_result["waiver_id"], team["id"], now, now),
+            )
+            claim = dict(conn.execute("SELECT * FROM waiver_claims WHERE id = ?", (claim_cur.lastrowid,)).fetchone())
+            result = self.db._approve_waiver_claim_conn(conn, claim, timestamp=now)
+            conn.commit()
+
+        self.assertIsNotNone(result)
+        with self.db.connect() as conn:
+            self.assertIsNone(conn.execute("SELECT id FROM dead_contracts WHERE id = ?", (dead_contract_id,)).fetchone())
+            waiver = conn.execute(
+                "SELECT status, dead_contract_id, claimed_team_code FROM waiver_players WHERE id = ?",
+                (cut_result["waiver_id"],),
+            ).fetchone()
+            self.assertEqual("claimed", waiver["status"])
+            self.assertIsNone(waiver["dead_contract_id"])
+            self.assertEqual("BOS", waiver["claimed_team_code"])
+            player = conn.execute(
+                """
+                SELECT p.id
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.profile_id = ? AND t.code = 'BOS'
+                """,
+                (profile_id,),
+            ).fetchone()
+            self.assertIsNotNone(player)
 
         self.db.assert_player_identity_integrity()
 

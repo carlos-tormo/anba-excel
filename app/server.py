@@ -153,6 +153,39 @@ OWNER_BACKGROUND_ALLOWED_MIME_TYPES = {
     "image/png": "png",
     "image/webp": "webp",
 }
+STATIC_ASSET_FILES = (
+    "styles.css",
+    "guest.js",
+    "admin.js",
+    "login.js",
+    "news.js",
+)
+
+
+def static_asset_version() -> str:
+    explicit = (
+        os.getenv("ASSET_VERSION")
+        or os.getenv("RAILWAY_GIT_COMMIT_SHA")
+        or os.getenv("GIT_COMMIT_SHA")
+        or os.getenv("SOURCE_VERSION")
+        or ""
+    ).strip()
+    if explicit:
+        clean = re.sub(r"[^A-Za-z0-9_.-]", "", explicit)[:24]
+        if clean:
+            return clean
+
+    digest = hashlib.sha256()
+    for filename in STATIC_ASSET_FILES:
+        path = WEB_DIR / filename
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        digest.update(filename.encode("utf-8"))
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+        digest.update(str(stat.st_size).encode("ascii"))
+    return digest.hexdigest()[:12]
 
 
 def normalize_player_happiness(value: Any) -> Any:
@@ -13556,6 +13589,26 @@ class LeagueDB(DatabaseMaintenanceMixin):
         )
         return int(cur.lastrowid)
 
+    def _ensure_dead_contract_for_waiver_conn(
+        self,
+        conn: sqlite3.Connection,
+        waiver: Dict[str, Any],
+        payload: Dict[str, Any],
+        *,
+        timestamp: str,
+    ) -> int:
+        existing_id = parse_int(waiver.get("dead_contract_id"))
+        if existing_id is not None:
+            existing = conn.execute("SELECT id FROM dead_contracts WHERE id = ?", (existing_id,)).fetchone()
+            if existing:
+                return int(existing["id"])
+        dead_contract_id = self._insert_dead_contract_from_waiver_conn(conn, waiver, payload, timestamp=timestamp)
+        conn.execute(
+            "UPDATE waiver_players SET dead_contract_id = ?, updated_at = ? WHERE id = ?",
+            (dead_contract_id, timestamp, int(waiver["id"])),
+        )
+        return dead_contract_id
+
     def _upsert_free_agent_from_waiver_conn(
         self,
         conn: sqlite3.Connection,
@@ -13763,12 +13816,23 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
             return {"waiver": False, "dead_contract_id": None, "free_agent_id": free_agent_id, **player}
         waiver_id = self._create_waiver_player_conn(conn, player, created_at=timestamp, cut_options=cut_options)
-        waiver_row = conn.execute("SELECT waiver_expires_at FROM waiver_players WHERE id = ?", (waiver_id,)).fetchone()
+        waiver_row = conn.execute("SELECT * FROM waiver_players WHERE id = ?", (waiver_id,)).fetchone()
+        dead_contract_id = None
+        if waiver_row:
+            waiver_data = dict(waiver_row)
+            payload = json.loads(waiver_data.get("contract_json") or "{}")
+            dead_contract_id = self._ensure_dead_contract_for_waiver_conn(
+                conn,
+                waiver_data,
+                payload,
+                timestamp=timestamp,
+            )
         conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
         return {
             "waiver": True,
             "waiver_id": waiver_id,
             "waiver_expires_at": waiver_row["waiver_expires_at"] if waiver_row else None,
+            "dead_contract_id": dead_contract_id,
             **player,
         }
 
@@ -13780,7 +13844,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         timestamp: str,
     ) -> Dict[str, Any]:
         payload = json.loads(waiver.get("contract_json") or "{}")
-        dead_contract_id = self._insert_dead_contract_from_waiver_conn(conn, waiver, payload, timestamp=timestamp)
+        dead_contract_id = self._ensure_dead_contract_for_waiver_conn(conn, waiver, payload, timestamp=timestamp)
         free_agent_id = self._upsert_free_agent_from_waiver_conn(conn, waiver, payload, timestamp=timestamp)
         conn.execute(
             """
@@ -13828,6 +13892,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
         player_id = self._create_player_from_contract_payload_conn(conn, target_team_code, payload, timestamp=timestamp)
         if not player_id:
             return None
+        dead_contract_id = parse_int(waiver_data.get("dead_contract_id"))
+        if dead_contract_id is not None:
+            conn.execute("DELETE FROM dead_contracts WHERE id = ?", (dead_contract_id,))
         conn.execute(
             """
             UPDATE waiver_claims
@@ -13847,7 +13914,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         conn.execute(
             """
             UPDATE waiver_players
-            SET status = 'claimed', claimed_team_code = ?, player_id = ?, updated_at = ?
+            SET status = 'claimed', claimed_team_code = ?, player_id = ?, dead_contract_id = NULL, updated_at = ?
             WHERE id = ?
             """,
             (target_team_code, player_id, timestamp, int(claim["waiver_player_id"])),
@@ -17838,6 +17905,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
 class Handler(SimpleHTTPRequestHandler):
     db: LeagueDB = None  # type: ignore
+    asset_version = static_asset_version()
 
     admin_user = os.getenv("ADMIN_USER", "admin")
     admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
@@ -17981,7 +18049,7 @@ class Handler(SimpleHTTPRequestHandler):
         query = parsed.query
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
-        if path.endswith(".html") or path in {"/", "/login", "/admin"}:
+        if path.endswith(".html") or path in {"/", "/login", "/admin", "/news"}:
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         elif path.endswith((".css", ".js", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico")):
             if query:
@@ -18200,8 +18268,13 @@ class Handler(SimpleHTTPRequestHandler):
         return False
 
     def _route_html(self, filename: str) -> None:
-        self.path = f"/{filename}"
-        super().do_GET()
+        path = WEB_DIR / filename
+        if not path.exists() or not path.is_file():
+            self._json(404, {"error": "not_found"})
+            return
+        html = path.read_text(encoding="utf-8")
+        html = re.sub(r"\?v=[A-Za-z0-9_.-]+", f"?v={self.asset_version}", html)
+        self._bytes_response(200, html.encode("utf-8"), "text/html; charset=utf-8")
 
     def _start_session(self, session_payload: Dict[str, Any]) -> tuple[str, str]:
         self._maybe_cleanup_sessions()
