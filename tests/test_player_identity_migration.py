@@ -158,6 +158,91 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.db.update_player_profile(profile_id, {"happiness": 11})
 
+    def test_merge_player_profiles_keeps_dead_contracts_with_active_contract(self) -> None:
+        active_player_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Ty Jerome",
+                "position": "PG",
+                "rating": "75",
+                "bird_rights": "Mid",
+                "salary_2026_text": "9.975.000",
+            },
+        )
+        self.assertIsNotNone(active_player_id)
+        target_profile_id = self._profile_id_for_player(int(active_player_id))
+
+        now = now_iso()
+        with self.db.connect() as conn:
+            source_cur = conn.execute(
+                """
+                INSERT INTO player_profiles (name, created_at, updated_at)
+                VALUES ('Ty Jerome', ?, ?)
+                """,
+                (now, now),
+            )
+            source_profile_id = int(source_cur.lastrowid)
+            atl_team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            dead_cur = conn.execute(
+                """
+                INSERT INTO dead_contracts (
+                    team_id, profile_id, row_order, dead_type, label, amount_text, amount_num,
+                    salary_2026_text, salary_2026_num, created_at, updated_at
+                ) VALUES (?, ?, 1, 'normal', 'Ty Jerome', '765425', 765425, '765425', 765425, ?, ?)
+                """,
+                (atl_team_id, source_profile_id, now, now),
+            )
+            dead_contract_id = int(dead_cur.lastrowid)
+            conn.commit()
+
+        result = self.db.merge_player_profiles(source_profile_id, target_profile_id)
+
+        self.assertTrue(result["ok"])
+        with self.db.connect() as conn:
+            self.assertIsNone(
+                conn.execute("SELECT id FROM player_profiles WHERE id = ?", (source_profile_id,)).fetchone()
+            )
+            dead_row = conn.execute(
+                "SELECT profile_id FROM dead_contracts WHERE id = ?",
+                (dead_contract_id,),
+            ).fetchone()
+            self.assertIsNotNone(dead_row)
+            self.assertEqual(target_profile_id, int(dead_row["profile_id"]))
+            player_rows = conn.execute(
+                "SELECT id, profile_id FROM players WHERE profile_id = ?",
+                (target_profile_id,),
+            ).fetchall()
+            self.assertEqual(1, len(player_rows))
+            self.assertEqual(int(active_player_id), int(player_rows[0]["id"]))
+
+    def test_merge_player_profiles_blocks_two_active_contracts(self) -> None:
+        first_player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Duplicate Active A",
+                "position": "SG",
+                "salary_2026_text": "5.000.000",
+            },
+        )
+        second_player_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Duplicate Active B",
+                "position": "SG",
+                "salary_2026_text": "6.000.000",
+            },
+        )
+        self.assertIsNotNone(first_player_id)
+        self.assertIsNotNone(second_player_id)
+
+        result = self.db.merge_player_profiles(
+            self._profile_id_for_player(int(first_player_id)),
+            self._profile_id_for_player(int(second_player_id)),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("active_contract_conflict", result["error"])
+
     def test_create_player_rejects_duplicate_active_profile(self) -> None:
         profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
         with self.assertRaises(ValueError):

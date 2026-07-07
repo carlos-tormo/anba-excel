@@ -12928,7 +12928,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 ).fetchall()
                 active_contract_rows = [
                     row for row in roster_rows
-                    if not self._player_row_is_retained_rights_only(row, int(current_year))
+                    if not self._player_row_is_retained_rights_only(row, int(current_year), conn)
                 ]
                 if active_contract_rows:
                     raise ValueError("profile_has_active_contract")
@@ -13029,6 +13029,208 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if cur.rowcount <= 0:
                 return {"ok": False, "error": "not_found"}
             return {"ok": True, "profile": profile, "deleted": linked_counts}
+
+    def merge_player_profiles(self, source_profile_id: int, target_profile_id: int) -> Dict[str, Any]:
+        source_id = parse_int(source_profile_id)
+        target_id = parse_int(target_profile_id)
+        if source_id is None or target_id is None or int(source_id) == int(target_id):
+            return {"ok": False, "error": "invalid_profile_id"}
+
+        timestamp = now_iso()
+        with self.connect() as conn:
+            source_profile = conn.execute(
+                "SELECT id, name FROM player_profiles WHERE id = ?",
+                (int(source_id),),
+            ).fetchone()
+            target_profile = conn.execute(
+                "SELECT id, name FROM player_profiles WHERE id = ?",
+                (int(target_id),),
+            ).fetchone()
+            if not source_profile or not target_profile:
+                return {"ok": False, "error": "not_found"}
+
+            settings = {
+                str(row["key"]): str(row["value"])
+                for row in conn.execute("SELECT key, value FROM app_settings").fetchall()
+            }
+            current_year = parse_int(settings.get("current_year")) or PLAYER_CONTRACT_SEASONS[0]
+
+            def profile_player_rows(profile_id: int) -> List[sqlite3.Row]:
+                return conn.execute(
+                    """
+                    SELECT p.*, t.code AS team_code
+                    FROM players p
+                    JOIN teams t ON t.id = p.team_id
+                    WHERE p.profile_id = ?
+                    ORDER BY p.id
+                    """,
+                    (int(profile_id),),
+                ).fetchall()
+
+            source_players = profile_player_rows(int(source_id))
+            target_players = profile_player_rows(int(target_id))
+            source_active = [
+                row for row in source_players
+                if not self._player_row_is_retained_rights_only(row, int(current_year), conn)
+            ]
+            target_active = [
+                row for row in target_players
+                if not self._player_row_is_retained_rights_only(row, int(current_year), conn)
+            ]
+            if source_active and target_active:
+                return {"ok": False, "error": "active_contract_conflict"}
+
+            deleted_player_rows = 0
+            moved_player_rows = 0
+            if source_players:
+                if target_players:
+                    if source_active and not target_active:
+                        for row in target_players:
+                            conn.execute("DELETE FROM players WHERE id = ?", (int(row["id"]),))
+                            deleted_player_rows += 1
+                        cur = conn.execute(
+                            "UPDATE players SET profile_id = ?, updated_at = ? WHERE profile_id = ?",
+                            (int(target_id), timestamp, int(source_id)),
+                        )
+                        moved_player_rows += int(cur.rowcount or 0)
+                    else:
+                        for row in source_players:
+                            conn.execute("DELETE FROM players WHERE id = ?", (int(row["id"]),))
+                            deleted_player_rows += 1
+                else:
+                    cur = conn.execute(
+                        "UPDATE players SET profile_id = ?, updated_at = ? WHERE profile_id = ?",
+                        (int(target_id), timestamp, int(source_id)),
+                    )
+                    moved_player_rows += int(cur.rowcount or 0)
+
+            final_player_rows = profile_player_rows(int(target_id))
+            final_has_active_contract = any(
+                not self._player_row_is_retained_rights_only(row, int(current_year), conn)
+                for row in final_player_rows
+            )
+            deleted_free_agents = 0
+            if final_has_active_contract:
+                free_agent_ids = [
+                    int(row["id"])
+                    for row in conn.execute(
+                        "SELECT id FROM free_agents WHERE profile_id IN (?, ?)",
+                        (int(source_id), int(target_id)),
+                    ).fetchall()
+                ]
+                if free_agent_ids:
+                    placeholders = ",".join("?" for _ in free_agent_ids)
+                    conn.execute(
+                        f"DELETE FROM gm_free_agent_offer_requests WHERE free_agent_id IN ({placeholders})",
+                        free_agent_ids,
+                    )
+                    cur = conn.execute(
+                        f"DELETE FROM free_agents WHERE id IN ({placeholders})",
+                        free_agent_ids,
+                    )
+                    deleted_free_agents += int(cur.rowcount or 0)
+            else:
+                cur = conn.execute(
+                    "UPDATE free_agents SET profile_id = ?, updated_at = ? WHERE profile_id = ?",
+                    (int(target_id), timestamp, int(source_id)),
+                )
+                moved_player_rows += int(cur.rowcount or 0)
+
+            moved_dead_contracts = int(
+                conn.execute(
+                    "UPDATE dead_contracts SET profile_id = ?, updated_at = ? WHERE profile_id = ?",
+                    (int(target_id), timestamp, int(source_id)),
+                ).rowcount or 0
+            )
+            conn.execute(
+                "UPDATE waiver_players SET profile_id = ?, updated_at = ? WHERE profile_id = ?",
+                (int(target_id), timestamp, int(source_id)),
+            )
+
+            source_history = conn.execute(
+                "SELECT id, season_year FROM player_salary_history WHERE profile_id = ? ORDER BY season_year",
+                (int(source_id),),
+            ).fetchall()
+            moved_salary_history = 0
+            deleted_salary_history = 0
+            for row in source_history:
+                exists = conn.execute(
+                    "SELECT id FROM player_salary_history WHERE profile_id = ? AND season_year = ?",
+                    (int(target_id), int(row["season_year"])),
+                ).fetchone()
+                if exists:
+                    conn.execute("DELETE FROM player_salary_history WHERE id = ?", (int(row["id"]),))
+                    deleted_salary_history += 1
+                else:
+                    conn.execute(
+                        "UPDATE player_salary_history SET profile_id = ?, updated_at = ? WHERE id = ?",
+                        (int(target_id), timestamp, int(row["id"])),
+                    )
+                    moved_salary_history += 1
+
+            moved_transactions = int(
+                conn.execute(
+                    "UPDATE player_transactions SET profile_id = ? WHERE profile_id = ?",
+                    (int(target_id), int(source_id)),
+                ).rowcount or 0
+            )
+            conn.execute(
+                "UPDATE admin_logs SET profile_id = ? WHERE profile_id = ?",
+                (str(int(target_id)), str(int(source_id))),
+            )
+            conn.execute(
+                "UPDATE admin_logs SET profile_id = ? WHERE profile_id = ?",
+                (str(int(target_id)), int(source_id)),
+            )
+            target_thread = conn.execute(
+                "SELECT id FROM discord_free_agent_offer_threads WHERE profile_id = ? LIMIT 1",
+                (int(target_id),),
+            ).fetchone()
+            if target_thread:
+                conn.execute("DELETE FROM discord_free_agent_offer_threads WHERE profile_id = ?", (int(source_id),))
+            else:
+                conn.execute(
+                    "UPDATE discord_free_agent_offer_threads SET profile_id = ?, updated_at = ? WHERE profile_id = ?",
+                    (int(target_id), timestamp, int(source_id)),
+                )
+
+            self._record_player_transaction(
+                conn,
+                int(target_id),
+                "merge_profile",
+                f"Perfil fusionado: {source_profile['name']} -> {target_profile['name']}",
+                details={
+                    "source_profile_id": int(source_id),
+                    "target_profile_id": int(target_id),
+                    "source_name": source_profile["name"],
+                    "target_name": target_profile["name"],
+                    "deleted_player_rows": deleted_player_rows,
+                    "moved_player_rows": moved_player_rows,
+                    "moved_dead_contracts": moved_dead_contracts,
+                    "moved_salary_history": moved_salary_history,
+                    "deleted_salary_history": deleted_salary_history,
+                    "deleted_free_agents": deleted_free_agents,
+                },
+            )
+            conn.execute("DELETE FROM player_profiles WHERE id = ?", (int(source_id),))
+            conn.commit()
+
+            return {
+                "ok": True,
+                "source_profile_id": int(source_id),
+                "target_profile_id": int(target_id),
+                "moved": {
+                    "player_rows": moved_player_rows,
+                    "dead_contracts": moved_dead_contracts,
+                    "salary_history": moved_salary_history,
+                    "transactions": moved_transactions,
+                },
+                "deleted": {
+                    "player_rows": deleted_player_rows,
+                    "salary_history": deleted_salary_history,
+                    "free_agents": deleted_free_agents,
+                },
+            }
 
     def create_player_transaction(self, profile_id: int, payload: Dict[str, Any]) -> Optional[int]:
         summary = str(payload.get("summary") or "").strip()
@@ -15292,7 +15494,53 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return cur.rowcount > 0
 
-    def _player_row_is_retained_rights_only(self, player: sqlite3.Row, current_year: int) -> bool:
+    def _approved_option_decision_conn(
+        self,
+        conn: sqlite3.Connection,
+        player_id: Any,
+        option_field: str,
+    ) -> Optional[sqlite3.Row]:
+        parsed_player_id = parse_int(player_id)
+        field = str(option_field or "").strip()
+        if parsed_player_id is None or not re.fullmatch(r"option_(20\d{2})", field):
+            return None
+        return conn.execute(
+            """
+            SELECT option_value, action, status
+            FROM gm_option_requests
+            WHERE player_id = ?
+              AND option_field = ?
+              AND status = 'approved'
+            ORDER BY COALESCE(decided_at, updated_at, created_at) DESC, id DESC
+            LIMIT 1
+            """,
+            (int(parsed_player_id), field),
+        ).fetchone()
+
+    def _player_row_has_accepted_rights_option_conn(
+        self,
+        conn: Optional[sqlite3.Connection],
+        player: sqlite3.Row,
+        season: int,
+        option_marker: str,
+    ) -> bool:
+        if conn is None or option_marker not in {"QO", "GAP"}:
+            return False
+        decision = self._approved_option_decision_conn(conn, player["id"], f"option_{season}")
+        if not decision:
+            return False
+        return (
+            str(decision["status"] or "").strip().lower() == "approved"
+            and str(decision["action"] or "").strip().lower() == "accepted"
+            and str(decision["option_value"] or "").strip().upper() == option_marker
+        )
+
+    def _player_row_is_retained_rights_only(
+        self,
+        player: sqlite3.Row,
+        current_year: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bool:
         rights_markers = {"NB", "EB", "FB", "QO", "GAP"}
         for season in PLAYER_CONTRACT_SEASONS:
             if season < int(current_year):
@@ -15300,14 +15548,21 @@ class LeagueDB(DatabaseMaintenanceMixin):
             salary_text = str(player[f"salary_{season}_text"] or "").strip()
             salary_marker = salary_text.upper()
             option_marker = str(player[f"option_{season}"] or "").strip().upper()
+            accepted_rights_option = self._player_row_has_accepted_rights_option_conn(
+                conn,
+                player,
+                season,
+                option_marker,
+            )
             salary_num = parse_float(player[f"salary_{season}_num"])
-            if salary_num is not None and abs(float(salary_num)) > 0:
+            if salary_num is not None and abs(float(salary_num)) > 0 and not accepted_rights_option:
                 return False
             parsed_salary_text = parse_amount_like(salary_text)
-            if parsed_salary_text is not None and abs(float(parsed_salary_text)) > 0:
+            if parsed_salary_text is not None and abs(float(parsed_salary_text)) > 0 and not accepted_rights_option:
                 return False
             if salary_text and salary_text != "-" and salary_marker not in rights_markers:
-                return False
+                if not accepted_rights_option:
+                    return False
             if option_marker and option_marker not in rights_markers:
                 return False
         return True
@@ -15329,6 +15584,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             salary_marker = str(player[f"salary_{season}_text"] or "").strip().upper()
             option_marker = str(player[f"option_{season}"] or "").strip().upper()
             marker = salary_marker or option_marker
+            if marker not in {"NB", "EB", "FB", "QO", "GAP"} and option_marker in {"QO", "GAP"}:
+                marker = option_marker
             if marker in {"NB", "EB", "FB", "QO", "GAP"}:
                 rights_by_season[str(season)] = marker
 
@@ -15408,7 +15665,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     if not same_team_row:
                         blocking_rows = [
                             row for row in active_rows
-                            if not self._player_row_is_retained_rights_only(row, int(current_year))
+                            if not self._player_row_is_retained_rights_only(row, int(current_year), conn)
                         ]
                         if blocking_rows:
                             raise ValueError("profile_has_active_contract")
@@ -22646,6 +22903,42 @@ QUALITY REQUIREMENTS
                     custom_image=payload.get("discord_custom_image"),
                 )
             self._json(200, {"ok": True, "result": result})
+            return
+
+        if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/merge"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            try:
+                target_profile_id = int(parts[2])
+            except ValueError:
+                self._json(400, {"error": "invalid_profile_id"})
+                return
+            source_profile_id = parse_int(payload.get("source_profile_id"))
+            if source_profile_id is None:
+                self._json(400, {"error": "source_profile_id_required"})
+                return
+            result = self.db.merge_player_profiles(int(source_profile_id), int(target_profile_id))
+            if not result.get("ok"):
+                status = 409 if result.get("error") == "active_contract_conflict" else 404
+                if result.get("error") == "invalid_profile_id":
+                    status = 400
+                self._json(status, {"error": result.get("error") or "merge_failed"})
+                return
+            self._log_admin_action(
+                "merge",
+                "player_profile",
+                str(target_profile_id),
+                None,
+                {
+                    "source_profile_id": int(source_profile_id),
+                    "target_profile_id": int(target_profile_id),
+                    "moved": result.get("moved") or {},
+                    "deleted": result.get("deleted") or {},
+                },
+            )
+            self._json(200, result)
             return
 
         if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/salary-history"):

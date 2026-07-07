@@ -6838,6 +6838,7 @@ function renderLeaguePlayers() {
       <td>${leaguePlayerContractHtml(player)}</td>
       <td>${leaguePlayerLogsSummaryHtml(player)}</td>
       <td class="league-player-actions">
+        <button type="button" class="secondary player-profile-merge-btn" data-player-profile-merge="${escapeHtml(profileId || '')}"${profileId ? '' : ' disabled'}>Fusionar</button>
         <button type="button" class="danger player-profile-delete-btn" data-player-profile-delete="${escapeHtml(profileId || '')}"${profileId ? '' : ' disabled'}>Eliminar</button>
       </td>
     `;
@@ -6873,6 +6874,53 @@ function renderLeaguePlayers() {
           if (typeof loadAdminLogs === 'function') await loadAdminLogs();
         } catch (err) {
           alert(`No se pudo eliminar el jugador: ${err.message || err}`);
+        }
+      });
+    }
+    const mergeBtn = tr.querySelector('[data-player-profile-merge]');
+    if (mergeBtn) {
+      mergeBtn.addEventListener('click', async () => {
+        if (!profileId) {
+          alert('Este jugador no tiene perfil global para fusionar.');
+          return;
+        }
+        const duplicateKey = leaguePlayerDuplicateNameKey(player.name);
+        const candidates = (state.leaguePlayers || [])
+          .filter((candidate) => {
+            const candidateProfileId = candidate.profile_id || null;
+            if (!candidateProfileId || String(candidateProfileId) === String(profileId)) return false;
+            return leaguePlayerDuplicateNameKey(candidate.name) === duplicateKey;
+          });
+        const candidateLines = candidates.length
+          ? candidates.map((candidate) => {
+              const teamLabel = candidate.team_code ? ` · ${candidate.team_code}` : '';
+              return `ID ${candidate.profile_id}: ${candidate.name || 'Sin nombre'} · ${candidate.status_label || candidate.status || 'Sin estado'}${teamLabel}`;
+            }).join('\n')
+          : 'No se detectaron duplicados exactos por nombre. Puedes escribir manualmente el ID destino.';
+        const defaultTarget = candidates[0]?.profile_id || '';
+        const targetRaw = window.prompt(
+          `Fusionar perfil ID ${profileId} (${player.name || 'sin nombre'}) en otro perfil.\n\nPerfiles sugeridos:\n${candidateLines}\n\nEscribe el ID del perfil destino que debe conservarse:`,
+          defaultTarget
+        );
+        if (targetRaw == null) return;
+        const targetId = String(targetRaw || '').trim();
+        if (!targetId || targetId === String(profileId)) {
+          alert('Selecciona un perfil destino distinto.');
+          return;
+        }
+        const confirmed = window.confirm(
+          `¿Fusionar el perfil ${profileId} dentro del perfil ${targetId}?\n\nSe conservará el perfil destino. Si ambos tienen contrato activo real, el servidor bloqueará la operación.`
+        );
+        if (!confirmed) return;
+        try {
+          await api(`/api/player-profiles/${encodeURIComponent(targetId)}/merge`, {
+            method: 'POST',
+            body: JSON.stringify({ source_profile_id: profileId }),
+          });
+          await loadLeaguePlayers();
+          if (typeof loadAdminLogs === 'function') await loadAdminLogs();
+        } catch (err) {
+          alert(`No se pudo fusionar el jugador: ${err.message || err}`);
         }
       });
     }

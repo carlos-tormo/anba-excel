@@ -518,6 +518,67 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(1, len(players_for_profile))
         self.assertEqual("ATL", players_for_profile[0]["team_code"])
 
+    def test_signing_free_agent_overrides_accepted_qo_rights_on_other_team(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        player_id = self.db.create_player(
+            "BKN",
+            {
+                "name": "Accepted QO Player",
+                "position": "SG",
+                "rating": "76",
+                "bird_rights": "R",
+                "years_left": "1",
+                "salary_2026_text": "6.250.000",
+                "option_2026": "QO",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        player = self.db.get_player_record(int(player_id))
+        profile_id = int(player["profile_id"])
+        self.db.record_admin_option_decision(
+            int(player_id),
+            "option_2026",
+            "QO",
+            "accepted",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+        free_agent_id = self.db.create_free_agent(
+            {
+                "profile_id": profile_id,
+                "name": "Accepted QO Player",
+                "position": "SG",
+                "rating": "76",
+                "bird_rights": "QO",
+                "free_agent_type": "Restringido",
+                "source": "cap_hold",
+                "rights_team_code": "BKN",
+            }
+        )
+        self.assertIsNotNone(free_agent_id)
+
+        signed_player_id = self.db.sign_free_agent(
+            int(free_agent_id),
+            "ATL",
+            {
+                "profile_id": profile_id,
+                "name": "Accepted QO Player",
+                "bird_rights": "Reg",
+                "salary_2026_text": "12.000.000",
+                "salary_2027_text": "12.600.000",
+            },
+        )
+
+        self.assertIsNotNone(signed_player_id)
+        self.assertIsNone(self.db.get_free_agent(int(free_agent_id)))
+        players_for_profile = [
+            row for row in self.db.list_players()
+            if int(row.get("profile_id") or 0) == profile_id
+        ]
+        self.assertEqual(1, len(players_for_profile))
+        self.assertEqual("ATL", players_for_profile[0]["team_code"])
+        signed_player = self.db.get_player_record(int(signed_player_id))
+        self.assertEqual("12.000.000", signed_player["salary_2026_text"])
+
     def test_renewal_offer_uses_bird_years_for_large_raises(self) -> None:
         handler = object.__new__(Handler)
         handler.db = self.db
