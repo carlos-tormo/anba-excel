@@ -318,14 +318,15 @@ function optionDecisionForSeason(row, season) {
 function optionAcceptedByTeam(row, season, expectedOption = '') {
   const option = String(row?.[`option_${season}`] || '').trim().toUpperCase();
   const decision = optionDecisionForSeason(row, season);
-  if (!['QO', 'GAP'].includes(option) || !decision) return false;
+  if (!decision) return false;
   const expected = String(expectedOption || '').trim().toUpperCase();
-  if (expected && option !== expected) return false;
   const decisionOption = String(decision.option_value || '').trim().toUpperCase();
+  if (!['QO', 'GAP'].includes(decisionOption)) return false;
+  if (expected && decisionOption !== expected) return false;
+  if (!expected && option && !['QO', 'GAP'].includes(option)) return false;
   const action = String(decision.action || '').trim().toLowerCase();
   const status = String(decision.status || '').trim().toLowerCase();
-  return decisionOption === option
-    && action === 'accepted'
+  return action === 'accepted'
     && status === 'approved';
 }
 

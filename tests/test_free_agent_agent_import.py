@@ -287,6 +287,14 @@ class FreeAgentAgentImportTests(unittest.TestCase):
                 {"email": "admin@example.com", "name": "Admin"},
             )
         )
+        team = self.db.get_team("ATL")
+        self.assertIsNotNone(team)
+        team_player = next(player for player in team["players"] if player["name"] == "Accepted GAP Player")
+        team_decision = team_player["option_decisions"]["option_2026"]
+        self.assertEqual("GAP", team_decision["option_value"])
+        self.assertEqual("accepted", team_decision["action"])
+        self.assertEqual("approved", team_decision["status"])
+
         self.assertTrue(self.db.update_player(int(player_id), {"option_2026": None}))
 
         free_agents = self.db.list_free_agents()
