@@ -305,6 +305,49 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         self.assertEqual("cap_hold", free_agent["source"])
         self.assertEqual("ATL", free_agent["rights_team_code"])
 
+    def test_direct_admin_accepted_gap_persists_and_syncs_free_agent(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        self.db.update_setting("free_agency_mode", "1")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Direct Admin GAP Player",
+                "position": "SG",
+                "rating": "71",
+                "bird_rights": "Min",
+                "years_left": "1",
+                "salary_2025_text": "2150917",
+                "salary_2026_text": "2450000",
+                "option_2026": "GAP",
+            },
+        )
+        self.assertIsNotNone(player_id)
+
+        decision = self.db.record_admin_option_decision(
+            int(player_id),
+            "option_2026",
+            "GAP",
+            "accepted",
+            {"email": "admin@example.com", "name": "Admin"},
+        )
+
+        self.assertIsNotNone(decision)
+        team = self.db.get_team("ATL")
+        self.assertIsNotNone(team)
+        team_player = next(player for player in team["players"] if player["name"] == "Direct Admin GAP Player")
+        team_decision = team_player["option_decisions"]["option_2026"]
+        self.assertEqual("GAP", team_decision["option_value"])
+        self.assertEqual("accepted", team_decision["action"])
+        self.assertEqual("approved", team_decision["status"])
+
+        free_agents = self.db.list_free_agents()
+        free_agent = next((agent for agent in free_agents if agent["name"] == "Direct Admin GAP Player"), None)
+
+        self.assertIsNotNone(free_agent)
+        self.assertEqual("Restringido", free_agent["free_agent_type"])
+        self.assertEqual("cap_hold", free_agent["source"])
+        self.assertEqual("ATL", free_agent["rights_team_code"])
+
     def test_manual_contract_replaces_accepted_qo_free_agent_row(self) -> None:
         self.db.update_setting("current_year", "2026")
         self.db.update_setting("free_agency_mode", "1")

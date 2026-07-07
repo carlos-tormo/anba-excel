@@ -4925,6 +4925,80 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         return self.get_gm_option_request(request_id) if request_id is not None else None
 
+    def record_admin_option_decision(
+        self,
+        player_id: int,
+        option_field: str,
+        option_value: str,
+        action: str,
+        admin: Dict[str, Any],
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        field = str(option_field or "").strip()
+        match = re.fullmatch(r"option_(20\d{2})", field)
+        if not match:
+            raise ValueError("invalid_option_field")
+        option = str(option_value or "").strip().upper()
+        if option not in {"TO", "PO", "QO", "GAP"}:
+            raise ValueError("invalid_option_value")
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"accepted", "rejected"}:
+            raise ValueError("invalid_option_action")
+
+        timestamp = now_iso()
+        with self.connect() as conn:
+            player = conn.execute(
+                f"""
+                SELECT p.id, p.team_id, p.{field} AS current_option
+                FROM players p
+                WHERE p.id = ?
+                """,
+                (int(player_id),),
+            ).fetchone()
+            if not player:
+                return None
+            cur = conn.execute(
+                """
+                INSERT INTO gm_option_requests (
+                    player_id,
+                    team_id,
+                    requester_user_id,
+                    requester_email,
+                    requester_name,
+                    option_field,
+                    option_value,
+                    action,
+                    status,
+                    admin_email,
+                    admin_name,
+                    admin_decision_note,
+                    created_at,
+                    updated_at,
+                    decided_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(player_id),
+                    int(player["team_id"]),
+                    parse_int(str(admin.get("user_id") or "")) if admin else None,
+                    str(admin.get("email") or "").strip() if admin else None,
+                    str(admin.get("name") or "").strip() if admin else None,
+                    field,
+                    option,
+                    normalized_action,
+                    str(admin.get("email") or "").strip() if admin else None,
+                    str(admin.get("name") or "").strip() if admin else None,
+                    note,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            request_id = int(cur.lastrowid)
+            conn.commit()
+        return self.get_gm_option_request(request_id)
+
     def create_gm_bird_rights_renounce_request(
         self,
         player_id: int,
@@ -24154,6 +24228,18 @@ QUALITY REQUIREMENTS
             if ok:
                 log_details: Dict[str, Any] = {"fields": sorted(payload.keys())}
                 renounced_free_agent_id: Optional[int] = None
+                direct_option_decision: Optional[Dict[str, Any]] = None
+                if option_action and option_action_season is not None:
+                    try:
+                        direct_option_decision = self.db.record_admin_option_decision(
+                            player_id,
+                            option_action_field,
+                            option_action_value,
+                            option_action,
+                            self._current_session() or {},
+                        )
+                    except ValueError:
+                        direct_option_decision = None
                 settings = self.db.get_settings()
                 current_year = parse_int(settings.get("current_year")) or 2025
                 renounce_season = int(current_year)
@@ -24189,6 +24275,9 @@ QUALITY REQUIREMENTS
                             "option_action_field": option_action_field,
                             "option_action_value": option_action_value,
                             "option_action_season": option_action_season,
+                            "option_decision_request_id": (
+                                direct_option_decision.get("id") if isinstance(direct_option_decision, dict) else None
+                            ),
                         }
                     )
                 self._log_admin_action(
