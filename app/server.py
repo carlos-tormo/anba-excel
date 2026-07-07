@@ -2933,8 +2933,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             salary_marker == "QO"
             or option_marker == "QO"
             or (
-                option_marker == "GAP"
-                and decision_option == "GAP"
+                decision_option in {"QO", "GAP"}
                 and decision_action == "accepted"
                 and decision_status == "approved"
             )
@@ -14334,13 +14333,36 @@ class LeagueDB(DatabaseMaintenanceMixin):
         if salary_text_code == "QO" or option_code == "QO":
             return FREE_AGENT_TYPE_RESTRICTED
         if (
-            option_code in {"QO", "GAP"}
-            and option_value == option_code
+            option_value in {"QO", "GAP"}
             and option_action == "accepted"
             and option_status == "approved"
+            and (
+                option_code in {"QO", "GAP"}
+                or not self._free_agency_has_future_contract_salary(player, int(season))
+            )
         ):
             return FREE_AGENT_TYPE_RESTRICTED
         return FREE_AGENT_TYPE_UNRESTRICTED
+
+    def _free_agency_has_future_contract_salary(self, player: Dict[str, Any], season: int) -> bool:
+        rights_markers = {"NB", "EB", "FB", "QO", "GAP"}
+        for future_season in PLAYER_CONTRACT_SEASONS:
+            if int(future_season) <= int(season):
+                continue
+            salary_text = str(player.get(f"salary_{future_season}_text") or "").strip()
+            salary_code = salary_text.upper()
+            option_code = str(player.get(f"option_{future_season}") or "").strip().upper()
+            salary_num = parse_float(player.get(f"salary_{future_season}_num"))
+            if salary_num is not None and abs(float(salary_num)) > 0:
+                return True
+            salary_text_amount = parse_amount_like(salary_text)
+            if salary_text_amount is not None and abs(float(salary_text_amount)) > 0:
+                return True
+            if salary_text and salary_text != "-" and salary_code not in rights_markers:
+                return True
+            if option_code and option_code not in rights_markers:
+                return True
+        return False
 
     def _free_agency_empty_cell(self, value: Any) -> bool:
         raw = str(value or "").strip()
@@ -14509,10 +14531,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     decision_action = str(decision.get("action") or "").strip().lower()
                     decision_status = str(decision.get("status") or "").strip().lower()
                     if (
-                        option_code in {"QO", "GAP"}
-                        and decision_option == option_code
+                        decision_option in {"QO", "GAP"}
                         and decision_action == "accepted"
                         and decision_status == "approved"
+                        and (
+                            option_code in {"QO", "GAP"}
+                            or not self._free_agency_has_future_contract_salary(player, int(season))
+                        )
                     ):
                         continue
                     salary_num = parse_float(player.get(f"salary_{season}_num"))

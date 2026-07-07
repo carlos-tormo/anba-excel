@@ -255,6 +255,48 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         self.assertEqual("ATL", free_agent["rights_team_code"])
         self.assertEqual("FB", free_agent["bird_rights"])
 
+    def test_accepted_gap_with_visible_value_stays_on_free_agent_list(self) -> None:
+        self.db.update_setting("current_year", "2026")
+        self.db.update_setting("free_agency_mode", "1")
+        player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Accepted GAP Player",
+                "position": "SG",
+                "rating": "70",
+                "bird_rights": "Min",
+                "years_left": "1",
+                "salary_2025_text": "2150917",
+                "salary_2026_text": "2450000",
+                "option_2026": "GAP",
+            },
+        )
+        self.assertIsNotNone(player_id)
+        request = self.db.create_gm_option_request(
+            int(player_id),
+            "option_2026",
+            "GAP",
+            "accepted",
+            {"email": "gm@example.com", "name": "GM"},
+        )
+        self.assertIsNotNone(request)
+        self.assertIsNotNone(
+            self.db.mark_gm_option_request_decided(
+                int(request["id"]),
+                "approved",
+                {"email": "admin@example.com", "name": "Admin"},
+            )
+        )
+        self.assertTrue(self.db.update_player(int(player_id), {"option_2026": None}))
+
+        free_agents = self.db.list_free_agents()
+        free_agent = next((agent for agent in free_agents if agent["name"] == "Accepted GAP Player"), None)
+
+        self.assertIsNotNone(free_agent)
+        self.assertEqual("Restringido", free_agent["free_agent_type"])
+        self.assertEqual("cap_hold", free_agent["source"])
+        self.assertEqual("ATL", free_agent["rights_team_code"])
+
     def test_manual_contract_replaces_accepted_qo_free_agent_row(self) -> None:
         self.db.update_setting("current_year", "2026")
         self.db.update_setting("free_agency_mode", "1")
