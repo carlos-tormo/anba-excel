@@ -12844,8 +12844,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     return False
 
             if update_rights_team:
-                active = conn.execute("SELECT id FROM players WHERE profile_id = ? LIMIT 1", (profile_id,)).fetchone()
-                if active:
+                settings = {
+                    str(row["key"]): str(row["value"])
+                    for row in conn.execute("SELECT key, value FROM app_settings").fetchall()
+                }
+                current_year = parse_int(settings.get("current_year")) or PLAYER_CONTRACT_SEASONS[0]
+                roster_rows = conn.execute(
+                    "SELECT * FROM players WHERE profile_id = ? ORDER BY id",
+                    (profile_id,),
+                ).fetchall()
+                active_contract_rows = [
+                    row for row in roster_rows
+                    if not self._player_row_is_retained_rights_only(row, int(current_year))
+                ]
+                if active_contract_rows:
                     raise ValueError("profile_has_active_contract")
                 team_code = normalize_team_code(payload.get("rights_team_code"))
                 if team_code:
