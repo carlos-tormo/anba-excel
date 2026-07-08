@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import copy
 import csv
 import hashlib
 import io
@@ -1116,6 +1117,37 @@ class LeagueDB(DatabaseMaintenanceMixin):
         self.db_path = db_path
         self._free_agents_sync_lock = threading.Lock()
         self._session_cleanup_lock = threading.Lock()
+        self._tracker_cache_lock = threading.Lock()
+        self._tracker_cache: Dict[int, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _is_sqlite_lock_error(exc: BaseException) -> bool:
+        message = str(exc).lower()
+        return "database is locked" in message or "database table is locked" in message
+
+    def _get_tracker_cache(self, season_year: Optional[int]) -> Optional[Dict[str, Any]]:
+        with self._tracker_cache_lock:
+            if season_year is not None and season_year in self._tracker_cache:
+                cached = copy.deepcopy(self._tracker_cache[season_year])
+            elif self._tracker_cache:
+                cached = copy.deepcopy(next(reversed(self._tracker_cache.values())))
+            else:
+                cached = None
+        if cached is not None:
+            timings = cached.setdefault("timings", {})
+            timings["cache_stale"] = 1.0
+            cached["stale"] = True
+        return cached
+
+    def _set_tracker_cache(self, season_year: int, payload: Dict[str, Any]) -> None:
+        with self._tracker_cache_lock:
+            self._tracker_cache[int(season_year)] = copy.deepcopy(payload)
+
+    def warm_tracker_cache(self) -> None:
+        settings = self.get_settings()
+        current_year = parse_int(settings.get("current_year")) or CAP_FORECAST_MIN_YEAR
+        current_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, current_year))
+        self.list_tracker(current_year, busy_timeout_ms=15000)
 
     def _ensure_gm_free_agent_offer_requests_are_retained(self, conn: sqlite3.Connection) -> None:
         fk_rows = conn.execute("PRAGMA foreign_key_list(gm_free_agent_offer_requests)").fetchall()
@@ -8253,118 +8285,157 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
         return self.list_gm_history(code)
 
-    def list_tracker(self, season_year: Optional[int] = None) -> Dict[str, Any]:
+    def list_tracker(self, season_year: Optional[int] = None, busy_timeout_ms: int = 750) -> Dict[str, Any]:
         timings: Dict[str, float] = {}
         started = time.perf_counter()
+        requested_year = parse_int(season_year)
+        cache_lookup_year = requested_year
 
         def mark(label: str, since: float) -> float:
             now = time.perf_counter()
             timings[label] = round((now - since) * 1000, 2)
             return now
 
-        with self.connect() as conn:
-            settings_cur = conn.execute("SELECT key, value FROM app_settings")
-            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
-            checkpoint = mark("settings_ms", started)
-            current_year = parse_int(settings.get("current_year")) or 2025
-            if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
-                current_year = CAP_FORECAST_MIN_YEAR
-            default_tracker_year = current_year
-            requested_year = parse_int(season_year)
-            tracker_year = requested_year if requested_year is not None else default_tracker_year
-            tracker_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, tracker_year))
-            team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
-            teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
-            checkpoint = mark("teams_ms", checkpoint)
-            rows: List[Dict[str, Any]] = []
+        try:
+            with self.connect() as conn:
+                if busy_timeout_ms is not None:
+                    safe_timeout = max(100, min(int(busy_timeout_ms), 15000))
+                    conn.execute(f"PRAGMA busy_timeout = {safe_timeout}")
+                settings_cur = conn.execute("SELECT key, value FROM app_settings")
+                settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+                checkpoint = mark("settings_ms", started)
+                current_year = parse_int(settings.get("current_year")) or 2025
+                if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
+                    current_year = CAP_FORECAST_MIN_YEAR
+                default_tracker_year = current_year
+                tracker_year = requested_year if requested_year is not None else default_tracker_year
+                tracker_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, tracker_year))
+                cache_lookup_year = tracker_year
+                team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
+                teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
+                checkpoint = mark("teams_ms", checkpoint)
+                rows: List[Dict[str, Any]] = []
 
-            draft_year_start = current_year + 1
+                draft_year_start = current_year + 1
 
-            def pick_round_for_tracker(asset: Dict[str, Any]) -> str:
-                round_raw = str(asset.get("draft_round") or "").strip().lower()
-                if "2" in round_raw:
-                    return "2nd"
-                if "1" in round_raw:
-                    return "1st"
-                label = str(asset.get("label") or "").strip().lower()
-                return "2nd" if "2" in label else "1st"
+                def pick_round_for_tracker(asset: Dict[str, Any]) -> str:
+                    round_raw = str(asset.get("draft_round") or "").strip().lower()
+                    if "2" in round_raw:
+                        return "2nd"
+                    if "1" in round_raw:
+                        return "1st"
+                    label = str(asset.get("label") or "").strip().lower()
+                    return "2nd" if "2" in label else "1st"
 
-            def draft_counts_for_tracker(assets: List[Dict[str, Any]]) -> Dict[str, int]:
-                counts = {"draft_first_count": 0, "draft_second_count": 0}
-                for asset in assets:
-                    if asset.get("asset_type") != "draft_pick":
-                        continue
-                    if normalize_pick_type(asset.get("draft_pick_type")) == "sold":
-                        continue
-                    year = parse_int(asset.get("year"))
-                    if year is not None and year < draft_year_start:
-                        continue
-                    if pick_round_for_tracker(asset) == "2nd":
-                        counts["draft_second_count"] += 1
-                    else:
-                        counts["draft_first_count"] += 1
-                return counts
+                def draft_counts_for_tracker(assets: List[Dict[str, Any]]) -> Dict[str, int]:
+                    counts = {"draft_first_count": 0, "draft_second_count": 0}
+                    for asset in assets:
+                        if asset.get("asset_type") != "draft_pick":
+                            continue
+                        if normalize_pick_type(asset.get("draft_pick_type")) == "sold":
+                            continue
+                        year = parse_int(asset.get("year"))
+                        if year is not None and year < draft_year_start:
+                            continue
+                        if pick_round_for_tracker(asset) == "2nd":
+                            counts["draft_second_count"] += 1
+                        else:
+                            counts["draft_first_count"] += 1
+                    return counts
 
-            for team in teams:
-                team_id = int(team["id"])
-                team_started = time.perf_counter()
-                players = self._select_team_players(conn, team_id)
-                asset_cur = conn.execute(
-                    "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
-                    (team_id,),
-                )
-                assets = [row_to_dict(asset_cur, row) for row in asset_cur.fetchall()]
-                dead_cur = conn.execute(
-                    "SELECT * FROM dead_contracts WHERE team_id = ? ORDER BY dead_type, row_order, id",
-                    (team_id,),
-                )
-                dead_contracts = [row_to_dict(dead_cur, row) for row in dead_cur.fetchall()]
-                summary = self._calc_summary(
-                    team,
-                    players,
-                    assets,
-                    dead_contracts,
-                    settings,
-                    season_year=tracker_year,
-                    luxury_repeater=self._team_luxury_repeater_for_season(conn, team_id, tracker_year),
-                    apron_hard_cap=self._team_apron_hard_cap_for_season(
+                for team in teams:
+                    team_id = int(team["id"])
+                    team_code = str(team["code"])
+                    team_started = time.perf_counter()
+                    team_query_started = time.perf_counter()
+                    players = self._select_team_players(conn, team_id)
+                    players_ms = round((time.perf_counter() - team_query_started) * 1000, 2)
+                    team_query_started = time.perf_counter()
+                    asset_cur = conn.execute(
+                        "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
+                        (team_id,),
+                    )
+                    assets = [row_to_dict(asset_cur, row) for row in asset_cur.fetchall()]
+                    assets_ms = round((time.perf_counter() - team_query_started) * 1000, 2)
+                    team_query_started = time.perf_counter()
+                    dead_cur = conn.execute(
+                        "SELECT * FROM dead_contracts WHERE team_id = ? ORDER BY dead_type, row_order, id",
+                        (team_id,),
+                    )
+                    dead_contracts = [row_to_dict(dead_cur, row) for row in dead_cur.fetchall()]
+                    dead_ms = round((time.perf_counter() - team_query_started) * 1000, 2)
+                    team_query_started = time.perf_counter()
+                    luxury_repeater = self._team_luxury_repeater_for_season(conn, team_id, tracker_year)
+                    luxury_ms = round((time.perf_counter() - team_query_started) * 1000, 2)
+                    team_query_started = time.perf_counter()
+                    apron_hard_cap = self._team_apron_hard_cap_for_season(
                         conn,
                         team_id,
                         tracker_year,
                         team.get("apron_hard_cap") if tracker_year == current_year else None,
-                    ),
-                    include_breakdowns=False,
-                )
-                draft_counts = draft_counts_for_tracker(assets)
-                rows.append(
-                    {
-                        "team_code": team["code"],
-                        "team_name": team["name"],
-                        "cap_total": float(summary["cap_figure"]),
-                        "gasto_total": float(summary["payroll"]),
-                        "espacio_cap": float(summary["room_to_cap"]),
-                        "espacio_luxury": float(summary["room_to_luxury"]),
-                        "luxury_tax": float(summary["luxury_tax"]),
-                        "espacio_1er_apron": float(summary["room_to_first_apron"]),
-                        "espacio_2do_apron": float(summary["room_to_second_apron"]),
-                        "roster_standard_count": int(summary["roster_standard_count"]),
-                        "roster_two_way_count": int(summary["roster_two_way_count"]),
-                        "draft_first_count": int(draft_counts["draft_first_count"]),
-                        "draft_second_count": int(draft_counts["draft_second_count"]),
-                        "apron_hard_cap": summary["apron_hard_cap"],
-                    }
-                )
-                timings[f"team_{team['code']}_ms"] = round((time.perf_counter() - team_started) * 1000, 2)
-            mark("rows_ms", checkpoint)
-            timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
-            timings["row_count"] = float(len(rows))
-            setattr(self, "_last_tracker_timings", timings)
-            return {
-                "rows": rows,
-                "season_year": tracker_year,
-                "seasons": [current_year + idx for idx in range(6)],
-                "timings": timings,
-            }
+                    )
+                    hardcap_ms = round((time.perf_counter() - team_query_started) * 1000, 2)
+                    summary_started = time.perf_counter()
+                    summary = self._calc_summary(
+                        team,
+                        players,
+                        assets,
+                        dead_contracts,
+                        settings,
+                        season_year=tracker_year,
+                        luxury_repeater=luxury_repeater,
+                        apron_hard_cap=apron_hard_cap,
+                        include_breakdowns=False,
+                    )
+                    summary_ms = round((time.perf_counter() - summary_started) * 1000, 2)
+                    draft_counts = draft_counts_for_tracker(assets)
+                    rows.append(
+                        {
+                            "team_code": team["code"],
+                            "team_name": team["name"],
+                            "cap_total": float(summary["cap_figure"]),
+                            "gasto_total": float(summary["payroll"]),
+                            "espacio_cap": float(summary["room_to_cap"]),
+                            "espacio_luxury": float(summary["room_to_luxury"]),
+                            "luxury_tax": float(summary["luxury_tax"]),
+                            "espacio_1er_apron": float(summary["room_to_first_apron"]),
+                            "espacio_2do_apron": float(summary["room_to_second_apron"]),
+                            "roster_standard_count": int(summary["roster_standard_count"]),
+                            "roster_two_way_count": int(summary["roster_two_way_count"]),
+                            "draft_first_count": int(draft_counts["draft_first_count"]),
+                            "draft_second_count": int(draft_counts["draft_second_count"]),
+                            "apron_hard_cap": summary["apron_hard_cap"],
+                        }
+                    )
+                    team_ms = round((time.perf_counter() - team_started) * 1000, 2)
+                    timings[f"team_{team_code}_ms"] = team_ms
+                    if team_ms >= 500:
+                        print(
+                            "Tracker team slow "
+                            f"{team_code} {team_ms:.2f}ms "
+                            f"players_ms={players_ms},assets_ms={assets_ms},dead_ms={dead_ms},"
+                            f"luxury_ms={luxury_ms},hardcap_ms={hardcap_ms},summary_ms={summary_ms}",
+                            flush=True,
+                        )
+                mark("rows_ms", checkpoint)
+                timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                timings["row_count"] = float(len(rows))
+                setattr(self, "_last_tracker_timings", timings)
+                result = {
+                    "rows": rows,
+                    "season_year": tracker_year,
+                    "seasons": [current_year + idx for idx in range(6)],
+                    "timings": timings,
+                }
+                self._set_tracker_cache(tracker_year, result)
+                return result
+        except sqlite3.OperationalError as exc:
+            if self._is_sqlite_lock_error(exc):
+                cached = self._get_tracker_cache(cache_lookup_year)
+                if cached is not None:
+                    print(f"Tracker served from cache after SQLite lock: {exc}", flush=True)
+                    return cached
+            raise
 
     def list_team_economy(self, season_year: Optional[int] = None) -> Dict[str, Any]:
         with self.connect() as conn:
@@ -21661,13 +21732,15 @@ QUALITY REQUIREMENTS
                 )
                 if total_ms >= 500:
                     self.log_message("Tracker slow load %.2fms %s", total_ms, timings_text)
+                if tracker.get("stale"):
+                    self.log_message("Tracker served stale cache season=%s", tracker.get("season_year"))
                 self._json(
                     200,
                     {
                         "tracker": tracker.get("rows") or [],
                         "season_year": tracker.get("season_year"),
                         "seasons": tracker.get("seasons") or [],
-                        "meta": {"timings": timings},
+                        "meta": {"timings": timings, "stale": bool(tracker.get("stale"))},
                     },
                     headers={"X-Tracker-Timing": timings_text[:3500]},
                 )
@@ -25427,6 +25500,10 @@ def run_server(db_path: str, host: str, port: int) -> None:
 
     Handler.db = LeagueDB(db_path)
     Handler.db.ensure_auth_schema()
+    try:
+        Handler.db.warm_tracker_cache()
+    except Exception as err:
+        print(f"Tracker cache warmup skipped: {err}", flush=True)
 
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Serving on http://{host}:{port}")
