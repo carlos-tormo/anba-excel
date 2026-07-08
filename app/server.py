@@ -11037,13 +11037,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
         def luxury_tax_detail_lines(overage: float, repeater: bool) -> List[Dict[str, Any]]:
             lines: List[Dict[str, Any]] = []
             remaining = max(0.0, float(overage or 0.0))
+            if not math.isfinite(remaining):
+                return lines
             if remaining <= 0:
                 return lines
             tier_size = 5_000_000.0
             rates = [2.5, 2.75, 3.5, 4.25] if repeater else [1.5, 1.75, 2.5, 3.25]
             tier_index = 0
             lower_bound = 0.0
-            while remaining > 0:
+            max_detail_tiers = 20
+            while remaining > 0 and tier_index < max_detail_tiers:
                 taxable = min(tier_size, remaining)
                 if tier_index < len(rates):
                     rate = rates[tier_index]
@@ -11059,6 +11062,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 remaining -= taxable
                 lower_bound += taxable
                 tier_index += 1
+            if remaining > 0:
+                lines.append(
+                    breakdown_amount(
+                        f"Resto luxury desde {int(lower_bound / 1_000_000)}M",
+                        luxury_tax_amount(remaining, repeater),
+                    )
+                )
             return lines
 
         balance_breakdowns: Dict[str, List[Dict[str, Any]]] = {}
@@ -25500,13 +25510,17 @@ def run_server(db_path: str, host: str, port: int) -> None:
 
     Handler.db = LeagueDB(db_path)
     Handler.db.ensure_auth_schema()
-    try:
-        Handler.db.warm_tracker_cache()
-    except Exception as err:
-        print(f"Tracker cache warmup skipped: {err}", flush=True)
 
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Serving on http://{host}:{port}")
+
+    def warm_tracker_cache_background() -> None:
+        try:
+            Handler.db.warm_tracker_cache()
+        except Exception as err:
+            print(f"Tracker cache warmup skipped: {err}", flush=True)
+
+    threading.Thread(target=warm_tracker_cache_background, daemon=True).start()
     server.serve_forever()
 
 

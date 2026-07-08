@@ -320,21 +320,33 @@ def apply_salary_floor(settings: Dict[str, str], season: int, salary_cap: float,
 
 def luxury_tax_amount(overage: float, repeater: bool) -> float:
     remaining = max(0.0, float(overage or 0.0))
+    if not math.isfinite(remaining):
+        return 0.0
     if remaining <= 0:
         return 0.0
     tier_size = 5_000_000.0
     base_rates = [2.5, 2.75, 3.5, 4.25] if repeater else [1.5, 1.75, 2.5, 3.25]
     tax = 0.0
-    tier_index = 0
-    while remaining > 0:
+    for tier_index, rate in enumerate(base_rates):
+        if remaining <= 0:
+            return tax
         taxable = min(tier_size, remaining)
-        if tier_index < len(base_rates):
-            rate = base_rates[tier_index]
-        else:
-            rate = base_rates[-1] + ((tier_index - len(base_rates) + 1) * 0.5)
         tax += taxable * rate
         remaining -= taxable
-        tier_index += 1
+
+    if remaining <= 0:
+        return tax
+
+    first_extra_rate = base_rates[-1] + 0.5
+    full_extra_tiers = int(remaining // tier_size)
+    partial_extra = remaining - (full_extra_tiers * tier_size)
+    if full_extra_tiers > 0:
+        rate_sum = (full_extra_tiers / 2.0) * (
+            (2.0 * first_extra_rate) + ((full_extra_tiers - 1) * 0.5)
+        )
+        tax += tier_size * rate_sum
+    if partial_extra > 0:
+        tax += partial_extra * (first_extra_rate + (full_extra_tiers * 0.5))
     return tax
 
 
