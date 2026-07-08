@@ -7667,7 +7667,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return "Traspaso procesado"
         return " ".join(part for part in [action, entity] if part).strip() or "Movimiento registrado"
 
-    def list_players(self, include_private: bool = False, sync_generated: bool = True) -> List[Dict[str, Any]]:
+    def list_players(
+        self,
+        include_private: bool = False,
+        sync_generated: bool = True,
+        include_salary_history: bool = True,
+    ) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
@@ -7894,7 +7899,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     continue
                 logs.append(tx)
 
-            if include_private and profiles:
+            if include_private and include_salary_history and profiles:
                 if self._table_exists_conn(conn, "player_salary_history"):
                     profile_ids = sorted(profiles.keys())
                     placeholders = ",".join("?" for _ in profile_ids)
@@ -7917,6 +7922,26 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         profiles[profile_id].setdefault("salary_history", []).append(item)
 
             return sorted(profiles.values(), key=lambda item: str(item.get("name") or "").lower())
+
+    def list_player_salary_history(self, profile_id: int) -> List[Dict[str, Any]]:
+        parsed_profile_id = parse_int(profile_id)
+        if parsed_profile_id is None:
+            return []
+        with self.connect() as conn:
+            if not self._table_exists_conn(conn, "player_salary_history"):
+                return []
+            cur = conn.execute(
+                """
+                SELECT
+                    id, profile_id, player_id, team_code, season_year, salary_text,
+                    salary_num, salary_type, source, created_at, updated_at
+                FROM player_salary_history
+                WHERE profile_id = ?
+                ORDER BY season_year DESC, id DESC
+                """,
+                (int(parsed_profile_id),),
+            )
+            return [row_to_dict(cur, row) for row in cur.fetchall()]
 
     def player_identity_integrity_report(self) -> Dict[str, Any]:
         checks = [
@@ -13161,14 +13186,23 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "active_contracts": int(conn.execute("SELECT COUNT(*) FROM players WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "free_agents": int(conn.execute("SELECT COUNT(*) FROM free_agents WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "dead_contracts": int(conn.execute("SELECT COUNT(*) FROM dead_contracts WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
-                "salary_history": int(conn.execute("SELECT COUNT(*) FROM player_salary_history WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "transactions": int(conn.execute("SELECT COUNT(*) FROM player_transactions WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "discord_offer_threads": int(conn.execute("SELECT COUNT(*) FROM discord_free_agent_offer_threads WHERE profile_id = ?", (profile_id,)).fetchone()[0]),
                 "free_agent_offer_requests": free_agent_request_count,
             }
+            linked_counts["salary_history"] = 0
+            if self._table_exists_conn(conn, "player_salary_history"):
+                linked_counts["salary_history"] = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM player_salary_history WHERE profile_id = ?",
+                        (profile_id,),
+                    ).fetchone()[0]
+                )
 
             conn.execute("DELETE FROM player_transactions WHERE profile_id = ?", (profile_id,))
             conn.execute("DELETE FROM discord_free_agent_offer_threads WHERE profile_id = ?", (profile_id,))
+            if self._table_exists_conn(conn, "player_salary_history"):
+                conn.execute("DELETE FROM player_salary_history WHERE profile_id = ?", (profile_id,))
             if free_agent_ids:
                 placeholders = ",".join("?" for _ in free_agent_ids)
                 conn.execute(
@@ -13183,6 +13217,77 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if cur.rowcount <= 0:
                 return {"ok": False, "error": "not_found"}
             return {"ok": True, "profile": profile, "deleted": linked_counts}
+
+    def _merge_player_salary_history_conn(
+        self,
+        conn: sqlite3.Connection,
+        source_profile_id: int,
+        target_profile_id: int,
+        timestamp: str,
+    ) -> tuple[int, int]:
+        if not self._table_exists_conn(conn, "player_salary_history"):
+            return 0, 0
+        source_rows = conn.execute(
+            """
+            SELECT
+                id, profile_id, player_id, team_code, season_year, salary_text,
+                salary_num, salary_type, source, created_at, updated_at
+            FROM player_salary_history
+            WHERE profile_id = ?
+            ORDER BY season_year, id
+            """,
+            (int(source_profile_id),),
+        ).fetchall()
+        moved = 0
+        deleted = 0
+        for row in source_rows:
+            row_id = int(row["id"])
+            season_year = parse_int(row["season_year"])
+            if season_year is None:
+                conn.execute(
+                    "UPDATE player_salary_history SET profile_id = ?, updated_at = ? WHERE id = ?",
+                    (int(target_profile_id), timestamp, row_id),
+                )
+                moved += 1
+                continue
+            existing = conn.execute(
+                """
+                SELECT
+                    id, player_id, team_code, salary_text, salary_num, salary_type, source
+                FROM player_salary_history
+                WHERE profile_id = ? AND season_year = ?
+                LIMIT 1
+                """,
+                (int(target_profile_id), int(season_year)),
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "UPDATE player_salary_history SET profile_id = ?, updated_at = ? WHERE id = ?",
+                    (int(target_profile_id), timestamp, row_id),
+                )
+                moved += 1
+                continue
+            updates: List[str] = []
+            values: List[Any] = []
+            for field in ["player_id", "team_code", "salary_text", "salary_num", "salary_type", "source"]:
+                existing_value = existing[field]
+                source_value = row[field]
+                existing_blank = existing_value is None or str(existing_value).strip() == ""
+                source_blank = source_value is None or str(source_value).strip() == ""
+                if existing_blank and not source_blank:
+                    updates.append(f"{field} = ?")
+                    values.append(source_value)
+            if updates:
+                updates.append("updated_at = ?")
+                values.append(timestamp)
+                values.append(int(existing["id"]))
+                conn.execute(
+                    f"UPDATE player_salary_history SET {', '.join(updates)} WHERE id = ?",
+                    values,
+                )
+            conn.execute("DELETE FROM player_salary_history WHERE id = ?", (row_id,))
+            deleted += 1
+        return moved, deleted
 
     def merge_player_profiles(self, source_profile_id: int, target_profile_id: int) -> Dict[str, Any]:
         source_id = parse_int(source_profile_id)
@@ -13301,26 +13406,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 (int(target_id), timestamp, int(source_id)),
             )
 
-            source_history = conn.execute(
-                "SELECT id, season_year FROM player_salary_history WHERE profile_id = ? ORDER BY season_year",
-                (int(source_id),),
-            ).fetchall()
-            moved_salary_history = 0
-            deleted_salary_history = 0
-            for row in source_history:
-                exists = conn.execute(
-                    "SELECT id FROM player_salary_history WHERE profile_id = ? AND season_year = ?",
-                    (int(target_id), int(row["season_year"])),
-                ).fetchone()
-                if exists:
-                    conn.execute("DELETE FROM player_salary_history WHERE id = ?", (int(row["id"]),))
-                    deleted_salary_history += 1
-                else:
-                    conn.execute(
-                        "UPDATE player_salary_history SET profile_id = ?, updated_at = ? WHERE id = ?",
-                        (int(target_id), timestamp, int(row["id"])),
-                    )
-                    moved_salary_history += 1
+            moved_salary_history, deleted_salary_history = self._merge_player_salary_history_conn(
+                conn,
+                int(source_id),
+                int(target_id),
+                timestamp,
+            )
 
             moved_transactions = int(
                 conn.execute(
@@ -13345,6 +13436,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
             else:
                 conn.execute(
                     "UPDATE discord_free_agent_offer_threads SET profile_id = ?, updated_at = ? WHERE profile_id = ?",
+                    (int(target_id), timestamp, int(source_id)),
+                )
+            if self._table_exists_conn(conn, "free_agent_offer_promises"):
+                conn.execute(
+                    "UPDATE free_agent_offer_promises SET profile_id = ?, updated_at = ? WHERE profile_id = ?",
                     (int(target_id), timestamp, int(source_id)),
                 )
 
@@ -21379,11 +21475,34 @@ QUALITY REQUIREMENTS
             )
             return
 
+        if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/salary-history"):
+            if not self._require_admin():
+                return
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) != 4:
+                self._json(404, {"error": "not_found"})
+                return
+            profile_id = parse_int(parts[2])
+            if profile_id is None:
+                self._json(400, {"error": "invalid_profile_id"})
+                return
+            self._json(200, {"salary_history": self.db.list_player_salary_history(int(profile_id))})
+            return
+
         if parsed.path == "/api/admin/players":
             if not self._require_admin():
                 return
             try:
-                self._json(200, {"players": self.db.list_players(include_private=True, sync_generated=False)})
+                self._json(
+                    200,
+                    {
+                        "players": self.db.list_players(
+                            include_private=True,
+                            sync_generated=False,
+                            include_salary_history=False,
+                        )
+                    },
+                )
             except Exception as err:
                 self.log_message("Player catalog load failed: %s", err)
                 self._json(500, {"error": "players_unavailable"})
@@ -23110,7 +23229,17 @@ QUALITY REQUIREMENTS
             if source_profile_id is None:
                 self._json(400, {"error": "source_profile_id_required"})
                 return
-            result = self.db.merge_player_profiles(int(source_profile_id), int(target_profile_id))
+            try:
+                result = self.db.merge_player_profiles(int(source_profile_id), int(target_profile_id))
+            except Exception as err:
+                self.log_message(
+                    "Player profile merge failed source=%s target=%s: %s",
+                    source_profile_id,
+                    target_profile_id,
+                    err,
+                )
+                self._json(500, {"error": "merge_failed"})
+                return
             if not result.get("ok"):
                 status = 409 if result.get("error") == "active_contract_conflict" else 404
                 if result.get("error") == "invalid_profile_id":

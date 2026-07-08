@@ -6487,6 +6487,12 @@ function leaguePlayerSalaryHistoryTeamOptions(selected = '') {
 
 function leaguePlayerSalaryHistoryHtml(player) {
   const profileId = player?.profile_id || '';
+  if (player?.salary_history_loading) {
+    return `<div class="muted-text">Cargando historial contractual...</div>`;
+  }
+  if (player?.salary_history_error) {
+    return `<div class="error-text">No se pudo cargar el historial contractual: ${escapeHtml(player.salary_history_error)}</div>`;
+  }
   const rows = Array.isArray(player?.salary_history) ? [...player.salary_history] : [];
   rows.sort((a, b) => Number(b.season_year || 0) - Number(a.season_year || 0));
   const rowsHtml = rows.length ? rows.map((row) => `
@@ -6849,10 +6855,30 @@ function renderLeaguePlayers() {
       });
     }
     bindLeaguePlayerProfileEditors(tr, player, profileId, contractRowId);
-    tr.querySelector('[data-league-player-expand]')?.addEventListener('click', () => {
+    tr.querySelector('[data-league-player-expand]')?.addEventListener('click', async () => {
       if (!expandKey) return;
-      if (state.ui.expandedLeaguePlayerProfiles.has(expandKey)) state.ui.expandedLeaguePlayerProfiles.delete(expandKey);
-      else state.ui.expandedLeaguePlayerProfiles.add(expandKey);
+      if (state.ui.expandedLeaguePlayerProfiles.has(expandKey)) {
+        state.ui.expandedLeaguePlayerProfiles.delete(expandKey);
+        renderLeaguePlayers();
+        return;
+      }
+      state.ui.expandedLeaguePlayerProfiles.add(expandKey);
+      if (profileId && !Array.isArray(player.salary_history)) {
+        player.salary_history_loading = true;
+        delete player.salary_history_error;
+        renderLeaguePlayers();
+        try {
+          const res = await api(`/api/player-profiles/${encodeURIComponent(profileId)}/salary-history`);
+          player.salary_history = Array.isArray(res.salary_history) ? res.salary_history : [];
+        } catch (err) {
+          player.salary_history = [];
+          player.salary_history_error = err.message || String(err);
+        } finally {
+          player.salary_history_loading = false;
+          renderLeaguePlayers();
+        }
+        return;
+      }
       renderLeaguePlayers();
     });
     const deleteBtn = tr.querySelector('[data-player-profile-delete]');
