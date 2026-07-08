@@ -6379,6 +6379,7 @@ function renderGmMinimumTargetsBoard() {
             <span class="gm-minimum-target-name">${escapeHtml(target.player_name || 'Jugador sin nombre')}</span>
             ${target.position ? `<span class="mini-chip">${escapeHtml(target.position)}</span>` : ''}
             ${target.rating ? `<span class="mini-chip">${escapeHtml(target.rating)}</span>` : ''}
+            ${target.role ? `<span class="mini-chip mini-chip--role">${escapeHtml(target.role)}</span>` : ''}
           </li>
         `).join('')}</ol>`
       : '<span class="muted-text">Sin jugadores seleccionados.</span>';

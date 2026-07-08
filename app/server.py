@@ -2300,10 +2300,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(users)").fetchall()
             }
+            gm_minimum_target_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(gm_minimum_targets)").fetchall()
+            }
             if "is_co_admin" not in user_cols:
                 conn.execute("ALTER TABLE users ADD COLUMN is_co_admin INTEGER NOT NULL DEFAULT 0")
             if "agent_name" not in user_cols:
                 conn.execute("ALTER TABLE users ADD COLUMN agent_name TEXT")
+            if "role" not in gm_minimum_target_cols:
+                conn.execute("ALTER TABLE gm_minimum_targets ADD COLUMN role TEXT")
             admin_log_add_columns = {
                 "actor_role": "TEXT",
                 "actor_user_id": "INTEGER",
@@ -12531,6 +12537,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "rating": str(row.get("rating") or "").strip(),
                     "free_agent_type": str(row.get("free_agent_type") or "").strip(),
                     "rights_team_code": normalize_team_code(row.get("rights_team_code")),
+                    "role": str(row.get("role") or "").strip(),
                 }
             )
         return {
@@ -12615,6 +12622,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
         cleaned: List[Dict[str, Any]] = []
         seen_agents = set()
         seen_ranks = set()
+        valid_roles = {
+            "Titular",
+            "Sexto hombre",
+            "Minutos de rotación (10-20)",
+            "Minutos de rotación (0-9)",
+            "Fuera de la rotación",
+        }
         for index, raw in enumerate(targets, start=1):
             if not isinstance(raw, dict):
                 raise ValueError("invalid_target")
@@ -12622,6 +12636,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if rank is None:
                 rank = index
             free_agent_id = parse_int(raw.get("free_agent_id"))
+            role = str(raw.get("role") or "").strip()
+            if role:
+                matched_role = next((option for option in valid_roles if option.casefold() == role.casefold()), None)
+                if not matched_role:
+                    raise ValueError("invalid_target_role")
+                role = matched_role
             if rank is None or rank < 1 or rank > 10:
                 raise ValueError("invalid_rank")
             if free_agent_id is None or free_agent_id <= 0:
@@ -12632,7 +12652,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 raise ValueError("duplicate_player")
             seen_ranks.add(rank)
             seen_agents.add(free_agent_id)
-            cleaned.append({"rank": rank, "free_agent_id": free_agent_id})
+            cleaned.append({"rank": rank, "free_agent_id": free_agent_id, "role": role})
 
         now = now_iso()
         with self.connect() as conn:
@@ -12659,6 +12679,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "free_agent_id": int(row["id"]),
                         "profile_id": parse_int(row["profile_id"]),
                         "player_name": str(row["name"] or "").strip(),
+                        "role": target.get("role") or "",
                     }
                 )
             conn.execute("DELETE FROM gm_minimum_targets WHERE user_id = ?", (parsed_user_id,))
@@ -12666,8 +12687,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute(
                     """
                     INSERT INTO gm_minimum_targets
-                        (user_id, rank, free_agent_id, profile_id, player_name, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (user_id, rank, free_agent_id, profile_id, player_name, role, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         parsed_user_id,
@@ -12675,6 +12696,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         target["free_agent_id"],
                         target["profile_id"],
                         target["player_name"],
+                        target["role"],
                         now,
                         now,
                     ),

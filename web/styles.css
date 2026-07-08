@@ -10910,7 +10910,7 @@ select[data-new-field="years_left"],
 .minimum-target-row {
   align-items: center;
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
+  grid-template-columns: 48px minmax(220px, 1fr) minmax(190px, 0.58fr);
   gap: 10px;
 }
 .minimum-target-rank {
@@ -10934,6 +10934,15 @@ select[data-new-field="years_left"],
   font: inherit;
   font-weight: 800;
   padding: 0 12px;
+}
+@media (max-width: 720px) {
+  .minimum-target-row {
+    align-items: stretch;
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+  .minimum-target-row select[data-minimum-target-role-rank] {
+    grid-column: 2;
+  }
 }
 .minimum-targets-disclaimer {
   background: #fff7ed;

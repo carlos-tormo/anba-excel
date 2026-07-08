@@ -5903,6 +5903,14 @@ function sortedMinimumTargetFreeAgents() {
     .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
 }
 
+const MINIMUM_TARGET_ROLE_OPTIONS = [
+  'Titular',
+  'Sexto hombre',
+  'Minutos de rotación (10-20)',
+  'Minutos de rotación (0-9)',
+  'Fuera de la rotación',
+];
+
 async function ensureFreeAgentsLoadedForMinimumTargets() {
   if (Array.isArray(state.freeAgents) && state.freeAgents.length) return;
   const data = await api('/api/free-agents');
@@ -5923,16 +5931,18 @@ function renderMinimumTargetsEditor(container, options = {}) {
   if (!container) return;
   const modal = Boolean(options.modal);
   const payload = normalizeMinimumTargets(state.gmOffice.minimumTargets || {});
-  const targetsByRank = new Map((payload.targets || []).map((target) => [Number(target.rank), Number(target.free_agent_id)]));
+  const targetsByRank = new Map((payload.targets || []).map((target) => [Number(target.rank), target]));
   const agents = sortedMinimumTargetFreeAgents();
   if (!agents.length) {
     container.innerHTML = '<div class="empty-state">No hay agentes libres disponibles para crear la lista.</div>';
     return;
   }
-  const selectedIds = new Set([...targetsByRank.values()].filter(Boolean));
+  const selectedIds = new Set([...targetsByRank.values()].map((target) => Number(target?.free_agent_id || 0)).filter(Boolean));
   const rows = Array.from({ length: 10 }, (_, index) => {
     const rank = index + 1;
-    const selectedId = targetsByRank.get(rank) || '';
+    const target = targetsByRank.get(rank) || {};
+    const selectedId = Number(target.free_agent_id || 0) || '';
+    const selectedRole = String(target.role || '').trim();
     const agentOptions = agents.map((agent) => {
       const id = Number(agent.id);
       const selected = Number(selectedId) === id;
@@ -5940,12 +5950,19 @@ function renderMinimumTargetsEditor(container, options = {}) {
       const meta = [agent.position, agent.rating ? `Rating ${agent.rating}` : '', agent.free_agent_type].filter(Boolean).join(' · ');
       return `<option value="${id}"${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}>${escapeHtml(agent.name || '')}${meta ? ` · ${escapeHtml(meta)}` : ''}</option>`;
     }).join('');
+    const roleOptions = MINIMUM_TARGET_ROLE_OPTIONS.map((role) => (
+      `<option value="${escapeHtml(role)}"${selectedRole === role ? ' selected' : ''}>${escapeHtml(role)}</option>`
+    )).join('');
     return `
       <label class="minimum-target-row">
         <span class="minimum-target-rank">#${rank}</span>
         <select data-minimum-target-rank="${rank}">
           <option value="">Sin seleccionar</option>
           ${agentOptions}
+        </select>
+        <select data-minimum-target-role-rank="${rank}" aria-label="Rol del jugador #${rank}">
+          <option value="">Rol sin definir</option>
+          ${roleOptions}
         </select>
       </label>
     `;
@@ -5964,7 +5981,7 @@ function renderMinimumTargetsEditor(container, options = {}) {
       </div>
     </div>
   `;
-  container.querySelectorAll('[data-minimum-target-rank]').forEach((select) => {
+  container.querySelectorAll('[data-minimum-target-rank], [data-minimum-target-role-rank]').forEach((select) => {
     select.addEventListener('change', () => {
       try {
         state.gmOffice.minimumTargets = normalizeMinimumTargets({
@@ -5987,12 +6004,14 @@ function collectMinimumTargets(container) {
   container.querySelectorAll('[data-minimum-target-rank]').forEach((select) => {
     const freeAgentId = Number(select.value || 0);
     const rank = Number(select.dataset.minimumTargetRank || 0);
+    const roleSelect = container.querySelector(`[data-minimum-target-role-rank="${rank}"]`);
+    const role = String(roleSelect?.value || '').trim();
     if (!freeAgentId) return;
     if (seen.has(freeAgentId)) {
       throw new Error('No puedes repetir jugadores en la lista.');
     }
     seen.add(freeAgentId);
-    targets.push({ rank, free_agent_id: freeAgentId });
+    targets.push({ rank, free_agent_id: freeAgentId, role });
   });
   return targets;
 }
