@@ -12558,7 +12558,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     u.display_name,
                     GROUP_CONCAT(t.code, ',') AS team_codes
                 FROM users u
-                LEFT JOIN user_teams ut ON ut.user_id = u.id
+                LEFT JOIN user_team_assignments ut ON ut.user_id = u.id
                 LEFT JOIN teams t ON t.id = ut.team_id
                 WHERE u.id = ?
                 GROUP BY u.id
@@ -12731,16 +12731,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     u.id,
                     u.email,
                     u.display_name,
-                    u.role,
+                    COALESCE(u.is_co_admin, 0) AS is_co_admin,
                     GROUP_CONCAT(t.code, ',') AS team_codes,
                     s.answered,
                     s.omitted,
                     s.updated_at
                 FROM users u
-                LEFT JOIN user_teams ut ON ut.user_id = u.id
+                LEFT JOIN user_team_assignments ut ON ut.user_id = u.id
                 LEFT JOIN teams t ON t.id = ut.team_id
                 LEFT JOIN gm_minimum_target_status s ON s.user_id = u.id
-                WHERE u.role IN ('gm', 'co_admin') OR s.user_id IS NOT NULL
+                WHERE COALESCE(u.is_co_admin, 0) = 1 OR ut.user_id IS NOT NULL OR s.user_id IS NOT NULL
                 GROUP BY u.id
                 ORDER BY COALESCE(t.code, ''), COALESCE(u.display_name, u.email) COLLATE NOCASE
                 """
@@ -12776,7 +12776,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "user_id": parse_int(user.get("id")),
                         "user_name": str(user.get("display_name") or user.get("email") or "").strip(),
                         "email": str(user.get("email") or "").strip(),
-                        "role": str(user.get("role") or "").strip(),
+                        "role": "co_admin" if parse_bool(user.get("is_co_admin")) else ("gm" if team_codes else "guest"),
                         "team_codes": team_codes,
                         "answered": bool(parse_int(user.get("answered"))),
                         "omitted": bool(parse_int(user.get("omitted"))),

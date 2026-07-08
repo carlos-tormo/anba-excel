@@ -5913,7 +5913,7 @@ function normalizeMinimumTargets(payload) {
   return {
     answered: Boolean(payload?.answered),
     omitted: Boolean(payload?.omitted),
-    team_code: normalizeTeamCode(payload?.team_code || state.gmOffice.teamCode || preferredFreeAgentActionTeamCode() || ''),
+    team_code: String(payload?.team_code || state.gmOffice.teamCode || preferredFreeAgentActionTeamCode() || '').trim().toUpperCase(),
     updated_at: String(payload?.updated_at || ''),
     targets: Array.isArray(payload?.targets) ? payload.targets : [],
   };
