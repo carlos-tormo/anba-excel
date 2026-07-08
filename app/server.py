@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -1113,6 +1114,7 @@ def owner_office_import_schema() -> Dict[str, List[Dict[str, str]]]:
 class LeagueDB(DatabaseMaintenanceMixin):
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._free_agents_sync_lock = threading.Lock()
 
     def _ensure_gm_free_agent_offer_requests_are_retained(self, conn: sqlite3.Connection) -> None:
         fk_rows = conn.execute("PRAGMA foreign_key_list(gm_free_agent_offer_requests)").fetchall()
@@ -15341,10 +15343,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
-            changed = self._sync_cap_hold_free_agents(conn, settings)
-            changed += self._sync_uncontracted_profile_free_agents(conn)
-            if changed:
-                conn.commit()
+            try:
+                with self._free_agents_sync_lock:
+                    changed = self._sync_cap_hold_free_agents(conn, settings)
+                    changed += self._sync_uncontracted_profile_free_agents(conn)
+                    if changed:
+                        conn.commit()
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                print(f"Free agent sync skipped: {exc}", flush=True)
+                conn.rollback()
             cur = conn.execute(
                 """
                 SELECT
@@ -18767,7 +18776,10 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("X-Request-ID", self._request_id())
         self._send_extra_headers(headers)
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            return
 
     def _bytes_response(self, status: int, data: bytes, content_type: str, headers: Optional[Dict[str, str]] = None) -> None:
         self.send_response(status)
