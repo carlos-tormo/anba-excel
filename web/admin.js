@@ -10856,6 +10856,9 @@ async function loadTrackerEconomy(season = null) {
 async function loadTracker(season = null) {
   const selected = normalizeTrackerSeason(season ?? state.ui.trackerSeason ?? defaultSeasonViewStart());
   const res = await api(`/api/tracker?season=${encodeURIComponent(selected)}`);
+  if (res?.meta?.timings) {
+    console.info('Tracker timings', res.meta.timings);
+  }
   state.trackerRows = res.tracker || [];
   state.trackerSeasons = res.seasons || [];
   state.ui.trackerSeason = Number(res.season_year || selected);

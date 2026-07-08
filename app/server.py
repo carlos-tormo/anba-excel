@@ -8227,9 +8227,18 @@ class LeagueDB(DatabaseMaintenanceMixin):
         return self.list_gm_history(code)
 
     def list_tracker(self, season_year: Optional[int] = None) -> Dict[str, Any]:
+        timings: Dict[str, float] = {}
+        started = time.perf_counter()
+
+        def mark(label: str, since: float) -> float:
+            now = time.perf_counter()
+            timings[label] = round((now - since) * 1000, 2)
+            return now
+
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            checkpoint = mark("settings_ms", started)
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < CAP_FORECAST_MIN_YEAR or current_year > CAP_FORECAST_MAX_YEAR:
                 current_year = CAP_FORECAST_MIN_YEAR
@@ -8239,6 +8248,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             tracker_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, tracker_year))
             team_cur = conn.execute("SELECT * FROM teams ORDER BY code")
             teams = [row_to_dict(team_cur, row) for row in team_cur.fetchall()]
+            checkpoint = mark("teams_ms", checkpoint)
             rows: List[Dict[str, Any]] = []
 
             draft_year_start = current_year + 1
@@ -8270,6 +8280,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
             for team in teams:
                 team_id = int(team["id"])
+                team_started = time.perf_counter()
                 players = self._select_team_players(conn, team_id)
                 asset_cur = conn.execute(
                     "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
@@ -8295,6 +8306,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         tracker_year,
                         team.get("apron_hard_cap") if tracker_year == current_year else None,
                     ),
+                    include_breakdowns=False,
                 )
                 draft_counts = draft_counts_for_tracker(assets)
                 rows.append(
@@ -8315,10 +8327,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "apron_hard_cap": summary["apron_hard_cap"],
                     }
                 )
+                timings[f"team_{team['code']}_ms"] = round((time.perf_counter() - team_started) * 1000, 2)
+            mark("rows_ms", checkpoint)
+            timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
+            timings["row_count"] = float(len(rows))
+            setattr(self, "_last_tracker_timings", timings)
             return {
                 "rows": rows,
                 "season_year": tracker_year,
                 "seasons": [current_year + idx for idx in range(6)],
+                "timings": timings,
             }
 
     def list_team_economy(self, season_year: Optional[int] = None) -> Dict[str, Any]:
@@ -10727,6 +10745,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         season_year: Optional[int] = None,
         luxury_repeater: bool = False,
         apron_hard_cap: Any = None,
+        include_breakdowns: bool = True,
     ) -> Dict[str, float]:
         current_year = parse_int(season_year) or parse_int(settings.get("current_year")) or 2025
         if current_year < 2025 or current_year > 2030:
@@ -10944,63 +10963,65 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 tier_index += 1
             return lines
 
-        cap_player_lines = cap_player_detail_lines()
-        payroll_player_lines = payroll_player_detail_lines()
-        apron_player_lines = apron_player_detail_lines()
-        dead_cap_team_salary_lines = dead_contract_detail_lines(cap_types={"normal", "draft_hold"}, exclude_field="cap")
-        dead_cap_apron_lines = dead_contract_detail_lines(cap_types={"normal"}, exclude_field="cap")
-        dead_gasto_normal_lines = dead_contract_detail_lines(cap_types={"normal"}, exclude_field="gasto")
-        dead_gasto_two_way_lines = dead_contract_detail_lines(cap_types={"two_way"}, exclude_field="gasto")
-        open_roster_lines = (
-            [
-                breakdown_amount(
-                    f"{int(open_roster_hold.get('open_spots') or 0)} plazas x minimo rookie",
-                    open_roster_hold_amount,
-                )
-            ]
-            if open_roster_hold_amount > 0
-            else []
-        )
-        salary_floor_lines = (
-            [breakdown_amount("Ajuste para llegar al Salary Floor", salary_floor_adjustment)]
-            if salary_floor_adjustment > 0
-            else []
-        )
+        balance_breakdowns: Dict[str, List[Dict[str, Any]]] = {}
+        if include_breakdowns:
+            cap_player_lines = cap_player_detail_lines()
+            payroll_player_lines = payroll_player_detail_lines()
+            apron_player_lines = apron_player_detail_lines()
+            dead_cap_team_salary_lines = dead_contract_detail_lines(cap_types={"normal", "draft_hold"}, exclude_field="cap")
+            dead_cap_apron_lines = dead_contract_detail_lines(cap_types={"normal"}, exclude_field="cap")
+            dead_gasto_normal_lines = dead_contract_detail_lines(cap_types={"normal"}, exclude_field="gasto")
+            dead_gasto_two_way_lines = dead_contract_detail_lines(cap_types={"two_way"}, exclude_field="gasto")
+            open_roster_lines = (
+                [
+                    breakdown_amount(
+                        f"{int(open_roster_hold.get('open_spots') or 0)} plazas x minimo rookie",
+                        open_roster_hold_amount,
+                    )
+                ]
+                if open_roster_hold_amount > 0
+                else []
+            )
+            salary_floor_lines = (
+                [breakdown_amount("Ajuste para llegar al Salary Floor", salary_floor_adjustment)]
+                if salary_floor_adjustment > 0
+                else []
+            )
 
-        balance_breakdowns = {
-            "cap_total": [
-                breakdown_amount("Jugadores y cap holds computables", cap_figure_players),
-                *cap_player_lines,
-                breakdown_amount("Dead contracts y rookie scale holds", dead_cap_team_salary),
-                *dead_cap_team_salary_lines,
-                breakdown_amount("Open roster spot cap holds", open_roster_hold_amount),
-                *open_roster_lines,
-                breakdown_amount("Ajuste Salary Floor", salary_floor_adjustment),
-                *salary_floor_lines,
-            ],
-            "gasto_total": [
-                breakdown_amount("Salarios de jugadores", player_payroll),
-                *payroll_player_lines,
-                breakdown_amount("Dead contracts", dead_gasto_normal),
-                *dead_gasto_normal_lines,
-                breakdown_amount("Dead contracts Two-Way", dead_gasto_two_way),
-                *dead_gasto_two_way_lines,
-            ],
-            "apron_account": [
-                breakdown_amount("Jugadores sin cap holds", apron_figure_players),
-                *apron_player_lines,
-                breakdown_amount("Dead contracts computables", dead_cap_apron),
-                *dead_cap_apron_lines,
-            ],
-            "luxury_tax": [
-                breakdown_amount("CAP TOTAL", cap_figure),
-                breakdown_amount("Luxury cap", luxury),
-                breakdown_amount("Exceso sobre luxury", luxury_overage),
-                breakdown_text("Tipo de luxury", "Reincidente" if luxury_repeater else "No reincidente"),
-                breakdown_amount("Luxury tax calculada", luxury_tax),
-                *luxury_tax_detail_lines(luxury_overage, luxury_repeater),
-            ],
-        }
+            balance_breakdowns = {
+                "cap_total": [
+                    breakdown_amount("Jugadores y cap holds computables", cap_figure_players),
+                    *cap_player_lines,
+                    breakdown_amount("Dead contracts y rookie scale holds", dead_cap_team_salary),
+                    *dead_cap_team_salary_lines,
+                    breakdown_amount("Open roster spot cap holds", open_roster_hold_amount),
+                    *open_roster_lines,
+                    breakdown_amount("Ajuste Salary Floor", salary_floor_adjustment),
+                    *salary_floor_lines,
+                ],
+                "gasto_total": [
+                    breakdown_amount("Salarios de jugadores", player_payroll),
+                    *payroll_player_lines,
+                    breakdown_amount("Dead contracts", dead_gasto_normal),
+                    *dead_gasto_normal_lines,
+                    breakdown_amount("Dead contracts Two-Way", dead_gasto_two_way),
+                    *dead_gasto_two_way_lines,
+                ],
+                "apron_account": [
+                    breakdown_amount("Jugadores sin cap holds", apron_figure_players),
+                    *apron_player_lines,
+                    breakdown_amount("Dead contracts computables", dead_cap_apron),
+                    *dead_cap_apron_lines,
+                ],
+                "luxury_tax": [
+                    breakdown_amount("CAP TOTAL", cap_figure),
+                    breakdown_amount("Luxury cap", luxury),
+                    breakdown_amount("Exceso sobre luxury", luxury_overage),
+                    breakdown_text("Tipo de luxury", "Reincidente" if luxury_repeater else "No reincidente"),
+                    breakdown_amount("Luxury tax calculada", luxury_tax),
+                    *luxury_tax_detail_lines(luxury_overage, luxury_repeater),
+                ],
+            }
 
         return {
             "player_payroll": player_payroll,
@@ -21585,21 +21606,37 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/tracker":
-            qs = parse_qs(parsed.query)
-            raw_season = (qs.get("season") or [""])[0].strip()
-            season_year = parse_int(raw_season) if raw_season else None
-            if raw_season and season_year is None:
-                self._json(400, {"error": "invalid_season_year"})
-                return
-            tracker = self.db.list_tracker(season_year)
-            self._json(
-                200,
-                {
-                    "tracker": tracker.get("rows") or [],
-                    "season_year": tracker.get("season_year"),
-                    "seasons": tracker.get("seasons") or [],
-                },
-            )
+            try:
+                started = time.perf_counter()
+                qs = parse_qs(parsed.query)
+                raw_season = (qs.get("season") or [""])[0].strip()
+                season_year = parse_int(raw_season) if raw_season else None
+                if raw_season and season_year is None:
+                    self._json(400, {"error": "invalid_season_year"})
+                    return
+                tracker = self.db.list_tracker(season_year)
+                timings = tracker.get("timings") if isinstance(tracker.get("timings"), dict) else {}
+                total_ms = round((time.perf_counter() - started) * 1000, 2)
+                timings_text = ",".join(
+                    f"{key}={value}"
+                    for key, value in timings.items()
+                    if isinstance(value, (int, float))
+                )
+                if total_ms >= 500:
+                    self.log_message("Tracker slow load %.2fms %s", total_ms, timings_text)
+                self._json(
+                    200,
+                    {
+                        "tracker": tracker.get("rows") or [],
+                        "season_year": tracker.get("season_year"),
+                        "seasons": tracker.get("seasons") or [],
+                        "meta": {"timings": timings},
+                    },
+                    headers={"X-Tracker-Timing": timings_text[:3500]},
+                )
+            except Exception as err:
+                self.log_message("Tracker load failed: %s", err)
+                self._json(500, {"error": "tracker_unavailable"})
             return
 
         if parsed.path == "/api/tracker/economy":
