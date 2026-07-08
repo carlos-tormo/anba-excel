@@ -55,6 +55,11 @@ const state = {
     depthChartSaving: false,
     depthChartStatus: '',
     depthChartStatusType: '',
+    minimumTargets: null,
+    minimumTargetsSaving: false,
+    minimumTargetsStatus: '',
+    minimumTargetsStatusType: '',
+    minimumTargetsPromptChecked: false,
     freeAgentSpendingLimit: null,
     spendingLimitStatus: '',
     spendingLimitStatusType: '',
@@ -5853,8 +5858,13 @@ function setGmOfficeDepthChartStatus(message, type = '') {
   state.gmOffice.depthChartStatusType = type || '';
 }
 
+function setGmOfficeMinimumTargetsStatus(message, type = '') {
+  state.gmOffice.minimumTargetsStatus = message || '';
+  state.gmOffice.minimumTargetsStatusType = type || '';
+}
+
 function activeGmOfficeTab() {
-  return ['overview', 'depth-chart'].includes(state.gmOffice.activeTab)
+  return ['overview', 'depth-chart', 'tools'].includes(state.gmOffice.activeTab)
     ? state.gmOffice.activeTab
     : 'overview';
 }
@@ -5868,12 +5878,14 @@ function syncGmOfficeTabs() {
   });
   document.getElementById('gmOfficeOverviewPanel')?.classList.toggle('section-hidden', active !== 'overview');
   document.getElementById('gmOfficeDepthChartPanel')?.classList.toggle('section-hidden', active !== 'depth-chart');
+  document.getElementById('gmOfficeToolsPanel')?.classList.toggle('section-hidden', active !== 'tools');
 }
 
 function setGmOfficeTab(tabId) {
-  state.gmOffice.activeTab = ['overview', 'depth-chart'].includes(tabId) ? tabId : 'overview';
+  state.gmOffice.activeTab = ['overview', 'depth-chart', 'tools'].includes(tabId) ? tabId : 'overview';
   syncGmOfficeTabs();
   if (state.gmOffice.activeTab === 'depth-chart') renderGmOfficeDepthChartEditor();
+  if (state.gmOffice.activeTab === 'tools') renderGmOfficeMinimumTargetsEditor();
 }
 
 function setupGmOfficeTabs() {
@@ -5883,6 +5895,226 @@ function setupGmOfficeTabs() {
     });
   });
   syncGmOfficeTabs();
+}
+
+function sortedMinimumTargetFreeAgents() {
+  return [...(state.freeAgents || [])]
+    .filter((agent) => Number(agent?.id) > 0)
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
+}
+
+async function ensureFreeAgentsLoadedForMinimumTargets() {
+  if (Array.isArray(state.freeAgents) && state.freeAgents.length) return;
+  const data = await api('/api/free-agents');
+  state.freeAgents = Array.isArray(data.free_agents) ? data.free_agents : [];
+}
+
+function normalizeMinimumTargets(payload) {
+  return {
+    answered: Boolean(payload?.answered),
+    omitted: Boolean(payload?.omitted),
+    team_code: normalizeTeamCode(payload?.team_code || state.gmOffice.teamCode || preferredFreeAgentActionTeamCode() || ''),
+    updated_at: String(payload?.updated_at || ''),
+    targets: Array.isArray(payload?.targets) ? payload.targets : [],
+  };
+}
+
+function renderMinimumTargetsEditor(container, options = {}) {
+  if (!container) return;
+  const modal = Boolean(options.modal);
+  const payload = normalizeMinimumTargets(state.gmOffice.minimumTargets || {});
+  const targetsByRank = new Map((payload.targets || []).map((target) => [Number(target.rank), Number(target.free_agent_id)]));
+  const agents = sortedMinimumTargetFreeAgents();
+  if (!agents.length) {
+    container.innerHTML = '<div class="empty-state">No hay agentes libres disponibles para crear la lista.</div>';
+    return;
+  }
+  const selectedIds = new Set([...targetsByRank.values()].filter(Boolean));
+  const rows = Array.from({ length: 10 }, (_, index) => {
+    const rank = index + 1;
+    const selectedId = targetsByRank.get(rank) || '';
+    const agentOptions = agents.map((agent) => {
+      const id = Number(agent.id);
+      const selected = Number(selectedId) === id;
+      const disabled = !selected && selectedIds.has(id);
+      const meta = [agent.position, agent.rating ? `Rating ${agent.rating}` : '', agent.free_agent_type].filter(Boolean).join(' · ');
+      return `<option value="${id}"${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}>${escapeHtml(agent.name || '')}${meta ? ` · ${escapeHtml(meta)}` : ''}</option>`;
+    }).join('');
+    return `
+      <label class="minimum-target-row">
+        <span class="minimum-target-rank">#${rank}</span>
+        <select data-minimum-target-rank="${rank}">
+          <option value="">Sin seleccionar</option>
+          ${agentOptions}
+        </select>
+      </label>
+    `;
+  }).join('');
+  container.innerHTML = `
+    <div class="minimum-targets-editor${modal ? ' minimum-targets-editor--modal' : ''}">
+      <div class="minimum-targets-copy">
+        <strong>Lista top 10 de mínimos</strong>
+        <span>Puedes guardar aunque no completes los 10 puestos. Un jugador no puede repetirse en la lista.</span>
+      </div>
+      <div class="minimum-targets-grid">${rows}</div>
+      <p class="minimum-targets-disclaimer">Si no rellenas esta lista será tu responsabilidad si un mínimo firma antes de preguntarte</p>
+      <div class="minimum-targets-actions">
+        <button type="button" data-minimum-target-save>${state.gmOffice.minimumTargetsSaving ? 'Guardando...' : 'Guardar'}</button>
+        <button type="button" class="secondary" data-minimum-target-omit>Omitir</button>
+      </div>
+    </div>
+  `;
+  container.querySelectorAll('[data-minimum-target-rank]').forEach((select) => {
+    select.addEventListener('change', () => {
+      try {
+        state.gmOffice.minimumTargets = normalizeMinimumTargets({
+          ...(state.gmOffice.minimumTargets || {}),
+          targets: collectMinimumTargets(container),
+        });
+      } catch {
+        // Duplicates are disabled in the selector UI; keep rendering stable if markup changes.
+      }
+      renderMinimumTargetsEditor(container, options);
+    });
+  });
+  container.querySelector('[data-minimum-target-save]')?.addEventListener('click', () => saveGmOfficeMinimumTargets({ modal }));
+  container.querySelector('[data-minimum-target-omit]')?.addEventListener('click', () => omitGmOfficeMinimumTargets({ modal }));
+}
+
+function collectMinimumTargets(container) {
+  const seen = new Set();
+  const targets = [];
+  container.querySelectorAll('[data-minimum-target-rank]').forEach((select) => {
+    const freeAgentId = Number(select.value || 0);
+    const rank = Number(select.dataset.minimumTargetRank || 0);
+    if (!freeAgentId) return;
+    if (seen.has(freeAgentId)) {
+      throw new Error('No puedes repetir jugadores en la lista.');
+    }
+    seen.add(freeAgentId);
+    targets.push({ rank, free_agent_id: freeAgentId });
+  });
+  return targets;
+}
+
+function renderGmOfficeMinimumTargetsEditor() {
+  const status = document.getElementById('gmOfficeMinimumTargetsStatus');
+  const editor = document.getElementById('gmOfficeMinimumTargetsEditor');
+  if (status) {
+    status.classList.toggle('is-error', state.gmOffice.minimumTargetsStatusType === 'error');
+    status.classList.toggle('is-success', state.gmOffice.minimumTargetsStatusType === 'success');
+    status.classList.toggle('is-pending', state.gmOffice.minimumTargetsStatusType === 'pending');
+    status.textContent = state.gmOffice.minimumTargetsStatus || '';
+  }
+  if (editor) {
+    if (!Array.isArray(state.freeAgents) || !state.freeAgents.length) {
+      editor.innerHTML = '<div class="empty-state">Cargando agentes libres...</div>';
+      ensureFreeAgentsLoadedForMinimumTargets()
+        .then(() => renderGmOfficeMinimumTargetsEditor())
+        .catch((err) => {
+          editor.innerHTML = `<div class="empty-state is-error">No se pudieron cargar los agentes libres: ${escapeHtml(err.message)}</div>`;
+        });
+      return;
+    }
+    renderMinimumTargetsEditor(editor);
+  }
+}
+
+async function saveGmOfficeMinimumTargets(options = {}) {
+  const modal = Boolean(options.modal);
+  const container = modal
+    ? document.querySelector('#minimumTargetsPromptModal .minimum-targets-editor')
+    : document.getElementById('gmOfficeMinimumTargetsEditor');
+  const teamCode = state.gmOffice.teamCode || preferredFreeAgentActionTeamCode();
+  if (!container || !teamCode || state.gmOffice.minimumTargetsSaving) return;
+  let targets = [];
+  try {
+    targets = collectMinimumTargets(container);
+  } catch (err) {
+    setGmOfficeMinimumTargetsStatus(err.message, 'error');
+    renderGmOfficeMinimumTargetsEditor();
+    return;
+  }
+  state.gmOffice.minimumTargetsSaving = true;
+  setGmOfficeMinimumTargetsStatus('Guardando lista...', 'pending');
+  renderGmOfficeMinimumTargetsEditor();
+  try {
+    const data = await api('/api/gm-office/minimum-targets', {
+      method: 'POST',
+      body: JSON.stringify({ team_code: teamCode, targets }),
+    });
+    state.gmOffice.minimumTargets = normalizeMinimumTargets(data.minimum_targets || {});
+    setGmOfficeMinimumTargetsStatus('Lista guardada.', 'success');
+    if (modal) closeMinimumTargetsPrompt();
+  } catch (err) {
+    setGmOfficeMinimumTargetsStatus(`No se pudo guardar: ${err.message}`, 'error');
+    if (modal) renderMinimumTargetsPrompt();
+  } finally {
+    state.gmOffice.minimumTargetsSaving = false;
+    renderGmOfficeMinimumTargetsEditor();
+  }
+}
+
+async function omitGmOfficeMinimumTargets(options = {}) {
+  const modal = Boolean(options.modal);
+  const teamCode = state.gmOffice.teamCode || preferredFreeAgentActionTeamCode();
+  if (!teamCode || state.gmOffice.minimumTargetsSaving) return;
+  state.gmOffice.minimumTargetsSaving = true;
+  setGmOfficeMinimumTargetsStatus('Guardando omisión...', 'pending');
+  try {
+    const data = await api('/api/gm-office/minimum-targets/omit', {
+      method: 'POST',
+      body: JSON.stringify({ team_code: teamCode }),
+    });
+    state.gmOffice.minimumTargets = normalizeMinimumTargets(data.minimum_targets || {});
+    setGmOfficeMinimumTargetsStatus('Omisión guardada.', 'success');
+    if (modal) closeMinimumTargetsPrompt();
+  } catch (err) {
+    setGmOfficeMinimumTargetsStatus(`No se pudo omitir: ${err.message}`, 'error');
+    if (modal) renderMinimumTargetsPrompt();
+  } finally {
+    state.gmOffice.minimumTargetsSaving = false;
+    renderGmOfficeMinimumTargetsEditor();
+  }
+}
+
+function closeMinimumTargetsPrompt() {
+  document.getElementById('minimumTargetsPromptModal')?.remove();
+}
+
+function renderMinimumTargetsPrompt() {
+  closeMinimumTargetsPrompt();
+  const modal = document.createElement('div');
+  modal.id = 'minimumTargetsPromptModal';
+  modal.className = 'modal-backdrop minimum-targets-modal-backdrop';
+  modal.innerHTML = `
+    <div class="modal-card minimum-targets-modal" role="dialog" aria-modal="true" aria-labelledby="minimumTargetsPromptTitle">
+      <h2 id="minimumTargetsPromptTitle">Prioridades para contratos mínimos</h2>
+      <p class="muted-text">Ordena hasta 10 jugadores a los que te gustaría firmar por el mínimo. Puedes guardar en cualquier momento, aunque dejes huecos vacíos.</p>
+      <div class="minimum-targets-modal-body"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  renderMinimumTargetsEditor(modal.querySelector('.minimum-targets-modal-body'), { modal: true });
+}
+
+async function maybeShowMinimumTargetsPrompt() {
+  if (state.gmOffice.minimumTargetsPromptChecked) return;
+  if (String(state.auth?.role || '').trim().toLowerCase() !== 'gm') return;
+  const teamCode = preferredFreeAgentActionTeamCode();
+  if (!teamCode) return;
+  state.gmOffice.minimumTargetsPromptChecked = true;
+  try {
+    const data = await api(`/api/gm-office/minimum-targets?team_code=${encodeURIComponent(teamCode)}`);
+    state.gmOffice.minimumTargets = normalizeMinimumTargets(data || {});
+    state.gmOffice.teamCode = state.gmOffice.teamCode || teamCode;
+    if (!state.gmOffice.minimumTargets.answered) {
+      await ensureFreeAgentsLoadedForMinimumTargets();
+      renderMinimumTargetsPrompt();
+    }
+  } catch (err) {
+    console.warn('Minimum targets prompt unavailable:', err);
+  }
 }
 
 function normalizeDepthChartDraft(chart) {
@@ -6167,6 +6399,7 @@ function renderGmOffice() {
     spendingStatus.textContent = state.gmOffice.spendingLimitStatus || '';
   }
   renderGmOfficeDepthChartEditor();
+  renderGmOfficeMinimumTargetsEditor();
 
   if (state.gmOffice.loading) {
     offersBody.innerHTML = '<tr><td colspan="5">Cargando...</td></tr>';
@@ -6256,7 +6489,9 @@ async function fetchGmOffice() {
     setGmOfficeDepthChartStatus('', '');
     state.gmOffice.freeAgentSpendingLimit = data.free_agent_spending_limit || null;
     state.gmOffice.spendingLimitLastSavedText = normalizeMillionsText(state.gmOffice.freeAgentSpendingLimit?.amount_millions ?? 0);
+    state.gmOffice.minimumTargets = normalizeMinimumTargets(data.minimum_targets || {});
     setGmOfficeSpendingStatus('', '');
+    setGmOfficeMinimumTargetsStatus('', '');
     state.gmOffice.error = '';
   } catch (err) {
     state.gmOffice.offers = [];
@@ -6266,6 +6501,7 @@ async function fetchGmOffice() {
     state.gmOffice.depthChartDraft = null;
     state.gmOffice.depthChartDraftTeam = '';
     state.gmOffice.freeAgentSpendingLimit = null;
+    state.gmOffice.minimumTargets = null;
     state.gmOffice.error = err.message || 'No se pudo cargar Despachos.';
   } finally {
     state.gmOffice.loading = false;
@@ -10308,6 +10544,7 @@ async function init() {
   } else {
     await loadTracker();
   }
+  await maybeShowMinimumTargetsPrompt();
 }
 
 init().catch((err) => {

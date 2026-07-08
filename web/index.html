@@ -377,6 +377,10 @@
           <span class="team-tab-icon" aria-hidden="true">⇄</span>
           <span>Depth Chart</span>
         </button>
+        <button type="button" class="team-tab-btn" data-gm-office-tab="tools" role="tab" aria-selected="false">
+          <span class="team-tab-icon" aria-hidden="true">⚙</span>
+          <span>Herramientas</span>
+        </button>
       </nav>
       <div id="gmOfficeOverviewPanel" class="gm-office-tab-panel">
         <section class="gm-office-panel gm-office-spending-panel">
@@ -442,6 +446,18 @@
           </div>
           <div id="gmOfficeDepthChartStatus" class="gm-office-status" aria-live="polite"></div>
           <div id="gmOfficeDepthChartEditor"></div>
+        </section>
+      </div>
+      <div id="gmOfficeToolsPanel" class="gm-office-tab-panel section-hidden">
+        <section class="gm-office-panel">
+          <div class="section-head compact">
+            <div>
+              <h3>Prioridades de mínimos</h3>
+              <div class="section-subtitle">Elige hasta 10 jugadores que aceptarías firmar por el mínimo. Puedes guardar aunque no completes la lista.</div>
+            </div>
+          </div>
+          <div id="gmOfficeMinimumTargetsStatus" class="gm-office-status" aria-live="polite"></div>
+          <div id="gmOfficeMinimumTargetsEditor"></div>
         </section>
       </div>
     </section>

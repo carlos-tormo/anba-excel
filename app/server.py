@@ -1556,6 +1556,38 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS gm_minimum_target_status (
+                    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    team_code TEXT REFERENCES teams(code) ON DELETE SET NULL,
+                    answered INTEGER NOT NULL DEFAULT 0,
+                    omitted INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS gm_minimum_targets (
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    rank INTEGER NOT NULL CHECK(rank >= 1 AND rank <= 10),
+                    free_agent_id INTEGER REFERENCES free_agents(id) ON DELETE SET NULL,
+                    profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL,
+                    player_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, rank)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_gm_minimum_targets_free_agent
+                ON gm_minimum_targets (free_agent_id)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS team_depth_charts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -12475,6 +12507,289 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             return [self._gm_spending_limit_payload(row) for row in cur.fetchall()]
 
+    def _minimum_target_payload(
+        self,
+        status_row: Optional[sqlite3.Row],
+        target_rows: Iterable[sqlite3.Row],
+        user: Optional[Dict[str, Any]] = None,
+        team_code: Any = None,
+    ) -> Dict[str, Any]:
+        status = dict(status_row) if status_row is not None else {}
+        user = user or {}
+        normalized_team = normalize_team_code(status.get("team_code") or team_code)
+        targets = []
+        for raw_row in target_rows:
+            row = dict(raw_row)
+            player_name = str(row.get("player_name") or row.get("free_agent_name") or "").strip()
+            targets.append(
+                {
+                    "rank": parse_int(row.get("rank")),
+                    "free_agent_id": parse_int(row.get("free_agent_id")),
+                    "profile_id": parse_int(row.get("profile_id")),
+                    "player_name": player_name,
+                    "position": str(row.get("position") or "").strip(),
+                    "rating": str(row.get("rating") or "").strip(),
+                    "free_agent_type": str(row.get("free_agent_type") or "").strip(),
+                    "rights_team_code": normalize_team_code(row.get("rights_team_code")),
+                }
+            )
+        return {
+            "user_id": parse_int(user.get("id") or status.get("user_id")),
+            "user_name": str(user.get("display_name") or user.get("name") or "").strip(),
+            "email": str(user.get("email") or "").strip(),
+            "team_code": normalized_team,
+            "answered": bool(parse_int(status.get("answered"))),
+            "omitted": bool(parse_int(status.get("omitted"))),
+            "updated_at": str(status.get("updated_at") or "").strip(),
+            "targets": targets,
+        }
+
+    def get_gm_minimum_targets(self, user_id: Any, team_code: Any = None) -> Dict[str, Any]:
+        parsed_user_id = parse_int(user_id)
+        if parsed_user_id is None or parsed_user_id <= 0:
+            raise ValueError("user_required")
+        normalized_team = normalize_team_code(team_code)
+        with self.connect() as conn:
+            user_cur = conn.execute(
+                """
+                SELECT
+                    u.id,
+                    u.email,
+                    u.display_name,
+                    GROUP_CONCAT(t.code, ',') AS team_codes
+                FROM users u
+                LEFT JOIN user_teams ut ON ut.user_id = u.id
+                LEFT JOIN teams t ON t.id = ut.team_id
+                WHERE u.id = ?
+                GROUP BY u.id
+                """,
+                (parsed_user_id,),
+            )
+            user_row = user_cur.fetchone()
+            if not user_row:
+                raise ValueError("user_not_found")
+            user = row_to_dict(user_cur, user_row)
+            if not normalized_team:
+                team_codes = [normalize_team_code(code) for code in str(user.get("team_codes") or "").split(",") if normalize_team_code(code)]
+                if len(team_codes) == 1:
+                    normalized_team = team_codes[0]
+            status_row = conn.execute(
+                "SELECT * FROM gm_minimum_target_status WHERE user_id = ?",
+                (parsed_user_id,),
+            ).fetchone()
+            target_cur = conn.execute(
+                """
+                SELECT
+                    mt.*,
+                    f.name AS free_agent_name,
+                    f.position,
+                    f.rating,
+                    f.free_agent_type,
+                    f.rights_team_code
+                FROM gm_minimum_targets mt
+                LEFT JOIN free_agents f ON f.id = mt.free_agent_id
+                WHERE mt.user_id = ?
+                ORDER BY mt.rank
+                """,
+                (parsed_user_id,),
+            )
+            return self._minimum_target_payload(status_row, target_cur.fetchall(), user, normalized_team)
+
+    def set_gm_minimum_targets(
+        self,
+        user_id: Any,
+        team_code: Any,
+        targets: Any,
+    ) -> Dict[str, Any]:
+        parsed_user_id = parse_int(user_id)
+        if parsed_user_id is None or parsed_user_id <= 0:
+            raise ValueError("user_required")
+        normalized_team = normalize_team_code(team_code)
+        if targets is None:
+            targets = []
+        if not isinstance(targets, list):
+            raise ValueError("invalid_targets")
+        if len(targets) > 10:
+            raise ValueError("too_many_targets")
+
+        cleaned: List[Dict[str, Any]] = []
+        seen_agents = set()
+        seen_ranks = set()
+        for index, raw in enumerate(targets, start=1):
+            if not isinstance(raw, dict):
+                raise ValueError("invalid_target")
+            rank = parse_int(raw.get("rank"))
+            if rank is None:
+                rank = index
+            free_agent_id = parse_int(raw.get("free_agent_id"))
+            if rank is None or rank < 1 or rank > 10:
+                raise ValueError("invalid_rank")
+            if free_agent_id is None or free_agent_id <= 0:
+                continue
+            if rank in seen_ranks:
+                raise ValueError("duplicate_rank")
+            if free_agent_id in seen_agents:
+                raise ValueError("duplicate_player")
+            seen_ranks.add(rank)
+            seen_agents.add(free_agent_id)
+            cleaned.append({"rank": rank, "free_agent_id": free_agent_id})
+
+        now = now_iso()
+        with self.connect() as conn:
+            if normalized_team:
+                team = conn.execute("SELECT code FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+                if not team:
+                    raise ValueError("team_not_found")
+            resolved: List[Dict[str, Any]] = []
+            for target in cleaned:
+                cur = conn.execute(
+                    """
+                    SELECT id, profile_id, name
+                    FROM free_agents
+                    WHERE id = ?
+                    """,
+                    (target["free_agent_id"],),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError("free_agent_not_found")
+                resolved.append(
+                    {
+                        "rank": target["rank"],
+                        "free_agent_id": int(row["id"]),
+                        "profile_id": parse_int(row["profile_id"]),
+                        "player_name": str(row["name"] or "").strip(),
+                    }
+                )
+            conn.execute("DELETE FROM gm_minimum_targets WHERE user_id = ?", (parsed_user_id,))
+            for target in resolved:
+                conn.execute(
+                    """
+                    INSERT INTO gm_minimum_targets
+                        (user_id, rank, free_agent_id, profile_id, player_name, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        parsed_user_id,
+                        target["rank"],
+                        target["free_agent_id"],
+                        target["profile_id"],
+                        target["player_name"],
+                        now,
+                        now,
+                    ),
+                )
+            conn.execute(
+                """
+                INSERT INTO gm_minimum_target_status
+                    (user_id, team_code, answered, omitted, created_at, updated_at)
+                VALUES (?, ?, 1, 0, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    team_code = excluded.team_code,
+                    answered = 1,
+                    omitted = 0,
+                    updated_at = excluded.updated_at
+                """,
+                (parsed_user_id, normalized_team, now, now),
+            )
+            conn.commit()
+        return self.get_gm_minimum_targets(parsed_user_id, normalized_team)
+
+    def omit_gm_minimum_targets(self, user_id: Any, team_code: Any = None) -> Dict[str, Any]:
+        parsed_user_id = parse_int(user_id)
+        if parsed_user_id is None or parsed_user_id <= 0:
+            raise ValueError("user_required")
+        normalized_team = normalize_team_code(team_code)
+        now = now_iso()
+        with self.connect() as conn:
+            if normalized_team:
+                team = conn.execute("SELECT code FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+                if not team:
+                    raise ValueError("team_not_found")
+            conn.execute("DELETE FROM gm_minimum_targets WHERE user_id = ?", (parsed_user_id,))
+            conn.execute(
+                """
+                INSERT INTO gm_minimum_target_status
+                    (user_id, team_code, answered, omitted, created_at, updated_at)
+                VALUES (?, ?, 1, 1, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    team_code = excluded.team_code,
+                    answered = 1,
+                    omitted = 1,
+                    updated_at = excluded.updated_at
+                """,
+                (parsed_user_id, normalized_team, now, now),
+            )
+            conn.commit()
+        return self.get_gm_minimum_targets(parsed_user_id, normalized_team)
+
+    def list_admin_gm_minimum_targets(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    u.id,
+                    u.email,
+                    u.display_name,
+                    u.role,
+                    GROUP_CONCAT(t.code, ',') AS team_codes,
+                    s.answered,
+                    s.omitted,
+                    s.updated_at
+                FROM users u
+                LEFT JOIN user_teams ut ON ut.user_id = u.id
+                LEFT JOIN teams t ON t.id = ut.team_id
+                LEFT JOIN gm_minimum_target_status s ON s.user_id = u.id
+                WHERE u.role IN ('gm', 'co_admin') OR s.user_id IS NOT NULL
+                GROUP BY u.id
+                ORDER BY COALESCE(t.code, ''), COALESCE(u.display_name, u.email) COLLATE NOCASE
+                """
+            )
+            users = [row_to_dict(cur, row) for row in cur.fetchall()]
+            if not users:
+                return []
+            user_ids = [int(user["id"]) for user in users]
+            placeholders = ",".join("?" for _ in user_ids)
+            target_cur = conn.execute(
+                f"""
+                SELECT
+                    mt.*,
+                    f.position,
+                    f.rating,
+                    f.free_agent_type,
+                    f.rights_team_code
+                FROM gm_minimum_targets mt
+                LEFT JOIN free_agents f ON f.id = mt.free_agent_id
+                WHERE mt.user_id IN ({placeholders})
+                ORDER BY mt.user_id, mt.rank
+                """,
+                tuple(user_ids),
+            )
+            grouped_targets: Dict[int, List[sqlite3.Row]] = {}
+            for row in target_cur.fetchall():
+                grouped_targets.setdefault(int(row["user_id"]), []).append(row)
+            lists = []
+            for user in users:
+                team_codes = [normalize_team_code(code) for code in str(user.get("team_codes") or "").split(",") if normalize_team_code(code)]
+                lists.append(
+                    {
+                        "user_id": parse_int(user.get("id")),
+                        "user_name": str(user.get("display_name") or user.get("email") or "").strip(),
+                        "email": str(user.get("email") or "").strip(),
+                        "role": str(user.get("role") or "").strip(),
+                        "team_codes": team_codes,
+                        "answered": bool(parse_int(user.get("answered"))),
+                        "omitted": bool(parse_int(user.get("omitted"))),
+                        "updated_at": str(user.get("updated_at") or "").strip(),
+                        "targets": self._minimum_target_payload(
+                            None,
+                            grouped_targets.get(int(user["id"]), []),
+                            {"id": user.get("id"), "email": user.get("email"), "display_name": user.get("display_name")},
+                        )["targets"],
+                    }
+                )
+            return lists
+
     @staticmethod
     def _depth_chart_player_payload(player: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -12654,6 +12969,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             ).fetchone()
             depth_chart = self._team_depth_chart_payload(conn, int(team["id"]))
             depth_chart_players = self._team_depth_chart_players(conn, int(team["id"]))
+            # Filled by the route when a current user is known.
+            minimum_targets = None
         return {
             "team_code": normalized_team,
             "team_name": str(team["name"] or normalized_team),
@@ -12665,6 +12982,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             ),
             "depth_chart": depth_chart,
             "depth_chart_players": depth_chart_players,
+            "minimum_targets": minimum_targets,
         }
 
     def cancel_gm_free_agent_offer_request(
@@ -21877,6 +22195,12 @@ QUALITY REQUIREMENTS
                 self._json(500, {"error": "players_unavailable"})
             return
 
+        if parsed.path == "/api/admin/gm-minimum-targets":
+            if not self._require_admin():
+                return
+            self._json(200, {"lists": self.db.list_admin_gm_minimum_targets()})
+            return
+
         if parsed.path == "/api/players":
             try:
                 started = time.perf_counter()
@@ -22012,10 +22336,37 @@ QUALITY REQUIREMENTS
                 self._json(403, {"error": "team_access_required"})
                 return
             try:
-                self._json(200, self.db.list_gm_office(team_code))
+                data = self.db.list_gm_office(team_code)
+                session = self._current_session() or {}
+                if parse_int(session.get("user_id")):
+                    data["minimum_targets"] = self.db.get_gm_minimum_targets(session.get("user_id"), team_code)
+                self._json(200, data)
             except ValueError as err:
                 message = str(err) or "invalid_gm_office"
                 self._json(404 if message == "team_not_found" else 400, {"error": message})
+            return
+
+        if parsed.path == "/api/gm-office/minimum-targets":
+            if not self._require_authenticated():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            qs = parse_qs(parsed.query)
+            team_code = normalize_team_code((qs.get("team_code") or [""])[0])
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if team_code and not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            session = self._current_session() or {}
+            try:
+                self._json(200, self.db.get_gm_minimum_targets(session.get("user_id"), team_code))
+            except ValueError as err:
+                message = str(err) or "invalid_minimum_targets"
+                self._json(404 if message in {"team_not_found", "user_not_found"} else 400, {"error": message})
             return
 
         if parsed.path == "/api/offseason-exceptions/preview":
@@ -22353,6 +22704,36 @@ QUALITY REQUIREMENTS
                 self._json(status, {"error": message})
                 return
             self._json(200, {"ok": True, "free_agent_spending_limit": spending_limit})
+            return
+
+        if parsed.path in {"/api/gm-office/minimum-targets", "/api/gm-office/minimum-targets/omit"}:
+            if not self._require_authenticated():
+                return
+            if not self._require_csrf():
+                return
+            if not (self._is_gm() or self._is_admin()):
+                self._json(403, {"error": "gm_auth_required"})
+                return
+            session = self._current_session() or {}
+            team_code = normalize_team_code(payload.get("team_code"))
+            if not team_code:
+                team_codes = self._current_session_team_codes()
+                if len(team_codes) == 1:
+                    team_code = team_codes[0]
+            if team_code and not self._can_manage_team(team_code):
+                self._json(403, {"error": "team_access_required"})
+                return
+            try:
+                if parsed.path.endswith("/omit"):
+                    minimum_targets = self.db.omit_gm_minimum_targets(session.get("user_id"), team_code)
+                else:
+                    minimum_targets = self.db.set_gm_minimum_targets(session.get("user_id"), team_code, payload.get("targets") or [])
+            except ValueError as err:
+                message = str(err) or "invalid_minimum_targets"
+                status = 404 if message in {"team_not_found", "user_not_found", "free_agent_not_found"} else 400
+                self._json(status, {"error": message})
+                return
+            self._json(200, {"ok": True, "minimum_targets": minimum_targets})
             return
 
         if parsed.path == "/api/gm-office/depth-chart":

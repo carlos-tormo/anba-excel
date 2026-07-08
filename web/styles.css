@@ -1836,6 +1836,51 @@ h1 {
   align-self: center;
   font-weight: 800;
 }
+.gm-minimum-targets-board {
+  display: grid;
+  gap: 12px;
+}
+.gm-minimum-targets-table {
+  border-collapse: collapse;
+  min-width: 760px;
+  width: 100%;
+}
+.gm-minimum-targets-table th,
+.gm-minimum-targets-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.gm-minimum-targets-table th {
+  background: #eef6f5;
+  color: #334155;
+  font-size: 0.86rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.gm-minimum-targets-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+}
+.gm-minimum-target-name {
+  font-weight: 800;
+}
+.mini-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1;
+  margin: 2px 3px 2px 0;
+  padding: 4px 8px;
+}
 .offseason-exceptions-preview {
   margin-top: 12px;
 }
@@ -10843,6 +10888,90 @@ select[data-new-field="years_left"],
 
 .wallet-status.is-error {
   color: #991b1b;
+}
+
+.minimum-targets-editor {
+  display: grid;
+  gap: 16px;
+}
+.minimum-targets-copy {
+  display: grid;
+  gap: 4px;
+  color: #334155;
+}
+.minimum-targets-copy strong {
+  color: #0f172a;
+  font-size: 1.05rem;
+}
+.minimum-targets-grid {
+  display: grid;
+  gap: 10px;
+}
+.minimum-target-row {
+  align-items: center;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 10px;
+}
+.minimum-target-rank {
+  align-items: center;
+  background: #e0f2fe;
+  border-radius: 999px;
+  color: #0369a1;
+  display: inline-flex;
+  font-weight: 900;
+  height: 34px;
+  justify-content: center;
+  width: 44px;
+}
+.minimum-target-row select {
+  min-height: 42px;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  color: #0f172a;
+  font: inherit;
+  font-weight: 800;
+  padding: 0 12px;
+}
+.minimum-targets-disclaimer {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  color: #9a3412;
+  font-weight: 800;
+  margin: 0;
+  padding: 12px;
+}
+.minimum-targets-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.minimum-targets-actions button.secondary {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+}
+.minimum-targets-modal {
+  max-height: min(88vh, 820px);
+  max-width: 760px;
+  overflow: auto;
+}
+.minimum-targets-modal h2 {
+  margin-top: 0;
+}
+.gm-office-status.is-success {
+  color: #15803d;
+}
+.gm-office-status.is-error {
+  color: #b91c1c;
+}
+.gm-office-status.is-pending {
+  color: #0369a1;
 }
 
 .wallet-clients-panel,

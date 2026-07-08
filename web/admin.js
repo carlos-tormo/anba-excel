@@ -33,6 +33,7 @@ const state = {
   offseasonExceptionChoices: {},
   adminUsers: [],
   gmOptionRequests: [],
+  gmMinimumTargets: [],
   coadminVotes: [],
   leaguePlayers: [],
   freeAgents: [],
@@ -4761,6 +4762,7 @@ async function openAdminSection(mode = 'gm-option-requests') {
   if (normalizedMode === 'admin-tools') {
     setPageHeading('ANBA Admin Tools', '');
     renderOffseasonExceptionControls();
+    await loadGmMinimumTargets();
     return;
   }
   if (normalizedMode === 'admin-settings') {
@@ -6351,6 +6353,78 @@ async function bulkAddFreeAgentsFromTool() {
     if (state.ui.viewMode === 'free-agents') renderFreeAgents();
   } catch (err) {
     if (resultEl) resultEl.textContent = `Error: ${err.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderGmMinimumTargetsBoard() {
+  const board = document.getElementById('gmMinimumTargetsBoard');
+  if (!board) return;
+  const lists = Array.isArray(state.gmMinimumTargets) ? state.gmMinimumTargets : [];
+  if (!lists.length) {
+    board.innerHTML = '<div class="muted-text">No hay GMs o co-admins con listas registradas.</div>';
+    return;
+  }
+  const rows = lists.map((item) => {
+    const targets = Array.isArray(item.targets) ? item.targets : [];
+    const status = item.omitted
+      ? '<span class="status-pill status-warning">Omitida</span>'
+      : item.answered
+        ? '<span class="status-pill status-success">Respondida</span>'
+        : '<span class="status-pill">Pendiente</span>';
+    const targetList = targets.length
+      ? `<ol class="gm-minimum-targets-list">${targets.map((target) => `
+          <li>
+            <span class="gm-minimum-target-name">${escapeHtml(target.player_name || 'Jugador sin nombre')}</span>
+            ${target.position ? `<span class="mini-chip">${escapeHtml(target.position)}</span>` : ''}
+            ${target.rating ? `<span class="mini-chip">${escapeHtml(target.rating)}</span>` : ''}
+          </li>
+        `).join('')}</ol>`
+      : '<span class="muted-text">Sin jugadores seleccionados.</span>';
+    return `
+      <tr>
+        <td>
+          <strong>${escapeHtml(item.user_name || item.email || 'Usuario')}</strong>
+          <div class="muted-text">${escapeHtml(item.email || '')}</div>
+        </td>
+        <td>${(item.team_codes || []).map((code) => `<span class="mini-chip">${escapeHtml(code)}</span>`).join(' ') || '<span class="muted-text">Sin equipo</span>'}</td>
+        <td>${status}<div class="muted-text">${escapeHtml(item.updated_at || '')}</div></td>
+        <td>${targetList}</td>
+      </tr>
+    `;
+  }).join('');
+  board.innerHTML = `
+    <div class="table-scroll">
+      <table class="gm-minimum-targets-table">
+        <thead>
+          <tr>
+            <th>GM</th>
+            <th>Equipo</th>
+            <th>Estado</th>
+            <th>Top mínimos</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadGmMinimumTargets() {
+  const statusEl = document.getElementById('gmMinimumTargetsStatus');
+  const button = document.getElementById('refreshGmMinimumTargetsBtn');
+  if (button) button.disabled = true;
+  if (statusEl) statusEl.textContent = 'Cargando listas...';
+  try {
+    const result = await api('/api/admin/gm-minimum-targets');
+    state.gmMinimumTargets = result.lists || [];
+    renderGmMinimumTargetsBoard();
+    if (statusEl) statusEl.textContent = `${state.gmMinimumTargets.length} lista(s) cargadas.`;
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `Error: ${err.message}`;
+    const board = document.getElementById('gmMinimumTargetsBoard');
+    if (board) board.innerHTML = '<div class="muted-text">No se pudieron cargar las listas.</div>';
   } finally {
     if (button) button.disabled = false;
   }
@@ -13000,6 +13074,9 @@ async function init() {
   });
   document.getElementById('launchArticleBtn')?.addEventListener('click', async () => {
     await launchPressArticleFromTool();
+  });
+  document.getElementById('refreshGmMinimumTargetsBtn')?.addEventListener('click', async () => {
+    await loadGmMinimumTargets();
   });
   document.getElementById('closeSignFreeAgentModalBtn').addEventListener('click', () => {
     closeSignFreeAgentModal();
