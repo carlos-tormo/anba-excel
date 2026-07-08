@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
@@ -7672,15 +7673,27 @@ class LeagueDB(DatabaseMaintenanceMixin):
         include_private: bool = False,
         sync_generated: bool = True,
         include_salary_history: bool = True,
+        collect_timings: bool = False,
     ) -> List[Dict[str, Any]]:
+        timings: Dict[str, float] = {}
+        started = time.perf_counter()
+
+        def mark(label: str, since: float) -> float:
+            now = time.perf_counter()
+            if collect_timings:
+                timings[label] = round((now - since) * 1000, 2)
+            return now
+
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            checkpoint = mark("settings_ms", started)
             if sync_generated:
                 changed = self._sync_cap_hold_free_agents(conn, settings)
                 changed += self._sync_uncontracted_profile_free_agents(conn)
                 if changed:
                     conn.commit()
+            checkpoint = mark("sync_ms", checkpoint)
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < 2025 or current_year > 2030:
                 current_year = 2025
@@ -7726,6 +7739,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 }
                 if include_private:
                     profiles[profile_id]["happiness"] = happiness
+            checkpoint = mark("profiles_ms", checkpoint)
 
             active_cur = conn.execute(
                 f"""
@@ -7790,6 +7804,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "active_contract_summary": " · ".join(part for part in contract_parts if part) or "Sí",
                     }
                 )
+            checkpoint = mark("active_contracts_ms", checkpoint)
 
             free_agent_cur = conn.execute(
                 """
@@ -7835,6 +7850,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         "years_left": profiles[profile_id].get("years_left") if profiles[profile_id].get("years_left") is not None else item.get("years_left"),
                     }
                 )
+            checkpoint = mark("free_agents_ms", checkpoint)
 
             dead_cur = conn.execute(
                 """
@@ -7881,11 +7897,21 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             "team_name": item.get("team_name"),
                         }
                     )
+            checkpoint = mark("dead_contracts_ms", checkpoint)
 
             tx_cur = conn.execute(
                 """
                 SELECT id, profile_id, created_at, action, team_code, from_team_code, to_team_code, summary, details_json
-                FROM player_transactions
+                FROM (
+                    SELECT
+                        id, profile_id, created_at, action, team_code, from_team_code, to_team_code, summary, details_json,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY profile_id
+                            ORDER BY created_at DESC, id DESC
+                        ) AS rn
+                    FROM player_transactions
+                )
+                WHERE rn <= 10
                 ORDER BY profile_id, created_at DESC, id DESC
                 """
             )
@@ -7898,6 +7924,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 if len(logs) >= 10:
                     continue
                 logs.append(tx)
+            checkpoint = mark("transactions_ms", checkpoint)
 
             if include_private and include_salary_history and profiles:
                 if self._table_exists_conn(conn, "player_salary_history"):
@@ -7920,8 +7947,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         if profile_id is None or profile_id not in profiles:
                             continue
                         profiles[profile_id].setdefault("salary_history", []).append(item)
+            checkpoint = mark("salary_history_ms", checkpoint)
 
-            return sorted(profiles.values(), key=lambda item: str(item.get("name") or "").lower())
+            rows = sorted(profiles.values(), key=lambda item: str(item.get("name") or "").lower())
+            mark("sort_ms", checkpoint)
+            if collect_timings:
+                timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                timings["row_count"] = float(len(rows))
+                setattr(self, "_last_list_players_timings", timings)
+            return rows
 
     def list_player_salary_history(self, profile_id: int) -> List[Dict[str, Any]]:
         parsed_profile_id = parse_int(profile_id)
@@ -21493,14 +21527,27 @@ QUALITY REQUIREMENTS
             if not self._require_admin():
                 return
             try:
+                started = time.perf_counter()
+                players = self.db.list_players(
+                    include_private=True,
+                    sync_generated=False,
+                    include_salary_history=False,
+                    collect_timings=True,
+                )
+                timings = getattr(self.db, "_last_list_players_timings", {}) or {}
+                total_ms = round((time.perf_counter() - started) * 1000, 2)
+                timings_text = ",".join(
+                    f"{key}={value}"
+                    for key, value in timings.items()
+                    if isinstance(value, (int, float))
+                )
+                if total_ms >= 500:
+                    self.log_message("Player catalog slow load %.2fms %s", total_ms, timings_text)
                 self._json(
                     200,
-                    {
-                        "players": self.db.list_players(
-                            include_private=True,
-                            sync_generated=False,
-                            include_salary_history=False,
-                        )
+                    {"players": players, "meta": {"timings": timings}},
+                    headers={
+                        "X-Player-Catalog-Timing": timings_text[:3500],
                     },
                 )
             except Exception as err:
@@ -21510,7 +21557,28 @@ QUALITY REQUIREMENTS
 
         if parsed.path == "/api/players":
             try:
-                self._json(200, {"players": self.db.list_players(sync_generated=False)})
+                started = time.perf_counter()
+                players = self.db.list_players(
+                    sync_generated=False,
+                    include_salary_history=False,
+                    collect_timings=True,
+                )
+                timings = getattr(self.db, "_last_list_players_timings", {}) or {}
+                total_ms = round((time.perf_counter() - started) * 1000, 2)
+                timings_text = ",".join(
+                    f"{key}={value}"
+                    for key, value in timings.items()
+                    if isinstance(value, (int, float))
+                )
+                if total_ms >= 500:
+                    self.log_message("Public player catalog slow load %.2fms %s", total_ms, timings_text)
+                self._json(
+                    200,
+                    {"players": players, "meta": {"timings": timings}},
+                    headers={
+                        "X-Player-Catalog-Timing": timings_text[:3500],
+                    },
+                )
             except Exception as err:
                 self.log_message("Public player catalog load failed: %s", err)
                 self._json(500, {"error": "players_unavailable"})

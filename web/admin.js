@@ -10947,6 +10947,9 @@ async function loadLeaguePlayers() {
   let players = [];
   try {
     const res = await api('/api/admin/players');
+    if (res?.meta?.timings) {
+      console.info('Player catalog timings', res.meta.timings);
+    }
     players = Array.isArray(res.players) ? res.players : [];
   } catch (err) {
     console.warn('API /api/admin/players not available, using team roster fallback.', err);
@@ -10966,7 +10969,10 @@ async function loadLeaguePlayers() {
   renderTeamStrip();
   renderTeamPicker();
   renderAdminMobileTeamGrid();
+  const renderStarted = typeof performance !== 'undefined' ? performance.now() : Date.now();
   renderLeaguePlayers();
+  const renderMs = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - renderStarted);
+  console.info('Player catalog render ms', renderMs);
   updateSortIndicators('leaguePlayersTable', state.sort.league_players);
   await refreshAdminLogsSafe();
 }
