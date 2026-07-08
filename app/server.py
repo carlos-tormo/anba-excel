@@ -518,6 +518,42 @@ def normalize_free_agent_type(value: Any) -> str:
     return FREE_AGENT_TYPE_UNRESTRICTED
 
 
+PLAYER_PROFILE_STATUS_ACTIVE = "active"
+PLAYER_PROFILE_STATUS_OUTSIDE_NBA = "outside_nba"
+PLAYER_PROFILE_STATUS_RETIRED = "retired"
+PLAYER_PROFILE_STATUSES = {
+    PLAYER_PROFILE_STATUS_ACTIVE,
+    PLAYER_PROFILE_STATUS_OUTSIDE_NBA,
+    PLAYER_PROFILE_STATUS_RETIRED,
+}
+PLAYER_PROFILE_STATUS_LABELS = {
+    PLAYER_PROFILE_STATUS_ACTIVE: "Activo",
+    PLAYER_PROFILE_STATUS_OUTSIDE_NBA: "Fuera de la NBA",
+    PLAYER_PROFILE_STATUS_RETIRED: "Retirado",
+}
+UNAVAILABLE_PLAYER_PROFILE_STATUSES = {
+    PLAYER_PROFILE_STATUS_OUTSIDE_NBA,
+    PLAYER_PROFILE_STATUS_RETIRED,
+}
+
+
+def normalize_player_profile_status(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in {"fuera_nba", "fuera_de_nba", "fuera_de_la_nba", "outside", "outside_nba", "out_of_nba"}:
+        return PLAYER_PROFILE_STATUS_OUTSIDE_NBA
+    if raw in {"retirado", "retired"}:
+        return PLAYER_PROFILE_STATUS_RETIRED
+    return PLAYER_PROFILE_STATUS_ACTIVE
+
+
+def player_profile_status_label(value: Any) -> str:
+    return PLAYER_PROFILE_STATUS_LABELS.get(normalize_player_profile_status(value), "Activo")
+
+
+def is_unavailable_player_profile_status(value: Any) -> bool:
+    return normalize_player_profile_status(value) in UNAVAILABLE_PLAYER_PROFILE_STATUSES
+
+
 def dead_contract_salary_num(dead_contract: Dict[str, Any], season: int) -> float:
     value = dead_contract.get(f"salary_{season}_num")
     if value is not None:
@@ -2084,6 +2120,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     profile_notes TEXT,
                     transaction_notes TEXT,
                     happiness REAL NOT NULL DEFAULT 0,
+                    profile_status TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -2359,6 +2396,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE player_profiles ADD COLUMN transaction_notes TEXT")
             if "happiness" not in profile_cols:
                 conn.execute("ALTER TABLE player_profiles ADD COLUMN happiness REAL NOT NULL DEFAULT 0")
+            if "profile_status" not in profile_cols:
+                conn.execute("ALTER TABLE player_profiles ADD COLUMN profile_status TEXT NOT NULL DEFAULT 'active'")
             salary_history_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(player_salary_history)").fetchall()
@@ -2366,6 +2405,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if "salary_type" not in salary_history_cols:
                 conn.execute("ALTER TABLE player_salary_history ADD COLUMN salary_type TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_players_profile_id ON players(profile_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_player_profiles_status ON player_profiles(profile_status)")
             duplicate_active_profile = conn.execute(
                 """
                 SELECT profile_id
@@ -2545,9 +2585,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
         name: Any,
         timestamp: str,
         forbid_active_contract: bool = False,
+        require_available: bool = False,
     ) -> int:
         profile_id = self._existing_profile_id(conn, payload.get("profile_id"))
         if profile_id is not None:
+            if require_available:
+                status_row = conn.execute(
+                    "SELECT profile_status FROM player_profiles WHERE id = ?",
+                    (profile_id,),
+                ).fetchone()
+                if status_row and is_unavailable_player_profile_status(status_row["profile_status"]):
+                    raise ValueError("profile_unavailable")
             if forbid_active_contract:
                 active = conn.execute(
                     "SELECT id FROM players WHERE profile_id = ? LIMIT 1",
@@ -7761,7 +7809,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """
                 SELECT
                     id, name, date_of_birth, nationality, experience_years, yos_source,
-                    reference_image_url, profile_notes, transaction_notes, happiness, created_at, updated_at
+                    reference_image_url, profile_notes, transaction_notes, happiness, profile_status,
+                    created_at, updated_at
                 FROM player_profiles
                 ORDER BY name COLLATE NOCASE, id
                 """
@@ -7771,11 +7820,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 profile = row_to_dict(profile_cur, row)
                 profile_id = int(profile["id"])
                 happiness = profile.pop("happiness", None)
+                profile_status = normalize_player_profile_status(profile.pop("profile_status", None))
+                unavailable_profile = is_unavailable_player_profile_status(profile_status)
                 profiles[profile_id] = {
                     **profile,
                     "profile_id": profile_id,
-                    "status": "inactive",
-                    "status_label": "Sin contrato",
+                    "profile_status": profile_status,
+                    "status": profile_status if unavailable_profile else "inactive",
+                    "status_label": player_profile_status_label(profile_status) if unavailable_profile else "Sin contrato",
                     "team_code": None,
                     "team_name": None,
                     "player_id": None,
@@ -7824,7 +7876,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for row in active_cur.fetchall():
                 item = row_to_dict(active_cur, row)
                 profile_id = parse_int(item.get("profile_id"))
-                if profile_id is None or profile_id not in profiles or profiles[profile_id]["active_contract"]:
+                if (
+                    profile_id is None
+                    or profile_id not in profiles
+                    or profiles[profile_id]["active_contract"]
+                    or is_unavailable_player_profile_status(profiles[profile_id].get("profile_status"))
+                ):
                     continue
                 salary_text = str(item.get("current_salary_text") or "").strip()
                 salary_code = salary_text.upper()
@@ -7887,7 +7944,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for row in free_agent_cur.fetchall():
                 item = row_to_dict(free_agent_cur, row)
                 profile_id = parse_int(item.get("profile_id"))
-                if profile_id is None or profile_id not in profiles or profiles[profile_id]["active_contract"]:
+                if (
+                    profile_id is None
+                    or profile_id not in profiles
+                    or profiles[profile_id]["active_contract"]
+                    or is_unavailable_player_profile_status(profiles[profile_id].get("profile_status"))
+                ):
                     continue
                 rights_team_code = str(item.get("rights_team_code") or "").strip().upper() or None
                 status_label = "Agente libre"
@@ -7951,7 +8013,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     profiles[profile_id].update(
                         {
                             "status": "dead_contract",
-                            "status_label": "Dead contract",
+                            "status_label": "CAP muerto",
                             "team_code": item.get("team_code"),
                             "team_name": item.get("team_name"),
                         }
@@ -8008,7 +8070,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         profiles[profile_id].setdefault("salary_history", []).append(item)
             checkpoint = mark("salary_history_ms", checkpoint)
 
-            rows = sorted(profiles.values(), key=lambda item: str(item.get("name") or "").lower())
+            rows = sorted(
+                (
+                    item for item in profiles.values()
+                    if include_private or not is_unavailable_player_profile_status(item.get("profile_status"))
+                ),
+                key=lambda item: str(item.get("name") or "").lower(),
+            )
             mark("sort_ms", checkpoint)
             if collect_timings:
                 timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
@@ -8611,7 +8679,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         dead_header = [
             "Equipo",
             "Nombre equipo",
-            "Dead contract ID",
+            "CAP muerto ID",
             "Profile ID",
             "Nombre",
             "Tipo",
@@ -8809,7 +8877,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "Nacionalidad",
                 "Fuente YOS",
                 "Contrato activo",
-                "Dead contracts",
+                "CAP muerto",
                 "Últimos movimientos",
             ]
         ]
@@ -8910,7 +8978,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 {"name": "Movimientos", "rows": move_rows},
                 {"name": "Hard caps", "rows": hard_cap_rows},
                 {"name": "Roster", "rows": roster_rows},
-                {"name": "Dead contracts", "rows": dead_rows},
+                {"name": "CAP muerto", "rows": dead_rows},
                 {"name": "Exceptions", "rows": exception_rows},
                 {"name": "Draft assets", "rows": draft_rows},
                 {"name": "Player rights", "rows": rights_rows},
@@ -10952,7 +11020,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return str(player.get("name") or "Jugador sin nombre").strip() or "Jugador sin nombre"
 
         def dead_contract_label(dead_contract: Dict[str, Any]) -> str:
-            return str(dead_contract.get("label") or "Dead contract").strip() or "Dead contract"
+            return str(dead_contract.get("label") or "CAP muerto").strip() or "CAP muerto"
 
         def season_marker(player: Dict[str, Any]) -> str:
             salary_marker = str(player.get(f"salary_{current_year}_text") or "").strip().upper()
@@ -11031,7 +11099,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     continue
                 amount = dead_contract_salary_num(dead_contract, current_year)
                 if amount > 0:
-                    lines.append(breakdown_amount(f"Dead contract - {dead_contract_label(dead_contract)}", amount))
+                    lines.append(breakdown_amount(f"CAP muerto - {dead_contract_label(dead_contract)}", amount))
             return lines
 
         def luxury_tax_detail_lines(overage: float, repeater: bool) -> List[Dict[str, Any]]:
@@ -11100,7 +11168,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "cap_total": [
                     breakdown_amount("Jugadores y cap holds computables", cap_figure_players),
                     *cap_player_lines,
-                    breakdown_amount("Dead contracts y rookie scale holds", dead_cap_team_salary),
+                    breakdown_amount("CAP muerto y rookie scale holds", dead_cap_team_salary),
                     *dead_cap_team_salary_lines,
                     breakdown_amount("Open roster spot cap holds", open_roster_hold_amount),
                     *open_roster_lines,
@@ -11110,15 +11178,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "gasto_total": [
                     breakdown_amount("Salarios de jugadores", player_payroll),
                     *payroll_player_lines,
-                    breakdown_amount("Dead contracts", dead_gasto_normal),
+                    breakdown_amount("CAP muerto", dead_gasto_normal),
                     *dead_gasto_normal_lines,
-                    breakdown_amount("Dead contracts Two-Way", dead_gasto_two_way),
+                    breakdown_amount("CAP muerto Two-Way", dead_gasto_two_way),
                     *dead_gasto_two_way_lines,
                 ],
                 "apron_account": [
                     breakdown_amount("Jugadores sin cap holds", apron_figure_players),
                     *apron_player_lines,
-                    breakdown_amount("Dead contracts computables", dead_cap_apron),
+                    breakdown_amount("CAP muerto computable", dead_cap_apron),
                     *dead_cap_apron_lines,
                 ],
                 "luxury_tax": [
@@ -13201,6 +13269,83 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return row_changed
 
+    def _make_player_profile_unavailable_conn(
+        self,
+        conn: sqlite3.Connection,
+        profile_id: int,
+        status: str,
+        timestamp: str,
+    ) -> Dict[str, int]:
+        normalized_status = normalize_player_profile_status(status)
+        if not is_unavailable_player_profile_status(normalized_status):
+            return {"players": 0, "free_agents": 0, "requests": 0}
+
+        player_rows = conn.execute(
+            """
+            SELECT p.id, p.name, t.code AS team_code
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+            WHERE p.profile_id = ?
+            ORDER BY p.id
+            """,
+            (int(profile_id),),
+        ).fetchall()
+        for row in player_rows:
+            self._record_player_transaction(
+                conn,
+                profile_id,
+                normalized_status,
+                player_profile_status_label(normalized_status),
+                player_id=int(row["id"]),
+                team_code=row["team_code"],
+                from_team_code=row["team_code"],
+                details={
+                    "player_name": str(row["name"] or "").strip(),
+                    "profile_status": normalized_status,
+                },
+                created_at=timestamp,
+            )
+
+        free_agent_ids = [
+            int(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM free_agents WHERE profile_id = ?",
+                (int(profile_id),),
+            ).fetchall()
+        ]
+        request_count = 0
+        if free_agent_ids:
+            placeholders = ",".join("?" for _ in free_agent_ids)
+            for table in ("free_agent_interests", "free_agent_favorites", "free_agent_team_ruleouts"):
+                if self._table_exists_conn(conn, table):
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE free_agent_id IN ({placeholders})",
+                        free_agent_ids,
+                    )
+            request_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM gm_free_agent_offer_requests WHERE free_agent_id IN ({placeholders})",
+                    free_agent_ids,
+                ).fetchone()[0]
+            )
+            conn.execute(
+                f"""
+                UPDATE gm_free_agent_offer_requests
+                SET status = 'cancelled', decided_at = COALESCE(decided_at, ?)
+                WHERE free_agent_id IN ({placeholders})
+                  AND status = 'pending'
+                """,
+                (timestamp, *free_agent_ids),
+            )
+
+        player_cur = conn.execute("DELETE FROM players WHERE profile_id = ?", (int(profile_id),))
+        free_agent_cur = conn.execute("DELETE FROM free_agents WHERE profile_id = ?", (int(profile_id),))
+        return {
+            "players": int(player_cur.rowcount or 0),
+            "free_agents": int(free_agent_cur.rowcount or 0),
+            "requests": request_count,
+        }
+
     def update_player_profile(self, profile_id: int, payload: Dict[str, Any]) -> bool:
         fields: Dict[str, Any] = {}
         update_rights_team = "rights_team_code" in payload
@@ -13225,6 +13370,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             fields["transaction_notes"] = str(payload.get("transaction_notes") or "").strip() or None
         if "happiness" in payload:
             fields["happiness"] = normalize_player_happiness(payload.get("happiness"))
+        if "profile_status" in payload:
+            fields["profile_status"] = normalize_player_profile_status(payload.get("profile_status"))
         if not fields and not update_rights_team:
             return False
 
@@ -13253,12 +13400,22 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         conn.execute("UPDATE players SET reference_image_url = ?, updated_at = ? WHERE profile_id = ?", (fields["reference_image_url"], timestamp, profile_id))
                     if "profile_notes" in fields:
                         conn.execute("UPDATE players SET profile_notes = ?, updated_at = ? WHERE profile_id = ?", (fields["profile_notes"], timestamp, profile_id))
+                    if "profile_status" in fields and is_unavailable_player_profile_status(fields["profile_status"]):
+                        self._make_player_profile_unavailable_conn(
+                            conn,
+                            int(profile_id),
+                            fields["profile_status"],
+                            timestamp,
+                        )
             else:
                 profile_exists = conn.execute("SELECT id FROM player_profiles WHERE id = ?", (profile_id,)).fetchone()
                 if not profile_exists:
                     return False
 
             if update_rights_team:
+                status_row = conn.execute("SELECT profile_status FROM player_profiles WHERE id = ?", (profile_id,)).fetchone()
+                if status_row and is_unavailable_player_profile_status(status_row["profile_status"]):
+                    raise ValueError("profile_unavailable")
                 settings = {
                     str(row["key"]): str(row["value"])
                     for row in conn.execute("SELECT key, value FROM app_settings").fetchall()
@@ -13901,6 +14058,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 name=values["name"],
                 timestamp=now,
                 forbid_active_contract=True,
+                require_available=True,
             )
             if parse_int(payload.get("profile_id")) is not None:
                 conn.execute(
@@ -15274,6 +15432,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
             players = self._select_team_players(conn, team_id)
             self._attach_option_decisions(conn, players, team_id)
             for player in players:
+                profile_id = parse_int(player.get("profile_id"))
+                if profile_id is not None:
+                    profile_status_row = conn.execute(
+                        "SELECT profile_status FROM player_profiles WHERE id = ?",
+                        (int(profile_id),),
+                    ).fetchone()
+                    if profile_status_row and is_unavailable_player_profile_status(profile_status_row["profile_status"]):
+                        continue
                 fa_type = self._cap_hold_free_agent_type(player, season)
                 has_restricted_option = fa_type == FREE_AGENT_TYPE_RESTRICTED
                 hold_amount = cap_hold_amount(player, season, settings, salary_cap)
@@ -15290,7 +15456,6 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 player_id = parse_int(player.get("id"))
                 if player_id is None:
                     continue
-                profile_id = parse_int(player.get("profile_id"))
                 if profile_id is None:
                     profile_id = self._ensure_profile_for_player(conn, player_id, timestamp)
                 if profile_id is None:
@@ -15433,6 +15598,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             LEFT JOIN free_agents f ON f.profile_id = pp.id
             WHERE p.id IS NULL
                 AND f.id IS NULL
+                AND COALESCE(pp.profile_status, 'active') NOT IN (?, ?)
                 AND TRIM(COALESCE(pp.name, '')) != ''
             """,
             (
@@ -15440,6 +15606,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,
                 timestamp,
                 timestamp,
+                PLAYER_PROFILE_STATUS_OUTSIDE_NBA,
+                PLAYER_PROFILE_STATUS_RETIRED,
             ),
         )
         changed += int(cur.rowcount or 0)
@@ -15471,11 +15639,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     pp.yos_source AS profile_yos_source,
                     pp.reference_image_url AS profile_reference_image_url,
                     pp.profile_notes AS profile_profile_notes,
-                    pp.transaction_notes AS profile_transaction_notes
+                    pp.transaction_notes AS profile_transaction_notes,
+                    pp.profile_status AS profile_status
                 FROM free_agents f
                 LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                WHERE COALESCE(pp.profile_status, 'active') NOT IN (?, ?)
                 ORDER BY COALESCE(pp.name, f.name) COLLATE NOCASE, f.id
-                """
+                """,
+                (PLAYER_PROFILE_STATUS_OUTSIDE_NBA, PLAYER_PROFILE_STATUS_RETIRED),
             )
             free_agents = [self._merge_player_profile(row_to_dict(cur, row)) for row in cur.fetchall()]
             return self._attach_player_salary_history_conn(conn, free_agents)
@@ -15493,7 +15664,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     pp.yos_source AS profile_yos_source,
                     pp.reference_image_url AS profile_reference_image_url,
                     pp.profile_notes AS profile_profile_notes,
-                    pp.transaction_notes AS profile_transaction_notes
+                    pp.transaction_notes AS profile_transaction_notes,
+                    pp.profile_status AS profile_status
                 FROM free_agents f
                 LEFT JOIN player_profiles pp ON pp.id = f.profile_id
                 WHERE f.id = ?
@@ -15502,6 +15674,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             row = cur.fetchone()
             if not row:
+                return None
+            if is_unavailable_player_profile_status(row["profile_status"]):
                 return None
             free_agent = self._merge_player_profile(row_to_dict(cur, row))
             enriched = self._attach_player_salary_history_conn(conn, [free_agent])
@@ -16062,6 +16236,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
         normalized_team_code = normalize_team_code(team_code)
         if profile_id is not None:
             with self.connect() as conn:
+                profile_status_row = conn.execute(
+                    "SELECT profile_status FROM player_profiles WHERE id = ?",
+                    (int(profile_id),),
+                ).fetchone()
+                if profile_status_row and is_unavailable_player_profile_status(profile_status_row["profile_status"]):
+                    raise ValueError("profile_unavailable")
                 settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings").fetchall()}
                 current_year = parse_int(settings.get("current_year")) or PLAYER_CONTRACT_SEASONS[0]
                 active_rows = conn.execute(
@@ -16145,7 +16325,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
     ) -> Optional[int]:
         player = conn.execute(
             """
-            SELECT p.id, p.profile_id, COALESCE(pp.name, p.name) AS player_name, t.code AS team_code
+            SELECT p.id, p.profile_id, COALESCE(pp.name, p.name) AS player_name,
+                   pp.profile_status, t.code AS team_code
             FROM players p
             LEFT JOIN player_profiles pp ON pp.id = p.profile_id
             JOIN teams t ON t.id = p.team_id
@@ -16155,6 +16336,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         ).fetchone()
         if not player:
             return None
+        if is_unavailable_player_profile_status(player["profile_status"]):
+            raise ValueError("profile_unavailable")
         if normalize_team_code(player["team_code"]) != normalize_team_code(team_code):
             raise ValueError("profile_has_active_contract")
 

@@ -436,6 +436,76 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
 
         self.db.assert_player_identity_integrity()
 
+    def test_unavailable_player_status_hides_public_profile_and_removes_active_rows(self) -> None:
+        profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
+        now = now_iso()
+
+        with self.db.connect() as conn:
+            free_agent_cur = conn.execute(
+                """
+                INSERT INTO free_agents (
+                    profile_id, name, position, bird_rights, rating, years_left,
+                    free_agent_type, source, created_at, updated_at
+                ) VALUES (?, 'Legacy Hawk', 'PG', NULL, '70', NULL, 'No restringido', 'manual', ?, ?)
+                """,
+                (profile_id, now, now),
+            )
+            free_agent_id = int(free_agent_cur.lastrowid)
+            team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            conn.execute(
+                """
+                INSERT INTO gm_free_agent_offer_requests (
+                    free_agent_id, team_id, requester_email, requester_name,
+                    offer_payload_json, offer_type, status, created_at, updated_at
+                ) VALUES (?, ?, 'gm@example.com', 'GM', '{}', 'free_agent_offer', 'pending', ?, ?)
+                """,
+                (free_agent_id, team_id, now, now),
+            )
+            conn.commit()
+
+        self.assertTrue(self.db.update_player_profile(profile_id, {"profile_status": "outside_nba"}))
+
+        public_profiles = self.db.list_players()
+        private_profiles = self.db.list_players(include_private=True)
+
+        self.assertFalse(any(int(player["profile_id"]) == profile_id for player in public_profiles))
+        unavailable = next(
+            player for player in private_profiles
+            if int(player["profile_id"]) == profile_id
+        )
+        self.assertEqual("outside_nba", unavailable["profile_status"])
+        self.assertEqual("outside_nba", unavailable["status"])
+        self.assertEqual("Fuera de la NBA", unavailable["status_label"])
+        with self.db.connect() as conn:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM players WHERE profile_id = ?",
+                    (profile_id,),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM free_agents WHERE profile_id = ?",
+                    (profile_id,),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                "cancelled",
+                conn.execute(
+                    "SELECT status FROM gm_free_agent_offer_requests WHERE free_agent_id = ?",
+                    (free_agent_id,),
+                ).fetchone()["status"],
+            )
+
+        self.assertFalse(
+            any(int(free_agent["profile_id"]) == profile_id for free_agent in self.db.list_free_agents())
+        )
+        with self.assertRaises(ValueError):
+            self.db.create_player("BOS", {"name": "Legacy Hawk", "profile_id": profile_id})
+        self.db.assert_player_identity_integrity()
+
     def test_cut_then_sign_preserves_profile_identity(self) -> None:
         profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
 

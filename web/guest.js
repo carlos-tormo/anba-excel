@@ -1753,11 +1753,11 @@ function apronYosAdjustmentValue(player, season, salary = salaryNumericValue(pla
 }
 
 function capTotalTooltipText() {
-  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Cuando el modo agencia libre está desactivado, si el equipo queda por debajo del Salary Floor, el CAP TOTAL sube hasta ese mínimo. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
+  return 'CAP TOTAL incluye: salarios de jugadores, CAP muerto, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Cuando el modo agencia libre está desactivado, si el equipo queda por debajo del Salary Floor, el CAP TOTAL sube hasta ese mínimo. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
 }
 
 function apronTooltipText() {
-  return 'Cuenta del APRON = Team Salary sin cap holds. Incluye salarios de jugadores, Dead Contracts y el ajuste 0-1 YOS cuando aplica: si un jugador con 0 o 1 año de servicio firma como agente libre, cuenta como mínimo de 2 YOS si su salario queda por debajo. Excluye cap holds, Two-Way y Exhibit 10. Unlikely bonuses, grievances, QO/matches, tenders y SRP Exception no aplican o se omiten por ahora.';
+  return 'Cuenta del APRON = Team Salary sin cap holds. Incluye salarios de jugadores, CAP muerto y el ajuste 0-1 YOS cuando aplica: si un jugador con 0 o 1 año de servicio firma como agente libre, cuenta como mínimo de 2 YOS si su salario queda por debajo. Excluye cap holds, Two-Way y Exhibit 10. Unlikely bonuses, grievances, QO/matches, tenders y SRP Exception no aplican o se omiten por ahora.';
 }
 
 function rosterLimits() {
@@ -9809,7 +9809,7 @@ async function ensureLocatorIndex() {
           name: item.label,
           team_code: teamCode,
           team_name: teamName,
-          source: 'Dead contract',
+          source: 'CAP muerto',
           section_id: 'deadContractsSection',
         });
       });

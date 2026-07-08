@@ -9055,6 +9055,16 @@ td.salary-option--nb .salary-pct {
   background: #fef2f2;
   color: #b91c1c;
 }
+.league-player-status--outside_nba {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #c2410c;
+}
+.league-player-status--retired {
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #475569;
+}
 #leaguePlayersTable tr.league-player-row--duplicate {
   box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.35), 0 0 22px rgba(220, 38, 38, 0.22);
 }
@@ -9069,15 +9079,79 @@ td.salary-option--nb .salary-pct {
   box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.11);
 }
 .league-player-actions {
-  min-width: 110px;
+  min-width: 70px;
+  position: relative;
   white-space: nowrap;
 }
-.player-profile-delete-btn {
-  padding: 6px 10px;
-  border-color: #fecaca;
-  background: #fff1f2;
+.league-player-actions-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: flex-end;
+}
+.league-player-actions-toggle {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+}
+.league-player-actions-toggle:hover,
+.league-player-actions-toggle[aria-expanded="true"] {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+  color: #075985;
+}
+.league-player-actions-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.league-player-actions-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 80;
+  min-width: 210px;
+  padding: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+}
+.league-player-actions-dropdown[hidden] {
+  display: none;
+}
+.league-player-actions-dropdown button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: transparent;
+  color: #334155;
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+.league-player-actions-dropdown button:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+.league-player-actions-dropdown button.danger {
   color: #b91c1c;
-  font-size: 0.82rem;
+}
+.league-player-actions-dropdown button.danger:hover {
+  background: #fef2f2;
 }
 .league-player-contract {
   border-radius: 8px;

@@ -1291,11 +1291,11 @@ function normalizeExperienceYears(value) {
 }
 
 function capTotalTooltipText() {
-  return 'CAP TOTAL incluye: salarios de jugadores, Dead Contracts, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Cuando el modo agencia libre está desactivado, si el equipo queda por debajo del Salary Floor, el CAP TOTAL sube hasta ese mínimo. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
+  return 'CAP TOTAL incluye: salarios de jugadores, CAP muerto, retirados bajo contrato, cap holds activos y, en modo agencia libre, el Open Roster Spot Cap Hold si el equipo no llega a 12 huecos computables. Cuando el modo agencia libre está desactivado, si el equipo queda por debajo del Salary Floor, el CAP TOTAL sube hasta ese mínimo. Excluye: cap holds renunciados, contratos Two-Way, cap holds Two-Way y contratos Exhibit 10.';
 }
 
 function apronTooltipText() {
-  return 'Cuenta del APRON = Team Salary sin cap holds. Incluye salarios de jugadores, Dead Contracts y el ajuste 0-1 YOS cuando aplica: si un jugador con 0 o 1 año de servicio firma como agente libre, cuenta como mínimo de 2 YOS si su salario queda por debajo. Excluye cap holds, Two-Way y Exhibit 10. Unlikely bonuses, grievances, QO/matches, tenders y SRP Exception no aplican o se omiten por ahora.';
+  return 'Cuenta del APRON = Team Salary sin cap holds. Incluye salarios de jugadores, CAP muerto y el ajuste 0-1 YOS cuando aplica: si un jugador con 0 o 1 año de servicio firma como agente libre, cuenta como mínimo de 2 YOS si su salario queda por debajo. Excluye cap holds, Two-Way y Exhibit 10. Unlikely bonuses, grievances, QO/matches, tenders y SRP Exception no aplican o se omiten por ahora.';
 }
 
 function rosterLimits() {
@@ -2762,7 +2762,7 @@ function renderAddEntryFields() {
         <option value="two_way">Two Way</option>
       </select>
       <label for="addDeadLabel">Label</label>
-      <input id="addDeadLabel" type="text" placeholder="Dead contract label">
+      <input id="addDeadLabel" type="text" placeholder="CAP muerto label">
       <label for="addDeadAmount">Amount</label>
       <input id="addDeadAmount" type="text" placeholder="0">
     `;
@@ -6557,7 +6557,9 @@ function leaguePlayerLogoHtml(code) {
 function leaguePlayerTeamHtml(player) {
   const code = String(player?.team_code || '').trim().toUpperCase();
   const status = String(player?.status || '').trim().toLowerCase();
-  const canAssignTeam = !player?.active_contract && ['free_agent', 'inactive'].includes(status) && player?.profile_id;
+  const profileStatus = String(player?.profile_status || 'active').trim().toLowerCase();
+  const unavailableStatus = ['outside_nba', 'retired'].includes(profileStatus);
+  const canAssignTeam = !unavailableStatus && !player?.active_contract && ['free_agent', 'inactive'].includes(status) && player?.profile_id;
   if (canAssignTeam) {
     return `
       <select class="player-profile-input league-player-team-select" data-player-profile-field="rights_team_code" aria-label="Equipo asignado">
@@ -6588,7 +6590,7 @@ function leaguePlayerContractHtml(player) {
   const deadSummary = String(player?.dead_contract_summary || '').trim();
   const deadCount = Number(player?.dead_contract_count || 0);
   const deadHtml = deadCount > 0
-    ? `<span class="league-player-contract-note">Dead contracts: ${escapeHtml(deadSummary || `${deadCount}`)}</span>`
+    ? `<span class="league-player-contract-note">CAP muerto: ${escapeHtml(deadSummary || `${deadCount}`)}</span>`
     : '';
   if (!summary || summary === 'No') {
     return `
@@ -6649,12 +6651,128 @@ function leaguePlayerDeleteSummary(player) {
   if (player.active_contract) parts.push('contrato activo');
   if (Number(player.free_agent_id || 0)) parts.push('entrada de agente libre');
   const deadCount = Number(player.dead_contract_count || 0);
-  if (deadCount) parts.push(`${deadCount} dead contract${deadCount === 1 ? '' : 's'}`);
+  if (deadCount) parts.push(`${deadCount} CAP muerto`);
   const salaryHistoryCount = Array.isArray(player.salary_history) ? player.salary_history.length : 0;
   if (salaryHistoryCount) parts.push(`${salaryHistoryCount} salario${salaryHistoryCount === 1 ? '' : 's'} histórico${salaryHistoryCount === 1 ? '' : 's'}`);
   const logCount = Array.isArray(player.transaction_logs) ? player.transaction_logs.length : 0;
   if (logCount) parts.push(`${logCount} movimiento${logCount === 1 ? '' : 's'}`);
   return parts.length ? parts.join(', ') : 'solo el perfil';
+}
+
+function closeLeaguePlayerActionMenus(exceptMenu = null) {
+  document.querySelectorAll('.league-player-actions-dropdown:not([hidden])').forEach((menu) => {
+    if (exceptMenu && menu === exceptMenu) return;
+    menu.hidden = true;
+  });
+}
+
+function bindLeaguePlayerActionMenuDocumentListener() {
+  if (window.__leaguePlayerActionMenuDocumentListenerBound) return;
+  window.__leaguePlayerActionMenuDocumentListenerBound = true;
+  document.addEventListener('click', () => closeLeaguePlayerActionMenus());
+}
+
+function leaguePlayerActionsMenuHtml(profileId) {
+  const disabled = profileId ? '' : ' disabled';
+  const disabledTitle = profileId ? '' : ' title="Este jugador no tiene perfil global"';
+  return `
+    <div class="league-player-actions-menu">
+      <button type="button" class="league-player-actions-toggle" data-player-profile-actions-toggle aria-haspopup="menu" aria-expanded="false"${disabled}${disabledTitle}>...</button>
+      <div class="league-player-actions-dropdown" role="menu" hidden>
+        <button type="button" data-player-profile-action="merge"${disabled}>Fusionar</button>
+        <button type="button" class="danger" data-player-profile-action="delete"${disabled}>Eliminar</button>
+        <button type="button" data-player-profile-action="outside_nba"${disabled}>Mover a Fuera NBA</button>
+        <button type="button" data-player-profile-action="retired"${disabled}>Mover a retirado</button>
+      </div>
+    </div>
+  `;
+}
+
+async function deleteLeaguePlayerProfile(player, profileId) {
+  if (!profileId) {
+    alert('Este jugador no tiene perfil global para eliminar.');
+    return;
+  }
+  const name = String(player.name || 'este jugador').trim() || 'este jugador';
+  const summary = leaguePlayerDeleteSummary(player);
+  const confirmed = window.confirm(
+    `¿Eliminar definitivamente a ${name}?\n\nSe eliminará: ${summary}.\nEsta acción no se puede deshacer.`
+  );
+  if (!confirmed) return;
+  try {
+    await api(`/api/player-profiles/${profileId}`, { method: 'DELETE' });
+    await loadLeaguePlayers();
+    if (typeof loadAdminLogs === 'function') await loadAdminLogs();
+  } catch (err) {
+    alert(`No se pudo eliminar el jugador: ${err.message || err}`);
+  }
+}
+
+async function mergeLeaguePlayerProfile(player, profileId) {
+  if (!profileId) {
+    alert('Este jugador no tiene perfil global para fusionar.');
+    return;
+  }
+  const duplicateKey = leaguePlayerDuplicateNameKey(player.name);
+  const candidates = (state.leaguePlayers || [])
+    .filter((candidate) => {
+      const candidateProfileId = candidate.profile_id || null;
+      if (!candidateProfileId || String(candidateProfileId) === String(profileId)) return false;
+      return leaguePlayerDuplicateNameKey(candidate.name) === duplicateKey;
+    });
+  const candidateLines = candidates.length
+    ? candidates.map((candidate) => {
+        const teamLabel = candidate.team_code ? ` · ${candidate.team_code}` : '';
+        return `ID ${candidate.profile_id}: ${candidate.name || 'Sin nombre'} · ${candidate.status_label || candidate.status || 'Sin estado'}${teamLabel}`;
+      }).join('\n')
+    : 'No se detectaron duplicados exactos por nombre. Puedes escribir manualmente el ID destino.';
+  const defaultTarget = candidates[0]?.profile_id || '';
+  const targetRaw = window.prompt(
+    `Fusionar perfil ID ${profileId} (${player.name || 'sin nombre'}) en otro perfil.\n\nPerfiles sugeridos:\n${candidateLines}\n\nEscribe el ID del perfil destino que debe conservarse:`,
+    defaultTarget
+  );
+  if (targetRaw == null) return;
+  const targetId = String(targetRaw || '').trim();
+  if (!targetId || targetId === String(profileId)) {
+    alert('Selecciona un perfil destino distinto.');
+    return;
+  }
+  const confirmed = window.confirm(
+    `¿Fusionar el perfil ${profileId} dentro del perfil ${targetId}?\n\nSe conservará el perfil destino. Si ambos tienen contrato activo real, el servidor bloqueará la operación.`
+  );
+  if (!confirmed) return;
+  try {
+    await api(`/api/player-profiles/${encodeURIComponent(targetId)}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({ source_profile_id: profileId }),
+    });
+    await loadLeaguePlayers();
+    if (typeof loadAdminLogs === 'function') await loadAdminLogs();
+  } catch (err) {
+    alert(`No se pudo fusionar el jugador: ${err.message || err}`);
+  }
+}
+
+async function moveLeaguePlayerProfileStatus(player, profileId, status, label) {
+  if (!profileId) {
+    alert('Este jugador no tiene perfil global para mover.');
+    return;
+  }
+  const name = String(player.name || 'este jugador').trim() || 'este jugador';
+  const confirmed = window.confirm(
+    `¿Mover a ${name} a "${label}"?\n\nSe eliminará de rosters y agentes libres. El historial y el CAP muerto existente se conservan.`
+  );
+  if (!confirmed) return;
+  try {
+    await api(`/api/player-profiles/${encodeURIComponent(profileId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ profile_status: status }),
+    });
+    await loadLeaguePlayers();
+    if (typeof loadAdminLogs === 'function') await loadAdminLogs();
+  } catch (err) {
+    alert(`No se pudo mover el jugador: ${err.message || err}`);
+  }
 }
 
 function bindLeaguePlayerProfileEditors(root, player, profileId, contractRowId) {
@@ -6844,8 +6962,7 @@ function renderLeaguePlayers() {
       <td>${leaguePlayerContractHtml(player)}</td>
       <td>${leaguePlayerLogsSummaryHtml(player)}</td>
       <td class="league-player-actions">
-        <button type="button" class="secondary player-profile-merge-btn" data-player-profile-merge="${escapeHtml(profileId || '')}"${profileId ? '' : ' disabled'}>Fusionar</button>
-        <button type="button" class="danger player-profile-delete-btn" data-player-profile-delete="${escapeHtml(profileId || '')}"${profileId ? '' : ' disabled'}>Eliminar</button>
+        ${leaguePlayerActionsMenuHtml(profileId)}
       </td>
     `;
     const teamBtn = tr.querySelector('[data-team-code]');
@@ -6881,75 +6998,35 @@ function renderLeaguePlayers() {
       }
       renderLeaguePlayers();
     });
-    const deleteBtn = tr.querySelector('[data-player-profile-delete]');
-    if (deleteBtn) {
-      deleteBtn.addEventListener('click', async () => {
-        if (!profileId) {
-          alert('Este jugador no tiene perfil global para eliminar.');
-          return;
-        }
-        const name = String(player.name || 'este jugador').trim() || 'este jugador';
-        const summary = leaguePlayerDeleteSummary(player);
-        const confirmed = window.confirm(
-          `¿Eliminar definitivamente a ${name}?\n\nSe eliminará: ${summary}.\nEsta acción no se puede deshacer.`
-        );
-        if (!confirmed) return;
-        try {
-          await api(`/api/player-profiles/${profileId}`, { method: 'DELETE' });
-          await loadLeaguePlayers();
-          if (typeof loadAdminLogs === 'function') await loadAdminLogs();
-        } catch (err) {
-          alert(`No se pudo eliminar el jugador: ${err.message || err}`);
-        }
+    bindLeaguePlayerActionMenuDocumentListener();
+    const actionsToggle = tr.querySelector('[data-player-profile-actions-toggle]');
+    if (actionsToggle) {
+      actionsToggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const menu = actionsToggle.closest('.league-player-actions-menu')?.querySelector('.league-player-actions-dropdown');
+        if (!menu) return;
+        const willOpen = menu.hidden;
+        closeLeaguePlayerActionMenus(menu);
+        menu.hidden = !willOpen;
+        actionsToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
       });
     }
-    const mergeBtn = tr.querySelector('[data-player-profile-merge]');
-    if (mergeBtn) {
-      mergeBtn.addEventListener('click', async () => {
-        if (!profileId) {
-          alert('Este jugador no tiene perfil global para fusionar.');
-          return;
-        }
-        const duplicateKey = leaguePlayerDuplicateNameKey(player.name);
-        const candidates = (state.leaguePlayers || [])
-          .filter((candidate) => {
-            const candidateProfileId = candidate.profile_id || null;
-            if (!candidateProfileId || String(candidateProfileId) === String(profileId)) return false;
-            return leaguePlayerDuplicateNameKey(candidate.name) === duplicateKey;
-          });
-        const candidateLines = candidates.length
-          ? candidates.map((candidate) => {
-              const teamLabel = candidate.team_code ? ` · ${candidate.team_code}` : '';
-              return `ID ${candidate.profile_id}: ${candidate.name || 'Sin nombre'} · ${candidate.status_label || candidate.status || 'Sin estado'}${teamLabel}`;
-            }).join('\n')
-          : 'No se detectaron duplicados exactos por nombre. Puedes escribir manualmente el ID destino.';
-        const defaultTarget = candidates[0]?.profile_id || '';
-        const targetRaw = window.prompt(
-          `Fusionar perfil ID ${profileId} (${player.name || 'sin nombre'}) en otro perfil.\n\nPerfiles sugeridos:\n${candidateLines}\n\nEscribe el ID del perfil destino que debe conservarse:`,
-          defaultTarget
-        );
-        if (targetRaw == null) return;
-        const targetId = String(targetRaw || '').trim();
-        if (!targetId || targetId === String(profileId)) {
-          alert('Selecciona un perfil destino distinto.');
-          return;
-        }
-        const confirmed = window.confirm(
-          `¿Fusionar el perfil ${profileId} dentro del perfil ${targetId}?\n\nSe conservará el perfil destino. Si ambos tienen contrato activo real, el servidor bloqueará la operación.`
-        );
-        if (!confirmed) return;
-        try {
-          await api(`/api/player-profiles/${encodeURIComponent(targetId)}/merge`, {
-            method: 'POST',
-            body: JSON.stringify({ source_profile_id: profileId }),
-          });
-          await loadLeaguePlayers();
-          if (typeof loadAdminLogs === 'function') await loadAdminLogs();
-        } catch (err) {
-          alert(`No se pudo fusionar el jugador: ${err.message || err}`);
+    tr.querySelectorAll('[data-player-profile-action]').forEach((btn) => {
+      btn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        closeLeaguePlayerActionMenus();
+        const action = btn.dataset.playerProfileAction;
+        if (action === 'merge') {
+          await mergeLeaguePlayerProfile(player, profileId);
+        } else if (action === 'delete') {
+          await deleteLeaguePlayerProfile(player, profileId);
+        } else if (action === 'outside_nba') {
+          await moveLeaguePlayerProfileStatus(player, profileId, 'outside_nba', 'Fuera de la NBA');
+        } else if (action === 'retired') {
+          await moveLeaguePlayerProfileStatus(player, profileId, 'retired', 'Retirado');
         }
       });
-    }
+    });
     tbody.appendChild(tr);
     if (isExpanded) {
       const detailTr = document.createElement('tr');
@@ -9440,7 +9517,7 @@ function renderPlayers() {
     tr.querySelector('[data-action="cut"]').addEventListener('click', async () => {
       const decision = await confirmWithDiscordNotification({
         title: 'Cortar jugador',
-        message: `Cortar a ${p.name || 'este jugador'}? Esto crea un dead contract y lo añade a Agentes libres.`,
+        message: `Cortar a ${p.name || 'este jugador'}? Esto crea CAP muerto y lo añade a Agentes libres.`,
         confirmLabel: 'Cut',
         danger: true,
         defaultNotify: true,
@@ -9652,7 +9729,7 @@ async function cutSelectedPlayersAction() {
   }
   const decision = await confirmWithDiscordNotification({
     title: 'Cortar jugadores',
-    message: `Cortar ${players.length} jugador(es) seleccionado(s)? Esto crea dead contracts, los añade a Agentes libres y los elimina del roster.`,
+    message: `Cortar ${players.length} jugador(es) seleccionado(s)? Esto crea CAP muerto, los añade a Agentes libres y los elimina del roster.`,
     confirmLabel: 'Cut selected',
     danger: true,
     defaultNotify: true,
@@ -10678,7 +10755,7 @@ function renderDeadContracts() {
           await refreshSummary();
         } catch (err) {
           checkbox.checked = previous;
-          alert(`Dead contract flag save failed: ${err.message}`);
+          alert(`CAP muerto flag save failed: ${err.message}`);
         } finally {
           checkbox.disabled = false;
         }
@@ -10686,7 +10763,7 @@ function renderDeadContracts() {
     });
 
     tr.querySelector('[data-action="delete-dead-contract"]').addEventListener('click', async () => {
-      if (!confirm('Delete this dead contract?')) return;
+      if (!confirm('Delete this CAP muerto?')) return;
       await api(`/api/dead-contracts/${d.id}`, { method: 'DELETE' });
       await loadTeam(state.teamCode);
     });
@@ -10787,7 +10864,7 @@ function renderDeadContracts() {
       <td colspan="11">
         <button type="button" class="table-add-trigger">
           <span class="table-add-badge">+</span>
-          <span>Add dead contract</span>
+          <span>Add CAP muerto</span>
         </button>
       </td>
     `;
@@ -13117,7 +13194,7 @@ async function init() {
     const toLabel = seasonLabel(previousYear + 1);
     const newDraftAssetYear = previousYear + 8;
     const confirmed = confirm(
-      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- add +1 to every player bird-year counter\n- delete ${previousYear + 1} draft assets\n- add missing ${newDraftAssetYear} 1st/2nd round draft assets\n- remove dead contracts with no salary left in current or future seasons\n- hide ${fromLabel} salary columns across the site`
+      `Progress from ${fromLabel} to ${toLabel}?\n\nThis will:\n- create a season snapshot backup\n- add +1 to every player bird-year counter\n- delete ${previousYear + 1} draft assets\n- add missing ${newDraftAssetYear} 1st/2nd round draft assets\n- remove CAP muerto with no salary left in current or future seasons\n- hide ${fromLabel} salary columns across the site`
     );
     if (!confirmed) return;
 
