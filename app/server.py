@@ -12642,6 +12642,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 if not matched_role:
                     raise ValueError("invalid_target_role")
                 role = matched_role
+            elif free_agent_id is not None and free_agent_id > 0:
+                raise ValueError("target_role_required")
             if rank is None or rank < 1 or rank > 10:
                 raise ValueError("invalid_rank")
             if free_agent_id is None or free_agent_id <= 0:

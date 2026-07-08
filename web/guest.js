@@ -6010,6 +6010,9 @@ function collectMinimumTargets(container) {
     if (seen.has(freeAgentId)) {
       throw new Error('No puedes repetir jugadores en la lista.');
     }
+    if (!role) {
+      throw new Error(`Selecciona un rol para el jugador #${rank}.`);
+    }
     seen.add(freeAgentId);
     targets.push({ rank, free_agent_id: freeAgentId, role });
   });
