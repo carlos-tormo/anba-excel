@@ -7667,14 +7667,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return "Traspaso procesado"
         return " ".join(part for part in [action, entity] if part).strip() or "Movimiento registrado"
 
-    def list_players(self, include_private: bool = False) -> List[Dict[str, Any]]:
+    def list_players(self, include_private: bool = False, sync_generated: bool = True) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
-            changed = self._sync_cap_hold_free_agents(conn, settings)
-            changed += self._sync_uncontracted_profile_free_agents(conn)
-            if changed:
-                conn.commit()
+            if sync_generated:
+                changed = self._sync_cap_hold_free_agents(conn, settings)
+                changed += self._sync_uncontracted_profile_free_agents(conn)
+                if changed:
+                    conn.commit()
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < 2025 or current_year > 2030:
                 current_year = 2025
@@ -21381,11 +21382,19 @@ QUALITY REQUIREMENTS
         if parsed.path == "/api/admin/players":
             if not self._require_admin():
                 return
-            self._json(200, {"players": self.db.list_players(include_private=True)})
+            try:
+                self._json(200, {"players": self.db.list_players(include_private=True, sync_generated=False)})
+            except Exception as err:
+                self.log_message("Player catalog load failed: %s", err)
+                self._json(500, {"error": "players_unavailable"})
             return
 
         if parsed.path == "/api/players":
-            self._json(200, {"players": self.db.list_players()})
+            try:
+                self._json(200, {"players": self.db.list_players(sync_generated=False)})
+            except Exception as err:
+                self.log_message("Public player catalog load failed: %s", err)
+                self._json(500, {"error": "players_unavailable"})
             return
 
         if parsed.path == "/api/tracker":
