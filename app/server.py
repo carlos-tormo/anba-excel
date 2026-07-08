@@ -1199,6 +1199,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def ensure_auth_schema(self) -> None:
         with self.connect() as conn:
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError as exc:
+                print(f"SQLite WAL setup skipped: {exc}", flush=True)
             self._ensure_maintenance_schema(conn)
             conn.execute(
                 """
