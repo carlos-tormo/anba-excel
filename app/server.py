@@ -1115,6 +1115,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._free_agents_sync_lock = threading.Lock()
+        self._session_cleanup_lock = threading.Lock()
 
     def _ensure_gm_free_agent_offer_requests_are_retained(self, conn: sqlite3.Connection) -> None:
         fk_rows = conn.execute("PRAGMA foreign_key_list(gm_free_agent_offer_requests)").fetchall()
@@ -5928,14 +5929,24 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 return None
             expires_at = int(row["expires_at"] or 0)
             if expires_at <= current_ts:
-                conn.execute("DELETE FROM sessions WHERE session_token = ?", (token,))
-                conn.commit()
+                try:
+                    conn.execute("DELETE FROM sessions WHERE session_token = ?", (token,))
+                    conn.commit()
+                except sqlite3.OperationalError as exc:
+                    if "database is locked" not in str(exc).lower():
+                        raise
+                    print(f"Expired session cleanup skipped: {exc}", flush=True)
                 return None
             try:
                 payload = json.loads(str(row["data_json"] or "{}"))
             except json.JSONDecodeError:
-                conn.execute("DELETE FROM sessions WHERE session_token = ?", (token,))
-                conn.commit()
+                try:
+                    conn.execute("DELETE FROM sessions WHERE session_token = ?", (token,))
+                    conn.commit()
+                except sqlite3.OperationalError as exc:
+                    if "database is locked" not in str(exc).lower():
+                        raise
+                    print(f"Invalid session cleanup skipped: {exc}", flush=True)
                 return None
             return payload if isinstance(payload, dict) else None
 
@@ -5948,10 +5959,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def cleanup_expired_sessions(self, now_ts: Optional[int] = None) -> int:
         current_ts = now_ts if now_ts is not None else int(datetime.now(UTC).timestamp())
-        with self.connect() as conn:
-            cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (current_ts,))
-            conn.commit()
-            return int(cur.rowcount or 0)
+        if not self._session_cleanup_lock.acquire(blocking=False):
+            return 0
+        try:
+            with self.connect() as conn:
+                cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (current_ts,))
+                conn.commit()
+                return int(cur.rowcount or 0)
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            print(f"Session cleanup skipped: {exc}", flush=True)
+            return 0
+        finally:
+            self._session_cleanup_lock.release()
 
     def list_teams(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
