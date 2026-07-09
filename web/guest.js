@@ -5283,7 +5283,8 @@ function freeAgentOfferMinimumAmount(agent, season, contractYear = 1) {
   const type = freeAgentOfferContractType().toUpperCase();
   if (type === 'E10') return 0;
   if (type === 'TW') return twoWayMinimumSalaryForSeason(season) || 0;
-  const experience = freeAgentOfferExperienceYears(agent);
+  const rawExperience = freeAgentOfferExperienceYears(agent);
+  const experience = type === 'MIN' && rawExperience > 2 ? 2 : rawExperience;
   return (
     minimumSalaryForSeason(season, experience, contractYear)
     || minimumSalaryForSeason(season, Math.min(10, experience + contractYear - 1), 1)

@@ -9695,6 +9695,16 @@ select[data-new-field="years_left"],
   align-items: center;
   gap: 6px;
 }
+.inline-editor input,
+.inline-editor textarea,
+.inline-editor select {
+  touch-action: manipulation;
+}
+.inline-editor input,
+.inline-editor textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
 .inline-editor.locked input,
 .inline-editor.locked select {
   background: #f0f4f8;

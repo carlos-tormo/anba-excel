@@ -5787,7 +5787,8 @@ function freeAgentOfferMinimumAmount(agent, season, contractYear = 1) {
   const type = freeAgentOfferContractType().toUpperCase();
   if (type === 'E10') return 0;
   if (type === 'TW') return twoWayMinimumSalaryForSeason(season) || 0;
-  const experience = freeAgentOfferExperienceYears(agent);
+  const rawExperience = freeAgentOfferExperienceYears(agent);
+  const experience = type === 'MIN' && rawExperience > 2 ? 2 : rawExperience;
   return (
     minimumSalaryForSeason(season, experience, contractYear)
     || minimumSalaryForSeason(season, Math.min(10, experience + contractYear - 1), 1)
@@ -9120,6 +9121,34 @@ function attachInlineEditor(fieldEl, onSaveField) {
     tick.hidden = !editable;
   };
 
+  const focusField = () => {
+    try {
+      fieldEl.focus({ preventScroll: true });
+    } catch (_) {
+      fieldEl.focus();
+    }
+    if (!isSelect && typeof fieldEl.setSelectionRange === 'function') {
+      const end = String(fieldEl.value || '').length;
+      try {
+        fieldEl.setSelectionRange(end, end);
+      } catch (_) {
+        // Some input types do not support selection ranges.
+      }
+    }
+  };
+
+  const activateEditor = ({ openSelect = false } = {}) => {
+    if (wrapper.classList.contains('locked')) {
+      setEditable(true);
+    }
+    focusField();
+    if (openSelect && isSelect) {
+      setTimeout(() => fieldEl.click(), 0);
+    }
+  };
+
+  const isEditorControl = (target) => target === tick || target?.closest?.('button');
+
   let saving = false;
 
   const persist = async () => {
@@ -9148,14 +9177,26 @@ function attachInlineEditor(fieldEl, onSaveField) {
 
   setEditable(false);
 
+  wrapper.addEventListener('pointerdown', (e) => {
+    if (isEditorControl(e.target) || e.pointerType === 'mouse') return;
+    if (wrapper.classList.contains('locked')) {
+      activateEditor();
+    }
+  });
+
+  wrapper.addEventListener('touchstart', (e) => {
+    if (isEditorControl(e.target)) return;
+    if (wrapper.classList.contains('locked')) {
+      setEditable(true);
+    }
+  }, { passive: true });
+
   wrapper.addEventListener('click', (e) => {
     if (e.target === tick) return;
     if (wrapper.classList.contains('locked')) {
-      setEditable(true);
-      fieldEl.focus();
-      if (isSelect) {
-        setTimeout(() => fieldEl.click(), 0);
-      }
+      activateEditor({ openSelect: isSelect });
+    } else if (e.target === fieldEl && document.activeElement !== fieldEl) {
+      focusField();
     }
   });
 
