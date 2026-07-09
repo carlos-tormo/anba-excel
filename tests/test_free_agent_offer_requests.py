@@ -449,6 +449,64 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(players))
 
+    def test_player_payload_from_free_agent_offer_adds_post_contract_bird_markers(self) -> None:
+        handler = object.__new__(Handler)
+
+        one_year = handler._player_payload_from_free_agent_offer(
+            {"name": "One Year FA"},
+            {
+                "contract_type": "Reg",
+                "years": 1,
+                "salary_by_season": {"2026": "10.000.000"},
+            },
+        )
+        self.assertEqual("NB", one_year["salary_2027_text"])
+
+        two_year = handler._player_payload_from_free_agent_offer(
+            {"name": "Two Year FA"},
+            {
+                "contract_type": "Reg",
+                "years": 2,
+                "salary_by_season": {
+                    "2026": "10.000.000",
+                    "2027": "11.000.000",
+                },
+            },
+        )
+        self.assertEqual("EB", two_year["salary_2028_text"])
+
+        long_contract = handler._player_payload_from_free_agent_offer(
+            {"name": "Long FA"},
+            {
+                "contract_type": "Reg",
+                "years": 3,
+                "salary_by_season": {
+                    "2026": "10.000.000",
+                    "2027": "11.000.000",
+                    "2028": "12.000.000",
+                },
+            },
+        )
+        self.assertEqual("FB", long_contract["salary_2029_text"])
+
+    def test_player_payload_from_free_agent_offer_skips_post_contract_marker_when_final_year_has_option(self) -> None:
+        handler = object.__new__(Handler)
+
+        payload = handler._player_payload_from_free_agent_offer(
+            {"name": "Option FA"},
+            {
+                "contract_type": "Reg",
+                "years": 2,
+                "salary_by_season": {
+                    "2026": "10.000.000",
+                    "2027": "11.000.000",
+                },
+                "option_by_season": {"2027": "PO"},
+            },
+        )
+
+        self.assertNotIn("salary_2028_text", payload)
+
     def test_renewal_discord_notification_uses_offer_years(self) -> None:
         handler = object.__new__(Handler)
         captured = {}
@@ -920,11 +978,38 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(20, scores[0]["role_points"])
         self.assertEqual(10, scores[0]["birds_bonus"])
         self.assertEqual(40, scores[0]["total"])
+        self.assertEqual(0, scores[0]["handicap"])
+
+        self.db.set_gm_minimum_target_handicap("ATL", -3)
+        scores = self.db.list_admin_gm_minimum_target_order()
+        self.assertEqual(-3, scores[0]["handicap"])
+        self.assertEqual(37, scores[0]["total"])
         self.assertEqual(6, self.db._minimum_target_birds_bonus(23, "ATL", "ATL"))
         self.assertEqual(6, self.db._minimum_target_birds_bonus(28, "ATL", "ATL"))
         self.assertEqual(3, self.db._minimum_target_birds_bonus(29, "ATL", "ATL"))
         self.assertEqual(1, self.db._minimum_target_birds_bonus(34, "ATL", "ATL"))
         self.assertEqual(0, self.db._minimum_target_birds_bonus(22, "BKN", "ATL"))
+
+    def test_admin_can_remove_minimum_target_from_user_list(self) -> None:
+        user = self.db.upsert_google_user("google-atl-gm", "atl-gm@example.com", "ATL GM", None)
+        self.db.replace_user_team_assignments(int(user["id"]), ["ATL"])
+        self.db.set_gm_minimum_targets(
+            int(user["id"]),
+            "ATL",
+            [
+                {
+                    "rank": 1,
+                    "free_agent_id": self.free_agent_id,
+                    "role": "Titular",
+                }
+            ],
+        )
+
+        result = self.db.remove_admin_gm_minimum_target(int(user["id"]), 1)
+
+        self.assertTrue(result["removed"])
+        minimum_targets = self.db.get_gm_minimum_targets(int(user["id"]), "ATL")
+        self.assertEqual([], minimum_targets["targets"])
 
     def test_cartera_clients_include_offer_and_interest_teams(self) -> None:
         self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})

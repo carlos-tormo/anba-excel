@@ -1689,6 +1689,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS gm_minimum_target_handicaps (
+                    team_code TEXT PRIMARY KEY REFERENCES teams(code) ON DELETE CASCADE,
+                    handicap INTEGER NOT NULL DEFAULT 0 CHECK(handicap >= -9 AND handicap <= 0),
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS team_depth_charts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -13045,6 +13054,74 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
         return self.get_gm_minimum_targets(parsed_user_id, normalized_team)
 
+    def remove_admin_gm_minimum_target(self, user_id: Any, rank: Any) -> Dict[str, Any]:
+        parsed_user_id = parse_int(user_id)
+        parsed_rank = parse_int(rank)
+        if parsed_user_id is None or parsed_user_id <= 0:
+            raise ValueError("user_required")
+        if parsed_rank is None or parsed_rank < 1 or parsed_rank > 10:
+            raise ValueError("invalid_rank")
+        with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM gm_minimum_targets WHERE user_id = ? AND rank = ?",
+                (parsed_user_id, parsed_rank),
+            ).fetchone()
+            if not existing:
+                return {"removed": False, "user_id": parsed_user_id, "rank": parsed_rank}
+            conn.execute(
+                "DELETE FROM gm_minimum_targets WHERE user_id = ? AND rank = ?",
+                (parsed_user_id, parsed_rank),
+            )
+            conn.execute(
+                "UPDATE gm_minimum_target_status SET updated_at = ? WHERE user_id = ?",
+                (now_iso(), parsed_user_id),
+            )
+            conn.commit()
+        return {"removed": True, "user_id": parsed_user_id, "rank": parsed_rank}
+
+    def list_gm_minimum_target_handicaps(self) -> Dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT team_code, handicap FROM gm_minimum_target_handicaps ORDER BY team_code"
+            ).fetchall()
+        handicaps: Dict[str, int] = {}
+        for row in rows:
+            team_code = normalize_team_code(row["team_code"])
+            handicap = parse_int(row["handicap"])
+            if team_code and handicap is not None and -9 <= handicap <= 0:
+                handicaps[team_code] = handicap
+        return handicaps
+
+    def set_gm_minimum_target_handicap(self, team_code: Any, handicap: Any) -> Dict[str, Any]:
+        normalized_team = normalize_team_code(team_code)
+        parsed_handicap = parse_int(handicap)
+        if not normalized_team:
+            raise ValueError("team_required")
+        if parsed_handicap is None:
+            parsed_handicap = 0
+        if parsed_handicap < -9 or parsed_handicap > 0:
+            raise ValueError("invalid_handicap")
+        now = now_iso()
+        with self.connect() as conn:
+            team = conn.execute("SELECT code FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+            if not team:
+                raise ValueError("team_not_found")
+            if parsed_handicap == 0:
+                conn.execute("DELETE FROM gm_minimum_target_handicaps WHERE team_code = ?", (normalized_team,))
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO gm_minimum_target_handicaps (team_code, handicap, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(team_code) DO UPDATE SET
+                        handicap = excluded.handicap,
+                        updated_at = excluded.updated_at
+                    """,
+                    (normalized_team, parsed_handicap, now),
+                )
+            conn.commit()
+        return {"team_code": normalized_team, "handicap": parsed_handicap}
+
     def list_admin_gm_minimum_targets(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             cur = conn.execute(
@@ -13212,6 +13289,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 }
             appeal_rows = conn.execute("SELECT * FROM free_agent_team_appeal").fetchall()
             appeal_by_team = {str(row["team_code"] or "").upper(): dict(row) for row in appeal_rows}
+            handicap_rows = conn.execute("SELECT team_code, handicap FROM gm_minimum_target_handicaps").fetchall()
+            handicaps = {
+                normalize_team_code(row["team_code"]): parse_int(row["handicap"]) or 0
+                for row in handicap_rows
+                if normalize_team_code(row["team_code"])
+            }
             target_rows = conn.execute(
                 """
                 SELECT
@@ -13248,7 +13331,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             role_points = self._minimum_target_role_points(row["role"])
             rights_team_code = normalize_team_code(row["rights_team_code"])
             birds_bonus = self._minimum_target_birds_bonus(age, team_code, rights_team_code)
-            total = priority_points + appeal_points + role_points + birds_bonus
+            handicap = handicaps.get(team_code, 0)
+            total = priority_points + appeal_points + role_points + birds_bonus + handicap
             scored.append(
                 {
                     "total": total,
@@ -13256,6 +13340,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "appeal_points": appeal_points,
                     "role_points": role_points,
                     "birds_bonus": birds_bonus,
+                    "handicap": handicap,
                     "appeal_rank": int(appeal_rank) if appeal_rank and appeal_rank > 0 else None,
                     "appeal_key": appeal_key,
                     "age": age,
@@ -21657,6 +21742,44 @@ QUALITY REQUIREMENTS
         sign = "-" if amount < 0 else ""
         return f"{sign}{abs(amount):,}".replace(",", ".")
 
+    def _free_agent_offer_post_contract_rights_marker(
+        self,
+        offer_payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        salary_by_season = offer_payload.get("salary_by_season")
+        if not isinstance(salary_by_season, dict) or not salary_by_season:
+            return None
+
+        signed_seasons = sorted(
+            season
+            for season in (parse_int(str(raw_season)) for raw_season in salary_by_season.keys())
+            if season is not None
+        )
+        if not signed_seasons:
+            return None
+
+        years = parse_int(offer_payload.get("years")) or len(signed_seasons)
+        years = max(1, int(years))
+        final_season = max(signed_seasons)
+        marker = "NB" if years == 1 else "EB" if years == 2 else "FB"
+
+        if years >= 2:
+            option_by_season = offer_payload.get("option_by_season")
+            if not isinstance(option_by_season, dict):
+                option_by_season = {}
+            final_option = str(
+                option_by_season.get(str(final_season))
+                or option_by_season.get(final_season)
+                or ""
+            ).strip().upper()
+            if final_option in {"PO", "TO", "QO", "GAP"}:
+                return None
+
+        rights_season = final_season + 1
+        if rights_season < CAP_FORECAST_MIN_YEAR or rights_season > 2030:
+            return None
+        return {"season": rights_season, "marker": marker}
+
     def _free_agent_offer_role_options(self) -> tuple[str, ...]:
         return (
             "Titular",
@@ -21807,6 +21930,13 @@ QUALITY REQUIREMENTS
                 value = str(raw_value or "").strip().upper()
                 if value:
                     player_payload[f"option_{season}"] = value
+
+        rights_marker = self._free_agent_offer_post_contract_rights_marker(offer_payload)
+        if rights_marker:
+            rights_season = int(rights_marker["season"])
+            rights_field = f"salary_{rights_season}_text"
+            if not player_payload.get(rights_field):
+                player_payload[rights_field] = str(rights_marker["marker"])
 
         return player_payload
 
@@ -22710,6 +22840,12 @@ QUALITY REQUIREMENTS
             self._json(200, {"scores": self.db.list_admin_gm_minimum_target_order()})
             return
 
+        if parsed.path == "/api/admin/gm-minimum-target-handicaps":
+            if not self._require_admin():
+                return
+            self._json(200, {"handicaps": self.db.list_gm_minimum_target_handicaps()})
+            return
+
         if parsed.path == "/api/players":
             try:
                 started = time.perf_counter()
@@ -23122,6 +23258,48 @@ QUALITY REQUIREMENTS
             return
 
         payload = self._read_json()
+
+        if parsed.path == "/api/admin/gm-minimum-targets/remove":
+            if not self._require_admin():
+                return
+            if not self._require_csrf():
+                return
+            try:
+                result = self.db.remove_admin_gm_minimum_target(payload.get("user_id"), payload.get("rank"))
+            except ValueError as err:
+                self._json(400, {"error": str(err) or "invalid_minimum_target"})
+                return
+            self._log_admin_action(
+                "remove",
+                "gm_minimum_target",
+                result.get("user_id"),
+                None,
+                {"rank": result.get("rank"), "removed": result.get("removed")},
+            )
+            self._json(200, {"ok": True, **result})
+            return
+
+        if parsed.path == "/api/admin/gm-minimum-target-handicaps":
+            if not self._require_admin():
+                return
+            if not self._require_csrf():
+                return
+            try:
+                result = self.db.set_gm_minimum_target_handicap(payload.get("team_code"), payload.get("handicap"))
+            except ValueError as err:
+                message = str(err) or "invalid_handicap"
+                status = 404 if message == "team_not_found" else 400
+                self._json(status, {"error": message})
+                return
+            self._log_admin_action(
+                "update",
+                "gm_minimum_target_handicap",
+                result.get("team_code"),
+                result.get("team_code"),
+                {"handicap": result.get("handicap")},
+            )
+            self._json(200, {"ok": True, "handicap": result})
+            return
 
         if parsed.path.startswith("/api/cartera/clients/") and parsed.path.endswith("/ruleout"):
             if not self._require_admin_or_coadmin():

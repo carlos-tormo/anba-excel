@@ -35,6 +35,7 @@ const state = {
   gmOptionRequests: [],
   gmMinimumTargets: [],
   gmMinimumTargetOrder: [],
+  gmMinimumTargetHandicaps: {},
   coadminVotes: [],
   leaguePlayers: [],
   freeAgents: [],
@@ -6563,6 +6564,13 @@ function renderGmMinimumTargetsBoard() {
             ${target.position ? `<span class="mini-chip">${escapeHtml(target.position)}</span>` : ''}
             ${target.rating ? `<span class="mini-chip">${escapeHtml(target.rating)}</span>` : ''}
             ${target.role ? `<span class="mini-chip mini-chip--role">${escapeHtml(target.role)}</span>` : ''}
+            <button
+              type="button"
+              class="gm-minimum-target-remove-btn"
+              data-minimum-target-remove="1"
+              data-user-id="${Number(item.user_id || 0)}"
+              data-rank="${Number(target.rank || 0)}"
+            >Quitar</button>
           </li>
         `).join('')}</ol>`
       : '<span class="muted-text">Sin jugadores seleccionados.</span>';
@@ -6593,6 +6601,28 @@ function renderGmMinimumTargetsBoard() {
       </table>
     </div>
   `;
+  board.querySelectorAll('[data-minimum-target-remove]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const userId = Number(button.dataset.userId || 0);
+      const rank = Number(button.dataset.rank || 0);
+      if (!userId || !rank) return;
+      if (!window.confirm('¿Quitar este jugador de la lista de prioridades?')) return;
+      button.disabled = true;
+      try {
+        await api('/api/admin/gm-minimum-targets/remove', {
+          method: 'POST',
+          body: JSON.stringify({ user_id: userId, rank }),
+        });
+        await loadGmMinimumTargets();
+        if (Array.isArray(state.gmMinimumTargetOrder) && state.gmMinimumTargetOrder.length) {
+          await loadGmMinimumTargetOrder();
+        }
+      } catch (err) {
+        window.alert(`No se pudo quitar el jugador: ${err.message}`);
+        button.disabled = false;
+      }
+    });
+  });
 }
 
 async function loadGmMinimumTargets() {
@@ -6619,7 +6649,11 @@ function renderGmMinimumTargetOrderBoard() {
   if (!board) return;
   const scores = Array.isArray(state.gmMinimumTargetOrder) ? state.gmMinimumTargetOrder : [];
   if (!scores.length) {
-    board.innerHTML = '<div class="muted-text">No hay puntuaciones para ordenar todavía.</div>';
+    board.innerHTML = `
+      ${renderGmMinimumTargetHandicapControls()}
+      <div class="muted-text">No hay puntuaciones para ordenar todavía.</div>
+    `;
+    wireGmMinimumTargetHandicapControls(board);
     return;
   }
   const rows = scores.map((item, index) => {
@@ -6658,13 +6692,18 @@ function renderGmMinimumTargetOrderBoard() {
           <strong>${Number(item.birds_bonus || 0)} pts</strong>
           <div class="muted-text">${escapeHtml(birdsText)}</div>
         </td>
+        <td>
+          <strong>${Number(item.handicap || 0)} pts</strong>
+          <div class="muted-text">${Number(item.handicap || 0) ? 'Penalización manual' : 'Sin penalización'}</div>
+        </td>
       </tr>
     `;
   }).join('');
   board.innerHTML = `
+    ${renderGmMinimumTargetHandicapControls()}
     <div class="gm-minimum-target-order-header">
       <h4>Orden estimado top 20</h4>
-      <p class="muted-text">Puntuación = prioridad del equipo + atractivo del equipo + rol ofrecido + bonus Bird.</p>
+      <p class="muted-text">Puntuación = prioridad del equipo + atractivo del equipo + rol ofrecido + bonus Bird + handicap.</p>
     </div>
     <div class="table-scroll">
       <table class="gm-minimum-targets-table gm-minimum-target-order-table">
@@ -6679,12 +6718,78 @@ function renderGmMinimumTargetOrderBoard() {
             <th>Atractivo</th>
             <th>Rol</th>
             <th>Birds</th>
+            <th>Handicap</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
   `;
+  wireGmMinimumTargetHandicapControls(board);
+}
+
+function renderGmMinimumTargetHandicapControls() {
+  const teams = Array.isArray(state.teams) ? state.teams : [];
+  const handicaps = state.gmMinimumTargetHandicaps || {};
+  if (!teams.length) {
+    return '';
+  }
+  const options = [0, -1, -2, -3, -4, -5, -6, -7, -8, -9];
+  const teamRows = teams.map((team) => {
+    const code = String(team.code || '').toUpperCase();
+    if (!code) return '';
+    const current = Number(handicaps[code] || 0);
+    return `
+      <label class="gm-minimum-target-handicap">
+        <span>${escapeHtml(code)}</span>
+        <select data-minimum-target-handicap="${escapeHtml(code)}">
+          ${options.map((value) => `<option value="${value}" ${value === current ? 'selected' : ''}>${value === 0 ? '0' : value}</option>`).join('')}
+        </select>
+      </label>
+    `;
+  }).join('');
+  return `
+    <section class="gm-minimum-target-handicaps">
+      <div>
+        <h4>Handicap por equipo</h4>
+        <p class="muted-text">Aplica una penalización manual de 0 a -9 puntos al cálculo del orden.</p>
+      </div>
+      <div class="gm-minimum-target-handicap-grid">${teamRows}</div>
+    </section>
+  `;
+}
+
+function wireGmMinimumTargetHandicapControls(root) {
+  root.querySelectorAll('[data-minimum-target-handicap]').forEach((select) => {
+    select.addEventListener('change', async () => {
+      const teamCode = String(select.dataset.minimumTargetHandicap || '').toUpperCase();
+      const handicap = Number(select.value || 0);
+      select.disabled = true;
+      try {
+        await api('/api/admin/gm-minimum-target-handicaps', {
+          method: 'POST',
+          body: JSON.stringify({ team_code: teamCode, handicap }),
+        });
+        state.gmMinimumTargetHandicaps = {
+          ...(state.gmMinimumTargetHandicaps || {}),
+          [teamCode]: handicap,
+        };
+        await loadGmMinimumTargetOrder();
+      } catch (err) {
+        window.alert(`No se pudo guardar el handicap: ${err.message}`);
+        await loadGmMinimumTargetHandicaps();
+        renderGmMinimumTargetOrderBoard();
+      } finally {
+        select.disabled = false;
+      }
+    });
+  });
+}
+
+async function loadGmMinimumTargetHandicaps() {
+  const result = await api('/api/admin/gm-minimum-target-handicaps');
+  state.gmMinimumTargetHandicaps = result.handicaps || {};
+  return state.gmMinimumTargetHandicaps;
 }
 
 async function loadGmMinimumTargetOrder() {
@@ -6693,6 +6798,7 @@ async function loadGmMinimumTargetOrder() {
   if (button) button.disabled = true;
   if (statusEl) statusEl.textContent = 'Calculando orden...';
   try {
+    await loadGmMinimumTargetHandicaps();
     const result = await api('/api/admin/gm-minimum-targets/order');
     state.gmMinimumTargetOrder = result.scores || [];
     renderGmMinimumTargetOrderBoard();
