@@ -65,6 +65,11 @@ def parse_float(value: Optional[str]) -> Optional[float]:
 def parse_amount_like(value: Any) -> Optional[float]:
     if value is None:
         return None
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
     text = str(value).strip()
     if not text:
         return None
@@ -508,6 +513,42 @@ def salary_looks_like_minimum(amount: Any, salary_cap: float) -> bool:
     if numeric <= 0:
         return False
     return any(abs(numeric - minimum) <= 2 for minimum in minimum_salary_values_for_cap(salary_cap))
+
+
+def is_standard_minimum_contract(row: Dict[str, Any]) -> bool:
+    normalized = unicodedata.normalize("NFKD", str(row.get("bird_rights") or "").strip().upper())
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"[\s_-]+", "", normalized)
+    return normalized in {"MIN", "MINIMO", "MINIMUM"}
+
+
+def minimum_contract_year_for_season(row: Dict[str, Any], season: int) -> int:
+    target = int(season)
+    salary_years: List[int] = []
+    for key in row.keys():
+        match = re.fullmatch(r"salary_(\d{4})_(?:num|text)", str(key))
+        if not match:
+            continue
+        year = int(match.group(1))
+        if year <= target and row_salary_num(row, year) > 0:
+            salary_years.append(year)
+    if not salary_years:
+        return 1
+    return max(1, min(5, target - min(salary_years) + 1))
+
+
+def minimum_contract_team_salary(row: Dict[str, Any], season: int, salary_cap: float) -> float:
+    salary = row_salary_num(row, season)
+    if salary <= 0:
+        return 0.0
+    if not is_standard_minimum_contract(row):
+        return salary
+    experience = normalize_experience_years(row.get("experience_years"))
+    if experience is None or experience <= 2:
+        return salary
+    contract_year = minimum_contract_year_for_season(row, season)
+    accounting_salary = minimum_salary_for_season(salary_cap, 2, contract_year)
+    return float(accounting_salary or minimum_salary_2_yos_for_cap(salary_cap))
 
 
 def apron_yos_adjustment(row: Dict[str, Any], season: int, salary_cap: float) -> float:

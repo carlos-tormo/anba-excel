@@ -3,6 +3,7 @@ import unittest
 from app.domain_rules import (
     ROSTER_STANDARD_MAX_DEFAULT,
     cap_hold_amount,
+    minimum_contract_team_salary,
     minimum_salary_for_season,
     open_roster_spot_cap_hold,
     parse_amount_like,
@@ -18,6 +19,7 @@ class DomainRulesTests(unittest.TestCase):
     def test_money_parsing_preserves_existing_formats(self) -> None:
         self.assertEqual(1_234_567, parse_amount_like("1.234.567"))
         self.assertEqual(231.66, parse_amount_like("231.66"))
+        self.assertEqual(3_666_666.6666, parse_amount_like(3_666_666.6666))
         self.assertEqual(1234.5, parse_float("1 234,5"))
 
     def test_public_settings_payload_applies_roster_defaults(self) -> None:
@@ -60,6 +62,23 @@ class DomainRulesTests(unittest.TestCase):
         settings = {"free_agency_mode": "1", "current_year": "2026"}
 
         self.assertEqual(13_000_000, cap_hold_amount(row, 2026, settings, 154_647_000))
+
+    def test_minimum_contract_for_over_2_yos_counts_as_2_yos_minimum(self) -> None:
+        row = {
+            "bird_rights": "Min",
+            "experience_years": 10,
+            "salary_2026_text": "3.634.153",
+            "salary_2027_text": "3.815.861",
+        }
+
+        self.assertEqual(
+            minimum_salary_for_season(154_647_000, 2, 1),
+            minimum_contract_team_salary(row, 2026, 154_647_000),
+        )
+        self.assertEqual(
+            minimum_salary_for_season(154_647_000, 2, 2),
+            minimum_contract_team_salary(row, 2027, 154_647_000),
+        )
 
     def test_cap_hold_amount_uses_previous_salary_history_fallback(self) -> None:
         row = {

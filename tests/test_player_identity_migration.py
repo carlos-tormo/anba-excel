@@ -639,6 +639,93 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
 
         self.db.assert_player_identity_integrity()
 
+    def test_buyout_stretch_dead_cap_uses_adjusted_integer_amount_after_waivers(self) -> None:
+        profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
+        with self.db.connect() as conn:
+            now = now_iso()
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('current_year', '2026', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (now,),
+            )
+            conn.execute(
+                """
+                UPDATE players
+                SET salary_2026_text = '15000000',
+                    salary_2026_num = 15000000,
+                    salary_2027_text = NULL,
+                    salary_2027_num = NULL
+                WHERE id = ?
+                """,
+                (self.legacy_atl_player_id,),
+            )
+            conn.commit()
+
+        cut_result = self.db.cut_player(
+            self.legacy_atl_player_id,
+            {
+                "buyout": True,
+                "stretch": True,
+                "dead_cap_overrides": {"2026": "11000000"},
+            },
+        )
+        self.assertIsNotNone(cut_result)
+        self.assertTrue(cut_result["waiver"])
+        dead_contract_id = cut_result["dead_contract_id"]
+
+        with self.db.connect() as conn:
+            dead = conn.execute(
+                """
+                SELECT profile_id, salary_2026_text, salary_2026_num,
+                       salary_2027_text, salary_2027_num,
+                       salary_2028_text, salary_2028_num
+                FROM dead_contracts
+                WHERE id = ?
+                """,
+                (dead_contract_id,),
+            ).fetchone()
+            self.assertEqual(profile_id, int(dead["profile_id"]))
+            self.assertEqual("3.666.667", dead["salary_2026_text"])
+            self.assertEqual(3_666_667, int(dead["salary_2026_num"]))
+            self.assertEqual("3.666.667", dead["salary_2027_text"])
+            self.assertEqual(3_666_667, int(dead["salary_2027_num"]))
+            self.assertEqual("3.666.667", dead["salary_2028_text"])
+            self.assertEqual(3_666_667, int(dead["salary_2028_num"]))
+
+            conn.execute(
+                "UPDATE waiver_players SET waiver_expires_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+                (cut_result["waiver_id"],),
+            )
+            conn.commit()
+
+        expired = self.db.process_expired_waivers()
+        self.assertEqual(1, expired["count"])
+        self.assertEqual(dead_contract_id, expired["processed"][0]["dead_contract_id"])
+
+        with self.db.connect() as conn:
+            dead = conn.execute(
+                """
+                SELECT salary_2026_text, salary_2026_num,
+                       salary_2027_text, salary_2027_num,
+                       salary_2028_text, salary_2028_num
+                FROM dead_contracts
+                WHERE id = ?
+                """,
+                (dead_contract_id,),
+            ).fetchone()
+            self.assertIsNotNone(dead)
+            self.assertEqual("3.666.667", dead["salary_2026_text"])
+            self.assertEqual(3_666_667, int(dead["salary_2026_num"]))
+            self.assertEqual("3.666.667", dead["salary_2027_text"])
+            self.assertEqual(3_666_667, int(dead["salary_2027_num"]))
+            self.assertEqual("3.666.667", dead["salary_2028_text"])
+            self.assertEqual(3_666_667, int(dead["salary_2028_num"]))
+
+        self.db.assert_player_identity_integrity()
+
     def test_trade_preserves_contract_row_profile_identity(self) -> None:
         atl_profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
         bos_profile_id = self._profile_id_for_player(self.legacy_bos_player_id)

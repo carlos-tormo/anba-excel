@@ -64,6 +64,7 @@ try:
         luxury_tax_amount,
         maximum_salary_for_experience,
         minimum_salary_2_yos_for_cap,
+        minimum_contract_team_salary,
         minimum_salary_for_season,
         normalize_bird_years,
         normalize_experience_years,
@@ -125,6 +126,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         luxury_tax_amount,
         maximum_salary_for_experience,
         minimum_salary_2_yos_for_cap,
+        minimum_contract_team_salary,
         minimum_salary_for_season,
         normalize_bird_years,
         normalize_experience_years,
@@ -11260,7 +11262,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         def player_salary_for_gasto(player: Dict[str, Any]) -> float:
             if is_exhibit10_player(player):
                 return 0.0
-            return row_salary_num(player, current_year)
+            return minimum_contract_team_salary(player, current_year, salary_cap)
 
         def player_salary_for_cap(player: Dict[str, Any]) -> float:
             hold = cap_hold_amount(player, current_year, settings, salary_cap)
@@ -11268,14 +11270,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 return hold
             if is_two_way_player(player) or is_exhibit10_player(player):
                 return 0.0
-            return row_salary_num(player, current_year)
+            return minimum_contract_team_salary(player, current_year, salary_cap)
 
         def player_salary_for_apron(player: Dict[str, Any]) -> float:
             if cap_hold_amount(player, current_year, settings, salary_cap) > 0:
                 return 0.0
             if is_two_way_player(player) or is_exhibit10_player(player):
                 return 0.0
-            return row_salary_num(player, current_year) + apron_yos_adjustment(player, current_year, salary_cap)
+            return minimum_contract_team_salary(player, current_year, salary_cap) + apron_yos_adjustment(player, current_year, salary_cap)
 
         # CAP Total: player team salary excluding Two-Way and Exhibit 10 contracts.
         cap_figure_players = sum(player_salary_for_cap(p) for p in players)
@@ -11379,7 +11381,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     continue
                 if is_two_way_player(player) or is_exhibit10_player(player):
                     continue
-                salary = row_salary_num(player, current_year)
+                salary = minimum_contract_team_salary(player, current_year, salary_cap)
                 if salary > 0:
                     lines.append(breakdown_amount(f"Jugador - {player_name(player)}", salary))
             return lines
@@ -11389,7 +11391,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for player in players:
                 if is_exhibit10_player(player):
                     continue
-                salary = row_salary_num(player, current_year)
+                salary = minimum_contract_team_salary(player, current_year, salary_cap)
                 if salary > 0:
                     label = f"Jugador - {player_name(player)}"
                     if is_two_way_player(player):
@@ -11411,7 +11413,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     continue
                 if is_two_way_player(player) or is_exhibit10_player(player):
                     continue
-                salary = row_salary_num(player, current_year)
+                salary = minimum_contract_team_salary(player, current_year, salary_cap)
                 if salary > 0:
                     lines.append(breakdown_amount(f"Jugador - {player_name(player)}", salary))
                 yos_adjustment = apron_yos_adjustment(player, current_year, salary_cap)
@@ -13160,6 +13162,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
         }
         return mapping.get(normalized, 0)
 
+    @staticmethod
+    def _minimum_target_birds_bonus(age: int, team_code: Any, rights_team_code: Any) -> int:
+        normalized_team = normalize_team_code(team_code)
+        normalized_rights_team = normalize_team_code(rights_team_code)
+        if not normalized_team or normalized_team != normalized_rights_team:
+            return 0
+        if age < 23:
+            return 10
+        if age <= 28:
+            return 6
+        if age <= 33:
+            return 3
+        return 1
+
     def list_admin_gm_minimum_target_order(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             teams = {
@@ -13207,6 +13223,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     mt.role,
                     f.position,
                     f.rating,
+                    f.rights_team_code,
                     pp.date_of_birth
                 FROM gm_minimum_targets mt
                 LEFT JOIN free_agents f ON f.id = mt.free_agent_id
@@ -13229,13 +13246,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
             appeal_rank = parse_float((appeal_by_team.get(team_code) or {}).get(appeal_key))
             appeal_points = max(0, 31 - int(appeal_rank)) if appeal_rank and appeal_rank > 0 else 0
             role_points = self._minimum_target_role_points(row["role"])
-            total = priority_points + appeal_points + role_points
+            rights_team_code = normalize_team_code(row["rights_team_code"])
+            birds_bonus = self._minimum_target_birds_bonus(age, team_code, rights_team_code)
+            total = priority_points + appeal_points + role_points + birds_bonus
             scored.append(
                 {
                     "total": total,
                     "priority_points": priority_points,
                     "appeal_points": appeal_points,
                     "role_points": role_points,
+                    "birds_bonus": birds_bonus,
                     "appeal_rank": int(appeal_rank) if appeal_rank and appeal_rank > 0 else None,
                     "appeal_key": appeal_key,
                     "age": age,
@@ -13249,6 +13269,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "profile_id": parse_int(row["profile_id"]),
                     "position": str(row["position"] or "").strip(),
                     "rating": str(row["rating"] or "").strip(),
+                    "rights_team_code": rights_team_code,
                     "role": str(row["role"] or "").strip(),
                 }
             )
@@ -13258,6 +13279,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 -int(item.get("priority_points") or 0),
                 -int(item.get("appeal_points") or 0),
                 -int(item.get("role_points") or 0),
+                -int(item.get("birds_bonus") or 0),
                 str(item.get("player_name") or ""),
                 str(item.get("team_code") or ""),
             )
@@ -17080,6 +17102,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                             player_payload,
                         )
 
+        rights_team_code = normalize_team_code(agent.get("rights_team_code"))
+        if not rights_team_code or rights_team_code != normalized_team_code:
+            player_payload["years_left"] = "0"
+
         player_id = self.create_player(team_code, player_payload)
         if not player_id:
             return None
@@ -17784,14 +17810,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 return hold
             if is_two_way_player(player) or is_exhibit10_player(player):
                 return 0.0
-            return row_salary_num(player, season)
+            return minimum_contract_team_salary(player, season, salary_cap)
 
         def player_apron_value(player: Dict[str, Any]) -> float:
             if cap_hold_amount(player, season, settings, salary_cap) > 0:
                 return 0.0
             if is_two_way_player(player) or is_exhibit10_player(player):
                 return 0.0
-            return row_salary_num(player, season) + apron_yos_adjustment(player, season, salary_cap)
+            return minimum_contract_team_salary(player, season, salary_cap) + apron_yos_adjustment(player, season, salary_cap)
 
         dead_cap_team_salary = sum(
             dead_contract_salary_num(d, season)
@@ -17923,18 +17949,19 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if not player:
                 return None
             hold = cap_hold_amount(player, season, settings, thresholds["salaryCap"])
-            salary = 0.0 if is_exhibit10_player(player) else row_salary_num(player, season)
+            salary = 0.0 if is_exhibit10_player(player) else minimum_contract_team_salary(player, season, thresholds["salaryCap"])
             cap_salary = (
                 hold
                 if hold > 0
                 else 0.0
                 if is_two_way_player(player) or is_exhibit10_player(player)
-                else row_salary_num(player, season)
+                else minimum_contract_team_salary(player, season, thresholds["salaryCap"])
             )
             apron_salary = (
                 0.0
                 if hold > 0 or is_two_way_player(player) or is_exhibit10_player(player)
-                else row_salary_num(player, season) + apron_yos_adjustment(player, season, thresholds["salaryCap"])
+                else minimum_contract_team_salary(player, season, thresholds["salaryCap"])
+                + apron_yos_adjustment(player, season, thresholds["salaryCap"])
             )
             minimum_cutoff = minimum_salary_2_yos_for_cap(thresholds["salaryCap"])
             roster_slot = roster_contract_slot_type(player, season)
@@ -21605,6 +21632,8 @@ QUALITY REQUIREMENTS
             return float(scaled_minimum_salary(TWO_WAY_MINIMUM_BASE_SALARY, salary_cap))
         experience = normalize_experience_years(free_agent.get("experience_years"))
         base_experience = experience or 0
+        if normalized_type == "MIN" and base_experience > 2:
+            return float(minimum_salary_for_season(salary_cap, 2, contract_year))
         amount = minimum_salary_for_season(salary_cap, base_experience, contract_year)
         if amount:
             return float(amount)

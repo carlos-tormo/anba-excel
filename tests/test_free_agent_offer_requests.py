@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from app.server import Handler, LeagueDB
+from app.domain_rules import minimum_salary_for_season
 from app.xlsx_import import create_schema, now_iso
 
 
@@ -440,6 +441,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("PO", updated["option_2028"])
         self.assertIsNone(updated["salary_2029_text"])
         self.assertEqual("Reg", updated["bird_rights"])
+        self.assertEqual("2+", updated["years_left"])
 
         players = [
             row for row in self.db.list_players()
@@ -585,6 +587,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         signed_player = self.db.get_player_record(int(signed_player_id))
         self.assertEqual("ATL", signed_player["team_code"])
         self.assertEqual("12.000.000", signed_player["salary_2026_text"])
+        self.assertIsNone(signed_player["years_left"])
         players_for_profile = [
             row for row in self.db.list_players()
             if int(row.get("profile_id") or 0) == profile_id
@@ -652,6 +655,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("ATL", players_for_profile[0]["team_code"])
         signed_player = self.db.get_player_record(int(signed_player_id))
         self.assertEqual("12.000.000", signed_player["salary_2026_text"])
+        self.assertIsNone(signed_player["years_left"])
 
     def test_renewal_offer_uses_bird_years_for_large_raises(self) -> None:
         handler = object.__new__(Handler)
@@ -737,6 +741,35 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
 
         self.assertEqual("Sexto hombre", normalized["role"])
+
+    def test_minimum_offer_for_over_2_yos_uses_2_yos_team_salary(self) -> None:
+        handler = object.__new__(Handler)
+        handler.db = self.db
+
+        normalized = handler._validate_and_normalize_free_agent_offer_payload(
+            {
+                "name": "Veteran Minimum Free Agent",
+                "source": "manual",
+                "experience_years": 10,
+            },
+            "ATL",
+            {
+                "contract_type": "Min",
+                "years": 2,
+                "annual_raise_percent": 0,
+                "role": "Minutos de rotación (0-9)",
+                "salary_by_season": {},
+            },
+        )
+
+        self.assertEqual(
+            f"{int(minimum_salary_for_season(154_647_000, 2, 1)):,}".replace(",", "."),
+            normalized["salary_by_season"]["2025"],
+        )
+        self.assertEqual(
+            f"{int(minimum_salary_for_season(154_647_000, 2, 2)):,}".replace(",", "."),
+            normalized["salary_by_season"]["2026"],
+        )
 
     def test_free_agent_offer_discord_thread_mentions_role_only_on_creation(self) -> None:
         handler = object.__new__(Handler)
@@ -855,6 +888,43 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(1.0, atl["under_23_single"])
         self.assertEqual(2.0, atl["under_23_multi"])
         self.assertEqual("BOS", appeal["rankings"][0]["under_23_multi"]["team_code"])
+
+    def test_minimum_target_order_includes_bird_rights_bonus(self) -> None:
+        user = self.db.upsert_google_user("google-atl-gm", "atl-gm@example.com", "ATL GM", None)
+        self.db.replace_user_team_assignments(int(user["id"]), ["ATL"])
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE free_agents SET rights_team_code = ? WHERE id = ?",
+                ("ATL", self.free_agent_id),
+            )
+            conn.commit()
+
+        self.db.set_gm_minimum_targets(
+            int(user["id"]),
+            "ATL",
+            [
+                {
+                    "rank": 1,
+                    "free_agent_id": self.free_agent_id,
+                    "role": "Titular",
+                }
+            ],
+        )
+
+        scores = self.db.list_admin_gm_minimum_target_order()
+
+        self.assertEqual(1, len(scores))
+        self.assertEqual("ATL", scores[0]["team_code"])
+        self.assertEqual("ATL", scores[0]["rights_team_code"])
+        self.assertEqual(10, scores[0]["priority_points"])
+        self.assertEqual(20, scores[0]["role_points"])
+        self.assertEqual(10, scores[0]["birds_bonus"])
+        self.assertEqual(40, scores[0]["total"])
+        self.assertEqual(6, self.db._minimum_target_birds_bonus(23, "ATL", "ATL"))
+        self.assertEqual(6, self.db._minimum_target_birds_bonus(28, "ATL", "ATL"))
+        self.assertEqual(3, self.db._minimum_target_birds_bonus(29, "ATL", "ATL"))
+        self.assertEqual(1, self.db._minimum_target_birds_bonus(34, "ATL", "ATL"))
+        self.assertEqual(0, self.db._minimum_target_birds_bonus(22, "BKN", "ATL"))
 
     def test_cartera_clients_include_offer_and_interest_teams(self) -> None:
         self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})

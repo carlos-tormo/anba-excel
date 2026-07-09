@@ -6624,8 +6624,10 @@ function renderGmMinimumTargetOrderBoard() {
   const rows = scores.map((item, index) => {
     const teamCode = String(item.team_code || '').toUpperCase();
     const role = String(item.role || '').trim();
+    const rightsTeam = String(item.rights_team_code || '').toUpperCase();
     const appealRank = item.appeal_rank ? `Ranking ${item.appeal_rank}` : 'Ranking N/D';
     const ageText = item.age ? `${item.age} años` : 'Edad N/D';
+    const birdsText = rightsTeam && rightsTeam === teamCode ? `Derechos ${rightsTeam}` : 'Sin bonus';
     return `
       <tr>
         <td class="gm-minimum-target-order-rank">${index + 1}</td>
@@ -6651,13 +6653,17 @@ function renderGmMinimumTargetOrderBoard() {
           <strong>${Number(item.role_points || 0)} pts</strong>
           <div class="muted-text">${escapeHtml(role || 'Sin rol')}</div>
         </td>
+        <td>
+          <strong>${Number(item.birds_bonus || 0)} pts</strong>
+          <div class="muted-text">${escapeHtml(birdsText)}</div>
+        </td>
       </tr>
     `;
   }).join('');
   board.innerHTML = `
     <div class="gm-minimum-target-order-header">
       <h4>Orden estimado top 20</h4>
-      <p class="muted-text">Puntuación = prioridad del equipo + atractivo del equipo + rol ofrecido.</p>
+      <p class="muted-text">Puntuación = prioridad del equipo + atractivo del equipo + rol ofrecido + bonus Bird.</p>
     </div>
     <div class="table-scroll">
       <table class="gm-minimum-targets-table gm-minimum-target-order-table">
@@ -6671,6 +6677,7 @@ function renderGmMinimumTargetOrderBoard() {
             <th>Prioridad</th>
             <th>Atractivo</th>
             <th>Rol</th>
+            <th>Birds</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
