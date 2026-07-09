@@ -10927,6 +10927,10 @@ select[data-new-field="years_left"],
   color: #0f172a;
   font-size: 1.05rem;
 }
+.minimum-targets-note {
+  color: #0f766e;
+  font-weight: 900;
+}
 .minimum-targets-grid {
   display: grid;
   gap: 10px;

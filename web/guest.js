@@ -5978,6 +5978,7 @@ function renderMinimumTargetsEditor(container, options = {}) {
       <div class="minimum-targets-copy">
         <strong>Lista top 10 de mínimos</strong>
         <span>Puedes guardar aunque no completes los 10 puestos. Un jugador no puede repetirse en la lista.</span>
+        ${payload.omitted ? '<span class="minimum-targets-note">Omitiste esta lista antes, pero puedes completarla y guardarla aquí en cualquier momento.</span>' : ''}
       </div>
       <div class="minimum-targets-grid">${rows}</div>
       <p class="minimum-targets-disclaimer">Si no rellenas esta lista será tu responsabilidad si un mínimo firma antes de preguntarte</p>
@@ -5993,14 +5994,16 @@ function renderMinimumTargetsEditor(container, options = {}) {
       try {
         state.gmOffice.minimumTargets = normalizeMinimumTargets({
           ...(state.gmOffice.minimumTargets || {}),
-          targets: collectMinimumTargets(container),
+          targets: collectMinimumTargets(container, { requireRoles: false }),
         });
-      } catch {
-        // Duplicates are disabled in the selector UI; keep rendering stable if markup changes.
+        setMinimumTargetsInlineStatus(container, '', '');
+      } catch (err) {
+        setMinimumTargetsInlineStatus(container, err.message, 'error');
       }
-      renderMinimumTargetsEditor(container, options);
+      refreshMinimumTargetDuplicateOptions(container);
     });
   });
+  refreshMinimumTargetDuplicateOptions(container);
   container.querySelector('[data-minimum-target-save]')?.addEventListener('click', () => saveGmOfficeMinimumTargets({ modal }));
   container.querySelector('[data-minimum-target-omit]')?.addEventListener('click', () => omitGmOfficeMinimumTargets({ modal }));
 }
@@ -6014,7 +6017,28 @@ function setMinimumTargetsInlineStatus(container, message, type = '') {
   status.textContent = message || '';
 }
 
-function collectMinimumTargets(container) {
+function refreshMinimumTargetDuplicateOptions(container) {
+  if (!container) return;
+  const selectedByRank = new Map();
+  container.querySelectorAll('[data-minimum-target-rank]').forEach((select) => {
+    const rank = Number(select.dataset.minimumTargetRank || 0);
+    const freeAgentId = Number(select.value || 0);
+    if (rank && freeAgentId) selectedByRank.set(rank, freeAgentId);
+  });
+  const selectedIds = new Set(selectedByRank.values());
+  container.querySelectorAll('[data-minimum-target-rank]').forEach((select) => {
+    const rank = Number(select.dataset.minimumTargetRank || 0);
+    const currentId = selectedByRank.get(rank) || 0;
+    select.querySelectorAll('option').forEach((option) => {
+      const optionId = Number(option.value || 0);
+      if (!optionId) return;
+      option.disabled = optionId !== currentId && selectedIds.has(optionId);
+    });
+  });
+}
+
+function collectMinimumTargets(container, options = {}) {
+  const requireRoles = options.requireRoles !== false;
   const seen = new Set();
   const targets = [];
   container.querySelectorAll('[data-minimum-target-rank]').forEach((select) => {
@@ -6026,7 +6050,7 @@ function collectMinimumTargets(container) {
     if (seen.has(freeAgentId)) {
       throw new Error('No puedes repetir jugadores en la lista.');
     }
-    if (!role) {
+    if (requireRoles && !role) {
       throw new Error(`Selecciona un rol para el jugador #${rank}.`);
     }
     seen.add(freeAgentId);
