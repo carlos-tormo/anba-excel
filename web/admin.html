@@ -35,6 +35,7 @@
           <a id="downloadLeagueExportBtn" class="sidebar-icon-btn" href="/api/export/league.xlsx" aria-label="Export league spreadsheet" title="Export league spreadsheet" download>⇩</a>
           <button id="reloadBtn" class="sidebar-icon-btn" type="button" aria-label="Reload" title="Reload">↻</button>
         </div>
+        <button id="openOfficialTradeToolNavBtn" class="sidebar-nav-item" type="button" data-open-official-trade-tool>Traspasos oficiales</button>
       </div>
       <div class="sidebar-section sidebar-account-section">
         <div class="sidebar-section-label">Admin</div>
@@ -72,6 +73,7 @@
         <button id="adminMobileUsersBtn" type="button" class="mobile-nav-btn" data-icon="☉" data-nav-view="admin-users">Users</button>
         <button id="adminMobileGmOptionRequestsBtn" type="button" class="mobile-nav-btn" data-icon="!" data-nav-view="gm-option-requests">GM Requests <span id="mobileGmOptionRequestsBadge" class="nav-badge" hidden>0</span></button>
         <button id="adminMobileCoadminVotesBtn" type="button" class="mobile-nav-btn" data-icon="★" data-nav-view="coadmin-votes">Votaciones</button>
+        <button id="adminMobileOfficialTradeToolBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-open-official-trade-tool>Traspasos oficiales</button>
         <button id="adminMobileToolsBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="admin-tools">Admin Tools</button>
         <button id="adminMobileSettingsBtn" type="button" class="mobile-nav-btn" data-icon="⚙" data-nav-view="admin-settings">League Settings</button>
         <a href="/api/export/league.xlsx" class="mobile-nav-link" data-icon="⇩" download>Exportar datos</a>
@@ -262,24 +264,49 @@
         </div>
       </div>
       <div class="admin-tools-grid">
-        <article class="admin-tool-card">
-          <div>
-            <h3>Traspasos oficiales</h3>
-            <p>Procesa traspasos desde el panel de administración usando las mismas comprobaciones de la máquina de traspasos.</p>
+        <details class="admin-tool-card admin-tool-card-wide admin-tool-details">
+          <summary>
+            <div>
+              <h3>Añadir agentes libres</h3>
+              <p>Pega un nombre por línea para crear agentes libres no restringidos, sin equipo asignado.</p>
+            </div>
+            <span class="admin-tool-toggle-text">Abrir</span>
+          </summary>
+          <div class="admin-tool-collapsible-body">
+            <textarea id="bulkFreeAgentNamesInput" class="admin-tool-textarea" rows="8" placeholder="Nombre Apellido&#10;Otro Jugador&#10;..."></textarea>
+            <div class="admin-tool-inline">
+              <button id="bulkAddFreeAgentsBtn" type="button">Añadir agentes libres</button>
+              <span id="bulkFreeAgentImportResult" class="admin-tool-result muted-text"></span>
+            </div>
           </div>
-          <button id="openOfficialTradeToolBtn" type="button">Abrir herramienta de traspasos</button>
-        </article>
-        <article class="admin-tool-card admin-tool-card-wide">
-          <div>
-            <h3>Añadir agentes libres</h3>
-            <p>Pega un nombre por línea para crear agentes libres no restringidos, sin equipo asignado.</p>
+        </details>
+        <details id="adminFreeAgentPromisesTool" class="admin-tool-card admin-tool-card-wide admin-tool-details">
+          <summary>
+            <div>
+              <h3>Promesas de agencia libre</h3>
+              <p>Consulta las promesas de rol registradas en fichajes confirmados desde agencia libre.</p>
+            </div>
+            <span class="admin-tool-toggle-text">Abrir</span>
+          </summary>
+          <div class="admin-tool-collapsible-body">
+            <div class="admin-tool-inline">
+              <label class="admin-tool-field" for="adminFreeAgentPromisesStatusFilter">
+                <span>Estado</span>
+                <select id="adminFreeAgentPromisesStatusFilter">
+                  <option value="all">Todas</option>
+                  <option value="pending">Pendientes</option>
+                  <option value="fulfilled">Cumplidas</option>
+                  <option value="broken">Incumplidas</option>
+                </select>
+              </label>
+              <button id="refreshAdminFreeAgentPromisesBtn" type="button">Actualizar promesas</button>
+              <span id="adminFreeAgentPromisesStatus" class="admin-tool-result muted-text"></span>
+            </div>
+            <div id="adminFreeAgentPromisesBoard" class="admin-free-agent-promises-board empty-state">
+              Abre o actualiza la sección para cargar las promesas.
+            </div>
           </div>
-          <textarea id="bulkFreeAgentNamesInput" class="admin-tool-textarea" rows="8" placeholder="Nombre Apellido&#10;Otro Jugador&#10;..."></textarea>
-          <div class="admin-tool-inline">
-            <button id="bulkAddFreeAgentsBtn" type="button">Añadir agentes libres</button>
-            <span id="bulkFreeAgentImportResult" class="admin-tool-result muted-text"></span>
-          </div>
-        </article>
+        </details>
         <article class="admin-tool-card admin-tool-card-wide">
           <div>
             <h3>Prioridades de mínimos GM</h3>

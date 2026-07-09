@@ -1806,11 +1806,58 @@ h1 {
   color: #64748b;
   line-height: 1.45;
 }
+.admin-tool-details {
+  align-content: start;
+}
+.admin-tool-details > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  list-style: none;
+}
+.admin-tool-details > summary::-webkit-details-marker {
+  display: none;
+}
+.admin-tool-toggle-text {
+  background: #eef6f5;
+  border: 1px solid #c7ebe5;
+  border-radius: 999px;
+  color: #0f766e;
+  font-size: 0.84rem;
+  font-weight: 900;
+  padding: 7px 12px;
+  white-space: nowrap;
+}
+.admin-tool-details[open] .admin-tool-toggle-text {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #fff;
+}
+.admin-tool-collapsible-body {
+  display: grid;
+  gap: 14px;
+}
 .admin-tool-inline {
   align-items: end;
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+}
+.admin-tool-field {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 900;
+}
+.admin-tool-field select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: #172033;
+  font: inherit;
+  min-height: 42px;
+  padding: 8px 12px;
 }
 .admin-tool-textarea {
   width: 100%;
@@ -1835,6 +1882,65 @@ h1 {
 .admin-tool-result {
   align-self: center;
   font-weight: 800;
+}
+.admin-free-agent-promises-board {
+  display: grid;
+  gap: 12px;
+}
+.admin-free-agent-promises-board.empty-state {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  color: #64748b;
+  font-weight: 800;
+  padding: 16px;
+}
+.admin-promises-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: auto;
+}
+.admin-promises-table {
+  border-collapse: collapse;
+  min-width: 820px;
+  width: 100%;
+}
+.admin-promises-table th,
+.admin-promises-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 11px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.admin-promises-table th {
+  background: #eef6f5;
+  color: #334155;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.admin-promises-table tr:last-child td {
+  border-bottom: 0;
+}
+.admin-promise-status {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 5px 10px;
+  text-transform: uppercase;
+}
+.admin-promise-status--pending {
+  background: #fff7ed;
+  color: #9a3412;
+}
+.admin-promise-status--fulfilled {
+  background: #dcfce7;
+  color: #166534;
+}
+.admin-promise-status--broken {
+  background: #fee2e2;
+  color: #991b1b;
 }
 .gm-minimum-targets-board {
   display: grid;

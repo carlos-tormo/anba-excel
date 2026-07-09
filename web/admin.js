@@ -4042,7 +4042,7 @@ async function confirmTrade() {
 
 function setupTradeModal() {
   const modal = document.getElementById('tradeModal');
-  const openButtons = [document.getElementById('openOfficialTradeToolBtn')].filter(Boolean);
+  const openButtons = Array.from(document.querySelectorAll('[data-open-official-trade-tool], #openOfficialTradeToolBtn'));
   const closeBtn = document.getElementById('closeTradeModalBtn');
   const confirmBtn = document.getElementById('confirmTradeBtn');
   const validateBtn = document.getElementById('validateTradeBtn');
@@ -4052,7 +4052,10 @@ function setupTradeModal() {
   const tradeBucketSelect = document.getElementById('tradeBucketSelect');
   const forceTradeCheckbox = document.getElementById('forceTradeCheckbox');
 
-  openButtons.forEach((openBtn) => openBtn.addEventListener('click', () => { void openTradeModal(); }));
+  openButtons.forEach((openBtn) => openBtn.addEventListener('click', () => {
+    closeAdminMobileSidebar();
+    void openTradeModal();
+  }));
   closeBtn.addEventListener('click', closeTradeModal);
   validateBtn?.addEventListener('click', () => { void validateTradeModal({ silent: false }); });
   confirmBtn.addEventListener('click', () => {
@@ -6357,6 +6360,96 @@ async function bulkAddFreeAgentsFromTool() {
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+function adminPromiseStatusLabel(status) {
+  const normalized = String(status || 'pending').trim().toLowerCase();
+  if (normalized === 'fulfilled') return 'Cumplida';
+  if (normalized === 'broken') return 'Incumplida';
+  return 'Pendiente';
+}
+
+function renderAdminFreeAgentPromises(promises = []) {
+  const board = document.getElementById('adminFreeAgentPromisesBoard');
+  if (!board) return;
+  if (!Array.isArray(promises) || !promises.length) {
+    board.className = 'admin-free-agent-promises-board empty-state';
+    board.textContent = 'No hay promesas registradas para este filtro.';
+    return;
+  }
+  board.className = 'admin-free-agent-promises-board';
+  board.innerHTML = `
+    <div class="admin-promises-table-wrap">
+      <table class="admin-promises-table">
+        <thead>
+          <tr>
+            <th>Jugador</th>
+            <th>Equipo</th>
+            <th>Temporada</th>
+            <th>Rol prometido</th>
+            <th>Agente</th>
+            <th>Contrato</th>
+            <th>Estado</th>
+            <th>Actualizado</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${promises.map((promise) => {
+            const status = String(promise.status || 'pending').trim().toLowerCase();
+            const promiseId = Number(promise.id || 0);
+            const actions = status === 'pending'
+              ? `
+                <button type="button" data-admin-promise-status="${promiseId}" data-status="fulfilled">Cumplida</button>
+                <button type="button" class="danger" data-admin-promise-status="${promiseId}" data-status="broken">Incumplida</button>
+              `
+              : `<button type="button" data-admin-promise-status="${promiseId}" data-status="pending">Reabrir</button>`;
+            return `
+              <tr>
+                <td><strong>${escapeHtml(promise.player_name || '-')}</strong></td>
+                <td><strong>${escapeHtml(promise.team_code || '-')}</strong><div class="muted-text">${escapeHtml(promise.team_name || '')}</div></td>
+                <td>${escapeHtml(promise.season_label || seasonLabel(promise.season_year) || '-')}</td>
+                <td>${escapeHtml(promise.role || '-')}</td>
+                <td>${escapeHtml(promise.agent_name || '-')}</td>
+                <td>${escapeHtml([promise.contract_type, promise.offer_type].filter(Boolean).join(' · ') || '-')}</td>
+                <td><span class="admin-promise-status admin-promise-status--${escapeHtml(status)}">${escapeHtml(adminPromiseStatusLabel(status))}</span></td>
+                <td>${escapeHtml(promise.updated_at || promise.created_at || '-')}</td>
+                <td><div class="wallet-promise-actions">${actions}</div></td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadAdminFreeAgentPromises() {
+  const statusEl = document.getElementById('adminFreeAgentPromisesStatus');
+  const filter = document.getElementById('adminFreeAgentPromisesStatusFilter');
+  const status = String(filter?.value || 'all').trim() || 'all';
+  if (statusEl) statusEl.textContent = 'Cargando...';
+  try {
+    const result = await api(`/api/cartera/promises?status=${encodeURIComponent(status)}`);
+    renderAdminFreeAgentPromises(result.promises || []);
+    if (statusEl) statusEl.textContent = `${(result.promises || []).length} promesa(s)`;
+  } catch (err) {
+    const board = document.getElementById('adminFreeAgentPromisesBoard');
+    if (board) {
+      board.className = 'admin-free-agent-promises-board empty-state';
+      board.textContent = `No se pudieron cargar las promesas: ${err.message}`;
+    }
+    if (statusEl) statusEl.textContent = 'Error';
+  }
+}
+
+async function updateAdminFreeAgentPromiseStatus(promiseId, status) {
+  if (!promiseId || !status) return;
+  await api(`/api/admin/free-agent-offer-promises/${promiseId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+  await loadAdminFreeAgentPromises();
 }
 
 function renderGmMinimumTargetsBoard() {
@@ -13158,6 +13251,31 @@ async function init() {
   });
   document.getElementById('bulkAddFreeAgentsBtn')?.addEventListener('click', async () => {
     await bulkAddFreeAgentsFromTool();
+  });
+  const adminPromisesTool = document.getElementById('adminFreeAgentPromisesTool');
+  adminPromisesTool?.addEventListener('toggle', () => {
+    if (adminPromisesTool.open) {
+      void loadAdminFreeAgentPromises();
+    }
+  });
+  document.getElementById('refreshAdminFreeAgentPromisesBtn')?.addEventListener('click', async () => {
+    await loadAdminFreeAgentPromises();
+  });
+  document.getElementById('adminFreeAgentPromisesStatusFilter')?.addEventListener('change', async () => {
+    await loadAdminFreeAgentPromises();
+  });
+  document.getElementById('adminFreeAgentPromisesBoard')?.addEventListener('click', async (event) => {
+    const target = event.target instanceof Element
+      ? event.target.closest('[data-admin-promise-status]')
+      : null;
+    if (!target) return;
+    const promiseId = Number(target.dataset.adminPromiseStatus || 0);
+    const status = String(target.dataset.status || '').trim();
+    try {
+      await updateAdminFreeAgentPromiseStatus(promiseId, status);
+    } catch (err) {
+      alert(`No se pudo actualizar la promesa: ${err.message}`);
+    }
   });
   document.getElementById('launchArticleBtn')?.addEventListener('click', async () => {
     await launchPressArticleFromTool();
