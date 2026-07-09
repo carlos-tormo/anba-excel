@@ -5954,17 +5954,23 @@ function renderMinimumTargetsEditor(container, options = {}) {
       `<option value="${escapeHtml(role)}"${selectedRole === role ? ' selected' : ''}>${escapeHtml(role)}</option>`
     )).join('');
     return `
-      <label class="minimum-target-row">
+      <div class="minimum-target-row">
         <span class="minimum-target-rank">#${rank}</span>
-        <select data-minimum-target-rank="${rank}">
-          <option value="">Sin seleccionar</option>
-          ${agentOptions}
-        </select>
-        <select data-minimum-target-role-rank="${rank}" aria-label="Rol del jugador #${rank}">
-          <option value="">Rol sin definir</option>
-          ${roleOptions}
-        </select>
-      </label>
+        <label class="minimum-target-field">
+          <span>Jugador</span>
+          <select data-minimum-target-rank="${rank}" aria-label="Jugador #${rank}">
+            <option value="">Sin seleccionar</option>
+            ${agentOptions}
+          </select>
+        </label>
+        <label class="minimum-target-field minimum-target-field--role">
+          <span>Rol</span>
+          <select data-minimum-target-role-rank="${rank}" aria-label="Rol del jugador #${rank}">
+            <option value="">Rol sin definir</option>
+            ${roleOptions}
+          </select>
+        </label>
+      </div>
     `;
   }).join('');
   container.innerHTML = `
@@ -5975,6 +5981,7 @@ function renderMinimumTargetsEditor(container, options = {}) {
       </div>
       <div class="minimum-targets-grid">${rows}</div>
       <p class="minimum-targets-disclaimer">Si no rellenas esta lista será tu responsabilidad si un mínimo firma antes de preguntarte</p>
+      <div class="minimum-targets-inline-status" data-minimum-target-inline-status aria-live="polite"></div>
       <div class="minimum-targets-actions">
         <button type="button" data-minimum-target-save>${state.gmOffice.minimumTargetsSaving ? 'Guardando...' : 'Guardar'}</button>
         <button type="button" class="secondary" data-minimum-target-omit>Omitir</button>
@@ -5996,6 +6003,15 @@ function renderMinimumTargetsEditor(container, options = {}) {
   });
   container.querySelector('[data-minimum-target-save]')?.addEventListener('click', () => saveGmOfficeMinimumTargets({ modal }));
   container.querySelector('[data-minimum-target-omit]')?.addEventListener('click', () => omitGmOfficeMinimumTargets({ modal }));
+}
+
+function setMinimumTargetsInlineStatus(container, message, type = '') {
+  const status = container?.querySelector?.('[data-minimum-target-inline-status]');
+  if (!status) return;
+  status.classList.toggle('is-error', type === 'error');
+  status.classList.toggle('is-success', type === 'success');
+  status.classList.toggle('is-pending', type === 'pending');
+  status.textContent = message || '';
 }
 
 function collectMinimumTargets(container) {
@@ -6054,12 +6070,14 @@ async function saveGmOfficeMinimumTargets(options = {}) {
     targets = collectMinimumTargets(container);
   } catch (err) {
     setGmOfficeMinimumTargetsStatus(err.message, 'error');
-    renderGmOfficeMinimumTargetsEditor();
+    setMinimumTargetsInlineStatus(container, err.message, 'error');
+    if (!modal) renderGmOfficeMinimumTargetsEditor();
     return;
   }
   state.gmOffice.minimumTargetsSaving = true;
   setGmOfficeMinimumTargetsStatus('Guardando lista...', 'pending');
-  renderGmOfficeMinimumTargetsEditor();
+  setMinimumTargetsInlineStatus(container, 'Guardando lista...', 'pending');
+  if (!modal) renderGmOfficeMinimumTargetsEditor();
   try {
     const data = await api('/api/gm-office/minimum-targets', {
       method: 'POST',
@@ -6067,13 +6085,14 @@ async function saveGmOfficeMinimumTargets(options = {}) {
     });
     state.gmOffice.minimumTargets = normalizeMinimumTargets(data.minimum_targets || {});
     setGmOfficeMinimumTargetsStatus('Lista guardada.', 'success');
+    setMinimumTargetsInlineStatus(container, 'Lista guardada.', 'success');
     if (modal) closeMinimumTargetsPrompt();
   } catch (err) {
     setGmOfficeMinimumTargetsStatus(`No se pudo guardar: ${err.message}`, 'error');
-    if (modal) renderMinimumTargetsPrompt();
+    setMinimumTargetsInlineStatus(container, `No se pudo guardar: ${err.message}`, 'error');
   } finally {
     state.gmOffice.minimumTargetsSaving = false;
-    renderGmOfficeMinimumTargetsEditor();
+    if (!modal) renderGmOfficeMinimumTargetsEditor();
   }
 }
 

@@ -1840,6 +1840,20 @@ h1 {
   display: grid;
   gap: 12px;
 }
+.gm-minimum-target-order-board {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.gm-minimum-target-order-header {
+  display: grid;
+  gap: 4px;
+}
+.gm-minimum-target-order-header h4 {
+  color: #0f172a;
+  font-size: 1.05rem;
+  margin: 0;
+}
 .gm-minimum-targets-table {
   border-collapse: collapse;
   min-width: 760px;
@@ -1867,6 +1881,16 @@ h1 {
 }
 .gm-minimum-target-name {
   font-weight: 800;
+}
+.gm-minimum-target-order-table {
+  min-width: 980px;
+}
+.gm-minimum-target-order-rank,
+.gm-minimum-target-score-total {
+  color: #0f766e;
+  font-size: 1.15rem;
+  font-weight: 950;
+  text-align: center;
 }
 .mini-chip {
   display: inline-flex;
@@ -10912,6 +10936,8 @@ select[data-new-field="years_left"],
   display: grid;
   grid-template-columns: 48px minmax(220px, 1fr) minmax(190px, 0.58fr);
   gap: 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
 }
 .minimum-target-rank {
   align-items: center;
@@ -10924,8 +10950,20 @@ select[data-new-field="years_left"],
   justify-content: center;
   width: 44px;
 }
-.minimum-target-row select {
-  min-height: 42px;
+.minimum-target-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.minimum-target-field span {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.minimum-target-field select {
+  min-height: 46px;
   min-width: 0;
   width: 100%;
   border: 1px solid #cbd5e1;
@@ -10939,10 +10977,34 @@ select[data-new-field="years_left"],
   .minimum-target-row {
     align-items: stretch;
     grid-template-columns: 48px minmax(0, 1fr);
+    padding: 10px;
+    border-color: #dbeafe;
+    background: #f8fafc;
   }
-  .minimum-target-row select[data-minimum-target-role-rank] {
+  .minimum-target-field {
     grid-column: 2;
   }
+  .minimum-target-field select {
+    font-size: 16px;
+    min-height: 48px;
+  }
+  .minimum-target-field--role {
+    grid-column: 2;
+  }
+}
+.minimum-targets-inline-status {
+  min-height: 20px;
+  color: #64748b;
+  font-weight: 900;
+}
+.minimum-targets-inline-status.is-error {
+  color: #991b1b;
+}
+.minimum-targets-inline-status.is-success {
+  color: #047857;
+}
+.minimum-targets-inline-status.is-pending {
+  color: #0f766e;
 }
 .minimum-targets-disclaimer {
   background: #fff7ed;

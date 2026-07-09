@@ -12815,6 +12815,160 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return lists
 
     @staticmethod
+    def _minimum_target_age_from_birth_date(raw_value: Any) -> int:
+        text = str(raw_value or "").strip()
+        if not text:
+            return 20
+        parsed: Optional[date] = None
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"):
+            try:
+                parsed = datetime.strptime(text, fmt).date()
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            return 20
+        today = date.today()
+        age = today.year - parsed.year - ((today.month, today.day) < (parsed.month, parsed.day))
+        if age < 0 or age > 80:
+            return 20
+        return age
+
+    @staticmethod
+    def _minimum_target_appeal_key_for_age(age: int) -> str:
+        if age < 23:
+            return "under_23_single"
+        if age <= 26:
+            return "age_23_26_single"
+        if age <= 33:
+            return "age_27_33_single"
+        return "over_34_single"
+
+    @staticmethod
+    def _minimum_target_role_points(role: Any) -> int:
+        normalized = normalize_import_text(role).casefold()
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        mapping = {
+            "titular": 20,
+            "sexto hombre": 10,
+            "minutos de rotacion 10 20": 4,
+            "rotacion 10 20 minutos": 4,
+            "rotacion 10 20": 4,
+            "minutos de rotacion 0 9": 2,
+            "minutos de rotacion 0 10": 2,
+            "rol limitado 0 10 minutos": 2,
+            "rol limitado 0 9": 2,
+            "rotacion 0 9": 2,
+            "rotacion 0 10": 2,
+            "fuera de la rotacion": 0,
+        }
+        return mapping.get(normalized, 0)
+
+    def list_admin_gm_minimum_target_order(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            teams = {
+                str(row["code"] or "").upper(): str(row["name"] or row["code"] or "").strip()
+                for row in conn.execute("SELECT code, name FROM teams").fetchall()
+            }
+            user_rows = conn.execute(
+                """
+                SELECT
+                    u.id,
+                    u.email,
+                    u.display_name,
+                    GROUP_CONCAT(t.code, ',') AS team_codes
+                FROM users u
+                LEFT JOIN user_team_assignments ut ON ut.user_id = u.id
+                LEFT JOIN teams t ON t.id = ut.team_id
+                GROUP BY u.id
+                """
+            ).fetchall()
+            users_by_id: Dict[int, Dict[str, Any]] = {}
+            for row in user_rows:
+                user_id = int(row["id"])
+                team_codes = [
+                    normalize_team_code(code)
+                    for code in str(row["team_codes"] or "").split(",")
+                    if normalize_team_code(code)
+                ]
+                users_by_id[user_id] = {
+                    "user_id": user_id,
+                    "user_name": str(row["display_name"] or row["email"] or "").strip(),
+                    "email": str(row["email"] or "").strip(),
+                    "team_codes": team_codes,
+                    "team_code": team_codes[0] if team_codes else "",
+                }
+            appeal_rows = conn.execute("SELECT * FROM free_agent_team_appeal").fetchall()
+            appeal_by_team = {str(row["team_code"] or "").upper(): dict(row) for row in appeal_rows}
+            target_rows = conn.execute(
+                """
+                SELECT
+                    mt.user_id,
+                    mt.rank,
+                    mt.free_agent_id,
+                    mt.profile_id,
+                    mt.player_name,
+                    mt.role,
+                    f.position,
+                    f.rating,
+                    pp.date_of_birth
+                FROM gm_minimum_targets mt
+                LEFT JOIN free_agents f ON f.id = mt.free_agent_id
+                LEFT JOIN player_profiles pp ON pp.id = COALESCE(mt.profile_id, f.profile_id)
+                WHERE mt.free_agent_id IS NOT NULL
+                ORDER BY mt.user_id, mt.rank
+                """
+            ).fetchall()
+
+        scored: List[Dict[str, Any]] = []
+        for row in target_rows:
+            user = users_by_id.get(int(row["user_id"]))
+            if not user:
+                continue
+            team_code = normalize_team_code(user.get("team_code"))
+            rank = parse_int(row["rank"]) or 0
+            priority_points = max(0, 11 - rank) if 1 <= rank <= 10 else 0
+            age = self._minimum_target_age_from_birth_date(row["date_of_birth"])
+            appeal_key = self._minimum_target_appeal_key_for_age(age)
+            appeal_rank = parse_float((appeal_by_team.get(team_code) or {}).get(appeal_key))
+            appeal_points = max(0, 31 - int(appeal_rank)) if appeal_rank and appeal_rank > 0 else 0
+            role_points = self._minimum_target_role_points(row["role"])
+            total = priority_points + appeal_points + role_points
+            scored.append(
+                {
+                    "total": total,
+                    "priority_points": priority_points,
+                    "appeal_points": appeal_points,
+                    "role_points": role_points,
+                    "appeal_rank": int(appeal_rank) if appeal_rank and appeal_rank > 0 else None,
+                    "appeal_key": appeal_key,
+                    "age": age,
+                    "target_rank": rank,
+                    "team_code": team_code,
+                    "team_name": teams.get(team_code, team_code),
+                    "user_id": user.get("user_id"),
+                    "user_name": user.get("user_name") or user.get("email") or "",
+                    "player_name": str(row["player_name"] or "").strip(),
+                    "free_agent_id": parse_int(row["free_agent_id"]),
+                    "profile_id": parse_int(row["profile_id"]),
+                    "position": str(row["position"] or "").strip(),
+                    "rating": str(row["rating"] or "").strip(),
+                    "role": str(row["role"] or "").strip(),
+                }
+            )
+        scored.sort(
+            key=lambda item: (
+                -int(item.get("total") or 0),
+                -int(item.get("priority_points") or 0),
+                -int(item.get("appeal_points") or 0),
+                -int(item.get("role_points") or 0),
+                str(item.get("player_name") or ""),
+                str(item.get("team_code") or ""),
+            )
+        )
+        return scored[:20]
+
+    @staticmethod
     def _depth_chart_player_payload(player: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "id": parse_int(player.get("id")),
@@ -22223,6 +22377,12 @@ QUALITY REQUIREMENTS
             if not self._require_admin():
                 return
             self._json(200, {"lists": self.db.list_admin_gm_minimum_targets()})
+            return
+
+        if parsed.path == "/api/admin/gm-minimum-targets/order":
+            if not self._require_admin():
+                return
+            self._json(200, {"scores": self.db.list_admin_gm_minimum_target_order()})
             return
 
         if parsed.path == "/api/players":

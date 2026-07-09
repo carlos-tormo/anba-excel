@@ -34,6 +34,7 @@ const state = {
   adminUsers: [],
   gmOptionRequests: [],
   gmMinimumTargets: [],
+  gmMinimumTargetOrder: [],
   coadminVotes: [],
   leaguePlayers: [],
   freeAgents: [],
@@ -6426,6 +6427,91 @@ async function loadGmMinimumTargets() {
     if (statusEl) statusEl.textContent = `Error: ${err.message}`;
     const board = document.getElementById('gmMinimumTargetsBoard');
     if (board) board.innerHTML = '<div class="muted-text">No se pudieron cargar las listas.</div>';
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderGmMinimumTargetOrderBoard() {
+  const board = document.getElementById('gmMinimumTargetOrderBoard');
+  if (!board) return;
+  const scores = Array.isArray(state.gmMinimumTargetOrder) ? state.gmMinimumTargetOrder : [];
+  if (!scores.length) {
+    board.innerHTML = '<div class="muted-text">No hay puntuaciones para ordenar todavía.</div>';
+    return;
+  }
+  const rows = scores.map((item, index) => {
+    const teamCode = String(item.team_code || '').toUpperCase();
+    const role = String(item.role || '').trim();
+    const appealRank = item.appeal_rank ? `Ranking ${item.appeal_rank}` : 'Ranking N/D';
+    const ageText = item.age ? `${item.age} años` : 'Edad N/D';
+    return `
+      <tr>
+        <td class="gm-minimum-target-order-rank">${index + 1}</td>
+        <td>
+          <strong>${escapeHtml(teamCode || '-')}</strong>
+          <div class="muted-text">${escapeHtml(item.team_name || '')}</div>
+        </td>
+        <td>
+          <strong>${escapeHtml(item.player_name || 'Jugador sin nombre')}</strong>
+          <div class="muted-text">${[item.position, item.rating ? `Rating ${item.rating}` : ''].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+        </td>
+        <td>${escapeHtml(item.user_name || '-')}</td>
+        <td class="gm-minimum-target-score-total">${Number(item.total || 0)}</td>
+        <td>
+          <strong>${Number(item.priority_points || 0)} pts</strong>
+          <div class="muted-text">Prioridad #${Number(item.target_rank || 0)}</div>
+        </td>
+        <td>
+          <strong>${Number(item.appeal_points || 0)} pts</strong>
+          <div class="muted-text">${escapeHtml(appealRank)} · ${escapeHtml(ageText)}</div>
+        </td>
+        <td>
+          <strong>${Number(item.role_points || 0)} pts</strong>
+          <div class="muted-text">${escapeHtml(role || 'Sin rol')}</div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+  board.innerHTML = `
+    <div class="gm-minimum-target-order-header">
+      <h4>Orden estimado top 20</h4>
+      <p class="muted-text">Puntuación = prioridad del equipo + atractivo del equipo + rol ofrecido.</p>
+    </div>
+    <div class="table-scroll">
+      <table class="gm-minimum-targets-table gm-minimum-target-order-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Equipo</th>
+            <th>Jugador</th>
+            <th>GM</th>
+            <th>Total</th>
+            <th>Prioridad</th>
+            <th>Atractivo</th>
+            <th>Rol</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadGmMinimumTargetOrder() {
+  const statusEl = document.getElementById('gmMinimumTargetsStatus');
+  const button = document.getElementById('viewGmMinimumTargetOrderBtn');
+  if (button) button.disabled = true;
+  if (statusEl) statusEl.textContent = 'Calculando orden...';
+  try {
+    const result = await api('/api/admin/gm-minimum-targets/order');
+    state.gmMinimumTargetOrder = result.scores || [];
+    renderGmMinimumTargetOrderBoard();
+    if (statusEl) statusEl.textContent = `${state.gmMinimumTargetOrder.length} puntuación(es) cargadas.`;
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `Error: ${err.message}`;
+    const board = document.getElementById('gmMinimumTargetOrderBoard');
+    if (board) board.innerHTML = '<div class="muted-text">No se pudo calcular el orden.</div>';
   } finally {
     if (button) button.disabled = false;
   }
@@ -13078,6 +13164,9 @@ async function init() {
   });
   document.getElementById('refreshGmMinimumTargetsBtn')?.addEventListener('click', async () => {
     await loadGmMinimumTargets();
+  });
+  document.getElementById('viewGmMinimumTargetOrderBtn')?.addEventListener('click', async () => {
+    await loadGmMinimumTargetOrder();
   });
   document.getElementById('closeSignFreeAgentModalBtn').addEventListener('click', () => {
     closeSignFreeAgentModal();
