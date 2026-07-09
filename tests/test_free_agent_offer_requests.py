@@ -157,6 +157,80 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertEqual(1, len(filtered["promises"]))
 
+    def test_promise_role_limits_block_only_active_signed_promises(self) -> None:
+        admin = {"email": "admin@example.com", "name": "Admin", "role": "admin"}
+        self.db.create_free_agent_offer_promise(
+            {
+                "player_name": "Existing Sixth Man",
+                "team_code": "ATL",
+                "season_year": 2026,
+                "role": "Sexto hombre",
+                "status": "pending",
+            },
+            admin,
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            self.db.create_free_agent_offer_promise(
+                {
+                    "player_name": "Second Sixth Man",
+                    "team_code": "ATL",
+                    "season_year": 2026,
+                    "role": "Sexto hombre",
+                    "status": "pending",
+                },
+                admin,
+            )
+        self.assertEqual("promise_role_limit_exceeded:Sexto hombre:1", str(ctx.exception))
+
+        broken = self.db.update_free_agent_offer_promise_status(
+            1,
+            "broken",
+            admin,
+        )
+        self.assertEqual("broken", broken["status"])
+        replacement = self.db.create_free_agent_offer_promise(
+            {
+                "player_name": "Replacement Sixth Man",
+                "team_code": "ATL",
+                "season_year": 2026,
+                "role": "Sexto hombre",
+                "status": "pending",
+            },
+            admin,
+        )
+        self.assertEqual("Replacement Sixth Man", replacement["player_name"])
+
+    def test_free_agent_offer_approval_checks_promise_role_capacity_before_signing(self) -> None:
+        admin = {"email": "admin@example.com", "name": "Admin", "role": "admin"}
+        self.db.create_free_agent_offer_promise(
+            {
+                "player_name": "Signed Sixth Man",
+                "team_code": "ATL",
+                "season_year": 2026,
+                "role": "Sexto hombre",
+                "status": "fulfilled",
+            },
+            admin,
+        )
+        request = self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {
+                "contract_type": "Min",
+                "years": 1,
+                "salary_by_season": {"2026": "2.296.274"},
+                "role": "Sexto hombre",
+            },
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            self.db.ensure_free_agent_offer_request_promise_capacity(int(request["id"]))
+        self.assertEqual("promise_role_limit_exceeded:Sexto hombre:1", str(ctx.exception))
+        self.assertIsNotNone(self.db.get_free_agent(self.free_agent_id))
+        self.assertEqual("pending", self.db.get_gm_free_agent_offer_request(int(request["id"]))["status"])
+
     def test_rejected_offer_notification_is_visible_and_dismissible_for_requesting_gm(self) -> None:
         user = self.db.upsert_google_user(
             "google-atl-gm",

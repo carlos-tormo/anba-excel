@@ -6424,10 +6424,98 @@ function renderAdminFreeAgentPromises(promises = []) {
   `;
 }
 
+function renderAdminManualPromiseControls() {
+  const teamSelect = document.getElementById('manualPromiseTeamSelect');
+  const seasonSelect = document.getElementById('manualPromiseSeasonSelect');
+  const agentSelect = document.getElementById('manualPromiseAgentSelect');
+  if (teamSelect) {
+    const currentValue = String(teamSelect.value || '').trim().toUpperCase();
+    const teams = Array.isArray(state.teams) ? state.teams : [];
+    teamSelect.innerHTML = `
+      <option value="">Selecciona equipo</option>
+      ${teams.map((team) => {
+        const code = String(team.code || '').trim().toUpperCase();
+        return `<option value="${escapeHtml(code)}"${code === currentValue ? ' selected' : ''}>${escapeHtml(code)} - ${escapeHtml(team.name || code)}</option>`;
+      }).join('')}
+    `;
+  }
+  if (seasonSelect) {
+    const currentValue = String(seasonSelect.value || '').trim();
+    const seasons = availableFiguresSeasonStarts();
+    const defaultSeason = String(currentSeasonStart());
+    seasonSelect.innerHTML = seasons.map((year) => {
+      const value = String(year);
+      const selected = currentValue ? value === currentValue : value === defaultSeason;
+      return `<option value="${escapeHtml(value)}"${selected ? ' selected' : ''}>${escapeHtml(seasonLabel(year))}</option>`;
+    }).join('');
+  }
+  if (agentSelect) {
+    const currentValue = String(agentSelect.value || '').trim();
+    agentSelect.innerHTML = freeAgentAgentOptions(currentValue);
+  }
+}
+
+async function createAdminFreeAgentPromise() {
+  renderAdminManualPromiseControls();
+  const playerInput = document.getElementById('manualPromisePlayerName');
+  const teamSelect = document.getElementById('manualPromiseTeamSelect');
+  const seasonSelect = document.getElementById('manualPromiseSeasonSelect');
+  const roleSelect = document.getElementById('manualPromiseRoleSelect');
+  const agentSelect = document.getElementById('manualPromiseAgentSelect');
+  const contractInput = document.getElementById('manualPromiseContractType');
+  const statusSelect = document.getElementById('manualPromiseStatusSelect');
+  const statusEl = document.getElementById('createAdminFreeAgentPromiseStatus');
+  const button = document.getElementById('createAdminFreeAgentPromiseBtn');
+  const payload = {
+    player_name: String(playerInput?.value || '').trim(),
+    team_code: String(teamSelect?.value || '').trim().toUpperCase(),
+    season_year: Number(seasonSelect?.value || 0),
+    role: String(roleSelect?.value || '').trim(),
+    agent_name: String(agentSelect?.value || '').trim(),
+    contract_type: String(contractInput?.value || '').trim(),
+    offer_type: 'manual',
+    status: String(statusSelect?.value || 'pending').trim(),
+  };
+  if (!payload.player_name) {
+    if (statusEl) statusEl.textContent = 'Escribe el nombre del jugador.';
+    playerInput?.focus();
+    return;
+  }
+  if (!payload.team_code) {
+    if (statusEl) statusEl.textContent = 'Selecciona un equipo.';
+    teamSelect?.focus();
+    return;
+  }
+  if (!payload.role) {
+    if (statusEl) statusEl.textContent = 'Selecciona el rol prometido.';
+    roleSelect?.focus();
+    return;
+  }
+  if (button) button.disabled = true;
+  if (statusEl) statusEl.textContent = 'Creando...';
+  try {
+    await api('/api/admin/free-agent-offer-promises', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (playerInput) playerInput.value = '';
+    if (contractInput) contractInput.value = '';
+    if (roleSelect) roleSelect.value = '';
+    if (statusSelect) statusSelect.value = 'pending';
+    if (statusEl) statusEl.textContent = 'Promesa creada.';
+    await loadAdminFreeAgentPromises();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function loadAdminFreeAgentPromises() {
   const statusEl = document.getElementById('adminFreeAgentPromisesStatus');
   const filter = document.getElementById('adminFreeAgentPromisesStatusFilter');
   const status = String(filter?.value || 'all').trim() || 'all';
+  renderAdminManualPromiseControls();
   if (statusEl) statusEl.textContent = 'Cargando...';
   try {
     const result = await api(`/api/cartera/promises?status=${encodeURIComponent(status)}`);
@@ -13257,6 +13345,9 @@ async function init() {
     if (adminPromisesTool.open) {
       void loadAdminFreeAgentPromises();
     }
+  });
+  document.getElementById('createAdminFreeAgentPromiseBtn')?.addEventListener('click', async () => {
+    await createAdminFreeAgentPromise();
   });
   document.getElementById('refreshAdminFreeAgentPromisesBtn')?.addEventListener('click', async () => {
     await loadAdminFreeAgentPromises();

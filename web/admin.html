@@ -289,6 +289,57 @@
             <span class="admin-tool-toggle-text">Abrir</span>
           </summary>
           <div class="admin-tool-collapsible-body">
+            <details class="admin-tool-subdetails">
+              <summary>
+                <strong>Crear promesa manual</strong>
+                <span class="muted-text">Para acuerdos registrados fuera de la web</span>
+              </summary>
+              <div class="admin-manual-promise-form">
+                <label class="admin-tool-field" for="manualPromisePlayerName">
+                  <span>Jugador</span>
+                  <input id="manualPromisePlayerName" type="text" placeholder="Nombre del jugador">
+                </label>
+                <label class="admin-tool-field" for="manualPromiseTeamSelect">
+                  <span>Equipo</span>
+                  <select id="manualPromiseTeamSelect"></select>
+                </label>
+                <label class="admin-tool-field" for="manualPromiseSeasonSelect">
+                  <span>Temporada</span>
+                  <select id="manualPromiseSeasonSelect"></select>
+                </label>
+                <label class="admin-tool-field" for="manualPromiseRoleSelect">
+                  <span>Rol prometido</span>
+                  <select id="manualPromiseRoleSelect">
+                    <option value="">Selecciona rol</option>
+                    <option value="Titular">Titular</option>
+                    <option value="Sexto hombre">Sexto hombre</option>
+                    <option value="Minutos de rotación (10-20)">Minutos de rotación (10-20)</option>
+                    <option value="Minutos de rotación (0-9)">Minutos de rotación (0-9)</option>
+                    <option value="Fuera de la rotación">Fuera de la rotación</option>
+                  </select>
+                </label>
+                <label class="admin-tool-field" for="manualPromiseAgentSelect">
+                  <span>Agente</span>
+                  <select id="manualPromiseAgentSelect"></select>
+                </label>
+                <label class="admin-tool-field" for="manualPromiseContractType">
+                  <span>Contrato/contexto</span>
+                  <input id="manualPromiseContractType" type="text" placeholder="Ej: Min · 1 año">
+                </label>
+                <label class="admin-tool-field" for="manualPromiseStatusSelect">
+                  <span>Estado inicial</span>
+                  <select id="manualPromiseStatusSelect">
+                    <option value="pending">Pendiente</option>
+                    <option value="fulfilled">Cumplida</option>
+                    <option value="broken">Incumplida</option>
+                  </select>
+                </label>
+                <div class="admin-tool-inline admin-manual-promise-actions">
+                  <button id="createAdminFreeAgentPromiseBtn" type="button">Crear promesa</button>
+                  <span id="createAdminFreeAgentPromiseStatus" class="admin-tool-result muted-text"></span>
+                </div>
+              </div>
+            </details>
             <div class="admin-tool-inline">
               <label class="admin-tool-field" for="adminFreeAgentPromisesStatusFilter">
                 <span>Estado</span>

@@ -1839,6 +1839,33 @@ h1 {
   display: grid;
   gap: 14px;
 }
+.admin-tool-subdetails {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+.admin-tool-subdetails > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  justify-content: space-between;
+  list-style: none;
+}
+.admin-tool-subdetails > summary::-webkit-details-marker {
+  display: none;
+}
+.admin-manual-promise-form {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-top: 14px;
+}
+.admin-manual-promise-actions {
+  align-self: end;
+}
 .admin-tool-inline {
   align-items: end;
   display: flex;
@@ -1851,7 +1878,8 @@ h1 {
   color: #334155;
   font-weight: 900;
 }
-.admin-tool-field select {
+.admin-tool-field select,
+.admin-tool-field input {
   border: 1px solid var(--border);
   border-radius: 10px;
   color: #172033;

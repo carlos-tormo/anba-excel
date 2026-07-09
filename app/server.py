@@ -215,6 +215,11 @@ FREE_AGENT_TYPE_RESTRICTED = "Restringido"
 FREE_AGENT_SOURCE_CAP_HOLD = "cap_hold"
 FREE_AGENT_SOURCE_RENOUNCED_RIGHTS = "renounced_rights"
 FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE = "uncontracted_profile"
+FREE_AGENT_PROMISE_ROLE_LIMITS = {
+    "Sexto hombre": 1,
+    "Minutos de rotación (10-20)": 5,
+    "Minutos de rotación (0-9)": 10,
+}
 PLAYER_CONTRACT_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030]
 CONTRACT_TERMINATING_OPTION_VALUES = {"TO", "PO"}
 OWNER_SEASON_OBJECTIVES = [
@@ -1265,6 +1270,99 @@ class LeagueDB(DatabaseMaintenanceMixin):
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
 
+    def _ensure_free_agent_offer_promises_support_manual_rows(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists_conn(conn, "free_agent_offer_promises"):
+            return
+        columns = conn.execute("PRAGMA table_info(free_agent_offer_promises)").fetchall()
+        request_col = next(
+            (row for row in columns if str(row["name"]) == "gm_free_agent_offer_request_id"),
+            None,
+        )
+        if request_col is None or int(request_col["notnull"] or 0) == 0:
+            return
+
+        backup_table = f"free_agent_offer_promises_old_{secrets.token_hex(4)}"
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.execute(f"ALTER TABLE free_agent_offer_promises RENAME TO {backup_table}")
+            conn.execute(
+                """
+                CREATE TABLE free_agent_offer_promises (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gm_free_agent_offer_request_id INTEGER UNIQUE
+                        REFERENCES gm_free_agent_offer_requests(id) ON DELETE CASCADE,
+                    free_agent_id INTEGER,
+                    profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL,
+                    player_name TEXT NOT NULL,
+                    team_code TEXT NOT NULL,
+                    team_name TEXT,
+                    agent_name TEXT,
+                    season_year INTEGER,
+                    season_label TEXT,
+                    role TEXT NOT NULL,
+                    offer_type TEXT,
+                    contract_type TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    admin_email TEXT,
+                    admin_name TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    decided_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                INSERT INTO free_agent_offer_promises (
+                    id,
+                    gm_free_agent_offer_request_id,
+                    free_agent_id,
+                    profile_id,
+                    player_name,
+                    team_code,
+                    team_name,
+                    agent_name,
+                    season_year,
+                    season_label,
+                    role,
+                    offer_type,
+                    contract_type,
+                    status,
+                    admin_email,
+                    admin_name,
+                    created_at,
+                    updated_at,
+                    decided_at
+                )
+                SELECT
+                    id,
+                    gm_free_agent_offer_request_id,
+                    free_agent_id,
+                    profile_id,
+                    player_name,
+                    team_code,
+                    team_name,
+                    agent_name,
+                    season_year,
+                    season_label,
+                    role,
+                    offer_type,
+                    contract_type,
+                    status,
+                    admin_email,
+                    admin_name,
+                    created_at,
+                    updated_at,
+                    decided_at
+                FROM {backup_table}
+                """
+            )
+            conn.execute(f"DROP TABLE {backup_table}")
+            conn.commit()
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+
     def ensure_auth_schema(self) -> None:
         with self.connect() as conn:
             try:
@@ -1407,7 +1505,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """
                 CREATE TABLE IF NOT EXISTS free_agent_offer_promises (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    gm_free_agent_offer_request_id INTEGER NOT NULL UNIQUE
+                    gm_free_agent_offer_request_id INTEGER UNIQUE
                         REFERENCES gm_free_agent_offer_requests(id) ON DELETE CASCADE,
                     free_agent_id INTEGER,
                     profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL,
@@ -1429,6 +1527,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 )
                 """
             )
+            self._ensure_free_agent_offer_promises_support_manual_rows(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_free_agent_offer_promises_status
@@ -5604,6 +5703,90 @@ class LeagueDB(DatabaseMaintenanceMixin):
         return aliases[status]
 
     @staticmethod
+    def _normalize_free_agent_promise_role(raw_role: Any) -> str:
+        return re.sub(r"\s+", " ", str(raw_role or "").strip())
+
+    def _free_agent_promise_role_limit(self, raw_role: Any) -> Optional[int]:
+        return FREE_AGENT_PROMISE_ROLE_LIMITS.get(self._normalize_free_agent_promise_role(raw_role))
+
+    def _ensure_free_agent_promise_role_capacity_conn(
+        self,
+        conn: sqlite3.Connection,
+        team_code: Any,
+        season_year: Any,
+        role: Any,
+        exclude_promise_id: Optional[int] = None,
+    ) -> None:
+        normalized_team = normalize_team_code(team_code)
+        normalized_role = self._normalize_free_agent_promise_role(role)
+        parsed_season = parse_int(season_year)
+        limit = self._free_agent_promise_role_limit(normalized_role)
+        if not normalized_team or parsed_season is None or limit is None:
+            return
+        params: List[Any] = [normalized_team, parsed_season, normalized_role]
+        exclude_clause = ""
+        if exclude_promise_id is not None:
+            exclude_clause = " AND id <> ?"
+            params.append(int(exclude_promise_id))
+        cur = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM free_agent_offer_promises
+            WHERE UPPER(TRIM(team_code)) = ?
+              AND season_year = ?
+              AND role = ?
+              AND status IN ('pending', 'fulfilled')
+              {exclude_clause}
+            """,
+            params,
+        )
+        count = int(cur.fetchone()["total"] or 0)
+        if count >= limit:
+            raise ValueError(f"promise_role_limit_exceeded:{normalized_role}:{limit}")
+
+    def ensure_free_agent_offer_request_promise_capacity(
+        self,
+        request_id: int,
+        promise_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT r.*, t.code AS team_code
+                FROM gm_free_agent_offer_requests r
+                JOIN teams t ON t.id = r.team_id
+                WHERE r.id = ?
+                """,
+                (int(request_id),),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("request_not_found")
+            payload = self._free_agent_offer_payload_from_request_row(row)
+            role = self._normalize_free_agent_promise_role(payload.get("role"))
+            if not role:
+                return
+            salary_by_season = payload.get("salary_by_season")
+            if not isinstance(salary_by_season, dict):
+                salary_by_season = {}
+            seasons = sorted(
+                season
+                for season in (parse_int(key) for key in salary_by_season.keys())
+                if season is not None
+            )
+            season_year = seasons[0] if seasons else None
+            if season_year is None:
+                context = promise_context or {}
+                free_agent_context = context.get("free_agent") if isinstance(context.get("free_agent"), dict) else {}
+                season_year = parse_int(free_agent_context.get("season_year"))
+            self._ensure_free_agent_promise_role_capacity_conn(
+                conn,
+                row["team_code"],
+                season_year,
+                role,
+            )
+
+    @staticmethod
     def _free_agent_offer_payload_from_request_row(row: sqlite3.Row) -> Dict[str, Any]:
         try:
             payload = json.loads(str(row["offer_payload_json"] or "{}"))
@@ -5679,6 +5862,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
             ).strip(),
         )
         admin = admin or {}
+        existing_promise = conn.execute(
+            "SELECT id FROM free_agent_offer_promises WHERE gm_free_agent_offer_request_id = ?",
+            (int(request_id),),
+        ).fetchone()
+        self._ensure_free_agent_promise_role_capacity_conn(
+            conn,
+            row["team_code"],
+            season_year,
+            role,
+            exclude_promise_id=int(existing_promise["id"]) if existing_promise else None,
+        )
         insert_cur = conn.execute(
             """
             INSERT INTO free_agent_offer_promises (
@@ -5819,6 +6013,94 @@ class LeagueDB(DatabaseMaintenanceMixin):
             promises = [self._free_agent_offer_promise_from_row(cur, row) for row in cur.fetchall()]
         return {"agent_name": agent_name, "missing_agent": False, "promises": promises}
 
+    def create_free_agent_offer_promise(
+        self,
+        payload: Dict[str, Any],
+        admin: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        player_name = re.sub(r"\s+", " ", str(payload.get("player_name") or "").strip())
+        if not player_name:
+            raise ValueError("player_name_required")
+        team_code = normalize_team_code(payload.get("team_code"))
+        if not team_code:
+            raise ValueError("invalid_team")
+        role = re.sub(r"\s+", " ", str(payload.get("role") or "").strip())
+        if not role:
+            raise ValueError("role_required")
+        season_year = parse_int(payload.get("season_year"))
+        if season_year is None:
+            settings = self.get_settings()
+            season_year = parse_int(settings.get("current_year")) or CAP_FORECAST_MIN_YEAR
+        if season_year < 2000 or season_year > 2100:
+            raise ValueError("invalid_season_year")
+        status = self._offer_promise_status(payload.get("status") or "pending")
+        agent_name = re.sub(r"\s+", " ", str(payload.get("agent_name") or "").strip())
+        contract_type = re.sub(r"\s+", " ", str(payload.get("contract_type") or "").strip())
+        offer_type = re.sub(r"\s+", " ", str(payload.get("offer_type") or "manual").strip()) or "manual"
+        profile_id = parse_int(payload.get("profile_id"))
+        free_agent_id = parse_int(payload.get("free_agent_id"))
+        timestamp = now_iso()
+        admin_email = str(admin.get("email") or "").strip().lower() or None
+        admin_name = str(admin.get("name") or "").strip() or None
+        with self.connect() as conn:
+            team_row = conn.execute("SELECT code, name FROM teams WHERE code = ?", (team_code,)).fetchone()
+            if not team_row:
+                raise ValueError("team_not_found")
+            if profile_id is not None and not self._profile_exists_conn(conn, profile_id):
+                raise ValueError("profile_not_found")
+            if status in {"pending", "fulfilled"}:
+                self._ensure_free_agent_promise_role_capacity_conn(conn, team_code, season_year, role)
+            cur = conn.execute(
+                """
+                INSERT INTO free_agent_offer_promises (
+                    gm_free_agent_offer_request_id,
+                    free_agent_id,
+                    profile_id,
+                    player_name,
+                    team_code,
+                    team_name,
+                    agent_name,
+                    season_year,
+                    season_label,
+                    role,
+                    offer_type,
+                    contract_type,
+                    status,
+                    admin_email,
+                    admin_name,
+                    created_at,
+                    updated_at,
+                    decided_at
+                )
+                VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    free_agent_id,
+                    profile_id,
+                    player_name,
+                    str(team_row["code"] or "").strip().upper(),
+                    str(team_row["name"] or "").strip(),
+                    agent_name,
+                    season_year,
+                    season_label(season_year),
+                    role,
+                    offer_type,
+                    contract_type,
+                    status,
+                    admin_email,
+                    admin_name,
+                    timestamp,
+                    timestamp,
+                    None if status == "pending" else timestamp,
+                ),
+            )
+            conn.commit()
+            read_cur = conn.execute("SELECT * FROM free_agent_offer_promises WHERE id = ?", (cur.lastrowid,))
+            row = read_cur.fetchone()
+            if not row:
+                raise ValueError("promise_not_created")
+            return self._free_agent_offer_promise_from_row(read_cur, row)
+
     def update_free_agent_offer_promise_status(
         self,
         promise_id: Any,
@@ -5831,6 +6113,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
         normalized_status = self._offer_promise_status(status)
         timestamp = now_iso()
         with self.connect() as conn:
+            if normalized_status in {"pending", "fulfilled"}:
+                promise_row = conn.execute(
+                    "SELECT team_code, season_year, role FROM free_agent_offer_promises WHERE id = ?",
+                    (parsed_id,),
+                ).fetchone()
+                if not promise_row:
+                    return None
+                self._ensure_free_agent_promise_role_capacity_conn(
+                    conn,
+                    promise_row["team_code"],
+                    promise_row["season_year"],
+                    promise_row["role"],
+                    exclude_promise_id=parsed_id,
+                )
             cur = conn.execute(
                 """
                 UPDATE free_agent_offer_promises
@@ -23733,6 +24029,43 @@ QUALITY REQUIREMENTS
             self._json(201, {"ok": True, "vote": vote})
             return
 
+        if parsed.path == "/api/admin/free-agent-offer-promises":
+            try:
+                promise = self.db.create_free_agent_offer_promise(payload, self._current_session() or {})
+            except ValueError as err:
+                message = str(err) or "invalid_promise"
+                if message.startswith("promise_role_limit_exceeded:"):
+                    _prefix, role, limit = message.split(":", 2)
+                    self._json(
+                        409,
+                        {
+                            "error": "promise_role_limit_exceeded",
+                            "role": role,
+                            "limit": parse_int(limit),
+                            "message": f"Este equipo ya ha alcanzado el máximo de promesas firmadas para {role}.",
+                        },
+                    )
+                    return
+                status = 404 if message in {"team_not_found", "profile_not_found"} else 400
+                self._json(status, {"error": message})
+                return
+            self._log_admin_action(
+                "create",
+                "free_agent_offer_promise",
+                str(promise.get("id")),
+                promise.get("team_code"),
+                {
+                    "manual": True,
+                    "status": promise.get("status"),
+                    "player_name": promise.get("player_name"),
+                    "role": promise.get("role"),
+                    "season_year": promise.get("season_year"),
+                },
+                after={"promise": promise},
+            )
+            self._json(201, {"ok": True, "promise": promise})
+            return
+
         if parsed.path == "/api/offseason-exceptions/generate":
             season_year = parse_int(payload.get("season_year"))
             if season_year is None:
@@ -24745,7 +25078,20 @@ QUALITY REQUIREMENTS
                     self._current_session() or {},
                 )
             except ValueError as err:
-                self._json(400, {"error": str(err) or "invalid_promise_status"})
+                message = str(err) or "invalid_promise_status"
+                if message.startswith("promise_role_limit_exceeded:"):
+                    _prefix, role, limit = message.split(":", 2)
+                    self._json(
+                        409,
+                        {
+                            "error": "promise_role_limit_exceeded",
+                            "role": role,
+                            "limit": parse_int(limit),
+                            "message": f"Este equipo ya ha alcanzado el máximo de promesas firmadas para {role}.",
+                        },
+                    )
+                    return
+                self._json(400, {"error": message})
                 return
             if not promise:
                 self._json(404, {"error": "promise_not_found"})
@@ -24946,6 +25292,27 @@ QUALITY REQUIREMENTS
                 self._json(400, {"error": "invalid_team_code"})
                 return
             sign_payload = self._player_payload_from_free_agent_offer(free_agent, offer_payload)
+            try:
+                self.db.ensure_free_agent_offer_request_promise_capacity(
+                    request_id,
+                    promise_context={"free_agent": free_agent},
+                )
+            except ValueError as err:
+                message = str(err) or "promise_role_limit_exceeded"
+                if message.startswith("promise_role_limit_exceeded:"):
+                    _prefix, role, limit = message.split(":", 2)
+                    self._json(
+                        409,
+                        {
+                            "error": "promise_role_limit_exceeded",
+                            "role": role,
+                            "limit": parse_int(limit),
+                            "message": f"{team_code} ya ha alcanzado el máximo de promesas firmadas para {role}.",
+                        },
+                    )
+                    return
+                self._json(400, {"error": message})
+                return
             try:
                 player_id = self.db.sign_free_agent(free_agent_id, team_code, sign_payload)
             except ValueError as err:
