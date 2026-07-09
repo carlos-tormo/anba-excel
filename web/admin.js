@@ -36,6 +36,7 @@ const state = {
   gmMinimumTargets: [],
   gmMinimumTargetOrder: [],
   gmMinimumTargetHandicaps: {},
+  gmMinimumTargetOrderPlayerFilter: '',
   coadminVotes: [],
   leaguePlayers: [],
   freeAgents: [],
@@ -6648,15 +6649,41 @@ function renderGmMinimumTargetOrderBoard() {
   const board = document.getElementById('gmMinimumTargetOrderBoard');
   if (!board) return;
   const scores = Array.isArray(state.gmMinimumTargetOrder) ? state.gmMinimumTargetOrder : [];
+  const rankedScores = scores.map((item, index) => ({ ...item, order_rank: index + 1 }));
+  const normalizeFilterText = (value) => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  const playerFilter = state.gmMinimumTargetOrderPlayerFilter || '';
+  const normalizedFilter = normalizeFilterText(playerFilter);
+  const visibleScores = normalizedFilter
+    ? rankedScores.filter((item) => normalizeFilterText(item.player_name).includes(normalizedFilter))
+    : rankedScores.slice(0, 20);
+  const filterHtml = `
+    <label class="gm-minimum-target-order-filter">
+      <span>Filtrar jugador</span>
+      <input
+        type="search"
+        data-minimum-order-player-filter
+        value="${escapeHtml(playerFilter)}"
+        placeholder="Nombre del jugador"
+      >
+    </label>
+  `;
   if (!scores.length) {
     board.innerHTML = `
       ${renderGmMinimumTargetHandicapControls()}
-      <div class="muted-text">No hay puntuaciones para ordenar todavía.</div>
+      <div class="gm-minimum-target-order-toolbar">
+        <div class="muted-text">No hay puntuaciones para ordenar todavía.</div>
+        ${filterHtml}
+      </div>
     `;
     wireGmMinimumTargetHandicapControls(board);
+    wireGmMinimumTargetOrderFilter(board);
     return;
   }
-  const rows = scores.map((item, index) => {
+  const rows = visibleScores.map((item, index) => {
     const teamCode = String(item.team_code || '').toUpperCase();
     const role = String(item.role || '').trim();
     const rightsTeam = String(item.rights_team_code || '').toUpperCase();
@@ -6665,7 +6692,7 @@ function renderGmMinimumTargetOrderBoard() {
     const birdsText = rightsTeam && rightsTeam === teamCode ? `Derechos ${rightsTeam}` : 'Sin bonus';
     return `
       <tr>
-        <td class="gm-minimum-target-order-rank">${index + 1}</td>
+        <td class="gm-minimum-target-order-rank">${Number(item.order_rank || index + 1)}</td>
         <td>
           <strong>${escapeHtml(teamCode || '-')}</strong>
           <div class="muted-text">${escapeHtml(item.team_name || '')}</div>
@@ -6701,11 +6728,15 @@ function renderGmMinimumTargetOrderBoard() {
   }).join('');
   board.innerHTML = `
     ${renderGmMinimumTargetHandicapControls()}
-    <div class="gm-minimum-target-order-header">
-      <h4>Orden estimado top 20</h4>
-      <p class="muted-text">Puntuación = prioridad del equipo + atractivo del equipo + rol ofrecido + bonus Bird + handicap.</p>
+    <div class="gm-minimum-target-order-toolbar">
+      <div class="gm-minimum-target-order-header">
+        <h4>Orden estimado top 20</h4>
+        <p class="muted-text">Puntuación = prioridad del equipo + atractivo del equipo + rol ofrecido + bonus Bird + handicap.</p>
+      </div>
+      ${filterHtml}
     </div>
-    <div class="table-scroll">
+    ${visibleScores.length ? `
+      <div class="table-scroll">
       <table class="gm-minimum-targets-table gm-minimum-target-order-table">
         <thead>
           <tr>
@@ -6723,9 +6754,30 @@ function renderGmMinimumTargetOrderBoard() {
         </thead>
         <tbody>${rows}</tbody>
       </table>
-    </div>
+      </div>
+    ` : '<div class="muted-text">No hay resultados para ese jugador.</div>'}
   `;
   wireGmMinimumTargetHandicapControls(board);
+  wireGmMinimumTargetOrderFilter(board);
+}
+
+function wireGmMinimumTargetOrderFilter(root) {
+  const input = root.querySelector('[data-minimum-order-player-filter]');
+  if (!input) return;
+  input.addEventListener('input', (event) => {
+    state.gmMinimumTargetOrderPlayerFilter = event.target.value || '';
+    renderGmMinimumTargetOrderBoard();
+    const nextInput = document.querySelector('[data-minimum-order-player-filter]');
+    if (nextInput) {
+      nextInput.focus();
+      const length = nextInput.value.length;
+      try {
+        nextInput.setSelectionRange(length, length);
+      } catch (_) {
+        // Some mobile browsers do not expose selection APIs on search inputs.
+      }
+    }
+  });
 }
 
 function renderGmMinimumTargetHandicapControls() {

@@ -12901,7 +12901,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     f.free_agent_type,
                     f.rights_team_code
                 FROM gm_minimum_targets mt
-                LEFT JOIN free_agents f ON f.id = mt.free_agent_id
+                JOIN free_agents f ON f.id = mt.free_agent_id
                 WHERE mt.user_id = ?
                 ORDER BY mt.rank
                 """,
@@ -13158,7 +13158,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     f.free_agent_type,
                     f.rights_team_code
                 FROM gm_minimum_targets mt
-                LEFT JOIN free_agents f ON f.id = mt.free_agent_id
+                JOIN free_agents f ON f.id = mt.free_agent_id
                 WHERE mt.user_id IN ({placeholders})
                 ORDER BY mt.user_id, mt.rank
                 """,
@@ -13309,9 +13309,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     f.rights_team_code,
                     pp.date_of_birth
                 FROM gm_minimum_targets mt
-                LEFT JOIN free_agents f ON f.id = mt.free_agent_id
+                JOIN free_agents f ON f.id = mt.free_agent_id
                 LEFT JOIN player_profiles pp ON pp.id = COALESCE(mt.profile_id, f.profile_id)
-                WHERE mt.free_agent_id IS NOT NULL
                 ORDER BY mt.user_id, mt.rank
                 """
             ).fetchall()
@@ -13369,7 +13368,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 str(item.get("team_code") or ""),
             )
         )
-        return scored[:20]
+        return scored
 
     @staticmethod
     def _depth_chart_player_payload(player: Dict[str, Any]) -> Dict[str, Any]:
@@ -16299,6 +16298,19 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return 0
         unique_ids = sorted(set(active_profile_ids))
         placeholders = ",".join("?" for _ in unique_ids)
+        free_agent_rows = conn.execute(
+            f"""
+            SELECT id
+            FROM free_agents
+            WHERE profile_id IN ({placeholders})
+                AND COALESCE(source, '') != ?
+            """,
+            (*unique_ids, FREE_AGENT_SOURCE_CAP_HOLD),
+        ).fetchall()
+        self._cleanup_gm_minimum_targets_for_free_agent_ids_conn(
+            conn,
+            [row["id"] for row in free_agent_rows],
+        )
         delete_cur = conn.execute(
             f"""
             DELETE FROM free_agents
@@ -16312,6 +16324,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def _sync_cap_hold_free_agents(self, conn: sqlite3.Connection, settings: Dict[str, str]) -> int:
         timestamp = now_iso()
         if not parse_bool(settings.get("free_agency_mode")):
+            rows = conn.execute("SELECT id FROM free_agents WHERE source = ?", (FREE_AGENT_SOURCE_CAP_HOLD,)).fetchall()
+            self._cleanup_gm_minimum_targets_for_free_agent_ids_conn(conn, [row["id"] for row in rows])
             cur = conn.execute("DELETE FROM free_agents WHERE source = ?", (FREE_AGENT_SOURCE_CAP_HOLD,))
             return int(cur.rowcount or 0)
 
@@ -16437,6 +16451,19 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         if valid_profile_ids:
             placeholders = ",".join("?" for _ in valid_profile_ids)
+            rows = conn.execute(
+                f"""
+                SELECT id
+                FROM free_agents
+                WHERE source = ?
+                    AND (
+                        profile_id IS NULL
+                        OR profile_id NOT IN ({placeholders})
+                    )
+                """,
+                (FREE_AGENT_SOURCE_CAP_HOLD, *valid_profile_ids),
+            ).fetchall()
+            self._cleanup_gm_minimum_targets_for_free_agent_ids_conn(conn, [row["id"] for row in rows])
             cur = conn.execute(
                 f"""
                 DELETE FROM free_agents
@@ -16449,6 +16476,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 (FREE_AGENT_SOURCE_CAP_HOLD, *valid_profile_ids),
             )
         else:
+            rows = conn.execute("SELECT id FROM free_agents WHERE source = ?", (FREE_AGENT_SOURCE_CAP_HOLD,)).fetchall()
+            self._cleanup_gm_minimum_targets_for_free_agent_ids_conn(conn, [row["id"] for row in rows])
             cur = conn.execute("DELETE FROM free_agents WHERE source = ?", (FREE_AGENT_SOURCE_CAP_HOLD,))
         changed += int(cur.rowcount or 0)
         changed += self._cleanup_active_contract_free_agents_conn(conn, int(current_year))
@@ -16458,6 +16487,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
         """Ensure canonical player profiles without a roster row are visible as free agents."""
         timestamp = now_iso()
         changed = 0
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM free_agents
+            WHERE source = ?
+                AND profile_id IN (
+                    SELECT DISTINCT profile_id
+                    FROM players
+                    WHERE profile_id IS NOT NULL
+                )
+            """,
+            (FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,),
+        ).fetchall()
+        self._cleanup_gm_minimum_targets_for_free_agent_ids_conn(conn, [row["id"] for row in rows])
         cur = conn.execute(
             """
             DELETE FROM free_agents
@@ -16963,6 +17006,44 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return cur.rowcount > 0
 
+    def _cleanup_gm_minimum_targets_for_free_agent_ids_conn(
+        self,
+        conn: sqlite3.Connection,
+        free_agent_ids: Any,
+    ) -> int:
+        parsed_ids = sorted({
+            int(parsed_id)
+            for parsed_id in (parse_int(value) for value in (free_agent_ids or []))
+            if parsed_id is not None and parsed_id > 0
+        })
+        if not parsed_ids:
+            return 0
+        placeholders = ",".join("?" for _ in parsed_ids)
+        user_rows = conn.execute(
+            f"""
+            SELECT DISTINCT user_id
+            FROM gm_minimum_targets
+            WHERE free_agent_id IN ({placeholders})
+            """,
+            tuple(parsed_ids),
+        ).fetchall()
+        cur = conn.execute(
+            f"DELETE FROM gm_minimum_targets WHERE free_agent_id IN ({placeholders})",
+            tuple(parsed_ids),
+        )
+        deleted = int(cur.rowcount or 0)
+        if deleted:
+            timestamp = now_iso()
+            for row in user_rows:
+                user_id = parse_int(row["user_id"])
+                if user_id is None:
+                    continue
+                conn.execute(
+                    "UPDATE gm_minimum_target_status SET updated_at = ? WHERE user_id = ?",
+                    (timestamp, int(user_id)),
+                )
+        return deleted
+
     def delete_free_agent(self, free_agent_id: int, record_transaction: bool = True) -> bool:
         with self.connect() as conn:
             agent = conn.execute(
@@ -16974,6 +17055,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
                 (free_agent_id,),
             ).fetchone()
+            self._cleanup_gm_minimum_targets_for_free_agent_ids_conn(conn, [free_agent_id])
             cur = conn.execute("DELETE FROM free_agents WHERE id = ?", (free_agent_id,))
             if record_transaction and cur.rowcount and agent:
                 self._record_player_transaction(
@@ -17110,6 +17192,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
         deleted = 0
         parsed_free_agent_id = parse_int(free_agent_id)
         parsed_profile_id = parse_int(profile_id)
+        free_agent_ids: List[int] = []
+        if parsed_free_agent_id is not None:
+            free_agent_ids.append(int(parsed_free_agent_id))
+        if parsed_profile_id is not None:
+            rows = conn.execute(
+                "SELECT id FROM free_agents WHERE profile_id = ?",
+                (int(parsed_profile_id),),
+            ).fetchall()
+            free_agent_ids.extend(int(row["id"]) for row in rows)
+        self._cleanup_gm_minimum_targets_for_free_agent_ids_conn(conn, free_agent_ids)
         if parsed_free_agent_id is not None:
             cur = conn.execute("DELETE FROM free_agents WHERE id = ?", (int(parsed_free_agent_id),))
             deleted += int(cur.rowcount or 0)

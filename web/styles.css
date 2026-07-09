@@ -1988,6 +1988,33 @@ h1 {
   font-size: 1.05rem;
   margin: 0;
 }
+.gm-minimum-target-order-toolbar {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+.gm-minimum-target-order-filter {
+  display: grid;
+  gap: 4px;
+  min-width: min(320px, 100%);
+}
+.gm-minimum-target-order-filter span {
+  color: #64748b;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.gm-minimum-target-order-filter input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: #0f172a;
+  font: inherit;
+  min-height: 42px;
+  padding: 9px 12px;
+}
 .gm-minimum-targets-table {
   border-collapse: collapse;
   min-width: 760px;

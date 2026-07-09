@@ -1011,6 +1011,52 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         minimum_targets = self.db.get_gm_minimum_targets(int(user["id"]), "ATL")
         self.assertEqual([], minimum_targets["targets"])
 
+    def test_signing_free_agent_removes_minimum_targets_for_every_gm(self) -> None:
+        atl_user = self.db.upsert_google_user("google-atl-gm", "atl-gm@example.com", "ATL GM", None)
+        bkn_user = self.db.upsert_google_user("google-bkn-gm", "bkn-gm@example.com", "BKN GM", None)
+        self.db.replace_user_team_assignments(int(atl_user["id"]), ["ATL"])
+        self.db.replace_user_team_assignments(int(bkn_user["id"]), ["BKN"])
+        self.db.set_gm_minimum_targets(
+            int(atl_user["id"]),
+            "ATL",
+            [{"rank": 1, "free_agent_id": self.free_agent_id, "role": "Titular"}],
+        )
+        self.db.set_gm_minimum_targets(
+            int(bkn_user["id"]),
+            "BKN",
+            [{"rank": 2, "free_agent_id": self.free_agent_id, "role": "Sexto hombre"}],
+        )
+
+        player_id = self.db.sign_free_agent(
+            self.free_agent_id,
+            "ATL",
+            {
+                "name": "Test Free Agent",
+                "bird_rights": "Min",
+                "salary_2026_text": "2.296.274",
+            },
+        )
+
+        self.assertIsNotNone(player_id)
+        self.assertEqual([], self.db.get_gm_minimum_targets(int(atl_user["id"]), "ATL")["targets"])
+        self.assertEqual([], self.db.get_gm_minimum_targets(int(bkn_user["id"]), "BKN")["targets"])
+        self.assertEqual([], self.db.list_admin_gm_minimum_target_order())
+
+    def test_deleting_free_agent_removes_minimum_targets_for_every_gm(self) -> None:
+        user = self.db.upsert_google_user("google-atl-gm", "atl-gm@example.com", "ATL GM", None)
+        self.db.replace_user_team_assignments(int(user["id"]), ["ATL"])
+        self.db.set_gm_minimum_targets(
+            int(user["id"]),
+            "ATL",
+            [{"rank": 1, "free_agent_id": self.free_agent_id, "role": "Titular"}],
+        )
+
+        deleted = self.db.delete_free_agent(self.free_agent_id)
+
+        self.assertTrue(deleted)
+        self.assertEqual([], self.db.get_gm_minimum_targets(int(user["id"]), "ATL")["targets"])
+        self.assertEqual([], self.db.list_admin_gm_minimum_target_order())
+
     def test_cartera_clients_include_offer_and_interest_teams(self) -> None:
         self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})
         self.db.record_free_agent_interest(
