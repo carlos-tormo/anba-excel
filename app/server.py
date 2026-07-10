@@ -13316,13 +13316,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
             ).fetchall()
 
         scored: List[Dict[str, Any]] = []
+        effective_ranks_by_user: Dict[int, int] = {}
         for row in target_rows:
-            user = users_by_id.get(int(row["user_id"]))
+            row_user_id = int(row["user_id"])
+            user = users_by_id.get(row_user_id)
             if not user:
                 continue
             team_code = normalize_team_code(user.get("team_code"))
-            rank = parse_int(row["rank"]) or 0
-            priority_points = max(0, 11 - rank) if 1 <= rank <= 10 else 0
+            original_rank = parse_int(row["rank"]) or 0
+            effective_rank = effective_ranks_by_user.get(row_user_id, 0) + 1
+            effective_ranks_by_user[row_user_id] = effective_rank
+            priority_points = max(0, 11 - effective_rank) if 1 <= effective_rank <= 10 else 0
             age = self._minimum_target_age_from_birth_date(row["date_of_birth"])
             appeal_key = self._minimum_target_appeal_key_for_age(age)
             appeal_rank = parse_float((appeal_by_team.get(team_code) or {}).get(appeal_key))
@@ -13343,7 +13347,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     "appeal_rank": int(appeal_rank) if appeal_rank and appeal_rank > 0 else None,
                     "appeal_key": appeal_key,
                     "age": age,
-                    "target_rank": rank,
+                    "target_rank": effective_rank,
+                    "original_target_rank": original_rank,
                     "team_code": team_code,
                     "team_name": teams.get(team_code, team_code),
                     "user_id": user.get("user_id"),

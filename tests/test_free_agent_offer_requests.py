@@ -990,6 +990,28 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(1, self.db._minimum_target_birds_bonus(34, "ATL", "ATL"))
         self.assertEqual(0, self.db._minimum_target_birds_bonus(22, "BKN", "ATL"))
 
+    def test_minimum_target_order_compresses_empty_priority_slots(self) -> None:
+        user = self.db.upsert_google_user("google-atl-gm", "atl-gm@example.com", "ATL GM", None)
+        self.db.replace_user_team_assignments(int(user["id"]), ["ATL"])
+        self.db.set_gm_minimum_targets(
+            int(user["id"]),
+            "ATL",
+            [
+                {
+                    "rank": 3,
+                    "free_agent_id": self.free_agent_id,
+                    "role": "Titular",
+                }
+            ],
+        )
+
+        scores = self.db.list_admin_gm_minimum_target_order()
+
+        self.assertEqual(1, len(scores))
+        self.assertEqual(10, scores[0]["priority_points"])
+        self.assertEqual(1, scores[0]["target_rank"])
+        self.assertEqual(3, scores[0]["original_target_rank"])
+
     def test_admin_can_remove_minimum_target_from_user_list(self) -> None:
         user = self.db.upsert_google_user("google-atl-gm", "atl-gm@example.com", "ATL GM", None)
         self.db.replace_user_team_assignments(int(user["id"]), ["ATL"])
