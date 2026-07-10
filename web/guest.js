@@ -117,6 +117,21 @@ const state = {
     trackerSeason: null,
     trackerEconomySeason: null,
     freeAgentSearch: '',
+    freeAgentFilters: {
+      type: '',
+      agent: '',
+      position: '',
+      rating: '',
+      details: '',
+    },
+    leaguePlayerSearch: '',
+    leaguePlayerFilters: {
+      status: '',
+      team: '',
+      yos: '',
+      contract: '',
+      movement: '',
+    },
     contractCalculator: {
       firstAmount: '',
       years: 5,
@@ -5728,6 +5743,120 @@ async function refreshCoadminVoteRequests({ silent = true } = {}) {
   }
 }
 
+function normalizedFilterText(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function filterTextIncludes(value, query) {
+  const normalizedQuery = normalizedFilterText(query);
+  if (!normalizedQuery) return true;
+  return normalizedFilterText(value).includes(normalizedQuery);
+}
+
+function filterTextEquals(value, expected) {
+  const normalizedExpected = normalizedFilterText(expected);
+  if (!normalizedExpected) return true;
+  return normalizedFilterText(value) === normalizedExpected;
+}
+
+function uniqueFilterOptions(rows, getter) {
+  const seen = new Set();
+  return (Array.isArray(rows) ? rows : [])
+    .map(getter)
+    .map((value) => String(value ?? '').trim())
+    .filter((value) => {
+      if (!value) return false;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => a.localeCompare(b, 'es', { numeric: true, sensitivity: 'base' }));
+}
+
+function filterSelectOptions(values, selected = '') {
+  const normalizedSelected = String(selected || '').trim();
+  const optionValues = ['', ...uniqueFilterOptions(values, (value) => value)];
+  if (normalizedSelected && !optionValues.some((value) => value.toLowerCase() === normalizedSelected.toLowerCase())) {
+    optionValues.push(normalizedSelected);
+  }
+  return optionValues
+    .map((value) => `<option value="${escapeHtml(value)}"${value === normalizedSelected ? ' selected' : ''}>${escapeHtml(value || 'Todos')}</option>`)
+    .join('');
+}
+
+function normalizeFreeAgentType(value = '') {
+  return String(value || '').trim().toLowerCase() === 'restringido' ? 'Restringido' : 'No restringido';
+}
+
+function filteredFreeAgents() {
+  const rows = state.freeAgents || [];
+  const query = state.ui.freeAgentSearch || '';
+  const filters = state.ui.freeAgentFilters || {};
+  return rows.filter((agent) => (
+    filterTextIncludes(agent.name, query)
+    && filterTextEquals(normalizeFreeAgentType(agent.free_agent_type), filters.type)
+    && filterTextEquals(agent.agent || '-', filters.agent)
+    && filterTextEquals(agent.position, filters.position)
+    && filterTextIncludes(agent.rating, filters.rating)
+    && filterTextIncludes(agent.notes, filters.details)
+  ));
+}
+
+function renderFreeAgentFilters() {
+  const container = document.getElementById('freeAgentFilterBar');
+  if (!container) return;
+  const rows = state.freeAgents || [];
+  const typeOptions = uniqueFilterOptions(rows, (agent) => normalizeFreeAgentType(agent.free_agent_type));
+  const agentOptions = uniqueFilterOptions(rows, (agent) => agent.agent || '-');
+  const positionOptions = uniqueFilterOptions(rows, (agent) => agent.position);
+  const signature = JSON.stringify({ typeOptions, agentOptions, positionOptions });
+  if (container.dataset.filterSignature === signature && container.childElementCount) return;
+  container.dataset.filterSignature = signature;
+  const filters = state.ui.freeAgentFilters || {};
+  container.innerHTML = `
+    <label class="table-filter-field">
+      <span>Tipo FA</span>
+      <select data-free-agent-filter="type">${filterSelectOptions(typeOptions, filters.type)}</select>
+    </label>
+    <label class="table-filter-field">
+      <span>Agente</span>
+      <select data-free-agent-filter="agent">${filterSelectOptions(agentOptions, filters.agent)}</select>
+    </label>
+    <label class="table-filter-field">
+      <span>Posición</span>
+      <select data-free-agent-filter="position">${filterSelectOptions(positionOptions, filters.position)}</select>
+    </label>
+    <label class="table-filter-field">
+      <span>Rating</span>
+      <input data-free-agent-filter="rating" value="${escapeHtml(filters.rating || '')}" placeholder="Ej: 80">
+    </label>
+    <label class="table-filter-field">
+      <span>Detalles</span>
+      <input data-free-agent-filter="details" value="${escapeHtml(filters.details || '')}" placeholder="Texto">
+    </label>
+    <button class="table-filter-clear" type="button" data-free-agent-filter-clear>Limpiar filtros</button>
+  `;
+  container.querySelectorAll('[data-free-agent-filter]').forEach((control) => {
+    control.addEventListener(control.tagName === 'SELECT' ? 'change' : 'input', (event) => {
+      const key = event.currentTarget.dataset.freeAgentFilter;
+      state.ui.freeAgentFilters = {
+        ...(state.ui.freeAgentFilters || {}),
+        [key]: event.currentTarget.value || '',
+      };
+      resetPagination('freeAgents');
+      renderFreeAgents();
+    });
+  });
+  container.querySelector('[data-free-agent-filter-clear]')?.addEventListener('click', () => {
+    state.ui.freeAgentSearch = '';
+    state.ui.freeAgentFilters = { type: '', agent: '', position: '', rating: '', details: '' };
+    container.dataset.filterSignature = '';
+    resetPagination('freeAgents');
+    renderFreeAgents();
+  });
+}
+
 function renderFreeAgents() {
   const tbody = document.querySelector('#freeAgentsTable tbody');
   if (!tbody) return;
@@ -5736,11 +5865,8 @@ function renderFreeAgents() {
   if (searchInput && searchInput.value !== String(state.ui.freeAgentSearch || '')) {
     searchInput.value = state.ui.freeAgentSearch || '';
   }
-  const query = String(state.ui.freeAgentSearch || '').trim().toLowerCase();
-  const filteredRows = query
-    ? (state.freeAgents || []).filter((agent) => String(agent.name || '').toLowerCase().includes(query))
-    : (state.freeAgents || []);
-  const allRows = sortedRows(filteredRows, state.sort.free_agents);
+  renderFreeAgentFilters();
+  const allRows = sortedRows(filteredFreeAgents(), state.sort.free_agents);
   const pagination = paginatedRows(allRows, 'freeAgents');
   syncFreeAgentPrimarySortHeader(state.sort.free_agents);
   renderPaginationControls('freeAgents', pagination);
@@ -5751,7 +5877,7 @@ function renderFreeAgents() {
     return;
   }
   pagination.rows.forEach((agent) => {
-    const freeAgentType = String(agent.free_agent_type || 'No restringido').trim() === 'Restringido' ? 'Restringido' : 'No restringido';
+    const freeAgentType = normalizeFreeAgentType(agent.free_agent_type);
     const canAct = canSubmitFreeAgentAction();
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -6738,16 +6864,115 @@ function leaguePlayerProfileSummaryHtml(player) {
   `;
 }
 
+function leaguePlayerStatusFilterValue(player) {
+  return String(player?.status_label || player?.status || player?.profile_status || 'Sin contrato').trim() || 'Sin contrato';
+}
+
+function leaguePlayerTeamFilterValue(player) {
+  return String(player?.team_code || player?.rights_team_code || '').trim().toUpperCase() || 'Sin equipo';
+}
+
+function leaguePlayerMovementFilterText(player) {
+  const logs = Array.isArray(player?.transaction_logs) ? player.transaction_logs : [];
+  return [
+    player?.latest_movement,
+    player?.last_movement,
+    player?.last_transaction,
+    player?.transaction_summary,
+    ...(logs.map((log) => [
+      log?.created_at,
+      log?.action,
+      log?.summary,
+      log?.description,
+      log?.team_code,
+    ].filter(Boolean).join(' '))),
+  ].filter(Boolean).join(' ');
+}
+
+function filteredLeaguePlayers() {
+  const rows = state.leaguePlayers || [];
+  const query = state.ui.leaguePlayerSearch || '';
+  const filters = state.ui.leaguePlayerFilters || {};
+  return rows.filter((player) => (
+    filterTextIncludes(player.name, query)
+    && filterTextEquals(leaguePlayerStatusFilterValue(player), filters.status)
+    && filterTextEquals(leaguePlayerTeamFilterValue(player), filters.team)
+    && filterTextEquals(player.experience_years == null ? '' : player.experience_years, filters.yos)
+    && filterTextIncludes(player.active_contract_summary, filters.contract)
+    && filterTextIncludes(leaguePlayerMovementFilterText(player), filters.movement)
+  ));
+}
+
+function renderLeaguePlayerFilters() {
+  const container = document.getElementById('leaguePlayerFilterBar');
+  if (!container) return;
+  const rows = state.leaguePlayers || [];
+  const statusOptions = uniqueFilterOptions(rows, leaguePlayerStatusFilterValue);
+  const teamOptions = uniqueFilterOptions(rows, leaguePlayerTeamFilterValue);
+  const yosOptions = uniqueFilterOptions(rows, (player) => player.experience_years == null ? '' : player.experience_years);
+  const signature = JSON.stringify({ statusOptions, teamOptions, yosOptions });
+  if (container.dataset.filterSignature === signature && container.childElementCount) return;
+  container.dataset.filterSignature = signature;
+  const filters = state.ui.leaguePlayerFilters || {};
+  container.innerHTML = `
+    <label class="table-filter-field">
+      <span>Estado</span>
+      <select data-league-player-filter="status">${filterSelectOptions(statusOptions, filters.status)}</select>
+    </label>
+    <label class="table-filter-field">
+      <span>Equipo</span>
+      <select data-league-player-filter="team">${filterSelectOptions(teamOptions, filters.team)}</select>
+    </label>
+    <label class="table-filter-field">
+      <span>YOS</span>
+      <select data-league-player-filter="yos">${filterSelectOptions(yosOptions, filters.yos)}</select>
+    </label>
+    <label class="table-filter-field">
+      <span>Contrato activo</span>
+      <input data-league-player-filter="contract" value="${escapeHtml(filters.contract || '')}" placeholder="Texto">
+    </label>
+    <label class="table-filter-field">
+      <span>Movimientos</span>
+      <input data-league-player-filter="movement" value="${escapeHtml(filters.movement || '')}" placeholder="Texto">
+    </label>
+    <button class="table-filter-clear" type="button" data-league-player-filter-clear>Limpiar filtros</button>
+  `;
+  container.querySelectorAll('[data-league-player-filter]').forEach((control) => {
+    control.addEventListener(control.tagName === 'SELECT' ? 'change' : 'input', (event) => {
+      const key = event.currentTarget.dataset.leaguePlayerFilter;
+      state.ui.leaguePlayerFilters = {
+        ...(state.ui.leaguePlayerFilters || {}),
+        [key]: event.currentTarget.value || '',
+      };
+      resetPagination('leaguePlayers');
+      renderLeaguePlayers();
+    });
+  });
+  container.querySelector('[data-league-player-filter-clear]')?.addEventListener('click', () => {
+    state.ui.leaguePlayerSearch = '';
+    state.ui.leaguePlayerFilters = { status: '', team: '', yos: '', contract: '', movement: '' };
+    container.dataset.filterSignature = '';
+    resetPagination('leaguePlayers');
+    renderLeaguePlayers();
+  });
+}
+
 function renderLeaguePlayers() {
   const tbody = document.querySelector('#leaguePlayersTable tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
-  const allRows = sortedRows(state.leaguePlayers || [], state.sort.league_players);
+  const searchInput = document.getElementById('leaguePlayerSearchInput');
+  if (searchInput && searchInput.value !== String(state.ui.leaguePlayerSearch || '')) {
+    searchInput.value = state.ui.leaguePlayerSearch || '';
+  }
+  renderLeaguePlayerFilters();
+  const allRows = sortedRows(filteredLeaguePlayers(), state.sort.league_players);
   const pagination = paginatedRows(allRows, 'leaguePlayers');
   renderPaginationControls('leaguePlayers', pagination);
   if (!allRows.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="7">No hay jugadores cargados.</td>';
+    const hasPlayers = Boolean((state.leaguePlayers || []).length);
+    tr.innerHTML = `<td colspan="7">${hasPlayers ? 'No hay jugadores que coincidan con los filtros.' : 'No hay jugadores cargados.'}</td>`;
     tbody.appendChild(tr);
     return;
   }
@@ -10551,6 +10776,11 @@ async function init() {
     state.ui.freeAgentSearch = String(event.target.value || '');
     resetPagination('freeAgents');
     renderFreeAgents();
+  });
+  document.getElementById('leaguePlayerSearchInput')?.addEventListener('input', (event) => {
+    state.ui.leaguePlayerSearch = String(event.target.value || '');
+    resetPagination('leaguePlayers');
+    renderLeaguePlayers();
   });
   document.getElementById('freeAgentOfferYears')?.addEventListener('change', () => {
     renderFreeAgentOfferYearsTable({ preserveFirstAmount: true });

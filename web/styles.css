@@ -4987,6 +4987,52 @@ section {
   max-width: 1500px;
   width: 100%;
 }
+.table-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  max-width: 1500px;
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid #dbe7f3;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+.table-filter-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.table-filter-field span {
+  color: #64748b;
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.table-filter-field input,
+.table-filter-field select {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #cbd9ea;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-weight: 800;
+}
+.table-filter-clear {
+  align-self: end;
+  min-height: 38px;
+  border: 1px solid #cbd9ea;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  font-weight: 900;
+}
+.table-filter-clear:hover {
+  background: #eff6ff;
+}
 .table-pagination {
   display: flex;
   justify-content: space-between;
