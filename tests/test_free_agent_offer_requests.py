@@ -489,6 +489,21 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertEqual("FB", long_contract["salary_2029_text"])
 
+    def test_player_payload_from_two_way_offer_adds_qo_two_way_marker(self) -> None:
+        handler = object.__new__(Handler)
+
+        payload = handler._player_payload_from_free_agent_offer(
+            {"name": "Two Way FA"},
+            {
+                "contract_type": "Two-way",
+                "years": 1,
+                "salary_by_season": {"2026": "636.435"},
+            },
+        )
+
+        self.assertEqual("Two-way", payload["salary_2027_text"])
+        self.assertEqual("QO", payload["option_2027"])
+
     def test_player_payload_from_free_agent_offer_skips_post_contract_marker_when_final_year_has_option(self) -> None:
         handler = object.__new__(Handler)
 

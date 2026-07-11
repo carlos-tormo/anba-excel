@@ -21865,6 +21865,17 @@ QUALITY REQUIREMENTS
         years = parse_int(offer_payload.get("years")) or len(signed_seasons)
         years = max(1, int(years))
         final_season = max(signed_seasons)
+        normalized_contract_type = re.sub(
+            r"[\s_-]+",
+            "",
+            str(offer_payload.get("contract_type") or "").strip().upper(),
+        )
+        if normalized_contract_type in {"TW", "TWOWAY", "TWOWAYCONTRACT"}:
+            rights_season = final_season + 1
+            if rights_season < CAP_FORECAST_MIN_YEAR or rights_season > 2030:
+                return None
+            return {"season": rights_season, "marker": "Two-way", "option": "QO"}
+
         marker = "NB" if years == 1 else "EB" if years == 2 else "FB"
 
         if years >= 2:
@@ -22041,6 +22052,10 @@ QUALITY REQUIREMENTS
             rights_field = f"salary_{rights_season}_text"
             if not player_payload.get(rights_field):
                 player_payload[rights_field] = str(rights_marker["marker"])
+            rights_option = str(rights_marker.get("option") or "").strip().upper()
+            rights_option_field = f"option_{rights_season}"
+            if rights_option and not player_payload.get(rights_option_field):
+                player_payload[rights_option_field] = rights_option
 
         return player_payload
 
