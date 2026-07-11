@@ -6492,6 +6492,44 @@ function adminPromiseStatusLabel(status) {
   return 'Pendiente';
 }
 
+function adminPromiseRoleOptions(selected = '') {
+  const normalized = String(selected || '').trim();
+  const roles = [
+    '',
+    'Titular',
+    'Sexto hombre',
+    'Minutos de rotación (10-20)',
+    'Minutos de rotación (0-9)',
+    'Fuera de la rotación',
+  ];
+  if (normalized && !roles.some((role) => role.toLowerCase() === normalized.toLowerCase())) roles.push(normalized);
+  return roles
+    .map((role) => `<option value="${escapeHtml(role)}"${role === normalized ? ' selected' : ''}>${escapeHtml(role || '-')}</option>`)
+    .join('');
+}
+
+function adminPromiseTeamOptions(selected = '') {
+  const normalized = String(selected || '').trim().toUpperCase();
+  const teams = Array.isArray(state.teams) ? state.teams : [];
+  return [
+    '<option value="">-</option>',
+    ...teams.map((team) => {
+      const code = String(team.code || '').trim().toUpperCase();
+      return `<option value="${escapeHtml(code)}"${code === normalized ? ' selected' : ''}>${escapeHtml(code)}</option>`;
+    }),
+  ].join('');
+}
+
+function adminPromiseSeasonOptions(selected = '') {
+  const normalized = String(selected || '').trim();
+  return availableFiguresSeasonStarts()
+    .map((year) => {
+      const value = String(year);
+      return `<option value="${escapeHtml(value)}"${value === normalized ? ' selected' : ''}>${escapeHtml(seasonLabel(year))}</option>`;
+    })
+    .join('');
+}
+
 function renderAdminFreeAgentPromises(promises = []) {
   const board = document.getElementById('adminFreeAgentPromisesBoard');
   if (!board) return;
@@ -6528,16 +6566,43 @@ function renderAdminFreeAgentPromises(promises = []) {
               `
               : `<button type="button" data-admin-promise-status="${promiseId}" data-status="pending">Reabrir</button>`;
             return `
-              <tr>
-                <td><strong>${escapeHtml(promise.player_name || '-')}</strong></td>
-                <td><strong>${escapeHtml(promise.team_code || '-')}</strong><div class="muted-text">${escapeHtml(promise.team_name || '')}</div></td>
-                <td>${escapeHtml(promise.season_label || seasonLabel(promise.season_year) || '-')}</td>
-                <td>${escapeHtml(promise.role || '-')}</td>
-                <td>${escapeHtml(promise.agent_name || '-')}</td>
-                <td>${escapeHtml([promise.contract_type, promise.offer_type].filter(Boolean).join(' · ') || '-')}</td>
+              <tr data-admin-promise-row="${promiseId}">
+                <td>
+                  <input type="text" value="${escapeHtml(promise.player_name || '')}" data-admin-promise-field="player_name" aria-label="Jugador">
+                </td>
+                <td>
+                  <select data-admin-promise-field="team_code" aria-label="Equipo">
+                    ${adminPromiseTeamOptions(promise.team_code)}
+                  </select>
+                  <div class="muted-text">${escapeHtml(promise.team_name || '')}</div>
+                </td>
+                <td>
+                  <select data-admin-promise-field="season_year" aria-label="Temporada">
+                    ${adminPromiseSeasonOptions(promise.season_year)}
+                  </select>
+                </td>
+                <td>
+                  <select data-admin-promise-field="role" aria-label="Rol prometido">
+                    ${adminPromiseRoleOptions(promise.role)}
+                  </select>
+                </td>
+                <td>
+                  <select data-admin-promise-field="agent_name" aria-label="Agente">
+                    ${freeAgentAgentOptions(promise.agent_name)}
+                  </select>
+                </td>
+                <td>
+                  <input type="text" value="${escapeHtml(promise.contract_type || '')}" data-admin-promise-field="contract_type" aria-label="Contrato">
+                  <input type="hidden" value="${escapeHtml(promise.offer_type || 'manual')}" data-admin-promise-field="offer_type">
+                </td>
                 <td><span class="admin-promise-status admin-promise-status--${escapeHtml(status)}">${escapeHtml(adminPromiseStatusLabel(status))}</span></td>
                 <td>${escapeHtml(promise.updated_at || promise.created_at || '-')}</td>
-                <td><div class="wallet-promise-actions">${actions}</div></td>
+                <td>
+                  <div class="wallet-promise-actions">
+                    <button type="button" data-admin-promise-save="${promiseId}">Guardar</button>
+                    ${actions}
+                  </div>
+                </td>
               </tr>
             `;
           }).join('')}
@@ -6545,6 +6610,24 @@ function renderAdminFreeAgentPromises(promises = []) {
       </table>
     </div>
   `;
+}
+
+function collectAdminFreeAgentPromisePayload(promiseId) {
+  const row = document.querySelector(`[data-admin-promise-row="${Number(promiseId)}"]`);
+  if (!row) return null;
+  const readField = (field) => {
+    const input = row.querySelector(`[data-admin-promise-field="${field}"]`);
+    return input ? String(input.value || '').trim() : '';
+  };
+  return {
+    player_name: readField('player_name'),
+    team_code: readField('team_code').toUpperCase(),
+    season_year: Number(readField('season_year') || 0),
+    role: readField('role'),
+    agent_name: readField('agent_name'),
+    contract_type: readField('contract_type'),
+    offer_type: readField('offer_type') || 'manual',
+  };
 }
 
 function renderAdminManualPromiseControls() {
@@ -6659,6 +6742,20 @@ async function updateAdminFreeAgentPromiseStatus(promiseId, status) {
   await api(`/api/admin/free-agent-offer-promises/${promiseId}`, {
     method: 'PATCH',
     body: JSON.stringify({ status }),
+  });
+  await loadAdminFreeAgentPromises();
+}
+
+async function saveAdminFreeAgentPromise(promiseId) {
+  if (!promiseId) return;
+  const payload = collectAdminFreeAgentPromisePayload(promiseId);
+  if (!payload) return;
+  if (!payload.player_name) throw new Error('El nombre del jugador es obligatorio.');
+  if (!payload.team_code) throw new Error('El equipo es obligatorio.');
+  if (!payload.role) throw new Error('El rol prometido es obligatorio.');
+  await api(`/api/admin/free-agent-offer-promises/${promiseId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
   });
   await loadAdminFreeAgentPromises();
 }
@@ -13780,13 +13877,18 @@ async function init() {
   });
   document.getElementById('adminFreeAgentPromisesBoard')?.addEventListener('click', async (event) => {
     const target = event.target instanceof Element
-      ? event.target.closest('[data-admin-promise-status]')
+      ? event.target.closest('[data-admin-promise-status], [data-admin-promise-save]')
       : null;
     if (!target) return;
-    const promiseId = Number(target.dataset.adminPromiseStatus || 0);
-    const status = String(target.dataset.status || '').trim();
     try {
-      await updateAdminFreeAgentPromiseStatus(promiseId, status);
+      if (target.hasAttribute('data-admin-promise-save')) {
+        const promiseId = Number(target.dataset.adminPromiseSave || 0);
+        await saveAdminFreeAgentPromise(promiseId);
+      } else {
+        const promiseId = Number(target.dataset.adminPromiseStatus || 0);
+        const status = String(target.dataset.status || '').trim();
+        await updateAdminFreeAgentPromiseStatus(promiseId, status);
+      }
     } catch (err) {
       alert(`No se pudo actualizar la promesa: ${err.message}`);
     }

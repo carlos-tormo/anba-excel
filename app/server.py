@@ -5734,7 +5734,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
         season_year: Any,
         role: Any,
         exclude_promise_id: Optional[int] = None,
+        bypass_role_limits: bool = False,
     ) -> None:
+        if bypass_role_limits:
+            return
         normalized_team = normalize_team_code(team_code)
         normalized_role = self._normalize_free_agent_promise_role(role)
         parsed_season = parse_int(season_year)
@@ -5766,7 +5769,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
         self,
         request_id: int,
         promise_context: Optional[Dict[str, Any]] = None,
+        bypass_role_limits: bool = False,
     ) -> None:
+        if bypass_role_limits:
+            return
         with self.connect() as conn:
             cur = conn.execute(
                 """
@@ -5819,6 +5825,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         admin: Optional[Dict[str, Any]] = None,
         timestamp: Optional[str] = None,
         promise_context: Optional[Dict[str, Any]] = None,
+        bypass_role_limits: bool = False,
     ) -> Optional[int]:
         timestamp = timestamp or now_iso()
         cur = conn.execute(
@@ -5890,6 +5897,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             season_year,
             role,
             exclude_promise_id=int(existing_promise["id"]) if existing_promise else None,
+            bypass_role_limits=bypass_role_limits,
         )
         insert_cur = conn.execute(
             """
@@ -6035,6 +6043,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         self,
         payload: Dict[str, Any],
         admin: Dict[str, Any],
+        bypass_role_limits: bool = False,
     ) -> Dict[str, Any]:
         player_name = re.sub(r"\s+", " ", str(payload.get("player_name") or "").strip())
         if not player_name:
@@ -6064,10 +6073,16 @@ class LeagueDB(DatabaseMaintenanceMixin):
             team_row = conn.execute("SELECT code, name FROM teams WHERE code = ?", (team_code,)).fetchone()
             if not team_row:
                 raise ValueError("team_not_found")
-            if profile_id is not None and not self._profile_exists_conn(conn, profile_id):
+            if profile_id is not None and not self._player_profile_exists_conn(conn, profile_id):
                 raise ValueError("profile_not_found")
             if status in {"pending", "fulfilled"}:
-                self._ensure_free_agent_promise_role_capacity_conn(conn, team_code, season_year, role)
+                self._ensure_free_agent_promise_role_capacity_conn(
+                    conn,
+                    team_code,
+                    season_year,
+                    role,
+                    bypass_role_limits=bypass_role_limits,
+                )
             cur = conn.execute(
                 """
                 INSERT INTO free_agent_offer_promises (
@@ -6119,36 +6134,100 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 raise ValueError("promise_not_created")
             return self._free_agent_offer_promise_from_row(read_cur, row)
 
-    def update_free_agent_offer_promise_status(
+    def update_free_agent_offer_promise(
         self,
         promise_id: Any,
-        status: Any,
+        payload: Dict[str, Any],
         admin: Dict[str, Any],
+        bypass_role_limits: bool = False,
     ) -> Optional[Dict[str, Any]]:
         parsed_id = parse_int(promise_id)
         if parsed_id is None or parsed_id <= 0:
             raise ValueError("invalid_promise_id")
-        normalized_status = self._offer_promise_status(status)
+        payload = payload if isinstance(payload, dict) else {}
         timestamp = now_iso()
         with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM free_agent_offer_promises WHERE id = ?",
+                (parsed_id,),
+            ).fetchone()
+            if not existing:
+                return None
+            player_name = re.sub(
+                r"\s+",
+                " ",
+                str(payload.get("player_name") if "player_name" in payload else existing["player_name"] or "").strip(),
+            )
+            if not player_name:
+                raise ValueError("player_name_required")
+            team_code = normalize_team_code(payload.get("team_code") if "team_code" in payload else existing["team_code"])
+            if not team_code:
+                raise ValueError("invalid_team")
+            team_row = conn.execute("SELECT code, name FROM teams WHERE code = ?", (team_code,)).fetchone()
+            if not team_row:
+                raise ValueError("team_not_found")
+            role = self._normalize_free_agent_promise_role(
+                payload.get("role") if "role" in payload else existing["role"]
+            )
+            if not role:
+                raise ValueError("role_required")
+            season_year = parse_int(payload.get("season_year") if "season_year" in payload else existing["season_year"])
+            if season_year is None or season_year < 2000 or season_year > 2100:
+                raise ValueError("invalid_season_year")
+            normalized_status = self._offer_promise_status(
+                payload.get("status") if "status" in payload else existing["status"]
+            )
+            free_agent_id = (
+                parse_int(payload.get("free_agent_id"))
+                if "free_agent_id" in payload
+                else parse_int(existing["free_agent_id"])
+            )
+            profile_id = (
+                parse_int(payload.get("profile_id"))
+                if "profile_id" in payload
+                else parse_int(existing["profile_id"])
+            )
+            if profile_id is not None and not self._player_profile_exists_conn(conn, profile_id):
+                raise ValueError("profile_not_found")
+            agent_name = re.sub(
+                r"\s+",
+                " ",
+                str(payload.get("agent_name") if "agent_name" in payload else existing["agent_name"] or "").strip(),
+            )
+            contract_type = re.sub(
+                r"\s+",
+                " ",
+                str(payload.get("contract_type") if "contract_type" in payload else existing["contract_type"] or "").strip(),
+            )
+            offer_type = re.sub(
+                r"\s+",
+                " ",
+                str(payload.get("offer_type") if "offer_type" in payload else existing["offer_type"] or "manual").strip(),
+            ) or "manual"
             if normalized_status in {"pending", "fulfilled"}:
-                promise_row = conn.execute(
-                    "SELECT team_code, season_year, role FROM free_agent_offer_promises WHERE id = ?",
-                    (parsed_id,),
-                ).fetchone()
-                if not promise_row:
-                    return None
                 self._ensure_free_agent_promise_role_capacity_conn(
                     conn,
-                    promise_row["team_code"],
-                    promise_row["season_year"],
-                    promise_row["role"],
+                    team_code,
+                    season_year,
+                    role,
                     exclude_promise_id=parsed_id,
+                    bypass_role_limits=bypass_role_limits,
                 )
             cur = conn.execute(
                 """
                 UPDATE free_agent_offer_promises
                 SET
+                    free_agent_id = ?,
+                    profile_id = ?,
+                    player_name = ?,
+                    team_code = ?,
+                    team_name = ?,
+                    agent_name = ?,
+                    season_year = ?,
+                    season_label = ?,
+                    role = ?,
+                    offer_type = ?,
+                    contract_type = ?,
                     status = ?,
                     admin_email = ?,
                     admin_name = ?,
@@ -6157,6 +6236,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 WHERE id = ?
                 """,
                 (
+                    free_agent_id,
+                    profile_id,
+                    player_name,
+                    str(team_row["code"] or "").strip().upper(),
+                    str(team_row["name"] or "").strip(),
+                    agent_name,
+                    season_year,
+                    season_label(season_year),
+                    role,
+                    offer_type,
+                    contract_type,
                     normalized_status,
                     str(admin.get("email") or "").strip().lower() or None,
                     str(admin.get("name") or "").strip() or None,
@@ -6175,6 +6265,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             row = read_cur.fetchone()
             return self._free_agent_offer_promise_from_row(read_cur, row) if row else None
+
+    def update_free_agent_offer_promise_status(
+        self,
+        promise_id: Any,
+        status: Any,
+        admin: Dict[str, Any],
+        bypass_role_limits: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        return self.update_free_agent_offer_promise(
+            promise_id,
+            {"status": status},
+            admin,
+            bypass_role_limits=bypass_role_limits,
+        )
 
     def mark_gm_option_request_decided(
         self,
@@ -24359,7 +24463,12 @@ QUALITY REQUIREMENTS
 
         if parsed.path == "/api/admin/free-agent-offer-promises":
             try:
-                promise = self.db.create_free_agent_offer_promise(payload, self._current_session() or {})
+                session = self._current_session() or {}
+                promise = self.db.create_free_agent_offer_promise(
+                    payload,
+                    session,
+                    bypass_role_limits=str(session.get("role") or "").strip().lower() == "admin",
+                )
             except ValueError as err:
                 message = str(err) or "invalid_promise"
                 if message.startswith("promise_role_limit_exceeded:"):
@@ -25400,10 +25509,12 @@ QUALITY REQUIREMENTS
                 self._json(400, {"error": "invalid_promise_id"})
                 return
             try:
-                promise = self.db.update_free_agent_offer_promise_status(
+                session = self._current_session() or {}
+                promise = self.db.update_free_agent_offer_promise(
                     promise_id,
-                    payload.get("status"),
-                    self._current_session() or {},
+                    payload,
+                    session,
+                    bypass_role_limits=str(session.get("role") or "").strip().lower() == "admin",
                 )
             except ValueError as err:
                 message = str(err) or "invalid_promise_status"

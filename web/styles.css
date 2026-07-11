@@ -1950,6 +1950,25 @@ h1 {
 .admin-promises-table tr:last-child td {
   border-bottom: 0;
 }
+
+.admin-promises-table input,
+.admin-promises-table select {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  color: #0f172a;
+  font: inherit;
+  font-weight: 800;
+  max-width: 220px;
+  min-width: 110px;
+  padding: 7px 9px;
+  width: 100%;
+}
+
+.admin-promises-table input[type="hidden"] {
+  display: none;
+}
+
 .admin-promise-status {
   border-radius: 999px;
   display: inline-flex;

@@ -202,6 +202,74 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertEqual("Replacement Sixth Man", replacement["player_name"])
 
+    def test_admin_can_bypass_promise_role_limit_for_manual_corrections(self) -> None:
+        admin = {"email": "admin@example.com", "name": "Admin", "role": "admin"}
+        self.db.create_free_agent_offer_promise(
+            {
+                "player_name": "First Sixth Man",
+                "team_code": "ATL",
+                "season_year": 2026,
+                "role": "Sexto hombre",
+                "status": "pending",
+            },
+            admin,
+        )
+
+        duplicate = self.db.create_free_agent_offer_promise(
+            {
+                "player_name": "Admin Override Sixth Man",
+                "team_code": "ATL",
+                "season_year": 2026,
+                "role": "Sexto hombre",
+                "status": "pending",
+            },
+            admin,
+            bypass_role_limits=True,
+        )
+
+        self.assertEqual("Admin Override Sixth Man", duplicate["player_name"])
+        self.assertEqual("pending", duplicate["status"])
+
+    def test_admin_can_edit_existing_free_agent_offer_promise(self) -> None:
+        admin = {"email": "admin@example.com", "name": "Admin", "role": "admin"}
+        promise = self.db.create_free_agent_offer_promise(
+            {
+                "player_name": "Misspelled Player",
+                "team_code": "ATL",
+                "season_year": 2026,
+                "role": "Minutos de rotación (0-9)",
+                "agent_name": "Agent One",
+                "contract_type": "Min · 1 año",
+                "status": "pending",
+            },
+            admin,
+        )
+
+        updated = self.db.update_free_agent_offer_promise(
+            int(promise["id"]),
+            {
+                "player_name": "Corrected Player",
+                "team_code": "BKN",
+                "season_year": 2027,
+                "role": "Sexto hombre",
+                "agent_name": "Agent Two",
+                "contract_type": "Reg · 2 años",
+                "offer_type": "manual",
+                "status": "fulfilled",
+            },
+            admin,
+            bypass_role_limits=True,
+        )
+
+        self.assertIsNotNone(updated)
+        self.assertEqual("Corrected Player", updated["player_name"])
+        self.assertEqual("BKN", updated["team_code"])
+        self.assertEqual(2027, updated["season_year"])
+        self.assertEqual("Sexto hombre", updated["role"])
+        self.assertEqual("Agent Two", updated["agent_name"])
+        self.assertEqual("Reg · 2 años", updated["contract_type"])
+        self.assertEqual("fulfilled", updated["status"])
+
     def test_free_agent_offer_approval_checks_promise_role_capacity_before_signing(self) -> None:
         admin = {"email": "admin@example.com", "name": "Admin", "role": "admin"}
         self.db.create_free_agent_offer_promise(
