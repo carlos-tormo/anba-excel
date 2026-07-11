@@ -1881,6 +1881,13 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
                 (now_iso(),),
             )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                VALUES ('discord_free_agent_offer_role_ping_enabled', '1', ?)
+                """,
+                (now_iso(),),
+            )
             roster_defaults = {
                 "roster_standard_min": ROSTER_STANDARD_MIN_DEFAULT,
                 "roster_standard_max": ROSTER_STANDARD_MAX_DEFAULT,
@@ -22053,6 +22060,8 @@ QUALITY REQUIREMENTS
         webhook_url = self.discord_free_agent_offers_webhook_url or self.discord_webhook_url
         if not self.discord_notifications_enabled:
             return result
+        settings = self.db.get_settings()
+        offer_role_ping_enabled = parse_bool(settings.get("discord_free_agent_offer_role_ping_enabled", "1"))
         player_name = str(free_agent.get("name") or "Jugador")
         team = normalize_team_code(team_code) or str(team_code or "").upper()
         contract_type = str(payload.get("contract_type") or "").strip() or "Sin tipo definido"
@@ -22139,7 +22148,7 @@ QUALITY REQUIREMENTS
                             "allowed_mentions": dict(payload_json.get("allowed_mentions") or {}),
                         }
                         offer_role_id = re.sub(r"\D+", "", str(self.discord_free_agent_offers_role_id or ""))
-                        if offer_role_id:
+                        if offer_role_id and offer_role_ping_enabled:
                             creation_payload_json["content"] = f"<@&{offer_role_id}>"
                             creation_payload_json["allowed_mentions"]["parse"] = []
                             creation_payload_json["allowed_mentions"]["roles"] = [offer_role_id]
@@ -26066,6 +26075,7 @@ QUALITY REQUIREMENTS
             next_trade_move_limit_post30: Optional[int] = None
             next_trade_move_phase: Optional[str] = None
             next_free_agency_mode: Optional[bool] = None
+            next_free_agent_offer_role_ping_enabled: Optional[bool] = None
             next_roster_standard_min: Optional[int] = None
             next_roster_standard_max: Optional[int] = None
             next_roster_standard_offseason_max: Optional[int] = None
@@ -26131,6 +26141,11 @@ QUALITY REQUIREMENTS
 
             if "free_agency_mode" in payload:
                 next_free_agency_mode = parse_bool(payload.get("free_agency_mode"))
+
+            if "discord_free_agent_offer_role_ping_enabled" in payload:
+                next_free_agent_offer_role_ping_enabled = parse_bool(
+                    payload.get("discord_free_agent_offer_role_ping_enabled")
+                )
 
             if "free_agent_reps" in payload:
                 raw_reps = payload.get("free_agent_reps")
@@ -26254,6 +26269,7 @@ QUALITY REQUIREMENTS
                 and next_trade_move_limit_post30 is None
                 and next_trade_move_phase is None
                 and next_free_agency_mode is None
+                and next_free_agent_offer_role_ping_enabled is None
                 and not season_cap_updates
                 and not rookie_scale_updates
                 and next_roster_standard_min is None
@@ -26286,6 +26302,11 @@ QUALITY REQUIREMENTS
                 self.db.update_setting("trade_move_phase", next_trade_move_phase)
             if next_free_agency_mode is not None:
                 self.db.update_setting("free_agency_mode", "1" if next_free_agency_mode else "0")
+            if next_free_agent_offer_role_ping_enabled is not None:
+                self.db.update_setting(
+                    "discord_free_agent_offer_role_ping_enabled",
+                    "1" if next_free_agent_offer_role_ping_enabled else "0",
+                )
             for key, value in season_cap_updates.items():
                 self.db.update_setting(key, "" if value is None else str(int(value)))
             for key, value in rookie_scale_updates.items():
@@ -26323,6 +26344,7 @@ QUALITY REQUIREMENTS
                     "trade_move_limit_post30": next_trade_move_limit_post30,
                     "trade_move_phase": next_trade_move_phase,
                     "free_agency_mode": next_free_agency_mode,
+                    "discord_free_agent_offer_role_ping_enabled": next_free_agent_offer_role_ping_enabled,
                     "season_cap_updates": season_cap_updates,
                     "rookie_scale_updates": rookie_scale_updates,
                     "roster_standard_min": next_roster_standard_min,

@@ -68,6 +68,7 @@ const state = {
     roster_two_way_min: 0,
     roster_two_way_max: 3,
     free_agency_mode: false,
+    discord_free_agent_offer_role_ping_enabled: true,
     free_agent_reps: [],
     free_agent_rep_discord_ids: {},
   },
@@ -13539,6 +13540,7 @@ async function init() {
   const tradeMovePhaseSelect = document.getElementById('tradeMovePhaseSelect');
   const currentYearSelect = document.getElementById('currentYearSelect');
   const freeAgencyModeInput = document.getElementById('freeAgencyModeInput');
+  const freeAgentOfferRolePingInput = document.getElementById('freeAgentOfferRolePingInput');
   const freeAgentRepsInput = document.getElementById('freeAgentRepsInput');
   const freeAgentRepDiscordIdsInput = document.getElementById('freeAgentRepDiscordIdsInput');
   cashLimitTotalInput.value = formatDots(state.settings.cash_limit_total);
@@ -13552,6 +13554,9 @@ async function init() {
   tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
   currentYearSelect.value = String(state.settings.current_year || 2025);
   if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
+  if (freeAgentOfferRolePingInput) {
+    freeAgentOfferRolePingInput.checked = boolValue(state.settings.discord_free_agent_offer_role_ping_enabled ?? true);
+  }
   if (freeAgentRepsInput) freeAgentRepsInput.value = (state.settings.free_agent_reps || []).join('\n');
   if (freeAgentRepDiscordIdsInput) freeAgentRepDiscordIdsInput.value = formatFreeAgentRepDiscordIds();
   renderSeasonCapSettingsGrid(Number(currentYearSelect.value || state.settings.current_year || 2025));
@@ -13923,6 +13928,7 @@ async function init() {
         trade_move_limit_post30: parsedTradeMoveLimitPost30,
         trade_move_phase: selectedTradeMovePhase,
         free_agency_mode: Boolean(freeAgencyModeInput?.checked),
+        discord_free_agent_offer_role_ping_enabled: Boolean(freeAgentOfferRolePingInput?.checked),
         free_agent_reps: parsedFreeAgentReps,
         free_agent_rep_discord_ids: parsedRepDiscordIds.mapping,
         roster_standard_min: parsedRosterStandardMin,
@@ -13950,6 +13956,9 @@ async function init() {
     tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
+    if (freeAgentOfferRolePingInput) {
+      freeAgentOfferRolePingInput.checked = boolValue(state.settings.discord_free_agent_offer_role_ping_enabled ?? true);
+    }
     updateFreeAgentAppealImportVisibility();
     if (freeAgentRepsInput) freeAgentRepsInput.value = (state.settings.free_agent_reps || []).join('\n');
     if (freeAgentRepDiscordIdsInput) freeAgentRepDiscordIdsInput.value = formatFreeAgentRepDiscordIds();
@@ -14010,6 +14019,9 @@ async function init() {
     tradeMovePhaseSelect.value = normalizeMoveBucket(state.settings.trade_move_phase);
     currentYearSelect.value = String(state.settings.current_year || 2025);
     if (freeAgencyModeInput) freeAgencyModeInput.checked = freeAgencyModeActive();
+    if (freeAgentOfferRolePingInput) {
+      freeAgentOfferRolePingInput.checked = boolValue(state.settings.discord_free_agent_offer_role_ping_enabled ?? true);
+    }
     renderSeasonViewControl();
 
     if (state.ui.viewMode === 'team' && state.teamCode) {

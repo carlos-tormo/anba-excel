@@ -270,6 +270,9 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
         "trade_move_limit_post30": max(0, parse_int(settings.get("trade_move_limit_post30")) or 0),
         "trade_move_phase": normalize_move_phase(settings.get("trade_move_phase")),
         "free_agency_mode": parse_bool(settings.get("free_agency_mode")),
+        "discord_free_agent_offer_role_ping_enabled": parse_bool(
+            settings.get("discord_free_agent_offer_role_ping_enabled", "1")
+        ),
         "roster_standard_min": settings_int(settings, "roster_standard_min", ROSTER_STANDARD_MIN_DEFAULT),
         "roster_standard_max": settings_int(settings, "roster_standard_max", ROSTER_STANDARD_MAX_DEFAULT),
         "roster_standard_offseason_max": settings_int(
