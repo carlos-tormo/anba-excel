@@ -2228,10 +2228,10 @@ function maximumSalaryRows() {
 
 function exceptionRows() {
   return [
-    { label: 'Mid-Level Exception', value: (season) => capForSeason(season) * 0.0912 },
-    { label: 'Room Mid-Level Exception', value: (season) => capForSeason(season) * 0.05678 },
-    { label: 'Bi-Annual Exception', value: (season) => capForSeason(season) * 0.0332 },
-    { label: 'Tax-Payer Mid-Level Exception', value: taxpayerMidLevelForSeason },
+    { label: 'Mid-Level', value: (season) => capForSeason(season) * 0.0912 },
+    { label: 'Room Mid-Level', value: (season) => capForSeason(season) * 0.05678 },
+    { label: 'Bi-Annual', value: (season) => capForSeason(season) * 0.0332 },
+    { label: 'Tax-Payer Mid-Level', value: taxpayerMidLevelForSeason },
   ];
 }
 
@@ -8095,6 +8095,7 @@ function renderImportantFigures() {
 }
 
 function renderRosterCountSection() {
+  renderRosterTitleCount();
   const wrap = document.getElementById('rosterCountSection');
   if (!wrap) return;
   const counts = rosterCountFromSummary(state.teamData?.summary || {});
@@ -8112,6 +8113,13 @@ function renderRosterCountSection() {
       Estándar: ${limits.standardMin}-${limits.standardMax} en temporada, ${limits.standardOffseasonMax} en offseason · Two-way: ${limits.twoWayMin}-${limits.twoWayMax}
     </div>
   `;
+}
+
+function renderRosterTitleCount() {
+  const el = document.getElementById('rosterTitleCount');
+  if (!el) return;
+  const counts = rosterCountFromSummary(state.teamData?.summary || {});
+  el.textContent = `${counts.standard} standard / ${counts.twoWay} TW`;
 }
 
 function renderLuxuryHistory() {
@@ -8514,13 +8522,14 @@ function renderPlayers() {
   const cardsWrap = document.getElementById('playersCards');
   tbody.innerHTML = '';
   if (cardsWrap) cardsWrap.innerHTML = '';
+  renderRosterTitleCount();
 
   applySeasonColumnVisibility();
   const seasons = visibleSeasonYears();
   const filtered = filteredPlayers(state.teamData.players);
   const rows = sortedRows(filtered, state.sort.players);
   const playerHeader = document.querySelector('#playersTable thead th[data-sort-mode="player-cycle"]');
-  if (playerHeader) playerHeader.dataset.label = `PLAYER (${rows.length})`;
+  if (playerHeader) playerHeader.dataset.label = 'PLAYER';
   updateSortIndicators('playersTable', state.sort.players);
   const showPositionGroups = shouldRenderRosterPositionGroups();
   const positionCounts = rosterPositionCounts(rows);

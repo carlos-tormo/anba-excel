@@ -14,6 +14,9 @@ OPEN_ROSTER_SPOT_MINIMUM = 12
 CAP_FORECAST_MIN_YEAR = 2025
 CAP_FORECAST_MAX_YEAR = 2035
 CAP_FORECAST_WINDOW = 6
+CONTRACT_SEASON_MAX_YEAR = 2031
+CONTRACT_SEASON_WINDOW = 6
+CONTRACT_SEASON_MAX_START_YEAR = CONTRACT_SEASON_MAX_YEAR - CONTRACT_SEASON_WINDOW + 1
 MINIMUM_SALARY_BASE_CAP = 154_647_000.0
 MINIMUM_2_YOS_BASE_SALARY = 2_296_274.0
 TWO_WAY_MINIMUM_BASE_SALARY = 636_435.0
@@ -235,7 +238,7 @@ def parse_free_agent_rep_discord_ids(raw_value: Any) -> Dict[str, str]:
 
 def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
     current_year = parse_int(settings.get("current_year")) or 2025
-    if current_year < 2025 or current_year > 2030:
+    if current_year < CAP_FORECAST_MIN_YEAR or current_year > CONTRACT_SEASON_MAX_START_YEAR:
         current_year = 2025
     salary_cap = parse_float(settings.get("salary_cap_2025")) or 154647000.0
     salary_floor = salary_floor_for_season(settings, current_year, salary_cap)

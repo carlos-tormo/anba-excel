@@ -749,10 +749,6 @@
         <select id="currentYearSelect">
           <option value="2025">2025-26</option>
           <option value="2026">2026-27</option>
-          <option value="2027">2027-28</option>
-          <option value="2028">2028-29</option>
-          <option value="2029">2029-30</option>
-          <option value="2030">2030-31</option>
         </select>
         <label class="settings-check" for="freeAgencyModeInput">
           <input id="freeAgencyModeInput" type="checkbox">
@@ -775,7 +771,10 @@
     </section>
 
     <section id="rosterSection">
-      <h2>Roster</h2>
+      <div class="roster-title-wrap">
+        <h2>Roster</h2>
+        <span id="rosterTitleCount" class="roster-title-count"></span>
+      </div>
       <div class="bulk-bar">
         <label><input type="checkbox" id="selectAllPlayers"> Seleccionar todos</label>
         <select id="bulkTipo">
@@ -827,6 +826,7 @@
               <th data-sort="salary_2028_num">2028-29</th>
               <th data-sort="salary_2029_num">2029-30</th>
               <th data-sort="salary_2030_num">2030-31</th>
+              <th data-sort="salary_2031_num">2031-32</th>
               <th>Cut</th>
               <th>Actions</th>
             </tr>
@@ -853,6 +853,7 @@
               <th data-sort="salary_2028_num">2028-29</th>
               <th data-sort="salary_2029_num">2029-30</th>
               <th data-sort="salary_2030_num">2030-31</th>
+              <th data-sort="salary_2031_num">2031-32</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -1039,6 +1040,14 @@
           </select>
         </div>
       </td>
+      <td>
+        <div class="salary-cell-admin">
+          <input data-field="salary_2031_text">
+          <select data-option-field="option_2031">
+            <option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option>
+          </select>
+        </div>
+      </td>
       <td><button data-action="cut" class="danger" type="button">Cut</button></td>
       <td>
         <button data-action="remove" class="danger">Remove</button>
@@ -1087,6 +1096,7 @@
       <td><input data-field="salary_2028_text"></td>
       <td><input data-field="salary_2029_text"></td>
       <td><input data-field="salary_2030_text"></td>
+      <td><input data-field="salary_2031_text"></td>
       <td>
         <button data-action="delete-dead-contract" class="danger">Delete</button>
       </td>

@@ -165,7 +165,9 @@ const PLAYER_SORT_CYCLE = [
 let tradeValidationTimer = null;
 let draftLiveTimer = null;
 const POSITION_ORDER = { PG: 1, SG: 2, SF: 3, PF: 4, C: 5, TW: 6 };
-const ALL_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030];
+const ALL_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030, 2031];
+const SEASON_WINDOW_SIZE = 6;
+const MAX_CURRENT_SEASON_START = Math.max(...ALL_SEASONS) - SEASON_WINDOW_SIZE + 1;
 const TAXPAYER_MLE_BASE_AMOUNT = 6_064_000;
 const TAXPAYER_MLE_BASE_CAP = 165_000_000;
 const MINIMUM_SALARY_BASE_SEASON = 2025;
@@ -1768,18 +1770,18 @@ function figuresSeasonYears() {
 
 function maximumSalaryRows() {
   return [
-    { label: 'Salario máximo 0-6 años', value: (season) => capForSeason(season) * 0.25 },
-    { label: 'Salario máximo 7-9 años', value: (season) => capForSeason(season) * 0.30 },
-    { label: 'Salario máximo 10+ años', value: (season) => capForSeason(season) * 0.35 },
+    { label: '0-6 años', value: (season) => capForSeason(season) * 0.25 },
+    { label: '7-9 años', value: (season) => capForSeason(season) * 0.30 },
+    { label: '10+ años', value: (season) => capForSeason(season) * 0.35 },
   ];
 }
 
 function exceptionRows() {
   return [
-    { label: 'Mid-Level Exception', value: (season) => capForSeason(season) * 0.0912 },
-    { label: 'Room Mid-Level Exception', value: (season) => capForSeason(season) * 0.05678 },
-    { label: 'Bi-Annual Exception', value: (season) => capForSeason(season) * 0.0332 },
-    { label: 'Tax-Payer Mid-Level Exception', value: taxpayerMidLevelForSeason },
+    { label: 'Mid-Level', value: (season) => capForSeason(season) * 0.0912 },
+    { label: 'Room Mid-Level', value: (season) => capForSeason(season) * 0.05678 },
+    { label: 'Bi-Annual', value: (season) => capForSeason(season) * 0.0332 },
+    { label: 'Tax-Payer Mid-Level', value: taxpayerMidLevelForSeason },
   ];
 }
 
@@ -9474,6 +9476,7 @@ function setupOwnerOfficeControls() {
 }
 
 function renderRosterCountSection() {
+  renderRosterTitleCount();
   const wrap = document.getElementById('rosterCountSection');
   if (!wrap) return;
   const counts = rosterCountFromSummary(state.teamData?.summary || {});
@@ -9491,6 +9494,13 @@ function renderRosterCountSection() {
       Estándar: ${limits.standardMin}-${limits.standardMax} en temporada, ${limits.standardOffseasonMax} en offseason · Two-way: ${limits.twoWayMin}-${limits.twoWayMax}
     </div>
   `;
+}
+
+function renderRosterTitleCount() {
+  const el = document.getElementById('rosterTitleCount');
+  if (!el) return;
+  const counts = rosterCountFromSummary(state.teamData?.summary || {});
+  el.textContent = `${counts.standard} standard / ${counts.twoWay} TW`;
 }
 
 function renderLuxuryHistory() {
@@ -10030,6 +10040,7 @@ function appendAddPlayerRow(tbody) {
     <td><div class="salary-cell-admin"><input data-new-field="salary_2028_text" placeholder="0"><select data-new-option-field="option_2028"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
     <td><div class="salary-cell-admin"><input data-new-field="salary_2029_text" placeholder="0"><select data-new-option-field="option_2029"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
     <td><div class="salary-cell-admin"><input data-new-field="salary_2030_text" placeholder="0"><select data-new-option-field="option_2030"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
+    <td><div class="salary-cell-admin"><input data-new-field="salary_2031_text" placeholder="0"><select data-new-option-field="option_2031"><option value="">-</option><option value="TO">TO</option><option value="PO">PO</option><option value="QO">QO</option><option value="GAP">GAP</option></select></div></td>
     <td></td>
     <td class="table-add-actions-cell">
       <input data-new-field="reference_image_url" placeholder="Ref image URL">
@@ -10070,6 +10081,7 @@ function renderPlayers() {
   const tbody = document.querySelector('#playersTable tbody');
   const tpl = document.getElementById('playerRowTemplate');
   tbody.innerHTML = '';
+  renderRosterTitleCount();
 
   const rows = sortedRows(state.teamData.players, state.sort.players);
   const showPositionGroups = shouldRenderRosterPositionGroups();
@@ -11675,6 +11687,7 @@ function renderDeadContracts() {
       <td><input data-new-field="salary_2028_text" placeholder="0"></td>
       <td><input data-new-field="salary_2029_text" placeholder="0"></td>
       <td><input data-new-field="salary_2030_text" placeholder="0"></td>
+      <td><input data-new-field="salary_2031_text" placeholder="0"></td>
       <td class="table-add-actions-cell">
         <button type="button" class="inline-save" data-action="save-draft">✓</button>
         <button type="button" class="inline-cancel" data-action="discard-draft">✕</button>
@@ -13977,7 +13990,7 @@ async function init() {
       return;
     }
     const selectedYear = Number(currentYearSelect.value);
-    if (!Number.isInteger(selectedYear) || selectedYear < 2025 || selectedYear > 2030) {
+    if (!ALL_SEASONS.includes(selectedYear) || selectedYear > MAX_CURRENT_SEASON_START) {
       alert('Invalid current year.');
       return;
     }
@@ -14091,8 +14104,8 @@ async function init() {
 
   document.getElementById('progressYearBtn').addEventListener('click', async () => {
     const previousYear = Number(state.settings.current_year || 2025);
-    if (previousYear >= 2030) {
-      alert('Cannot progress beyond 2030-31 with the current data model.');
+    if (previousYear >= MAX_CURRENT_SEASON_START) {
+      alert(`Cannot progress beyond ${seasonLabel(MAX_CURRENT_SEASON_START)} with the current data model.`);
       return;
     }
     const fromLabel = seasonLabel(previousYear);

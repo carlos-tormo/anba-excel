@@ -4522,6 +4522,22 @@ h1 {
   gap: 10px;
   flex-wrap: wrap;
 }
+.roster-title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.roster-title-wrap h2 {
+  margin: 0;
+}
+.roster-title-count {
+  color: #8f8f8f;
+  font-size: 1.35rem;
+  font-weight: 900;
+  line-height: 1.1;
+  white-space: nowrap;
+}
 .section-actions {
   display: inline-flex;
   align-items: center;

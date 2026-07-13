@@ -222,7 +222,11 @@ FREE_AGENT_PROMISE_ROLE_LIMITS = {
     "Minutos de rotación (10-20)": 5,
     "Minutos de rotación (0-9)": 10,
 }
-PLAYER_CONTRACT_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030]
+PLAYER_CONTRACT_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030, 2031]
+PLAYER_CONTRACT_MIN_YEAR = min(PLAYER_CONTRACT_SEASONS)
+PLAYER_CONTRACT_MAX_YEAR = max(PLAYER_CONTRACT_SEASONS)
+PLAYER_CONTRACT_WINDOW_SIZE = 6
+PLAYER_CONTRACT_MAX_START_YEAR = PLAYER_CONTRACT_MAX_YEAR - PLAYER_CONTRACT_WINDOW_SIZE + 1
 CONTRACT_TERMINATING_OPTION_VALUES = {"TO", "PO"}
 OWNER_SEASON_OBJECTIVES = [
     "Campeones",
@@ -2482,46 +2486,68 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
                 (int(current_year), timestamp),
             )
-            option_cols = [f"option_{season}" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
+            option_cols = [f"option_{season}" for season in PLAYER_CONTRACT_SEASONS]
+            salary_cols = []
+            for season in PLAYER_CONTRACT_SEASONS:
+                salary_cols.append((f"salary_{season}_text", "TEXT"))
+                salary_cols.append((f"salary_{season}_num", "REAL"))
+            for col, col_type in salary_cols:
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
+                    cols.add(col)
             for col in option_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
+                    cols.add(col)
             if "provisional_amounts" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN provisional_amounts INTEGER NOT NULL DEFAULT 0")
-            provisional_cols = [f"salary_{season}_provisional" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
+                cols.add("provisional_amounts")
+            provisional_cols = [f"salary_{season}_provisional" for season in PLAYER_CONTRACT_SEASONS]
             for col in provisional_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+                    cols.add(col)
             if "partially_guaranteed" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN partially_guaranteed INTEGER NOT NULL DEFAULT 0")
+                cols.add("partially_guaranteed")
             if "contract_notes" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN contract_notes INTEGER NOT NULL DEFAULT 0")
-            partial_guarantee_bool_cols = [f"salary_{season}_partially_guaranteed" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
-            partial_guarantee_text_cols = [f"salary_{season}_guaranteed_text" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
-            contract_note_bool_cols = [f"salary_{season}_note" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
-            contract_note_text_cols = [f"salary_{season}_note_text" for season in [2025, 2026, 2027, 2028, 2029, 2030]]
+                cols.add("contract_notes")
+            partial_guarantee_bool_cols = [f"salary_{season}_partially_guaranteed" for season in PLAYER_CONTRACT_SEASONS]
+            partial_guarantee_text_cols = [f"salary_{season}_guaranteed_text" for season in PLAYER_CONTRACT_SEASONS]
+            contract_note_bool_cols = [f"salary_{season}_note" for season in PLAYER_CONTRACT_SEASONS]
+            contract_note_text_cols = [f"salary_{season}_note_text" for season in PLAYER_CONTRACT_SEASONS]
             for col in partial_guarantee_bool_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+                    cols.add(col)
             for col in partial_guarantee_text_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
+                    cols.add(col)
             for col in contract_note_bool_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+                    cols.add(col)
             for col in contract_note_text_cols:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
+                    cols.add(col)
             if "reference_image_url" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN reference_image_url TEXT")
+                cols.add("reference_image_url")
             if "experience_years" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN experience_years INTEGER")
+                cols.add("experience_years")
             if "signed_as_free_agent" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN signed_as_free_agent INTEGER NOT NULL DEFAULT 0")
+                cols.add("signed_as_free_agent")
             if "profile_notes" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN profile_notes TEXT")
+                cols.add("profile_notes")
             if "profile_id" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL")
+                cols.add("profile_id")
             free_agent_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(free_agents)").fetchall()
@@ -2652,7 +2678,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if "profile_id" not in dead_cols:
                 conn.execute("ALTER TABLE dead_contracts ADD COLUMN profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL")
                 dead_cols.add("profile_id")
-            for season in [2025, 2026, 2027, 2028, 2029, 2030]:
+            for season in PLAYER_CONTRACT_SEASONS:
                 text_col = f"salary_{season}_text"
                 num_col = f"salary_{season}_num"
                 if text_col not in dead_cols:
@@ -3943,7 +3969,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         timestamp: str,
     ) -> int:
         season = parse_int(season_year)
-        if season is None or season < 2025 or season > 2030:
+        if season is None or season < PLAYER_CONTRACT_MIN_YEAR or season > PLAYER_CONTRACT_MAX_YEAR:
             return 0
         salary_text_field = f"salary_{season}_text"
         salary_num_field = f"salary_{season}_num"
@@ -4260,8 +4286,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
             previous_year = parse_int(settings.get("current_year")) or 2025
-            if previous_year < 2025 or previous_year > 2030:
-                previous_year = 2025
+            if previous_year < PLAYER_CONTRACT_MIN_YEAR or previous_year > PLAYER_CONTRACT_MAX_START_YEAR:
+                previous_year = PLAYER_CONTRACT_MIN_YEAR
             delta = max(0, int(next_year) - previous_year)
             timestamp = now_iso()
             stored_salary_history = (
@@ -4311,10 +4337,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
             current_year = parse_int(settings.get("current_year")) or 2025
-            if current_year < 2025 or current_year > 2030:
-                current_year = 2025
-            if current_year >= 2030:
-                raise ValueError("cannot_progress_beyond_2030")
+            if current_year < PLAYER_CONTRACT_MIN_YEAR or current_year > PLAYER_CONTRACT_MAX_START_YEAR:
+                current_year = PLAYER_CONTRACT_MIN_YEAR
+            if current_year >= PLAYER_CONTRACT_MAX_START_YEAR:
+                raise ValueError("cannot_progress_beyond_contract_window")
 
             snapshot_payload = self._snapshot_payload_for_season(conn, current_year, settings)
             conn.execute(
@@ -5281,7 +5307,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         requester: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         season = parse_int(season_year)
-        if season is None or season < 2025 or season > 2030:
+        if season is None or season < PLAYER_CONTRACT_MIN_YEAR or season > PLAYER_CONTRACT_MAX_YEAR:
             raise ValueError("invalid_renounce_season")
         field = f"salary_{season}_text"
         rights = str(rights_value or "").strip().upper()
@@ -6522,7 +6548,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def current_draft_year(self) -> int:
         settings = self.get_settings()
         current_year = parse_int(settings.get("current_year")) or 2025
-        if current_year < 2025 or current_year > 2030:
+        if current_year < PLAYER_CONTRACT_MIN_YEAR or current_year > PLAYER_CONTRACT_MAX_START_YEAR:
             current_year = 2025
         return current_year + 1
 
@@ -7399,11 +7425,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def process_draft_results(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
         year = parse_int(str(draft_year)) if draft_year is not None else self.current_draft_year()
-        if year is None or year < 2025 or year > 2030:
+        if year is None or year < PLAYER_CONTRACT_MIN_YEAR or year > PLAYER_CONTRACT_MAX_YEAR:
             raise ValueError("unsupported_draft_year")
         settings = self.get_settings()
         timestamp = now_iso()
-        supported_salary_seasons = [2025, 2026, 2027, 2028, 2029, 2030]
+        supported_salary_seasons = PLAYER_CONTRACT_SEASONS
         created_holds: List[Dict[str, Any]] = []
         created_rights: List[Dict[str, Any]] = []
         skipped: List[Dict[str, Any]] = []
@@ -8258,7 +8284,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     conn.commit()
             checkpoint = mark("sync_ms", checkpoint)
             current_year = parse_int(settings.get("current_year")) or 2025
-            if current_year < 2025 or current_year > 2030:
+            if current_year < PLAYER_CONTRACT_MIN_YEAR or current_year > PLAYER_CONTRACT_MAX_START_YEAR:
                 current_year = 2025
 
             profile_cur = conn.execute(
@@ -11370,8 +11396,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         include_breakdowns: bool = True,
     ) -> Dict[str, float]:
         current_year = parse_int(season_year) or parse_int(settings.get("current_year")) or 2025
-        if current_year < 2025 or current_year > 2030:
-            current_year = max(2025, min(CAP_FORECAST_MAX_YEAR, current_year))
+        if current_year < PLAYER_CONTRACT_MIN_YEAR or current_year > PLAYER_CONTRACT_MAX_YEAR:
+            current_year = max(PLAYER_CONTRACT_MIN_YEAR, min(PLAYER_CONTRACT_MAX_YEAR, current_year))
         salary_cap = (
             parse_float(settings.get(f"salary_cap_{current_year}"))
             or parse_float(settings.get("salary_cap_2025"))
@@ -14139,7 +14165,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def _player_payload_affects_free_agency_sync(self, payload: Dict[str, Any]) -> bool:
         if "bird_rights" in payload or "years_left" in payload:
             return True
-        for season in [2025, 2026, 2027, 2028, 2029, 2030]:
+        for season in PLAYER_CONTRACT_SEASONS:
             if f"salary_{season}_text" in payload or f"option_{season}" in payload:
                 return True
         return False
@@ -14157,25 +14183,25 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def update_player(self, player_id: int, payload: Dict[str, Any]) -> bool:
         fields = [
             "name", "bird_rights", "rating", "position", "years_left",
-            "salary_2025_text", "salary_2026_text", "salary_2027_text",
-            "salary_2028_text", "salary_2029_text", "salary_2030_text",
-            "salary_2025_guaranteed_text", "salary_2026_guaranteed_text", "salary_2027_guaranteed_text",
-            "salary_2028_guaranteed_text", "salary_2029_guaranteed_text", "salary_2030_guaranteed_text",
-            "salary_2025_note_text", "salary_2026_note_text", "salary_2027_note_text",
-            "salary_2028_note_text", "salary_2029_note_text", "salary_2030_note_text",
-            "option_2025", "option_2026", "option_2027", "option_2028", "option_2029", "option_2030",
             "notes", "reference_image_url", "profile_notes",
         ]
+        for season in PLAYER_CONTRACT_SEASONS:
+            fields.extend([
+                f"salary_{season}_text",
+                f"salary_{season}_guaranteed_text",
+                f"salary_{season}_note_text",
+                f"option_{season}",
+            ])
         bool_fields = [
             "provisional_amounts", "partially_guaranteed", "contract_notes",
-            "salary_2025_provisional", "salary_2026_provisional", "salary_2027_provisional",
-            "salary_2028_provisional", "salary_2029_provisional", "salary_2030_provisional",
-            "salary_2025_partially_guaranteed", "salary_2026_partially_guaranteed", "salary_2027_partially_guaranteed",
-            "salary_2028_partially_guaranteed", "salary_2029_partially_guaranteed", "salary_2030_partially_guaranteed",
-            "salary_2025_note", "salary_2026_note", "salary_2027_note",
-            "salary_2028_note", "salary_2029_note", "salary_2030_note",
             "signed_as_free_agent",
         ]
+        for season in PLAYER_CONTRACT_SEASONS:
+            bool_fields.extend([
+                f"salary_{season}_provisional",
+                f"salary_{season}_partially_guaranteed",
+                f"salary_{season}_note",
+            ])
         assignments = []
         values: List[Any] = []
 
@@ -14192,7 +14218,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 assignments.append(f"{f} = ?")
                 values.append(1 if parse_bool(payload[f]) else 0)
 
-        for season in [2025, 2026, 2027, 2028, 2029, 2030]:
+        for season in PLAYER_CONTRACT_SEASONS:
             text_field = f"salary_{season}_text"
             if text_field in payload:
                 assignments.append(f"salary_{season}_num = ?")
@@ -15030,18 +15056,21 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "salary_2028_text": payload.get("salary_2028_text"),
                 "salary_2029_text": payload.get("salary_2029_text"),
                 "salary_2030_text": payload.get("salary_2030_text"),
+                "salary_2031_text": payload.get("salary_2031_text"),
                 "salary_2025_guaranteed_text": payload.get("salary_2025_guaranteed_text"),
                 "salary_2026_guaranteed_text": payload.get("salary_2026_guaranteed_text"),
                 "salary_2027_guaranteed_text": payload.get("salary_2027_guaranteed_text"),
                 "salary_2028_guaranteed_text": payload.get("salary_2028_guaranteed_text"),
                 "salary_2029_guaranteed_text": payload.get("salary_2029_guaranteed_text"),
                 "salary_2030_guaranteed_text": payload.get("salary_2030_guaranteed_text"),
+                "salary_2031_guaranteed_text": payload.get("salary_2031_guaranteed_text"),
                 "option_2025": payload.get("option_2025"),
                 "option_2026": payload.get("option_2026"),
                 "option_2027": payload.get("option_2027"),
                 "option_2028": payload.get("option_2028"),
                 "option_2029": payload.get("option_2029"),
                 "option_2030": payload.get("option_2030"),
+                "option_2031": payload.get("option_2031"),
                 "reference_image_url": payload.get("reference_image_url"),
                 "provisional_amounts": 1 if parse_bool(payload.get("provisional_amounts")) else 0,
                 "partially_guaranteed": 1 if parse_bool(payload.get("partially_guaranteed")) else 0,
@@ -15051,12 +15080,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 "salary_2028_provisional": 1 if parse_bool(payload.get("salary_2028_provisional")) else 0,
                 "salary_2029_provisional": 1 if parse_bool(payload.get("salary_2029_provisional")) else 0,
                 "salary_2030_provisional": 1 if parse_bool(payload.get("salary_2030_provisional")) else 0,
+                "salary_2031_provisional": 1 if parse_bool(payload.get("salary_2031_provisional")) else 0,
                 "salary_2025_partially_guaranteed": 1 if parse_bool(payload.get("salary_2025_partially_guaranteed")) else 0,
                 "salary_2026_partially_guaranteed": 1 if parse_bool(payload.get("salary_2026_partially_guaranteed")) else 0,
                 "salary_2027_partially_guaranteed": 1 if parse_bool(payload.get("salary_2027_partially_guaranteed")) else 0,
                 "salary_2028_partially_guaranteed": 1 if parse_bool(payload.get("salary_2028_partially_guaranteed")) else 0,
                 "salary_2029_partially_guaranteed": 1 if parse_bool(payload.get("salary_2029_partially_guaranteed")) else 0,
                 "salary_2030_partially_guaranteed": 1 if parse_bool(payload.get("salary_2030_partially_guaranteed")) else 0,
+                "salary_2031_partially_guaranteed": 1 if parse_bool(payload.get("salary_2031_partially_guaranteed")) else 0,
                 "notes": payload.get("notes"),
                 "profile_notes": payload.get("profile_notes"),
                 "experience_years": normalize_experience_years(payload.get("experience_years")),
@@ -15105,17 +15136,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     salary_2028_text, salary_2028_num,
                     salary_2029_text, salary_2029_num,
                     salary_2030_text, salary_2030_num,
-                    option_2025, option_2026, option_2027, option_2028, option_2029, option_2030,
+                    salary_2031_text, salary_2031_num,
+                    option_2025, option_2026, option_2027, option_2028, option_2029, option_2030, option_2031,
                     provisional_amounts, partially_guaranteed,
                     salary_2025_provisional, salary_2026_provisional, salary_2027_provisional,
-                    salary_2028_provisional, salary_2029_provisional, salary_2030_provisional,
+                    salary_2028_provisional, salary_2029_provisional, salary_2030_provisional, salary_2031_provisional,
                     salary_2025_partially_guaranteed, salary_2026_partially_guaranteed, salary_2027_partially_guaranteed,
                     salary_2028_partially_guaranteed, salary_2029_partially_guaranteed, salary_2030_partially_guaranteed,
+                    salary_2031_partially_guaranteed,
                     salary_2025_guaranteed_text, salary_2026_guaranteed_text, salary_2027_guaranteed_text,
                     salary_2028_guaranteed_text, salary_2029_guaranteed_text, salary_2030_guaranteed_text,
+                    salary_2031_guaranteed_text,
                     notes, reference_image_url, profile_notes, experience_years, signed_as_free_agent,
                     is_two_way, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -15138,12 +15172,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     parse_salary_amount(values["salary_2029_text"]),
                     values["salary_2030_text"],
                     parse_salary_amount(values["salary_2030_text"]),
+                    values["salary_2031_text"],
+                    parse_salary_amount(values["salary_2031_text"]),
                     values["option_2025"],
                     values["option_2026"],
                     values["option_2027"],
                     values["option_2028"],
                     values["option_2029"],
                     values["option_2030"],
+                    values["option_2031"],
                     values["provisional_amounts"],
                     values["partially_guaranteed"],
                     values["salary_2025_provisional"],
@@ -15152,18 +15189,21 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     values["salary_2028_provisional"],
                     values["salary_2029_provisional"],
                     values["salary_2030_provisional"],
+                    values["salary_2031_provisional"],
                     values["salary_2025_partially_guaranteed"],
                     values["salary_2026_partially_guaranteed"],
                     values["salary_2027_partially_guaranteed"],
                     values["salary_2028_partially_guaranteed"],
                     values["salary_2029_partially_guaranteed"],
                     values["salary_2030_partially_guaranteed"],
+                    values["salary_2031_partially_guaranteed"],
                     values["salary_2025_guaranteed_text"],
                     values["salary_2026_guaranteed_text"],
                     values["salary_2027_guaranteed_text"],
                     values["salary_2028_guaranteed_text"],
                     values["salary_2029_guaranteed_text"],
                     values["salary_2030_guaranteed_text"],
+                    values["salary_2031_guaranteed_text"],
                     values["notes"],
                     values["reference_image_url"],
                     values["profile_notes"],
@@ -15492,9 +15532,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 salary_2028_text, salary_2028_num,
                 salary_2029_text, salary_2029_num,
                 salary_2030_text, salary_2030_num,
+                salary_2031_text, salary_2031_num,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 team_id,
@@ -15516,6 +15557,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 parse_salary_amount(salary_texts.get(2029)),
                 salary_texts.get(2030),
                 parse_salary_amount(salary_texts.get(2030)),
+                salary_texts.get(2031),
+                parse_salary_amount(salary_texts.get(2031)),
                 timestamp,
                 timestamp,
             ),
@@ -15657,17 +15700,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 salary_2028_text, salary_2028_num,
                 salary_2029_text, salary_2029_num,
                 salary_2030_text, salary_2030_num,
-                option_2025, option_2026, option_2027, option_2028, option_2029, option_2030,
+                salary_2031_text, salary_2031_num,
+                option_2025, option_2026, option_2027, option_2028, option_2029, option_2030, option_2031,
                 provisional_amounts, partially_guaranteed,
                 salary_2025_provisional, salary_2026_provisional, salary_2027_provisional,
-                salary_2028_provisional, salary_2029_provisional, salary_2030_provisional,
+                salary_2028_provisional, salary_2029_provisional, salary_2030_provisional, salary_2031_provisional,
                 salary_2025_partially_guaranteed, salary_2026_partially_guaranteed, salary_2027_partially_guaranteed,
                 salary_2028_partially_guaranteed, salary_2029_partially_guaranteed, salary_2030_partially_guaranteed,
+                salary_2031_partially_guaranteed,
                 salary_2025_guaranteed_text, salary_2026_guaranteed_text, salary_2027_guaranteed_text,
                 salary_2028_guaranteed_text, salary_2029_guaranteed_text, salary_2030_guaranteed_text,
+                salary_2031_guaranteed_text,
                 notes, reference_image_url, profile_notes, experience_years, signed_as_free_agent,
                 is_two_way, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 team["id"],
@@ -15684,14 +15730,17 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 values["salary_2028_text"], parse_salary_amount(values["salary_2028_text"]),
                 values["salary_2029_text"], parse_salary_amount(values["salary_2029_text"]),
                 values["salary_2030_text"], parse_salary_amount(values["salary_2030_text"]),
-                values["option_2025"], values["option_2026"], values["option_2027"], values["option_2028"], values["option_2029"], values["option_2030"],
+                values["salary_2031_text"], parse_salary_amount(values["salary_2031_text"]),
+                values["option_2025"], values["option_2026"], values["option_2027"], values["option_2028"], values["option_2029"], values["option_2030"], values["option_2031"],
                 values["provisional_amounts"], values["partially_guaranteed"],
                 values["salary_2025_provisional"], values["salary_2026_provisional"], values["salary_2027_provisional"],
-                values["salary_2028_provisional"], values["salary_2029_provisional"], values["salary_2030_provisional"],
+                values["salary_2028_provisional"], values["salary_2029_provisional"], values["salary_2030_provisional"], values["salary_2031_provisional"],
                 values["salary_2025_partially_guaranteed"], values["salary_2026_partially_guaranteed"], values["salary_2027_partially_guaranteed"],
                 values["salary_2028_partially_guaranteed"], values["salary_2029_partially_guaranteed"], values["salary_2030_partially_guaranteed"],
+                values["salary_2031_partially_guaranteed"],
                 values["salary_2025_guaranteed_text"], values["salary_2026_guaranteed_text"], values["salary_2027_guaranteed_text"],
                 values["salary_2028_guaranteed_text"], values["salary_2029_guaranteed_text"], values["salary_2030_guaranteed_text"],
+                values["salary_2031_guaranteed_text"],
                 values["notes"], values["reference_image_url"], values["profile_notes"], values["experience_years"], values["signed_as_free_agent"],
                 1 if str(values["bird_rights"] or "").upper() == "TW" else 0,
                 timestamp,
@@ -17754,7 +17803,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             now = now_iso()
             salary_texts = {
                 season: payload.get(f"salary_{season}_text")
-                for season in [2025, 2026, 2027, 2028, 2029, 2030]
+                for season in PLAYER_CONTRACT_SEASONS
             }
             legacy_amount_text = payload.get("amount_text")
             if legacy_amount_text is not None and salary_texts[2025] is None:
@@ -17778,9 +17827,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     salary_2028_text, salary_2028_num,
                     salary_2029_text, salary_2029_num,
                     salary_2030_text, salary_2030_num,
+                    salary_2031_text, salary_2031_num,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -17804,6 +17854,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     parse_salary_amount(salary_texts[2029]),
                     salary_texts[2030],
                     parse_salary_amount(salary_texts[2030]),
+                    salary_texts[2031],
+                    parse_salary_amount(salary_texts[2031]),
                     now,
                     now,
                 ),
@@ -17827,7 +17879,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 assigns.append(f"{f} = ?")
                 vals.append(payload[f])
         legacy_amount = payload.get("amount_text") if "amount_text" in payload else None
-        for season in [2025, 2026, 2027, 2028, 2029, 2030]:
+        for season in PLAYER_CONTRACT_SEASONS:
             text_field = f"salary_{season}_text"
             if text_field in payload or (season == 2025 and legacy_amount is not None):
                 value = payload[text_field] if text_field in payload else legacy_amount
@@ -18032,12 +18084,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
     def _trade_machine_season(self, payload: Dict[str, Any], settings: Dict[str, str]) -> int:
         current_year = parse_int(settings.get("current_year")) or 2025
-        if current_year < 2025 or current_year > 2030:
+        if current_year < PLAYER_CONTRACT_MIN_YEAR or current_year > PLAYER_CONTRACT_MAX_START_YEAR:
             current_year = 2025
         season = parse_int(payload.get("season") or payload.get("season_start") or payload.get("seasonStart"))
         if season is None:
             season = current_year
-        return min(2030, max(2025, season))
+        return min(PLAYER_CONTRACT_MAX_YEAR, max(PLAYER_CONTRACT_MIN_YEAR, season))
 
     def _trade_machine_thresholds(self, settings: Dict[str, str], season: int) -> Dict[str, float]:
         salary_cap = (
@@ -19506,7 +19558,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 return None
 
             current_year = parse_int(self.get_settings().get("current_year")) or 2025
-            if current_year < 2025 or current_year > 2030:
+            if current_year < PLAYER_CONTRACT_MIN_YEAR or current_year > PLAYER_CONTRACT_MAX_START_YEAR:
                 current_year = 2025
 
             players_a_rows: List[Dict[str, Any]] = []
@@ -21976,7 +22028,7 @@ QUALITY REQUIREMENTS
         )
         if normalized_contract_type in {"TW", "TWOWAY", "TWOWAYCONTRACT"}:
             rights_season = final_season + 1
-            if rights_season < CAP_FORECAST_MIN_YEAR or rights_season > 2030:
+            if rights_season < PLAYER_CONTRACT_MIN_YEAR or rights_season > PLAYER_CONTRACT_MAX_YEAR:
                 return None
             return {"season": rights_season, "marker": "Two-way", "option": "QO"}
 
@@ -21995,7 +22047,7 @@ QUALITY REQUIREMENTS
                 return None
 
         rights_season = final_season + 1
-        if rights_season < CAP_FORECAST_MIN_YEAR or rights_season > 2030:
+        if rights_season < PLAYER_CONTRACT_MIN_YEAR or rights_season > PLAYER_CONTRACT_MAX_YEAR:
             return None
         return {"season": rights_season, "marker": marker}
 
@@ -22134,7 +22186,7 @@ QUALITY REQUIREMENTS
         if isinstance(salary_by_season, dict):
             for raw_season, raw_value in salary_by_season.items():
                 season = parse_int(str(raw_season))
-                if season is None or season < CAP_FORECAST_MIN_YEAR or season > 2030:
+                if season is None or season < PLAYER_CONTRACT_MIN_YEAR or season > PLAYER_CONTRACT_MAX_YEAR:
                     continue
                 value = str(raw_value or "").strip()
                 if value:
@@ -22144,7 +22196,7 @@ QUALITY REQUIREMENTS
         if isinstance(option_by_season, dict):
             for raw_season, raw_value in option_by_season.items():
                 season = parse_int(str(raw_season))
-                if season is None or season < CAP_FORECAST_MIN_YEAR or season > 2030:
+                if season is None or season < PLAYER_CONTRACT_MIN_YEAR or season > PLAYER_CONTRACT_MAX_YEAR:
                     continue
                 value = str(raw_value or "").strip().upper()
                 if value:
@@ -25317,7 +25369,7 @@ QUALITY REQUIREMENTS
             target_remaining = parse_int(payload.get("target_remaining"))
             bucket = payload.get("bucket")
             note = str(payload.get("note") or "").strip() or None
-            if season_year is None or season_year < 2025 or season_year > 2030:
+            if season_year is None or season_year < PLAYER_CONTRACT_MIN_YEAR or season_year > PLAYER_CONTRACT_MAX_YEAR:
                 self._json(400, {"error": "invalid_season_year"})
                 return
             if target_remaining is None or target_remaining < 0:
@@ -25422,8 +25474,8 @@ QUALITY REQUIREMENTS
             try:
                 result = self.db.progress_to_next_year()
             except ValueError as err:
-                if str(err) == "cannot_progress_beyond_2030":
-                    self._json(400, {"error": "cannot_progress_beyond_2030"})
+                if str(err) in {"cannot_progress_beyond_2030", "cannot_progress_beyond_contract_window"}:
+                    self._json(400, {"error": "cannot_progress_beyond_contract_window"})
                     return
                 raise
             merged = self.db.get_settings()
@@ -26222,7 +26274,7 @@ QUALITY REQUIREMENTS
 
             if "current_year" in payload:
                 parsed_year = parse_int(str(payload.get("current_year")))
-                if parsed_year is None or parsed_year < 2025 or parsed_year > 2030:
+                if parsed_year is None or parsed_year < PLAYER_CONTRACT_MIN_YEAR or parsed_year > PLAYER_CONTRACT_MAX_START_YEAR:
                     self._json(400, {"error": "invalid_current_year"})
                     return
                 next_current_year = parsed_year
