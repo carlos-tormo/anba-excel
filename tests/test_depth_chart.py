@@ -106,12 +106,37 @@ class TeamDepthChartTests(unittest.TestCase):
                 ],
             )
 
-    def test_team_depth_chart_rejects_players_from_another_team(self) -> None:
-        with self.assertRaisesRegex(ValueError, "player_not_on_team"):
-            self.db.set_team_depth_chart(
-                "ATL",
-                [{"position": "C", "depth_order": 1, "player_id": self.bos_player_id}],
-            )
+    def test_team_depth_chart_prunes_players_from_another_team(self) -> None:
+        chart = self.db.set_team_depth_chart(
+            "ATL",
+            [
+                {"position": "PG", "depth_order": 1, "player_id": self.atl_guard_id},
+                {"position": "C", "depth_order": 1, "player_id": self.bos_player_id},
+            ],
+        )
+
+        self.assertEqual(
+            [("PG", 1, "Depth Guard")],
+            [
+                (entry["position"], entry["depth_order"], entry["player"]["name"])
+                for entry in chart["entries"]
+            ],
+        )
+
+    def test_team_depth_chart_payload_ignores_players_traded_away(self) -> None:
+        self.db.set_team_depth_chart(
+            "ATL",
+            [{"position": "PG", "depth_order": 1, "player_id": self.atl_guard_id}],
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            bos_id = conn.execute("SELECT id FROM teams WHERE code = 'BOS'").fetchone()[0]
+            conn.execute("UPDATE players SET team_id = ? WHERE id = ?", (bos_id, self.atl_guard_id))
+            conn.commit()
+
+        team = self.db.get_team("ATL")
+        self.assertIsNotNone(team)
+        self.assertFalse(team["depth_chart"]["configured"])
+        self.assertEqual([], team["depth_chart"]["entries"])
 
 
 if __name__ == "__main__":

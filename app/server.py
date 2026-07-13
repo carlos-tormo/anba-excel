@@ -13537,7 +13537,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 dc.depth_order,
                 {self._player_select_columns()}
             FROM team_depth_charts dc
-            JOIN players p ON p.id = dc.player_id
+            JOIN players p ON p.id = dc.player_id AND p.team_id = dc.team_id
             LEFT JOIN player_profiles pp ON pp.id = p.profile_id
             WHERE dc.team_id = ?
             ORDER BY dc.position, dc.depth_order
@@ -13605,8 +13605,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     (team_id, *seen_players),
                 )
                 owned_ids = {int(row["id"]) for row in owned_cur.fetchall()}
-                if owned_ids != seen_players:
-                    raise ValueError("player_not_on_team")
+                cleaned = [entry for entry in cleaned if int(entry["player_id"]) in owned_ids]
             conn.execute("DELETE FROM team_depth_charts WHERE team_id = ?", (team_id,))
             for entry in cleaned:
                 conn.execute(

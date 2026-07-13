@@ -6311,6 +6311,11 @@ async function maybeShowMinimumTargetsPrompt() {
 
 function normalizeDepthChartDraft(chart) {
   const grid = {};
+  const validPlayerIds = new Set(
+    (Array.isArray(state.gmOffice.depthChartPlayers) ? state.gmOffice.depthChartPlayers : [])
+      .map((player) => Number(player.id))
+      .filter(Boolean)
+  );
   DEPTH_CHART_POSITIONS.forEach((position) => {
     grid[position] = Array.from({ length: DEPTH_CHART_MAX_DEPTH }, () => null);
   });
@@ -6320,6 +6325,7 @@ function normalizeDepthChartDraft(chart) {
     const depthOrder = Number(entry?.depth_order);
     const playerId = Number(entry?.player?.id);
     if (!DEPTH_CHART_POSITIONS.includes(position) || depthOrder < 1 || depthOrder > DEPTH_CHART_MAX_DEPTH || !playerId) return;
+    if (validPlayerIds.size && !validPlayerIds.has(playerId)) return;
     grid[position][depthOrder - 1] = playerId;
   });
   return grid;
