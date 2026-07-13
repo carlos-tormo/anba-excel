@@ -15149,7 +15149,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     salary_2031_guaranteed_text,
                     notes, reference_image_url, profile_notes, experience_years, signed_as_free_agent,
                     is_two_way, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -25811,6 +25811,16 @@ QUALITY REQUIREMENTS
                     self._json(409, {"error": "profile_has_active_contract"})
                     return
                 raise
+            except sqlite3.Error as err:
+                self.log_error(
+                    "GM free-agent offer approval DB failure request=%s free_agent=%s team=%s: %s",
+                    request_id,
+                    free_agent_id,
+                    team_code,
+                    err,
+                )
+                self._json(500, {"error": "offer_approval_failed", "detail": str(err)[:200]})
+                return
             if not player_id:
                 self._json(404, {"error": "free_agent_or_team_not_found"})
                 return
