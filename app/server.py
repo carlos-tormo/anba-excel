@@ -634,6 +634,112 @@ def normalize_team_codes(value: Any) -> List[str]:
     return codes
 
 
+class AuthorizationError(Exception):
+    def __init__(self, status: int, error: str) -> None:
+        super().__init__(error)
+        self.status = status
+        self.error = error
+
+
+AUTH_POLICIES: Dict[str, Dict[str, Any]] = {
+    "gm_office.view": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm_office.free_agent_spending_limit.update": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm_office.minimum_targets.update": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm_office.depth_chart.update": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm.option_request.create": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm.bird_rights_renounce.create": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm.free_agent_offer.create": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm.free_agent_favorite.update": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm.free_agent_offer.cancel": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "gm.waiver_claim.create": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "owner_office.view": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "owner_exit_interview.update": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "draft_live.pick_submit": {"roles": {"admin", "gm", "co_admin"}, "team_scope": True},
+    "notifications.view": {"roles": {"admin", "gm", "co_admin", "guest"}, "team_scope": False},
+    "notifications.read": {"roles": {"admin", "gm", "co_admin", "guest"}, "team_scope": False},
+    "coadmin.cartera.view": {"roles": {"admin", "co_admin"}, "team_scope": False},
+    "coadmin.cartera.ruleout": {"roles": {"admin", "co_admin"}, "team_scope": False},
+    "coadmin.vote.list": {"roles": {"co_admin"}, "team_scope": False},
+    "coadmin.vote.submit": {"roles": {"co_admin"}, "team_scope": False},
+    "admin.team.write": {"roles": {"admin"}, "team_scope": True},
+    "admin.player.write": {"roles": {"admin"}, "team_scope": True},
+    "admin.player.cut": {"roles": {"admin"}, "team_scope": True},
+    "admin.player.remove": {"roles": {"admin"}, "team_scope": True},
+    "admin.player.move": {"roles": {"admin"}, "team_scope": True},
+    "admin.free_agent.sign": {"roles": {"admin"}, "team_scope": True},
+    "admin.trade.process": {"roles": {"admin"}, "team_scope": True},
+    "admin.team_moves.write": {"roles": {"admin"}, "team_scope": True},
+    "admin.draft_asset.write": {"roles": {"admin"}, "team_scope": True},
+    "admin.frozen_draft_pick.write": {"roles": {"admin"}, "team_scope": True},
+    "admin.dead_contract.write": {"roles": {"admin"}, "team_scope": True},
+    "admin.gm_history.write": {"roles": {"admin"}, "team_scope": True},
+    "admin.gm_draft_pick_request.decide": {"roles": {"admin"}, "team_scope": True},
+    "admin.gm_free_agent_offer_request.decide": {"roles": {"admin"}, "team_scope": True},
+    "admin.waiver_claim_request.decide": {"roles": {"admin"}, "team_scope": True},
+    "admin.gm_option_request.decide": {"roles": {"admin"}, "team_scope": True},
+    "admin.player_profile.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.player_profile.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.player_catalog.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.gm_minimum_targets.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.gm_minimum_targets.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.draft_live.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.article.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.coadmin_vote.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.coadmin_vote.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.promise.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.offseason_exceptions.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.offseason_exceptions.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.import.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.backup.create": {"roles": {"admin"}, "team_scope": False},
+    "admin.draft_order.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.free_agent.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.tracker_economy.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.users.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.users.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.audit.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.maintenance.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.gm_history.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.gm_option_request.view": {"roles": {"admin"}, "team_scope": False},
+    "admin.global.write": {"roles": {"admin"}, "team_scope": False},
+}
+
+
+def authorization_actor_from_session(session: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not session:
+        return None
+    role = str(session.get("role") or "").strip().lower()
+    return {
+        "user_id": session.get("user_id"),
+        "email": session.get("email"),
+        "role": role,
+        "team_codes": normalize_team_codes(session.get("team_codes")),
+    }
+
+
+def authorize_action(
+    actor: Optional[Dict[str, Any]],
+    action: str,
+    resource: Optional[Dict[str, Any]] = None,
+) -> bool:
+    policy = AUTH_POLICIES.get(action)
+    if not policy:
+        raise AuthorizationError(403, "action_not_allowed")
+    if not actor:
+        raise AuthorizationError(401, "auth_required")
+    role = str(actor.get("role") or "").strip().lower()
+    if role not in policy.get("roles", set()):
+        raise AuthorizationError(403, "forbidden")
+    if role == "admin":
+        return True
+    if policy.get("team_scope"):
+        team_code = normalize_team_code((resource or {}).get("team_code"))
+        if not team_code:
+            raise AuthorizationError(400, "team_code_required")
+        if team_code not in normalize_team_codes(actor.get("team_codes")):
+            raise AuthorizationError(403, "team_access_required")
+    return True
+
+
 def parse_gm_account_map(value: Any) -> Dict[str, List[str]]:
     if value is None:
         return {}
@@ -8033,6 +8139,20 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.commit()
             return row
+
+    def get_frozen_draft_pick_record(self, frozen_pick_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT f.*, t.code AS team_code, t.name AS team_name
+                FROM frozen_draft_picks f
+                JOIN teams t ON t.id = f.team_id
+                WHERE f.id = ?
+                """,
+                (int(frozen_pick_id),),
+            )
+            row = cur.fetchone()
+            return row_to_dict(cur, row) if row else None
 
     def update_frozen_draft_pick(self, frozen_pick_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         timestamp = now_iso()
@@ -20447,6 +20567,17 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(403, {"error": "team_access_required"})
         return False
 
+    def _authorize(self, action: str, resource: Optional[Dict[str, Any]] = None) -> bool:
+        try:
+            return authorize_action(
+                authorization_actor_from_session(self._current_session()),
+                action,
+                resource or {},
+            )
+        except AuthorizationError as err:
+            self._json(err.status, {"error": err.error})
+            return False
+
     def _require_admin(self) -> bool:
         if self._is_admin():
             return True
@@ -22976,7 +23107,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/me/notifications":
-            if not self._require_authenticated():
+            if not self._authorize("notifications.view"):
                 return
             sess = self._current_session() or {}
             role = str(sess.get("role") or "").strip().lower()
@@ -23059,7 +23190,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/salary-history"):
-            if not self._require_admin():
+            if not self._authorize("admin.player_profile.view"):
                 return
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
@@ -23073,7 +23204,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/players":
-            if not self._require_admin():
+            if not self._authorize("admin.player_catalog.view"):
                 return
             try:
                 started = time.perf_counter()
@@ -23105,19 +23236,19 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/gm-minimum-targets":
-            if not self._require_admin():
+            if not self._authorize("admin.gm_minimum_targets.view"):
                 return
             self._json(200, {"lists": self.db.list_admin_gm_minimum_targets()})
             return
 
         if parsed.path == "/api/admin/gm-minimum-targets/order":
-            if not self._require_admin():
+            if not self._authorize("admin.gm_minimum_targets.view"):
                 return
             self._json(200, {"scores": self.db.list_admin_gm_minimum_target_order()})
             return
 
         if parsed.path == "/api/admin/gm-minimum-target-handicaps":
-            if not self._require_admin():
+            if not self._authorize("admin.gm_minimum_targets.view"):
                 return
             self._json(200, {"handicaps": self.db.list_gm_minimum_target_handicaps()})
             return
@@ -23198,7 +23329,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/cartera":
-            if not self._require_admin_or_coadmin():
+            if not self._authorize("coadmin.cartera.view"):
                 return
             qs = parse_qs(parsed.query)
             raw_amount = (qs.get("amount") or [""])[0].strip()
@@ -23214,13 +23345,13 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/cartera/clients":
-            if not self._require_admin_or_coadmin():
+            if not self._authorize("coadmin.cartera.view"):
                 return
             self._json(200, self.db.list_cartera_clients_for_session(self._current_session() or {}))
             return
 
         if parsed.path == "/api/cartera/promises":
-            if not self._require_admin_or_coadmin():
+            if not self._authorize("coadmin.cartera.view"):
                 return
             qs = parse_qs(parsed.query)
             status = (qs.get("status") or ["all"])[0].strip().lower() or "all"
@@ -23233,17 +23364,12 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/cartera/appeal":
-            if not self._require_admin_or_coadmin():
+            if not self._authorize("coadmin.cartera.view"):
                 return
             self._json(200, self.db.list_free_agent_team_appeal())
             return
 
         if parsed.path == "/api/gm-office":
-            if not self._require_authenticated():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
-                return
             qs = parse_qs(parsed.query)
             team_code = normalize_team_code((qs.get("team_code") or [""])[0])
             if not team_code:
@@ -23253,8 +23379,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm_office.view", {"team_code": team_code}):
                 return
             try:
                 data = self.db.list_gm_office(team_code)
@@ -23268,19 +23393,13 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/gm-office/minimum-targets":
-            if not self._require_authenticated():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
-                return
             qs = parse_qs(parsed.query)
             team_code = normalize_team_code((qs.get("team_code") or [""])[0])
             if not team_code:
                 team_codes = self._current_session_team_codes()
                 if len(team_codes) == 1:
                     team_code = team_codes[0]
-            if team_code and not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if team_code and not self._authorize("gm_office.view", {"team_code": team_code}):
                 return
             session = self._current_session() or {}
             try:
@@ -23291,7 +23410,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/offseason-exceptions/preview":
-            if not self._require_admin():
+            if not self._authorize("admin.offseason_exceptions.view"):
                 return
             qs = parse_qs(parsed.query)
             raw_season = (qs.get("season") or [""])[0].strip()
@@ -23360,7 +23479,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/gm-history":
-            if not self._require_admin():
+            if not self._authorize("admin.gm_history.view"):
                 return
             qs = parse_qs(parsed.query)
             team_code = str((qs.get("team") or [""])[0] or "").strip().upper() or None
@@ -23380,7 +23499,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/logs":
-            if not self._require_admin():
+            if not self._authorize("admin.audit.view"):
                 return
             qs = parse_qs(parsed.query)
             action = (qs.get("action") or [""])[0].strip() or None
@@ -23390,13 +23509,13 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/maintenance":
-            if not self._require_admin():
+            if not self._authorize("admin.maintenance.view"):
                 return
             self._json(200, self.db.maintenance_status())
             return
 
         if parsed.path == "/api/admin/users":
-            if not self._require_admin():
+            if not self._authorize("admin.users.view"):
                 return
             users = self.db.list_users()
             for user in users:
@@ -23415,7 +23534,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/gm-option-requests":
-            if not self._require_admin():
+            if not self._authorize("admin.gm_option_request.view"):
                 return
             qs = parse_qs(parsed.query)
             status = (qs.get("status") or ["pending"])[0].strip().lower() or "pending"
@@ -23423,18 +23542,15 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/coadmin-votes":
-            if not self._require_admin():
+            if not self._authorize("admin.coadmin_vote.view"):
                 return
             self._json(200, {"votes": self.db.list_admin_coadmin_votes()})
             return
 
         if parsed.path == "/api/coadmin-votes":
-            if not self._require_authenticated():
+            if not self._authorize("coadmin.vote.list"):
                 return
             session = self._current_session() or {}
-            if str(session.get("role") or "").strip().lower() != "co_admin":
-                self._json(403, {"error": "coadmin_required"})
-                return
             self._json(200, self.db.list_coadmin_votes_for_session(session))
             return
 
@@ -23444,10 +23560,7 @@ QUALITY REQUIREMENTS
                 self._json(404, {"error": "not_found"})
                 return
             code = parts[3]
-            if not self._require_authenticated():
-                return
-            if not self._can_manage_team(code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("owner_office.view", {"team_code": code}):
                 return
             data = self.db.get_team_owner_office(code, include_private=self._is_admin())
             if not data:
@@ -23484,8 +23597,6 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/teams/") and parsed.path.endswith("/owner-office/background"):
-            if not self._require_admin():
-                return
             if not self._require_csrf():
                 return
             if not self._require_sensitive_rate_limit("admin_upload"):
@@ -23498,7 +23609,7 @@ QUALITY REQUIREMENTS
             if not code:
                 self._json(400, {"error": "invalid_team"})
                 return
-            if not self._require_team_write_access(code):
+            if not self._authorize("admin.team.write", {"team_code": code}):
                 return
             try:
                 file_bytes, _ext, mime_type = self._read_multipart_image_upload("background")
@@ -23536,7 +23647,7 @@ QUALITY REQUIREMENTS
         payload = self._read_json()
 
         if parsed.path == "/api/admin/gm-minimum-targets/remove":
-            if not self._require_admin():
+            if not self._authorize("admin.gm_minimum_targets.write"):
                 return
             if not self._require_csrf():
                 return
@@ -23556,7 +23667,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/gm-minimum-target-handicaps":
-            if not self._require_admin():
+            if not self._authorize("admin.gm_minimum_targets.write"):
                 return
             if not self._require_csrf():
                 return
@@ -23578,7 +23689,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/cartera/clients/") and parsed.path.endswith("/ruleout"):
-            if not self._require_admin_or_coadmin():
+            if not self._authorize("coadmin.cartera.ruleout"):
                 return
             if not self._require_csrf():
                 return
@@ -23637,12 +23748,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/gm-office/free-agent-spending-limit":
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             team_code = normalize_team_code(payload.get("team_code"))
             if not team_code:
@@ -23652,8 +23758,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm_office.free_agent_spending_limit.update", {"team_code": team_code}):
                 return
             try:
                 spending_limit = self.db.set_gm_free_agent_spending_limit(
@@ -23670,12 +23775,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path in {"/api/gm-office/minimum-targets", "/api/gm-office/minimum-targets/omit"}:
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             session = self._current_session() or {}
             team_code = normalize_team_code(payload.get("team_code"))
@@ -23683,8 +23783,10 @@ QUALITY REQUIREMENTS
                 team_codes = self._current_session_team_codes()
                 if len(team_codes) == 1:
                     team_code = team_codes[0]
-            if team_code and not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if not team_code:
+                self._json(400, {"error": "team_code_required"})
+                return
+            if not self._authorize("gm_office.minimum_targets.update", {"team_code": team_code}):
                 return
             try:
                 if parsed.path.endswith("/omit"):
@@ -23700,12 +23802,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/gm-office/depth-chart":
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             team_code = normalize_team_code(payload.get("team_code"))
             if not team_code:
@@ -23715,8 +23812,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm_office.depth_chart.update", {"team_code": team_code}):
                 return
             try:
                 depth_chart = self.db.set_team_depth_chart(team_code, payload.get("entries") or [])
@@ -23729,7 +23825,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/me/notifications/") and parsed.path.endswith("/read"):
-            if not self._require_authenticated():
+            if not self._authorize("notifications.read"):
                 return
             if not self._require_csrf():
                 return
@@ -23783,7 +23879,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/draft-live/settings":
-            if not self._require_admin():
+            if not self._authorize("admin.draft_live.write"):
                 return
             if not self._require_csrf():
                 return
@@ -23807,7 +23903,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/draft-live/control":
-            if not self._require_admin():
+            if not self._authorize("admin.draft_live.write"):
                 return
             if not self._require_csrf():
                 return
@@ -23830,7 +23926,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/draft-live/process":
-            if not self._require_admin():
+            if not self._authorize("admin.draft_live.write"):
                 return
             if not self._require_csrf():
                 return
@@ -23855,8 +23951,6 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/draft-live/picks/"):
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
                 return
             try:
@@ -23868,8 +23962,7 @@ QUALITY REQUIREMENTS
             if not pick:
                 self._json(404, {"error": "draft_pick_not_found"})
                 return
-            if not self._is_admin() and not self._can_manage_team(pick.get("owner_team_code")):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("draft_live.pick_submit", {"team_code": pick.get("owner_team_code")}):
                 return
             if not self._is_admin():
                 try:
@@ -23921,14 +24014,12 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/trades/process/validate":
-            if not self._require_admin():
-                return
             if not self._require_csrf():
                 return
             if isinstance(payload.get("selections"), (list, dict)) or isinstance(payload.get("teams"), list):
                 normalized = self.db._trade_machine_normalized_request(payload)
                 for code in normalized.get("teams") or []:
-                    if not self._require_team_write_access(code):
+                    if not self._authorize("admin.trade.process", {"team_code": code}):
                         return
                 validation = self.db.validate_trade_machine(
                     {
@@ -23942,9 +24033,9 @@ QUALITY REQUIREMENTS
                 return
             team_a = normalize_team_code(payload.get("team_a")) or ""
             team_b = normalize_team_code(payload.get("team_b")) or ""
-            if not self._require_team_write_access(team_a):
+            if not self._authorize("admin.trade.process", {"team_code": team_a}):
                 return
-            if not self._require_team_write_access(team_b):
+            if not self._authorize("admin.trade.process", {"team_code": team_b}):
                 return
             validation = self.db.trade_validation_from_process_payload({
                 **payload,
@@ -23955,12 +24046,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/gm/option-requests":
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             player_id = parse_int(payload.get("player_id"))
             if player_id is None:
@@ -23973,8 +24059,7 @@ QUALITY REQUIREMENTS
             if not player:
                 self._json(404, {"error": "player_not_found"})
                 return
-            if not self._can_manage_team(player.get("team_code")):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm.option_request.create", {"team_code": player.get("team_code")}):
                 return
             try:
                 request = self.db.create_gm_option_request(
@@ -24006,12 +24091,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/gm/bird-rights-renounce-requests":
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             player_id = parse_int(payload.get("player_id"))
             season_year = parse_int(payload.get("season_year"))
@@ -24026,8 +24106,7 @@ QUALITY REQUIREMENTS
             if not player:
                 self._json(404, {"error": "player_not_found"})
                 return
-            if not self._can_manage_team(player.get("team_code")):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm.bird_rights_renounce.create", {"team_code": player.get("team_code")}):
                 return
             try:
                 request = self.db.create_gm_bird_rights_renounce_request(
@@ -24060,12 +24139,7 @@ QUALITY REQUIREMENTS
         if parsed.path.startswith("/api/free-agents/") and (
             parsed.path.endswith("/offer") or parsed.path.endswith("/negotiate")
         ):
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             if not self._require_sensitive_rate_limit("free_agent_action"):
                 return
@@ -24091,8 +24165,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm.free_agent_offer.create", {"team_code": team_code}):
                 return
             if action == "offer":
                 is_renewal = self._free_agent_offer_is_renewal(free_agent, team_code)
@@ -24173,12 +24246,7 @@ QUALITY REQUIREMENTS
         if parsed.path.startswith("/api/free-agents/") and (
             parsed.path.endswith("/favorite") or parsed.path.endswith("/unfavorite")
         ):
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
@@ -24198,8 +24266,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm.free_agent_favorite.update", {"team_code": team_code}):
                 return
             try:
                 if action == "favorite":
@@ -24222,12 +24289,7 @@ QUALITY REQUIREMENTS
                 return
 
         if parsed.path.startswith("/api/gm-free-agent-offer-requests/") and parsed.path.endswith("/cancel"):
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
@@ -24237,16 +24299,15 @@ QUALITY REQUIREMENTS
             if request_id is None:
                 self._json(400, {"error": "invalid_request_id"})
                 return
-            team_code = normalize_team_code(payload.get("team_code"))
-            if not team_code:
-                team_codes = self._current_session_team_codes()
-                if len(team_codes) == 1:
-                    team_code = team_codes[0]
+            request = self.db.get_gm_free_agent_offer_request(request_id)
+            if not request:
+                self._json(404, {"error": "request_not_found"})
+                return
+            team_code = normalize_team_code(request.get("team_code"))
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm.free_agent_offer.cancel", {"team_code": team_code}):
                 return
             try:
                 canceled = self.db.cancel_gm_free_agent_offer_request(request_id, team_code)
@@ -24269,12 +24330,7 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/waivers/") and parsed.path.endswith("/claims"):
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
-                return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
                 return
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
@@ -24292,8 +24348,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._can_manage_team(team_code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("gm.waiver_claim.create", {"team_code": team_code}):
                 return
             try:
                 claim = self.db.create_waiver_claim(waiver_id, team_code, payload, self._current_session() or {})
@@ -24308,14 +24363,11 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/coadmin-votes/") and parsed.path.endswith("/submit"):
-            if not self._require_authenticated():
+            if not self._authorize("coadmin.vote.submit"):
                 return
             if not self._require_csrf():
                 return
             session = self._current_session() or {}
-            if str(session.get("role") or "").strip().lower() != "co_admin":
-                self._json(403, {"error": "coadmin_required"})
-                return
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
                 self._json(404, {"error": "not_found"})
@@ -24344,15 +24396,9 @@ QUALITY REQUIREMENTS
             if action not in {"start", "reply", "reset"}:
                 self._json(404, {"error": "not_found"})
                 return
-            if not self._require_authenticated():
-                return
             if not self._require_csrf():
                 return
-            if not (self._is_gm() or self._is_admin()):
-                self._json(403, {"error": "gm_auth_required"})
-                return
-            if not self._can_manage_team(code):
-                self._json(403, {"error": "team_access_required"})
+            if not self._authorize("owner_exit_interview.update", {"team_code": code}):
                 return
             settings = self.db.get_settings()
             current_year = parse_int(settings.get("current_year")) or 2025
@@ -24436,14 +24482,14 @@ QUALITY REQUIREMENTS
             self._json(200, {"ok": True, "interview": interview, "owner_office": refreshed})
             return
 
-        if not self._require_admin():
-            return
         if not self._require_csrf():
             return
         if not self._require_sensitive_rate_limit("admin_post"):
             return
 
         if parsed.path == "/api/admin/launch-article":
+            if not self._authorize("admin.article.write"):
+                return
             article_text = str(payload.get("text") or payload.get("article_text") or "").strip()
             try:
                 image_attachment = self._discord_custom_image_attachment(payload.get("discord_custom_image"))
@@ -24497,6 +24543,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/coadmin-votes":
+            if not self._authorize("admin.coadmin_vote.write"):
+                return
             try:
                 vote = self.db.create_coadmin_vote(payload.get("title"), self._current_session() or {})
             except ValueError as err:
@@ -24513,6 +24561,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/free-agent-offer-promises":
+            if not self._authorize("admin.promise.write"):
+                return
             try:
                 session = self._current_session() or {}
                 promise = self.db.create_free_agent_offer_promise(
@@ -24555,6 +24605,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/offseason-exceptions/generate":
+            if not self._authorize("admin.offseason_exceptions.write"):
+                return
             season_year = parse_int(payload.get("season_year"))
             if season_year is None:
                 self._json(400, {"error": "invalid_season_year"})
@@ -24583,6 +24635,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/economy-import/preview":
+            if not self._authorize("admin.import.write"):
+                return
             csv_text = str(payload.get("csv_text") or "")
             if len(csv_text.encode("utf-8")) > 2_000_000:
                 self._json(413, {"error": "csv_too_large"})
@@ -24592,6 +24646,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/economy-import/import":
+            if not self._authorize("admin.import.write"):
+                return
             try:
                 backup = self.db.create_verified_backup("pre_owner_economy_import")
             except (OSError, sqlite3.Error, ValueError) as err:
@@ -24625,6 +24681,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/owner-office-import/preview":
+            if not self._authorize("admin.import.write"):
+                return
             csv_text = str(payload.get("csv_text") or "")
             if len(csv_text.encode("utf-8")) > 2_000_000:
                 self._json(413, {"error": "csv_too_large"})
@@ -24634,6 +24692,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/owner-office-import/import":
+            if not self._authorize("admin.import.write"):
+                return
             try:
                 backup = self.db.create_verified_backup("pre_owner_office_import")
             except (OSError, sqlite3.Error, ValueError) as err:
@@ -24667,6 +24727,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/free-agent-agent-import/preview":
+            if not self._authorize("admin.import.write"):
+                return
             try:
                 rows = _spreadsheet_rows_from_payload(
                     file_name=str(payload.get("file_name") or ""),
@@ -24693,6 +24755,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/free-agent-agent-import/import":
+            if not self._authorize("admin.import.write"):
+                return
             try:
                 backup = self.db.create_verified_backup("pre_free_agent_agent_import")
             except (OSError, sqlite3.Error, ValueError) as err:
@@ -24728,6 +24792,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/free-agent-appeal-import/preview":
+            if not self._authorize("admin.import.write"):
+                return
             settings = self.db.get_settings()
             if not parse_bool(settings.get("free_agency_mode")):
                 self._json(409, {"error": "free_agency_mode_required"})
@@ -24762,6 +24828,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/free-agent-appeal-import/import":
+            if not self._authorize("admin.import.write"):
+                return
             settings = self.db.get_settings()
             if not parse_bool(settings.get("free_agency_mode")):
                 self._json(409, {"error": "free_agency_mode_required"})
@@ -24799,6 +24867,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/admin/backup":
+            if not self._authorize("admin.backup.create"):
+                return
             try:
                 backup = self.db.create_verified_backup("manual_download")
                 data = Path(str(backup["path"])).read_bytes()
@@ -24835,6 +24905,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/free-agents/bulk":
+            if not self._authorize("admin.free_agent.write"):
+                return
             try:
                 result = self.db.bulk_create_free_agents(payload.get("names") or payload.get("text") or "")
             except ValueError as err:
@@ -24857,6 +24929,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/free-agents":
+            if not self._authorize("admin.free_agent.write"):
+                return
             free_agent_id = self.db.create_free_agent(payload)
             if not free_agent_id:
                 self._json(400, {"error": "name_required"})
@@ -24866,6 +24940,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/draft-order":
+            if not self._authorize("admin.draft_order.write"):
+                return
             try:
                 draft_order_id = self.db.create_draft_order_entry(payload)
             except ValueError as err:
@@ -24900,7 +24976,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._require_team_write_access(team_code):
+            if not self._authorize("admin.free_agent.sign", {"team_code": team_code}):
                 return
             try:
                 player_id = self.db.sign_free_agent(free_agent_id, team_code, payload)
@@ -24944,7 +25020,7 @@ QUALITY REQUIREMENTS
             if not player_before:
                 self._json(404, {"error": "player_not_found"})
                 return
-            if not self._require_team_write_access(player_before.get("team_code")):
+            if not self._authorize("admin.player.remove", {"team_code": player_before.get("team_code")}):
                 return
             result = self.db.remove_player_from_roster(player_id)
             if not result:
@@ -24980,7 +25056,7 @@ QUALITY REQUIREMENTS
             if not player_before:
                 self._json(404, {"error": "player_not_found"})
                 return
-            if not self._require_team_write_access(player_before.get("team_code")):
+            if not self._authorize("admin.player.cut", {"team_code": player_before.get("team_code")}):
                 return
             result = self.db.cut_player(player_id, payload)
             if not result:
@@ -25010,6 +25086,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/merge"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
                 self._json(404, {"error": "not_found"})
@@ -25056,6 +25134,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/salary-history"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
                 self._json(404, {"error": "not_found"})
@@ -25084,6 +25164,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-profiles/") and parsed.path.endswith("/transactions"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 4:
                 self._json(404, {"error": "not_found"})
@@ -25112,7 +25194,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._require_team_write_access(team_code):
+            if not self._authorize("admin.player.write", {"team_code": team_code}):
                 return
             try:
                 player_id = self.db.create_player(team_code, payload)
@@ -25150,9 +25232,9 @@ QUALITY REQUIREMENTS
             if not player_before:
                 self._json(404, {"error": "player_not_found"})
                 return
-            if not self._require_team_write_access(player_before.get("team_code")):
+            if not self._authorize("admin.player.move", {"team_code": player_before.get("team_code")}):
                 return
-            if not self._require_team_write_access(to_team_code):
+            if not self._authorize("admin.player.move", {"team_code": to_team_code}):
                 return
             ok = self.db.move_player(parsed_player_id, str(to_team_code))
             if ok:
@@ -25177,12 +25259,10 @@ QUALITY REQUIREMENTS
             if not self._require_csrf():
                 return
             if isinstance(payload.get("selections"), (list, dict)) or isinstance(payload.get("teams"), list):
-                if not self._require_admin():
-                    return
                 normalized = self.db._trade_machine_normalized_request(payload)
                 teams = normalized.get("teams") or []
                 for code in teams:
-                    if not self._require_team_write_access(code):
+                    if not self._authorize("admin.trade.process", {"team_code": code}):
                         return
                 force_trade = parse_bool(payload.get("force_trade"))
                 validation = self.db.validate_trade_machine(
@@ -25267,11 +25347,9 @@ QUALITY REQUIREMENTS
             no_count_players_b = payload.get("no_count_players_b")
             trade_bucket = payload.get("trade_bucket")
             force_trade = parse_bool(payload.get("force_trade"))
-            if force_trade and not self._require_admin():
+            if not self._authorize("admin.trade.process", {"team_code": team_a}):
                 return
-            if not self._require_team_write_access(team_a):
-                return
-            if not self._require_team_write_access(team_b):
+            if not self._authorize("admin.trade.process", {"team_code": team_b}):
                 return
             validation = self.db.trade_validation_from_process_payload({
                 **payload,
@@ -25374,7 +25452,7 @@ QUALITY REQUIREMENTS
             if target_remaining is None or target_remaining < 0:
                 self._json(400, {"error": "invalid_target_remaining"})
                 return
-            if not self._require_team_write_access(code):
+            if not self._authorize("admin.team_moves.write", {"team_code": code}):
                 return
             result = self.db.adjust_team_move_remaining(code, season_year, bucket, target_remaining, note)
             if result:
@@ -25387,7 +25465,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._require_team_write_access(team_code):
+            if not self._authorize("admin.draft_asset.write", {"team_code": team_code}):
                 return
             if str(payload.get("asset_type") or "").strip().lower() == "dead_cap":
                 self._json(400, {"error": "dead_cap_moved_to_dead_contracts"})
@@ -25404,6 +25482,8 @@ QUALITY REQUIREMENTS
             team_code = normalize_team_code(payload.get("team_code")) or ""
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
+                return
+            if not self._authorize("admin.frozen_draft_pick.write", {"team_code": team_code}):
                 return
             row = self.db.create_frozen_draft_pick(team_code, payload)
             if not row:
@@ -25424,7 +25504,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._require_team_write_access(team_code):
+            if not self._authorize("admin.dead_contract.write", {"team_code": team_code}):
                 return
             dead_contract_id = self.db.create_dead_contract(team_code, payload)
             if not dead_contract_id:
@@ -25445,7 +25525,7 @@ QUALITY REQUIREMENTS
             if not team_code:
                 self._json(400, {"error": "team_code_required"})
                 return
-            if not self._require_team_write_access(team_code):
+            if not self._authorize("admin.gm_history.write", {"team_code": team_code}):
                 return
             raw_entries = payload.get("entries")
             if not isinstance(raw_entries, list):
@@ -25470,6 +25550,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/settings/progress-year":
+            if not self._authorize("admin.global.write"):
+                return
             try:
                 result = self.db.progress_to_next_year()
             except ValueError as err:
@@ -25492,8 +25574,6 @@ QUALITY REQUIREMENTS
         self._json(404, {"error": "not_found"})
 
     def do_PATCH(self) -> None:
-        if not self._require_admin():
-            return
         if not self._require_csrf():
             return
         if not self._require_sensitive_rate_limit("admin_patch"):
@@ -25502,6 +25582,8 @@ QUALITY REQUIREMENTS
         payload = self._read_json()
 
         if parsed.path == "/api/tracker/economy":
+            if not self._authorize("admin.tracker_economy.write"):
+                return
             parsed_season = parse_int(str(payload.get("season_year") or payload.get("season") or ""))
             if parsed_season is None or parsed_season < 2000 or parsed_season > 2100:
                 self._json(400, {"error": "invalid_season_year"})
@@ -25532,6 +25614,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/admin/coadmin-votes/"):
+            if not self._authorize("admin.coadmin_vote.write"):
+                return
             vote_id = parse_int(parsed.path.split("/")[-1])
             if vote_id is None:
                 self._json(400, {"error": "invalid_vote_id"})
@@ -25555,6 +25639,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/admin/free-agent-offer-promises/"):
+            if not self._authorize("admin.promise.write"):
+                return
             promise_id = parse_int(parsed.path.split("/")[-1])
             if promise_id is None:
                 self._json(400, {"error": "invalid_promise_id"})
@@ -25618,7 +25704,7 @@ QUALITY REQUIREMENTS
             if str(request.get("status") or "").lower() != "pending":
                 self._json(409, {"error": "request_already_decided", "request": request})
                 return
-            if not self._require_team_write_access(request.get("team_code")):
+            if not self._authorize("admin.gm_draft_pick_request.decide", {"team_code": request.get("team_code")}):
                 return
 
             if admin_decision == "rejected":
@@ -25720,7 +25806,7 @@ QUALITY REQUIREMENTS
             if str(request.get("status") or "").lower() != "pending":
                 self._json(409, {"error": "request_already_decided", "request": request})
                 return
-            if not self._require_team_write_access(request.get("team_code")):
+            if not self._authorize("admin.gm_free_agent_offer_request.decide", {"team_code": request.get("team_code")}):
                 return
 
             if admin_decision == "rejected":
@@ -25889,7 +25975,7 @@ QUALITY REQUIREMENTS
             if str(request.get("status") or "").lower() != "pending":
                 self._json(409, {"error": "request_already_decided", "request": request})
                 return
-            if not self._require_team_write_access(request.get("team_code")):
+            if not self._authorize("admin.waiver_claim_request.decide", {"team_code": request.get("team_code")}):
                 return
             try:
                 result = self.db.decide_waiver_claim_request(
@@ -26003,7 +26089,7 @@ QUALITY REQUIREMENTS
                         },
                     )
                     return
-                if not self._require_team_write_access(current_team_code):
+                if not self._authorize("admin.gm_option_request.decide", {"team_code": current_team_code}):
                     return
                 current_rights = str(player_before.get(option_field) or "").strip().upper()
                 if current_rights != option_value:
@@ -26085,7 +26171,7 @@ QUALITY REQUIREMENTS
                     },
                 )
                 return
-            if not self._require_team_write_access(current_team_code):
+            if not self._authorize("admin.gm_option_request.decide", {"team_code": current_team_code}):
                 return
             current_option = str(player_before.get(option_field) or "").strip().upper()
             if current_option != option_value:
@@ -26196,6 +26282,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/admin/users/"):
+            if not self._authorize("admin.users.write"):
+                return
             try:
                 user_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -26253,6 +26341,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path == "/api/settings":
+            if not self._authorize("admin.global.write"):
+                return
             next_salary_cap: Optional[float] = None
             next_current_year: Optional[int] = None
             next_first_apron: Optional[float] = None
@@ -26555,6 +26645,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/free-agents/"):
+            if not self._authorize("admin.free_agent.write"):
+                return
             try:
                 free_agent_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -26567,6 +26659,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/draft-order/"):
+            if not self._authorize("admin.draft_order.write"):
+                return
             try:
                 draft_order_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -26589,6 +26683,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-transactions/"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             try:
                 transaction_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -26607,6 +26703,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-salary-history/"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             try:
                 salary_history_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -26629,6 +26727,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-profiles/"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             try:
                 profile_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -26664,7 +26764,7 @@ QUALITY REQUIREMENTS
             if not player_before:
                 self._json(404, {"error": "player_not_found"})
                 return
-            if not self._require_team_write_access(player_before.get("team_code")):
+            if not self._authorize("admin.player.write", {"team_code": player_before.get("team_code")}):
                 return
             if option_action:
                 if option_action not in {"accepted", "rejected"}:
@@ -26778,7 +26878,7 @@ QUALITY REQUIREMENTS
                 self._json(404, {"error": "not_found"})
                 return
             code = parts[3]
-            if not self._require_team_write_access(code):
+            if not self._authorize("admin.team.write", {"team_code": code}):
                 return
             season_year = parse_int(payload.get("season_year"))
             if season_year is None or season_year < 2000 or season_year > 2100:
@@ -26803,7 +26903,7 @@ QUALITY REQUIREMENTS
                 self._json(404, {"error": "not_found"})
                 return
             code = parts[3]
-            if not self._require_team_write_access(code):
+            if not self._authorize("admin.team.write", {"team_code": code}):
                 return
             try:
                 owner_office = self.db.update_team_owner_office(code, payload)
@@ -26827,7 +26927,7 @@ QUALITY REQUIREMENTS
 
         if parsed.path.startswith("/api/teams/"):
             code = parsed.path.split("/")[-1]
-            if not self._require_team_write_access(code):
+            if not self._authorize("admin.team.write", {"team_code": code}):
                 return
             update_payload: Dict[str, Any] = {}
             apron_hard_cap_requested = "apron_hard_cap" in payload
@@ -26887,7 +26987,7 @@ QUALITY REQUIREMENTS
             if not asset_before:
                 self._json(404, {"error": "asset_not_found"})
                 return
-            if not self._require_team_write_access(asset_before.get("team_code")):
+            if not self._authorize("admin.draft_asset.write", {"team_code": asset_before.get("team_code")}):
                 return
             if "asset_type" in payload and str(payload.get("asset_type") or "").strip().lower() == "dead_cap":
                 self._json(400, {"error": "dead_cap_moved_to_dead_contracts"})
@@ -26913,7 +27013,12 @@ QUALITY REQUIREMENTS
             except ValueError:
                 self._json(400, {"error": "invalid_frozen_pick_id"})
                 return
-            before = None
+            before = self.db.get_frozen_draft_pick_record(frozen_pick_id)
+            if not before:
+                self._json(404, {"error": "frozen_pick_not_found"})
+                return
+            if not self._authorize("admin.frozen_draft_pick.write", {"team_code": before.get("team_code")}):
+                return
             row = self.db.update_frozen_draft_pick(frozen_pick_id, payload)
             if not row:
                 self._json(404, {"error": "frozen_pick_not_found"})
@@ -26940,7 +27045,7 @@ QUALITY REQUIREMENTS
             if not dead_before:
                 self._json(404, {"error": "dead_contract_not_found"})
                 return
-            if not self._require_team_write_access(dead_before.get("team_code")):
+            if not self._authorize("admin.dead_contract.write", {"team_code": dead_before.get("team_code")}):
                 return
             ok = self.db.update_dead_contract(dead_contract_id, payload)
             if ok:
@@ -26957,31 +27062,9 @@ QUALITY REQUIREMENTS
             self._json(200 if ok else 404, {"ok": ok})
             return
 
-        if parsed.path.startswith("/api/frozen-draft-picks/"):
-            try:
-                frozen_pick_id = int(parsed.path.split("/")[-1])
-            except ValueError:
-                self._json(400, {"error": "invalid_frozen_pick_id"})
-                return
-            row = self.db.delete_frozen_draft_pick(frozen_pick_id)
-            if not row:
-                self._json(404, {"error": "frozen_pick_not_found"})
-                return
-            self._log_admin_action(
-                "delete",
-                "frozen_draft_pick",
-                str(frozen_pick_id),
-                row.get("team_code"),
-                before=row,
-            )
-            self._json(200, {"ok": True})
-            return
-
         self._json(404, {"error": "not_found"})
 
     def do_DELETE(self) -> None:
-        if not self._require_admin():
-            return
         if not self._require_csrf():
             return
         if not self._require_sensitive_rate_limit("admin_delete"):
@@ -26989,6 +27072,8 @@ QUALITY REQUIREMENTS
         parsed = urlparse(self.path)
 
         if parsed.path.startswith("/api/free-agents/"):
+            if not self._authorize("admin.free_agent.write"):
+                return
             try:
                 free_agent_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -27001,6 +27086,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/draft-order/"):
+            if not self._authorize("admin.draft_order.write"):
+                return
             try:
                 draft_order_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -27013,6 +27100,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-transactions/"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             try:
                 transaction_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -27025,6 +27114,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-salary-history/"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             try:
                 salary_history_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -27037,6 +27128,8 @@ QUALITY REQUIREMENTS
             return
 
         if parsed.path.startswith("/api/player-profiles/"):
+            if not self._authorize("admin.player_profile.write"):
+                return
             try:
                 profile_id = int(parsed.path.split("/")[-1])
             except ValueError:
@@ -27067,7 +27160,7 @@ QUALITY REQUIREMENTS
             if not player_before:
                 self._json(404, {"error": "player_not_found"})
                 return
-            if not self._require_team_write_access(player_before.get("team_code")):
+            if not self._authorize("admin.player.remove", {"team_code": player_before.get("team_code")}):
                 return
             ok = self.db.delete_player(player_id)
             if ok:
@@ -27091,7 +27184,7 @@ QUALITY REQUIREMENTS
             if not asset_before:
                 self._json(404, {"error": "asset_not_found"})
                 return
-            if not self._require_team_write_access(asset_before.get("team_code")):
+            if not self._authorize("admin.draft_asset.write", {"team_code": asset_before.get("team_code")}):
                 return
             ok = self.db.delete_asset(asset_id)
             if ok:
@@ -27115,7 +27208,7 @@ QUALITY REQUIREMENTS
             if not dead_before:
                 self._json(404, {"error": "dead_contract_not_found"})
                 return
-            if not self._require_team_write_access(dead_before.get("team_code")):
+            if not self._authorize("admin.dead_contract.write", {"team_code": dead_before.get("team_code")}):
                 return
             ok = self.db.delete_dead_contract(dead_contract_id)
             if ok:

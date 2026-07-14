@@ -4,8 +4,10 @@ import tempfile
 import unittest
 
 from app.server import (
+    AuthorizationError,
     Handler,
     LeagueDB,
+    authorize_action,
     pbkdf2_sha256_password_hash,
     verify_admin_password,
 )
@@ -41,6 +43,60 @@ def insert_team(conn: sqlite3.Connection, code: str, name: str) -> int:
 
 
 class AuthSecurityTests(unittest.TestCase):
+    def test_authorize_action_denies_unknown_actions_by_default(self) -> None:
+        actor = {"role": "admin", "team_codes": []}
+
+        with self.assertRaises(AuthorizationError) as ctx:
+            authorize_action(actor, "unknown.action", {"team_code": "ATL"})
+
+        self.assertEqual(403, ctx.exception.status)
+        self.assertEqual("action_not_allowed", ctx.exception.error)
+
+    def test_authorize_action_requires_authenticated_actor(self) -> None:
+        with self.assertRaises(AuthorizationError) as ctx:
+            authorize_action(None, "gm_office.view", {"team_code": "ATL"})
+
+        self.assertEqual(401, ctx.exception.status)
+        self.assertEqual("auth_required", ctx.exception.error)
+
+    def test_authorize_action_allows_admin_override(self) -> None:
+        actor = {"role": "admin", "team_codes": []}
+
+        self.assertTrue(authorize_action(actor, "gm_office.depth_chart.update", {"team_code": "BOS"}))
+
+    def test_authorize_action_enforces_team_scope_for_gms(self) -> None:
+        actor = {"role": "gm", "team_codes": ["ATL"]}
+
+        self.assertTrue(authorize_action(actor, "gm.free_agent_offer.create", {"team_code": "ATL"}))
+        with self.assertRaises(AuthorizationError) as ctx:
+            authorize_action(actor, "gm.free_agent_offer.create", {"team_code": "BOS"})
+
+        self.assertEqual(403, ctx.exception.status)
+        self.assertEqual("team_access_required", ctx.exception.error)
+
+    def test_authorize_action_normalizes_legacy_phoenix_code(self) -> None:
+        actor = {"role": "gm", "team_codes": ["PHO"]}
+
+        self.assertTrue(authorize_action(actor, "draft_live.pick_submit", {"team_code": "PHX"}))
+
+    def test_admin_policy_rejects_gm_even_for_own_team(self) -> None:
+        actor = {"role": "gm", "team_codes": ["ATL"]}
+
+        with self.assertRaises(AuthorizationError) as ctx:
+            authorize_action(actor, "admin.player.write", {"team_code": "ATL"})
+
+        self.assertEqual(403, ctx.exception.status)
+        self.assertEqual("forbidden", ctx.exception.error)
+
+    def test_global_admin_policy_rejects_gm(self) -> None:
+        actor = {"role": "gm", "team_codes": ["ATL"]}
+
+        with self.assertRaises(AuthorizationError) as ctx:
+            authorize_action(actor, "admin.global.write", {})
+
+        self.assertEqual(403, ctx.exception.status)
+        self.assertEqual("forbidden", ctx.exception.error)
+
     def test_admin_password_hash_verification(self) -> None:
         encoded = pbkdf2_sha256_password_hash(
             "correct horse battery staple",
