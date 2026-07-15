@@ -16,6 +16,7 @@ import time
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -486,6 +487,10 @@ def verify_admin_password(password: str, plaintext_password: str, encoded_hash: 
     if str(encoded_hash or "").strip():
         return verify_password_hash(password, encoded_hash)
     return secrets.compare_digest(str(password or ""), str(plaintext_password or ""))
+
+
+def session_token_digest(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
 def parse_allowed_origins(value: Any) -> set[str]:
@@ -1654,6 +1659,30 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS outbox_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    aggregate_type TEXT,
+                    aggregate_id TEXT,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    delivered_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_outbox_events_status_created
+                ON outbox_events (status, created_at)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS coadmin_votes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT NOT NULL,
@@ -2461,6 +2490,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """
                 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
                 ON sessions(expires_at)
+                """
+            )
+            session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            if "session_token_hash" not in session_columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN session_token_hash TEXT")
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_token_hash
+                ON sessions(session_token_hash)
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_players_team_id ON players(team_id)")
@@ -5198,29 +5236,36 @@ class LeagueDB(DatabaseMaintenanceMixin):
             row = cur.fetchone()
             return self._gm_draft_pick_request_from_row(cur, row) if row else None
 
+    def _get_gm_free_agent_offer_request_conn(
+        self,
+        conn: sqlite3.Connection,
+        request_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        cur = conn.execute(
+            """
+            SELECT
+                r.*,
+                f.name AS player_name,
+                f.profile_id,
+                f.position,
+                f.rating,
+                f.free_agent_type,
+                f.rights_team_code,
+                t.code AS team_code,
+                t.name AS team_name
+            FROM gm_free_agent_offer_requests r
+            LEFT JOIN free_agents f ON f.id = r.free_agent_id
+            JOIN teams t ON t.id = r.team_id
+            WHERE r.id = ?
+            """,
+            (int(request_id),),
+        )
+        row = cur.fetchone()
+        return self._gm_free_agent_offer_request_from_row(cur, row) if row else None
+
     def get_gm_free_agent_offer_request(self, request_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
-            cur = conn.execute(
-                """
-                SELECT
-                    r.*,
-                    f.name AS player_name,
-                    f.profile_id,
-                    f.position,
-                    f.rating,
-                    f.free_agent_type,
-                    f.rights_team_code,
-                    t.code AS team_code,
-                    t.name AS team_name
-                FROM gm_free_agent_offer_requests r
-                LEFT JOIN free_agents f ON f.id = r.free_agent_id
-                JOIN teams t ON t.id = r.team_id
-                WHERE r.id = ?
-                """,
-                (int(request_id),),
-            )
-            row = cur.fetchone()
-            return self._gm_free_agent_offer_request_from_row(cur, row) if row else None
+            return self._get_gm_free_agent_offer_request_conn(conn, request_id)
 
     def create_gm_option_request(
         self,
@@ -5647,6 +5692,149 @@ class LeagueDB(DatabaseMaintenanceMixin):
 
         return self.get_gm_draft_pick_request(request_id) if request_id is not None else None
 
+    def enqueue_outbox_event_conn(
+        self,
+        conn: sqlite3.Connection,
+        event_type: str,
+        payload: Dict[str, Any],
+        *,
+        aggregate_type: Optional[str] = None,
+        aggregate_id: Optional[Any] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[int]:
+        normalized_event_type = str(event_type or "").strip()
+        if not normalized_event_type:
+            raise ValueError("event_type_required")
+        payload_json = json.dumps(dict(payload or {}), ensure_ascii=False, sort_keys=True)
+        normalized_aggregate_type = str(aggregate_type or "").strip() or None
+        normalized_aggregate_id = str(aggregate_id).strip() if aggregate_id is not None else None
+        if not idempotency_key:
+            digest_source = "\0".join(
+                [
+                    normalized_event_type,
+                    normalized_aggregate_type or "",
+                    normalized_aggregate_id or "",
+                    payload_json,
+                ]
+            )
+            digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+            idempotency_key = f"{normalized_event_type}:{digest}"
+        timestamp = now_iso()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO outbox_events (
+                event_type,
+                aggregate_type,
+                aggregate_id,
+                idempotency_key,
+                payload_json,
+                status,
+                attempts,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+            """,
+            (
+                normalized_event_type,
+                normalized_aggregate_type,
+                normalized_aggregate_id,
+                idempotency_key,
+                payload_json,
+                timestamp,
+                timestamp,
+            ),
+        )
+        row = conn.execute(
+            "SELECT id FROM outbox_events WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        return int(row["id"]) if row else None
+
+    def enqueue_outbox_event(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        *,
+        aggregate_type: Optional[str] = None,
+        aggregate_id: Optional[Any] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[int]:
+        with self.transaction("IMMEDIATE") as conn:
+            return self.enqueue_outbox_event_conn(
+                conn,
+                event_type,
+                payload,
+                aggregate_type=aggregate_type,
+                aggregate_id=aggregate_id,
+                idempotency_key=idempotency_key,
+            )
+
+    def get_outbox_event(self, event_id: Any) -> Optional[Dict[str, Any]]:
+        parsed_event_id = parse_int(event_id)
+        if parsed_event_id is None:
+            return None
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT id, event_type, aggregate_type, aggregate_id, idempotency_key,
+                       payload_json, status, attempts, last_error, created_at, updated_at, delivered_at
+                FROM outbox_events
+                WHERE id = ?
+                """,
+                (int(parsed_event_id),),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            event = row_to_dict(cur, row)
+            try:
+                event["payload"] = json.loads(event.get("payload_json") or "{}")
+            except Exception:
+                event["payload"] = {}
+            return event
+
+    def mark_outbox_event_succeeded(self, event_id: Any) -> bool:
+        parsed_event_id = parse_int(event_id)
+        if parsed_event_id is None:
+            return False
+        timestamp = now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE outbox_events
+                SET status = 'delivered',
+                    delivered_at = ?,
+                    updated_at = ?,
+                    last_error = NULL
+                WHERE id = ?
+                """,
+                (timestamp, timestamp, int(parsed_event_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def mark_outbox_event_failed(self, event_id: Any, error: Any) -> bool:
+        parsed_event_id = parse_int(event_id)
+        if parsed_event_id is None:
+            return False
+        timestamp = now_iso()
+        clean_error = str(error or "").strip()[:1000] or "unknown_error"
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE outbox_events
+                SET status = 'failed',
+                    attempts = COALESCE(attempts, 0) + 1,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (clean_error, timestamp, int(parsed_event_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
     def create_gm_free_agent_offer_request(
         self,
         free_agent_id: int,
@@ -5665,7 +5853,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         requester_user_id = parse_int(str(requester.get("user_id") or "")) if requester else None
         timestamp = now_iso()
         request_id: Optional[int] = None
-        with self.connect() as conn:
+        with self.transaction("IMMEDIATE") as conn:
             free_agent = conn.execute(
                 "SELECT id, name, profile_id FROM free_agents WHERE id = ?",
                 (int(free_agent_id),),
@@ -5744,7 +5932,6 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     ),
                 )
                 request_id = int(req_cur.lastrowid)
-            conn.commit()
 
         return self.get_gm_free_agent_offer_request(request_id) if request_id is not None else None
 
@@ -5799,7 +5986,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         if normalized_status not in {"approved", "rejected"}:
             raise ValueError("invalid_status")
         timestamp = now_iso()
-        with self.connect() as conn:
+        with self.transaction("IMMEDIATE") as conn:
             cur = conn.execute(
                 """
                 UPDATE gm_free_agent_offer_requests
@@ -5830,10 +6017,150 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     timestamp,
                     promise_context=promise_context,
                 )
-            conn.commit()
             if cur.rowcount < 1:
                 return None
         return self.get_gm_free_agent_offer_request(request_id)
+
+    def decide_gm_free_agent_offer_request_command(
+        self,
+        request_id: int,
+        status: str,
+        admin: Dict[str, Any],
+        *,
+        note: Optional[str] = None,
+        sign_payload: Optional[Dict[str, Any]] = None,
+        offer_payload: Optional[Dict[str, Any]] = None,
+        notify_discord: bool = False,
+        generate_image: bool = False,
+        custom_image: Optional[Dict[str, Any]] = None,
+        promise_context: Optional[Dict[str, Any]] = None,
+        bypass_role_limits: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"approved", "rejected"}:
+            raise ValueError("invalid_status")
+        timestamp = now_iso()
+        parsed_request_id = int(request_id)
+        player_id: Optional[int] = None
+        outbox_event_ids: List[int] = []
+        with self.transaction("IMMEDIATE") as conn:
+            request = self._get_gm_free_agent_offer_request_conn(conn, parsed_request_id)
+            if not request:
+                raise ValueError("request_not_found")
+            if str(request.get("status") or "").strip().lower() != "pending":
+                raise ValueError("request_already_decided")
+
+            if normalized_status == "rejected":
+                cur = conn.execute(
+                    """
+                    UPDATE gm_free_agent_offer_requests
+                    SET
+                        status = 'rejected',
+                        admin_email = ?,
+                        admin_name = ?,
+                        admin_decision_note = ?,
+                        updated_at = ?,
+                        decided_at = ?
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (
+                        str(admin.get("email") or "").strip() if admin else None,
+                        str(admin.get("name") or "").strip() if admin else None,
+                        note,
+                        timestamp,
+                        timestamp,
+                        parsed_request_id,
+                    ),
+                )
+                if cur.rowcount < 1:
+                    raise ValueError("request_already_decided")
+                player_name = str(request.get("player_name") or "el agente libre").strip()
+                team_code = normalize_team_code(request.get("team_code")) or str(request.get("team_code") or "").upper()
+                offer_type = str(request.get("offer_type") or "").strip().lower()
+                offer_label = "oferta de renovación" if offer_type == "renewal" else "oferta"
+                notification_body = f"La administración ha rechazado la {offer_label} de {team_code} por {player_name}."
+                if note:
+                    notification_body = f"{notification_body} Nota: {note}"
+                self._create_user_notification_conn(
+                    conn,
+                    user_id=request.get("requester_user_id"),
+                    email=request.get("requester_email"),
+                    title=f"Oferta rechazada: {player_name}",
+                    body=notification_body,
+                    kind="free_agent_offer_rejected",
+                    entity_type="gm_free_agent_offer_request",
+                    entity_id=parsed_request_id,
+                )
+            else:
+                free_agent_id = parse_int(request.get("free_agent_id"))
+                team_code = normalize_team_code(request.get("team_code"))
+                if free_agent_id is None:
+                    raise ValueError("invalid_free_agent_id")
+                if not team_code:
+                    raise ValueError("invalid_team_code")
+                free_agent = self._get_free_agent_conn(conn, free_agent_id)
+                if not free_agent:
+                    raise ValueError("free_agent_not_found")
+                player_id = self._sign_free_agent_conn(conn, free_agent_id, team_code, sign_payload or {})
+                if not player_id:
+                    raise ValueError("free_agent_or_team_not_found")
+                cur = conn.execute(
+                    """
+                    UPDATE gm_free_agent_offer_requests
+                    SET
+                        status = 'approved',
+                        admin_email = ?,
+                        admin_name = ?,
+                        admin_decision_note = ?,
+                        updated_at = ?,
+                        decided_at = ?
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (
+                        str(admin.get("email") or "").strip() if admin else None,
+                        str(admin.get("name") or "").strip() if admin else None,
+                        note,
+                        timestamp,
+                        timestamp,
+                        parsed_request_id,
+                    ),
+                )
+                if cur.rowcount < 1:
+                    raise ValueError("request_already_decided")
+                self._upsert_free_agent_offer_promise_for_request_conn(
+                    conn,
+                    parsed_request_id,
+                    admin,
+                    timestamp,
+                    promise_context=promise_context or {"free_agent": free_agent},
+                    bypass_role_limits=bypass_role_limits,
+                )
+                if notify_discord:
+                    event_id = self.enqueue_outbox_event_conn(
+                        conn,
+                        "discord.free_agent_signed",
+                        {
+                            "player_id": player_id,
+                            "offer_payload": offer_payload or {},
+                            "offer_type": request.get("offer_type"),
+                            "generate_image": bool(generate_image),
+                            "custom_image": custom_image,
+                        },
+                        aggregate_type="gm_free_agent_offer_request",
+                        aggregate_id=parsed_request_id,
+                        idempotency_key=f"gm_free_agent_offer_request:{parsed_request_id}:discord.free_agent_signed",
+                    )
+                    if event_id is not None:
+                        outbox_event_ids.append(int(event_id))
+
+        updated = self.get_gm_free_agent_offer_request(parsed_request_id)
+        player = self.get_player_record(player_id) if player_id is not None else None
+        return {
+            "request": updated,
+            "player_id": player_id,
+            "player": player,
+            "outbox_event_ids": outbox_event_ids,
+        }
 
     @staticmethod
     def _offer_promise_status(raw_status: Any) -> str:
@@ -6451,8 +6778,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 return None
         return self.get_gm_option_request(request_id)
 
-    def create_user_notification(
+    def _create_user_notification_conn(
         self,
+        conn: sqlite3.Connection,
         *,
         user_id: Any = None,
         email: Any = None,
@@ -6468,48 +6796,71 @@ class LeagueDB(DatabaseMaintenanceMixin):
         if not clean_title or (parsed_user_id is None and not normalized_email):
             return None
         timestamp = now_iso()
-        with self.connect() as conn:
-            if parsed_user_id is not None:
-                user_row = conn.execute("SELECT id FROM users WHERE id = ?", (parsed_user_id,)).fetchone()
-                if not user_row:
-                    parsed_user_id = None
-            entity_type_value = str(entity_type or "").strip() or None
-            entity_id_value = str(entity_id) if entity_id is not None else None
-            if entity_type_value and entity_id_value:
-                existing = conn.execute(
-                    """
-                    SELECT id
-                    FROM user_notifications
-                    WHERE COALESCE(user_id, -1) = COALESCE(?, -1)
-                      AND COALESCE(lower(email), '') = COALESCE(?, '')
-                      AND entity_type = ?
-                      AND entity_id = ?
-                      AND read_at IS NULL
-                    LIMIT 1
-                    """,
-                    (parsed_user_id, normalized_email or None, entity_type_value, entity_id_value),
-                ).fetchone()
-                if existing:
-                    return int(existing["id"])
-            cur = conn.execute(
+        if parsed_user_id is not None:
+            user_row = conn.execute("SELECT id FROM users WHERE id = ?", (parsed_user_id,)).fetchone()
+            if not user_row:
+                parsed_user_id = None
+        entity_type_value = str(entity_type or "").strip() or None
+        entity_id_value = str(entity_id) if entity_id is not None else None
+        if entity_type_value and entity_id_value:
+            existing = conn.execute(
                 """
-                INSERT INTO user_notifications (
-                    user_id, email, title, body, kind, entity_type, entity_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT id
+                FROM user_notifications
+                WHERE COALESCE(user_id, -1) = COALESCE(?, -1)
+                  AND COALESCE(lower(email), '') = COALESCE(?, '')
+                  AND entity_type = ?
+                  AND entity_id = ?
+                  AND read_at IS NULL
+                LIMIT 1
                 """,
-                (
-                    parsed_user_id,
-                    normalized_email or None,
-                    clean_title,
-                    str(body or "").strip() or None,
-                    str(kind or "info").strip() or "info",
-                    entity_type_value,
-                    entity_id_value,
-                    timestamp,
-                ),
+                (parsed_user_id, normalized_email or None, entity_type_value, entity_id_value),
+            ).fetchone()
+            if existing:
+                return int(existing["id"])
+        cur = conn.execute(
+            """
+            INSERT INTO user_notifications (
+                user_id, email, title, body, kind, entity_type, entity_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                parsed_user_id,
+                normalized_email or None,
+                clean_title,
+                str(body or "").strip() or None,
+                str(kind or "info").strip() or "info",
+                entity_type_value,
+                entity_id_value,
+                timestamp,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def create_user_notification(
+        self,
+        *,
+        user_id: Any = None,
+        email: Any = None,
+        title: str,
+        body: str = "",
+        kind: str = "info",
+        entity_type: str = "",
+        entity_id: Any = None,
+    ) -> Optional[int]:
+        with self.connect() as conn:
+            notification_id = self._create_user_notification_conn(
+                conn,
+                user_id=user_id,
+                email=email,
+                title=title,
+                body=body,
+                kind=kind,
+                entity_type=entity_type,
+                entity_id=entity_id,
             )
             conn.commit()
-            return int(cur.lastrowid)
+            return notification_id
 
     def list_user_notifications_for_session(
         self,
@@ -6574,14 +6925,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return cur.rowcount > 0
 
     def create_session(self, token: str, payload: Dict[str, Any], created_at: str, expires_at: int) -> bool:
+        token_hash = session_token_digest(token)
         with self.connect() as conn:
             try:
                 conn.execute(
                     """
-                    INSERT INTO sessions (session_token, data_json, created_at, expires_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO sessions (session_token, session_token_hash, data_json, created_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (token, json.dumps(payload, ensure_ascii=True), created_at, int(expires_at)),
+                    (token_hash, token_hash, json.dumps(payload, ensure_ascii=True), created_at, int(expires_at)),
                 )
                 conn.commit()
                 return True
@@ -6591,18 +6943,25 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def get_session(self, token: str, now_ts: Optional[int] = None) -> Optional[Dict[str, Any]]:
         if not token:
             return None
+        token_hash = session_token_digest(token)
         current_ts = now_ts if now_ts is not None else int(datetime.now(UTC).timestamp())
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT data_json, expires_at FROM sessions WHERE session_token = ?",
-                (token,),
+                """
+                SELECT session_token, data_json, expires_at
+                FROM sessions
+                WHERE session_token_hash = ? OR session_token = ? OR session_token = ?
+                LIMIT 1
+                """,
+                (token_hash, token_hash, token),
             ).fetchone()
             if not row:
                 return None
+            stored_token = str(row["session_token"] or "")
             expires_at = int(row["expires_at"] or 0)
             if expires_at <= current_ts:
                 try:
-                    conn.execute("DELETE FROM sessions WHERE session_token = ?", (token,))
+                    conn.execute("DELETE FROM sessions WHERE session_token = ?", (stored_token,))
                     conn.commit()
                 except sqlite3.OperationalError as exc:
                     if "database is locked" not in str(exc).lower():
@@ -6613,7 +6972,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 payload = json.loads(str(row["data_json"] or "{}"))
             except json.JSONDecodeError:
                 try:
-                    conn.execute("DELETE FROM sessions WHERE session_token = ?", (token,))
+                    conn.execute("DELETE FROM sessions WHERE session_token = ?", (stored_token,))
                     conn.commit()
                 except sqlite3.OperationalError as exc:
                     if "database is locked" not in str(exc).lower():
@@ -6625,8 +6984,15 @@ class LeagueDB(DatabaseMaintenanceMixin):
     def delete_session(self, token: str) -> None:
         if not token:
             return
+        token_hash = session_token_digest(token)
         with self.connect() as conn:
-            conn.execute("DELETE FROM sessions WHERE session_token = ?", (token,))
+            conn.execute(
+                """
+                DELETE FROM sessions
+                WHERE session_token_hash = ? OR session_token = ? OR session_token = ?
+                """,
+                (token_hash, token_hash, token),
+            )
             conn.commit()
 
     def cleanup_expired_sessions(self, now_ts: Optional[int] = None) -> int:
@@ -11475,33 +11841,35 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for year in years
         ]
 
-    def update_team_apron_hard_cap(self, code: str, season_year: int, hard_cap: Any) -> bool:
+    def _update_team_apron_hard_cap_conn(self, conn: sqlite3.Connection, code: str, season_year: int, hard_cap: Any) -> bool:
         normalized = normalize_apron_hard_cap(hard_cap)
-        with self.connect() as conn:
-            row = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
-            if not row:
-                return False
-            timestamp = now_iso()
+        row = conn.execute("SELECT id FROM teams WHERE code = ?", (code.upper(),)).fetchone()
+        if not row:
+            return False
+        timestamp = now_iso()
+        conn.execute(
+            """
+            INSERT INTO team_apron_hard_caps (team_id, season_year, hard_cap, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(team_id, season_year) DO UPDATE SET
+                hard_cap = excluded.hard_cap,
+                updated_at = excluded.updated_at
+            """,
+            (int(row["id"]), int(season_year), normalized, timestamp),
+        )
+        settings_cur = conn.execute("SELECT key, value FROM app_settings")
+        settings = {str(item["key"]): str(item["value"]) for item in settings_cur.fetchall()}
+        current_year = parse_int(settings.get("current_year")) or 2025
+        if int(season_year) == int(current_year):
             conn.execute(
-                """
-                INSERT INTO team_apron_hard_caps (team_id, season_year, hard_cap, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(team_id, season_year) DO UPDATE SET
-                    hard_cap = excluded.hard_cap,
-                    updated_at = excluded.updated_at
-                """,
-                (int(row["id"]), int(season_year), normalized, timestamp),
+                "UPDATE teams SET apron_hard_cap = ?, updated_at = ? WHERE id = ?",
+                (normalized, timestamp, int(row["id"])),
             )
-            settings_cur = conn.execute("SELECT key, value FROM app_settings")
-            settings = {str(item["key"]): str(item["value"]) for item in settings_cur.fetchall()}
-            current_year = parse_int(settings.get("current_year")) or 2025
-            if int(season_year) == int(current_year):
-                conn.execute(
-                    "UPDATE teams SET apron_hard_cap = ?, updated_at = ? WHERE id = ?",
-                    (normalized, timestamp, int(row["id"])),
-                )
-            conn.commit()
-            return True
+        return True
+
+    def update_team_apron_hard_cap(self, code: str, season_year: int, hard_cap: Any) -> bool:
+        with self.transaction("IMMEDIATE") as conn:
+            return self._update_team_apron_hard_cap_conn(conn, code, season_year, hard_cap)
 
     def _calc_summary(
         self,
@@ -13837,7 +14205,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             raise ValueError("invalid_request_id")
         if not normalized_team:
             raise ValueError("team_code_required")
-        with self.connect() as conn:
+        with self.transaction("IMMEDIATE") as conn:
             cur = conn.execute(
                 """
                 SELECT
@@ -13863,8 +14231,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             item = self._gm_free_agent_offer_request_from_row(cur, row)
             if str(item.get("status") or "").strip().lower() != "pending":
                 raise ValueError("offer_not_pending")
-            conn.execute("DELETE FROM gm_free_agent_offer_requests WHERE id = ?", (parsed_id,))
-            conn.commit()
+            delete_cur = conn.execute(
+                "DELETE FROM gm_free_agent_offer_requests WHERE id = ? AND status = 'pending'",
+                (parsed_id,),
+            )
+            if delete_cur.rowcount != 1:
+                raise ValueError("offer_not_pending")
             return item
 
     def list_cartera_clients_for_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
@@ -14257,7 +14629,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             return "second"
         return ""
 
-    def apply_trade_hard_cap_triggers(self, validation: Dict[str, Any], season_year: int) -> List[Dict[str, Any]]:
+    def apply_trade_hard_cap_triggers(
+        self,
+        validation: Dict[str, Any],
+        season_year: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> List[Dict[str, Any]]:
         applied: List[Dict[str, Any]] = []
         parsed_season = parse_int(season_year)
         if parsed_season is None:
@@ -14271,7 +14648,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             hard_cap = self._hard_cap_from_trade_issue(issue)
             if not team_code or hard_cap not in {"first", "second"}:
                 continue
-            if self.update_team_apron_hard_cap(team_code, int(parsed_season), hard_cap):
+            changed = (
+                self._update_team_apron_hard_cap_conn(conn, team_code, int(parsed_season), hard_cap)
+                if conn is not None
+                else self.update_team_apron_hard_cap(team_code, int(parsed_season), hard_cap)
+            )
+            if changed:
                 applied.append(
                     {
                         "team_code": team_code,
@@ -15153,199 +15535,215 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
             return cur.rowcount > 0
 
-    def create_player(self, team_code: str, payload: Dict[str, Any]) -> Optional[int]:
-        with self.connect() as conn:
-            team = conn.execute("SELECT id FROM teams WHERE code = ?", (team_code.upper(),)).fetchone()
-            if not team:
-                return None
-            mx = conn.execute(
-                "SELECT COALESCE(MAX(row_order), 3) AS mx FROM players WHERE team_id = ?",
-                (team["id"],),
-            ).fetchone()["mx"]
-            now = now_iso()
-            values = {
-                "name": payload.get("name", "New Player"),
-                "bird_rights": payload.get("bird_rights"),
-                "rating": payload.get("rating"),
-                "position": payload.get("position"),
-                "years_left": normalize_bird_years(payload.get("years_left")),
-                "salary_2025_text": payload.get("salary_2025_text"),
-                "salary_2026_text": payload.get("salary_2026_text"),
-                "salary_2027_text": payload.get("salary_2027_text"),
-                "salary_2028_text": payload.get("salary_2028_text"),
-                "salary_2029_text": payload.get("salary_2029_text"),
-                "salary_2030_text": payload.get("salary_2030_text"),
-                "salary_2031_text": payload.get("salary_2031_text"),
-                "salary_2025_guaranteed_text": payload.get("salary_2025_guaranteed_text"),
-                "salary_2026_guaranteed_text": payload.get("salary_2026_guaranteed_text"),
-                "salary_2027_guaranteed_text": payload.get("salary_2027_guaranteed_text"),
-                "salary_2028_guaranteed_text": payload.get("salary_2028_guaranteed_text"),
-                "salary_2029_guaranteed_text": payload.get("salary_2029_guaranteed_text"),
-                "salary_2030_guaranteed_text": payload.get("salary_2030_guaranteed_text"),
-                "salary_2031_guaranteed_text": payload.get("salary_2031_guaranteed_text"),
-                "option_2025": payload.get("option_2025"),
-                "option_2026": payload.get("option_2026"),
-                "option_2027": payload.get("option_2027"),
-                "option_2028": payload.get("option_2028"),
-                "option_2029": payload.get("option_2029"),
-                "option_2030": payload.get("option_2030"),
-                "option_2031": payload.get("option_2031"),
-                "reference_image_url": payload.get("reference_image_url"),
-                "provisional_amounts": 1 if parse_bool(payload.get("provisional_amounts")) else 0,
-                "partially_guaranteed": 1 if parse_bool(payload.get("partially_guaranteed")) else 0,
-                "salary_2025_provisional": 1 if parse_bool(payload.get("salary_2025_provisional")) else 0,
-                "salary_2026_provisional": 1 if parse_bool(payload.get("salary_2026_provisional")) else 0,
-                "salary_2027_provisional": 1 if parse_bool(payload.get("salary_2027_provisional")) else 0,
-                "salary_2028_provisional": 1 if parse_bool(payload.get("salary_2028_provisional")) else 0,
-                "salary_2029_provisional": 1 if parse_bool(payload.get("salary_2029_provisional")) else 0,
-                "salary_2030_provisional": 1 if parse_bool(payload.get("salary_2030_provisional")) else 0,
-                "salary_2031_provisional": 1 if parse_bool(payload.get("salary_2031_provisional")) else 0,
-                "salary_2025_partially_guaranteed": 1 if parse_bool(payload.get("salary_2025_partially_guaranteed")) else 0,
-                "salary_2026_partially_guaranteed": 1 if parse_bool(payload.get("salary_2026_partially_guaranteed")) else 0,
-                "salary_2027_partially_guaranteed": 1 if parse_bool(payload.get("salary_2027_partially_guaranteed")) else 0,
-                "salary_2028_partially_guaranteed": 1 if parse_bool(payload.get("salary_2028_partially_guaranteed")) else 0,
-                "salary_2029_partially_guaranteed": 1 if parse_bool(payload.get("salary_2029_partially_guaranteed")) else 0,
-                "salary_2030_partially_guaranteed": 1 if parse_bool(payload.get("salary_2030_partially_guaranteed")) else 0,
-                "salary_2031_partially_guaranteed": 1 if parse_bool(payload.get("salary_2031_partially_guaranteed")) else 0,
-                "notes": payload.get("notes"),
-                "profile_notes": payload.get("profile_notes"),
-                "experience_years": normalize_experience_years(payload.get("experience_years")),
-                "signed_as_free_agent": 1 if parse_bool(payload.get("signed_as_free_agent")) else 0,
-            }
-            profile_payload = dict(payload)
-            profile_payload["experience_years"] = values["experience_years"]
-            profile_payload["reference_image_url"] = values["reference_image_url"]
-            profile_payload["profile_notes"] = values["profile_notes"]
-            profile_id = self._resolve_profile_for_new_row(
-                conn,
-                profile_payload,
-                name=values["name"],
-                timestamp=now,
-                forbid_active_contract=True,
-                require_available=True,
-            )
-            if parse_int(payload.get("profile_id")) is not None:
-                conn.execute(
-                    """
-                    UPDATE player_profiles
-                    SET
-                        name = ?,
-                        experience_years = COALESCE(?, experience_years),
-                        reference_image_url = COALESCE(NULLIF(?, ''), reference_image_url),
-                        profile_notes = COALESCE(?, profile_notes),
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        str(values["name"] or "").strip() or "New Player",
-                        values["experience_years"],
-                        values["reference_image_url"],
-                        values["profile_notes"],
-                        now,
-                        profile_id,
-                    ),
-                )
-            cur = conn.execute(
+    def create_player(
+        self,
+        team_code: str,
+        payload: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Optional[int]:
+        if conn is not None:
+            return self._create_player_conn(conn, team_code, payload)
+        with self.connect() as owned_conn:
+            player_id = self._create_player_conn(owned_conn, team_code, payload)
+            owned_conn.commit()
+            return player_id
+
+    def _create_player_conn(
+        self,
+        conn: sqlite3.Connection,
+        team_code: str,
+        payload: Dict[str, Any],
+    ) -> Optional[int]:
+        team = conn.execute("SELECT id FROM teams WHERE code = ?", (team_code.upper(),)).fetchone()
+        if not team:
+            return None
+        mx = conn.execute(
+            "SELECT COALESCE(MAX(row_order), 3) AS mx FROM players WHERE team_id = ?",
+            (team["id"],),
+        ).fetchone()["mx"]
+        now = now_iso()
+        values = {
+            "name": payload.get("name", "New Player"),
+            "bird_rights": payload.get("bird_rights"),
+            "rating": payload.get("rating"),
+            "position": payload.get("position"),
+            "years_left": normalize_bird_years(payload.get("years_left")),
+            "salary_2025_text": payload.get("salary_2025_text"),
+            "salary_2026_text": payload.get("salary_2026_text"),
+            "salary_2027_text": payload.get("salary_2027_text"),
+            "salary_2028_text": payload.get("salary_2028_text"),
+            "salary_2029_text": payload.get("salary_2029_text"),
+            "salary_2030_text": payload.get("salary_2030_text"),
+            "salary_2031_text": payload.get("salary_2031_text"),
+            "salary_2025_guaranteed_text": payload.get("salary_2025_guaranteed_text"),
+            "salary_2026_guaranteed_text": payload.get("salary_2026_guaranteed_text"),
+            "salary_2027_guaranteed_text": payload.get("salary_2027_guaranteed_text"),
+            "salary_2028_guaranteed_text": payload.get("salary_2028_guaranteed_text"),
+            "salary_2029_guaranteed_text": payload.get("salary_2029_guaranteed_text"),
+            "salary_2030_guaranteed_text": payload.get("salary_2030_guaranteed_text"),
+            "salary_2031_guaranteed_text": payload.get("salary_2031_guaranteed_text"),
+            "option_2025": payload.get("option_2025"),
+            "option_2026": payload.get("option_2026"),
+            "option_2027": payload.get("option_2027"),
+            "option_2028": payload.get("option_2028"),
+            "option_2029": payload.get("option_2029"),
+            "option_2030": payload.get("option_2030"),
+            "option_2031": payload.get("option_2031"),
+            "reference_image_url": payload.get("reference_image_url"),
+            "provisional_amounts": 1 if parse_bool(payload.get("provisional_amounts")) else 0,
+            "partially_guaranteed": 1 if parse_bool(payload.get("partially_guaranteed")) else 0,
+            "salary_2025_provisional": 1 if parse_bool(payload.get("salary_2025_provisional")) else 0,
+            "salary_2026_provisional": 1 if parse_bool(payload.get("salary_2026_provisional")) else 0,
+            "salary_2027_provisional": 1 if parse_bool(payload.get("salary_2027_provisional")) else 0,
+            "salary_2028_provisional": 1 if parse_bool(payload.get("salary_2028_provisional")) else 0,
+            "salary_2029_provisional": 1 if parse_bool(payload.get("salary_2029_provisional")) else 0,
+            "salary_2030_provisional": 1 if parse_bool(payload.get("salary_2030_provisional")) else 0,
+            "salary_2031_provisional": 1 if parse_bool(payload.get("salary_2031_provisional")) else 0,
+            "salary_2025_partially_guaranteed": 1 if parse_bool(payload.get("salary_2025_partially_guaranteed")) else 0,
+            "salary_2026_partially_guaranteed": 1 if parse_bool(payload.get("salary_2026_partially_guaranteed")) else 0,
+            "salary_2027_partially_guaranteed": 1 if parse_bool(payload.get("salary_2027_partially_guaranteed")) else 0,
+            "salary_2028_partially_guaranteed": 1 if parse_bool(payload.get("salary_2028_partially_guaranteed")) else 0,
+            "salary_2029_partially_guaranteed": 1 if parse_bool(payload.get("salary_2029_partially_guaranteed")) else 0,
+            "salary_2030_partially_guaranteed": 1 if parse_bool(payload.get("salary_2030_partially_guaranteed")) else 0,
+            "salary_2031_partially_guaranteed": 1 if parse_bool(payload.get("salary_2031_partially_guaranteed")) else 0,
+            "notes": payload.get("notes"),
+            "profile_notes": payload.get("profile_notes"),
+            "experience_years": normalize_experience_years(payload.get("experience_years")),
+            "signed_as_free_agent": 1 if parse_bool(payload.get("signed_as_free_agent")) else 0,
+        }
+        profile_payload = dict(payload)
+        profile_payload["experience_years"] = values["experience_years"]
+        profile_payload["reference_image_url"] = values["reference_image_url"]
+        profile_payload["profile_notes"] = values["profile_notes"]
+        profile_id = self._resolve_profile_for_new_row(
+            conn,
+            profile_payload,
+            name=values["name"],
+            timestamp=now,
+            forbid_active_contract=True,
+            require_available=True,
+        )
+        if parse_int(payload.get("profile_id")) is not None:
+            conn.execute(
                 """
-                INSERT INTO players (
-                    team_id, profile_id, row_order, bird_rights, rating, name, position, years_left,
-                    salary_2025_text, salary_2025_num,
-                    salary_2026_text, salary_2026_num,
-                    salary_2027_text, salary_2027_num,
-                    salary_2028_text, salary_2028_num,
-                    salary_2029_text, salary_2029_num,
-                    salary_2030_text, salary_2030_num,
-                    salary_2031_text, salary_2031_num,
-                    option_2025, option_2026, option_2027, option_2028, option_2029, option_2030, option_2031,
-                    provisional_amounts, partially_guaranteed,
-                    salary_2025_provisional, salary_2026_provisional, salary_2027_provisional,
-                    salary_2028_provisional, salary_2029_provisional, salary_2030_provisional, salary_2031_provisional,
-                    salary_2025_partially_guaranteed, salary_2026_partially_guaranteed, salary_2027_partially_guaranteed,
-                    salary_2028_partially_guaranteed, salary_2029_partially_guaranteed, salary_2030_partially_guaranteed,
-                    salary_2031_partially_guaranteed,
-                    salary_2025_guaranteed_text, salary_2026_guaranteed_text, salary_2027_guaranteed_text,
-                    salary_2028_guaranteed_text, salary_2029_guaranteed_text, salary_2030_guaranteed_text,
-                    salary_2031_guaranteed_text,
-                    notes, reference_image_url, profile_notes, experience_years, signed_as_free_agent,
-                    is_two_way, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE player_profiles
+                SET
+                    name = ?,
+                    experience_years = COALESCE(?, experience_years),
+                    reference_image_url = COALESCE(NULLIF(?, ''), reference_image_url),
+                    profile_notes = COALESCE(?, profile_notes),
+                    updated_at = ?
+                WHERE id = ?
                 """,
                 (
-                    team["id"],
-                    profile_id,
-                    int(mx) + 1,
-                    values["bird_rights"],
-                    values["rating"],
-                    values["name"],
-                    values["position"],
-                    values["years_left"],
-                    values["salary_2025_text"],
-                    parse_salary_amount(values["salary_2025_text"]),
-                    values["salary_2026_text"],
-                    parse_salary_amount(values["salary_2026_text"]),
-                    values["salary_2027_text"],
-                    parse_salary_amount(values["salary_2027_text"]),
-                    values["salary_2028_text"],
-                    parse_salary_amount(values["salary_2028_text"]),
-                    values["salary_2029_text"],
-                    parse_salary_amount(values["salary_2029_text"]),
-                    values["salary_2030_text"],
-                    parse_salary_amount(values["salary_2030_text"]),
-                    values["salary_2031_text"],
-                    parse_salary_amount(values["salary_2031_text"]),
-                    values["option_2025"],
-                    values["option_2026"],
-                    values["option_2027"],
-                    values["option_2028"],
-                    values["option_2029"],
-                    values["option_2030"],
-                    values["option_2031"],
-                    values["provisional_amounts"],
-                    values["partially_guaranteed"],
-                    values["salary_2025_provisional"],
-                    values["salary_2026_provisional"],
-                    values["salary_2027_provisional"],
-                    values["salary_2028_provisional"],
-                    values["salary_2029_provisional"],
-                    values["salary_2030_provisional"],
-                    values["salary_2031_provisional"],
-                    values["salary_2025_partially_guaranteed"],
-                    values["salary_2026_partially_guaranteed"],
-                    values["salary_2027_partially_guaranteed"],
-                    values["salary_2028_partially_guaranteed"],
-                    values["salary_2029_partially_guaranteed"],
-                    values["salary_2030_partially_guaranteed"],
-                    values["salary_2031_partially_guaranteed"],
-                    values["salary_2025_guaranteed_text"],
-                    values["salary_2026_guaranteed_text"],
-                    values["salary_2027_guaranteed_text"],
-                    values["salary_2028_guaranteed_text"],
-                    values["salary_2029_guaranteed_text"],
-                    values["salary_2030_guaranteed_text"],
-                    values["salary_2031_guaranteed_text"],
-                    values["notes"],
+                    str(values["name"] or "").strip() or "New Player",
+                    values["experience_years"],
                     values["reference_image_url"],
                     values["profile_notes"],
-                    values["experience_years"],
-                    values["signed_as_free_agent"],
-                    1 if str(values["bird_rights"] or "").upper() == "TW" else 0,
                     now,
-                    now,
+                    profile_id,
                 ),
             )
-            player_id = int(cur.lastrowid)
-            self._record_player_transaction(
-                conn,
+        cur = conn.execute(
+            """
+            INSERT INTO players (
+                team_id, profile_id, row_order, bird_rights, rating, name, position, years_left,
+                salary_2025_text, salary_2025_num,
+                salary_2026_text, salary_2026_num,
+                salary_2027_text, salary_2027_num,
+                salary_2028_text, salary_2028_num,
+                salary_2029_text, salary_2029_num,
+                salary_2030_text, salary_2030_num,
+                salary_2031_text, salary_2031_num,
+                option_2025, option_2026, option_2027, option_2028, option_2029, option_2030, option_2031,
+                provisional_amounts, partially_guaranteed,
+                salary_2025_provisional, salary_2026_provisional, salary_2027_provisional,
+                salary_2028_provisional, salary_2029_provisional, salary_2030_provisional, salary_2031_provisional,
+                salary_2025_partially_guaranteed, salary_2026_partially_guaranteed, salary_2027_partially_guaranteed,
+                salary_2028_partially_guaranteed, salary_2029_partially_guaranteed, salary_2030_partially_guaranteed,
+                salary_2031_partially_guaranteed,
+                salary_2025_guaranteed_text, salary_2026_guaranteed_text, salary_2027_guaranteed_text,
+                salary_2028_guaranteed_text, salary_2029_guaranteed_text, salary_2030_guaranteed_text,
+                salary_2031_guaranteed_text,
+                notes, reference_image_url, profile_notes, experience_years, signed_as_free_agent,
+                is_two_way, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                team["id"],
                 profile_id,
-                "create",
-                f"Alta en {team_code.upper()}",
-                player_id=player_id,
-                team_code=team_code,
-                details={"player_name": values["name"]},
-                created_at=now,
-            )
-            conn.commit()
-            return player_id
+                int(mx) + 1,
+                values["bird_rights"],
+                values["rating"],
+                values["name"],
+                values["position"],
+                values["years_left"],
+                values["salary_2025_text"],
+                parse_salary_amount(values["salary_2025_text"]),
+                values["salary_2026_text"],
+                parse_salary_amount(values["salary_2026_text"]),
+                values["salary_2027_text"],
+                parse_salary_amount(values["salary_2027_text"]),
+                values["salary_2028_text"],
+                parse_salary_amount(values["salary_2028_text"]),
+                values["salary_2029_text"],
+                parse_salary_amount(values["salary_2029_text"]),
+                values["salary_2030_text"],
+                parse_salary_amount(values["salary_2030_text"]),
+                values["salary_2031_text"],
+                parse_salary_amount(values["salary_2031_text"]),
+                values["option_2025"],
+                values["option_2026"],
+                values["option_2027"],
+                values["option_2028"],
+                values["option_2029"],
+                values["option_2030"],
+                values["option_2031"],
+                values["provisional_amounts"],
+                values["partially_guaranteed"],
+                values["salary_2025_provisional"],
+                values["salary_2026_provisional"],
+                values["salary_2027_provisional"],
+                values["salary_2028_provisional"],
+                values["salary_2029_provisional"],
+                values["salary_2030_provisional"],
+                values["salary_2031_provisional"],
+                values["salary_2025_partially_guaranteed"],
+                values["salary_2026_partially_guaranteed"],
+                values["salary_2027_partially_guaranteed"],
+                values["salary_2028_partially_guaranteed"],
+                values["salary_2029_partially_guaranteed"],
+                values["salary_2030_partially_guaranteed"],
+                values["salary_2031_partially_guaranteed"],
+                values["salary_2025_guaranteed_text"],
+                values["salary_2026_guaranteed_text"],
+                values["salary_2027_guaranteed_text"],
+                values["salary_2028_guaranteed_text"],
+                values["salary_2029_guaranteed_text"],
+                values["salary_2030_guaranteed_text"],
+                values["salary_2031_guaranteed_text"],
+                values["notes"],
+                values["reference_image_url"],
+                values["profile_notes"],
+                values["experience_years"],
+                values["signed_as_free_agent"],
+                1 if str(values["bird_rights"] or "").upper() == "TW" else 0,
+                now,
+                now,
+            ),
+        )
+        player_id = int(cur.lastrowid)
+        self._record_player_transaction(
+            conn,
+            profile_id,
+            "create",
+            f"Alta en {team_code.upper()}",
+            player_id=player_id,
+            team_code=team_code,
+            details={"player_name": values["name"]},
+            created_at=now,
+        )
+        return player_id
 
     def delete_player(self, player_id: int) -> bool:
         with self.connect() as conn:
@@ -15832,7 +16230,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 salary_2031_guaranteed_text,
                 notes, reference_image_url, profile_notes, experience_years, signed_as_free_agent,
                 is_two_way, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 team["id"],
@@ -16034,10 +16432,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
         )
         return {"player_id": player_id, "team_code": target_team_code, "player_name": waiver_data.get("player_name")}
 
-    def process_expired_waivers(self) -> Dict[str, Any]:
+    def process_expired_waivers_command(self) -> Dict[str, Any]:
         timestamp = now_iso()
         processed: List[Dict[str, Any]] = []
-        with self.connect() as conn:
+        with self.transaction("IMMEDIATE") as conn:
             waivers = conn.execute(
                 """
                 SELECT * FROM waiver_players
@@ -16068,8 +16466,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 else:
                     result = self._expire_waiver_without_claim_conn(conn, waiver, timestamp=timestamp)
                     processed.append({"waiver_player_id": int(waiver["id"]), "action": "expired", **result})
-            conn.commit()
         return {"processed": processed, "count": len(processed)}
+
+    def process_expired_waivers(self) -> Dict[str, Any]:
+        return self.process_expired_waivers_command()
 
     def _waiver_salary_for_season(self, waiver: Dict[str, Any], season_year: int) -> float:
         try:
@@ -16321,7 +16721,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         normalized = str(decision or "").strip().lower()
         if normalized not in {"approved", "rejected"}:
             raise ValueError("invalid_decision")
-        with self.connect() as conn:
+        with self.transaction("IMMEDIATE") as conn:
             claim_row = conn.execute("SELECT * FROM waiver_claims WHERE id = ?", (int(request_id),)).fetchone()
             if not claim_row:
                 return None
@@ -16333,11 +16733,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 if not result:
                     raise ValueError("waiver_not_available")
             else:
-                conn.execute(
+                cur = conn.execute(
                     """
                     UPDATE waiver_claims
                     SET status = 'rejected', admin_email = ?, admin_name = ?, admin_decision_note = ?, updated_at = ?, decided_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND status = 'pending'
                     """,
                     (
                         str((admin or {}).get("email") or "").strip() or None,
@@ -16348,8 +16748,9 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         int(request_id),
                     ),
                 )
+                if cur.rowcount != 1:
+                    raise ValueError("request_already_decided")
                 result = {"id": int(request_id), "status": "rejected"}
-            conn.commit()
             return result
 
     def _cap_hold_free_agent_type(self, player: Dict[str, Any], season: int) -> str:
@@ -16877,35 +17278,38 @@ class LeagueDB(DatabaseMaintenanceMixin):
             free_agents = [self._merge_player_profile(row_to_dict(cur, row)) for row in cur.fetchall()]
             return self._attach_player_salary_history_conn(conn, free_agents)
 
+    def _get_free_agent_conn(self, conn: sqlite3.Connection, free_agent_id: int) -> Optional[Dict[str, Any]]:
+        cur = conn.execute(
+            """
+            SELECT
+                f.*,
+                pp.name AS profile_name,
+                pp.date_of_birth AS profile_date_of_birth,
+                pp.nationality AS profile_nationality,
+                pp.experience_years AS profile_experience_years,
+                pp.yos_source AS profile_yos_source,
+                pp.reference_image_url AS profile_reference_image_url,
+                pp.profile_notes AS profile_profile_notes,
+                pp.transaction_notes AS profile_transaction_notes,
+                pp.profile_status AS profile_status
+            FROM free_agents f
+            LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+            WHERE f.id = ?
+            """,
+            (free_agent_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        if is_unavailable_player_profile_status(row["profile_status"]):
+            return None
+        free_agent = self._merge_player_profile(row_to_dict(cur, row))
+        enriched = self._attach_player_salary_history_conn(conn, [free_agent])
+        return enriched[0] if enriched else free_agent
+
     def get_free_agent(self, free_agent_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
-            cur = conn.execute(
-                """
-                SELECT
-                    f.*,
-                    pp.name AS profile_name,
-                    pp.date_of_birth AS profile_date_of_birth,
-                    pp.nationality AS profile_nationality,
-                    pp.experience_years AS profile_experience_years,
-                    pp.yos_source AS profile_yos_source,
-                    pp.reference_image_url AS profile_reference_image_url,
-                    pp.profile_notes AS profile_profile_notes,
-                    pp.transaction_notes AS profile_transaction_notes,
-                    pp.profile_status AS profile_status
-                FROM free_agents f
-                LEFT JOIN player_profiles pp ON pp.id = f.profile_id
-                WHERE f.id = ?
-                """,
-                (free_agent_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            if is_unavailable_player_profile_status(row["profile_status"]):
-                return None
-            free_agent = self._merge_player_profile(row_to_dict(cur, row))
-            enriched = self._attach_player_salary_history_conn(conn, [free_agent])
-            return enriched[0] if enriched else free_agent
+            return self._get_free_agent_conn(conn, int(free_agent_id))
 
     def create_free_agent(self, payload: Dict[str, Any]) -> Optional[int]:
         name = str(payload.get("name") or "").strip()
@@ -17494,8 +17898,26 @@ class LeagueDB(DatabaseMaintenanceMixin):
             deleted += int(cur.rowcount or 0)
         return deleted
 
-    def sign_free_agent(self, free_agent_id: int, team_code: str, payload: Dict[str, Any]) -> Optional[int]:
-        agent = self.get_free_agent(free_agent_id)
+    def sign_free_agent(
+        self,
+        free_agent_id: int,
+        team_code: str,
+        payload: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Optional[int]:
+        if conn is not None:
+            return self._sign_free_agent_conn(conn, free_agent_id, team_code, payload)
+        with self.transaction("IMMEDIATE") as owned_conn:
+            return self._sign_free_agent_conn(owned_conn, free_agent_id, team_code, payload)
+
+    def _sign_free_agent_conn(
+        self,
+        conn: sqlite3.Connection,
+        free_agent_id: int,
+        team_code: str,
+        payload: Dict[str, Any],
+    ) -> Optional[int]:
+        agent = self._get_free_agent_conn(conn, free_agent_id)
         if not agent:
             return None
         player_payload = dict(payload)
@@ -17510,87 +17932,82 @@ class LeagueDB(DatabaseMaintenanceMixin):
         profile_id = parse_int(player_payload.get("profile_id")) or parse_int(agent.get("profile_id"))
         normalized_team_code = normalize_team_code(team_code)
         if profile_id is not None:
-            with self.connect() as conn:
-                profile_status_row = conn.execute(
-                    "SELECT profile_status FROM player_profiles WHERE id = ?",
-                    (int(profile_id),),
-                ).fetchone()
-                if profile_status_row and is_unavailable_player_profile_status(profile_status_row["profile_status"]):
-                    raise ValueError("profile_unavailable")
-                settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings").fetchall()}
-                current_year = parse_int(settings.get("current_year")) or PLAYER_CONTRACT_SEASONS[0]
-                active_rows = conn.execute(
-                    """
-                    SELECT p.*, t.code AS team_code
-                    FROM players p
-                    JOIN teams t ON t.id = p.team_id
-                    WHERE p.profile_id = ?
-                    ORDER BY p.id
-                    """,
-                    (int(profile_id),),
-                ).fetchall()
-                if active_rows:
-                    same_team_row = next(
-                        (
-                            row for row in active_rows
-                            if normalize_team_code(row["team_code"]) == normalized_team_code
-                        ),
-                        None,
-                    )
-                    if not same_team_row:
-                        blocking_rows = [
-                            row for row in active_rows
-                            if not self._player_row_is_retained_rights_only(row, int(current_year), conn)
-                        ]
-                        if blocking_rows:
-                            raise ValueError("profile_has_active_contract")
-                        for row in active_rows:
-                            self._remove_retained_rights_player_row_for_signing(
-                                conn,
-                                row,
-                                free_agent_id=free_agent_id,
-                                signing_team_code=normalized_team_code,
-                                player_name=player_payload["name"],
-                            )
-                        conn.commit()
-                    else:
-                        return self._apply_free_agent_contract_to_active_player(
+            profile_status_row = conn.execute(
+                "SELECT profile_status FROM player_profiles WHERE id = ?",
+                (int(profile_id),),
+            ).fetchone()
+            if profile_status_row and is_unavailable_player_profile_status(profile_status_row["profile_status"]):
+                raise ValueError("profile_unavailable")
+            settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings").fetchall()}
+            current_year = parse_int(settings.get("current_year")) or PLAYER_CONTRACT_SEASONS[0]
+            active_rows = conn.execute(
+                """
+                SELECT p.*, t.code AS team_code
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.profile_id = ?
+                ORDER BY p.id
+                """,
+                (int(profile_id),),
+            ).fetchall()
+            if active_rows:
+                same_team_row = next(
+                    (
+                        row for row in active_rows
+                        if normalize_team_code(row["team_code"]) == normalized_team_code
+                    ),
+                    None,
+                )
+                if not same_team_row:
+                    blocking_rows = [
+                        row for row in active_rows
+                        if not self._player_row_is_retained_rights_only(row, int(current_year), conn)
+                    ]
+                    if blocking_rows:
+                        raise ValueError("profile_has_active_contract")
+                    for row in active_rows:
+                        self._remove_retained_rights_player_row_for_signing(
                             conn,
-                            int(same_team_row["id"]),
-                            free_agent_id,
-                            normalized_team_code,
-                            agent,
-                            player_payload,
+                            row,
+                            free_agent_id=free_agent_id,
+                            signing_team_code=normalized_team_code,
+                            player_name=player_payload["name"],
                         )
+                else:
+                    return self._apply_free_agent_contract_to_active_player(
+                        conn,
+                        int(same_team_row["id"]),
+                        free_agent_id,
+                        normalized_team_code,
+                        agent,
+                        player_payload,
+                        commit=False,
+                    )
 
         rights_team_code = normalize_team_code(agent.get("rights_team_code"))
         if not rights_team_code or rights_team_code != normalized_team_code:
             player_payload["years_left"] = "0"
 
-        player_id = self.create_player(team_code, player_payload)
+        player_id = self._create_player_conn(conn, team_code, player_payload)
         if not player_id:
             return None
-        with self.connect() as conn:
-            profile_id = self._find_profile_id(conn, player_id=player_id) or parse_int(agent.get("profile_id"))
-            self._record_player_transaction(
-                conn,
-                profile_id,
-                "sign",
-                f"Firmado por {team_code.upper()}",
-                player_id=player_id,
-                free_agent_id=free_agent_id,
-                team_code=team_code,
-                to_team_code=team_code,
-                details={"player_name": player_payload["name"]},
-            )
-            conn.commit()
-        with self.connect() as conn:
-            self._delete_free_agent_entries_for_signed_profile_conn(
-                conn,
-                free_agent_id=free_agent_id,
-                profile_id=profile_id,
-            )
-            conn.commit()
+        profile_id = self._find_profile_id(conn, player_id=player_id) or parse_int(agent.get("profile_id"))
+        self._record_player_transaction(
+            conn,
+            profile_id,
+            "sign",
+            f"Firmado por {team_code.upper()}",
+            player_id=player_id,
+            free_agent_id=free_agent_id,
+            team_code=team_code,
+            to_team_code=team_code,
+            details={"player_name": player_payload["name"]},
+        )
+        self._delete_free_agent_entries_for_signed_profile_conn(
+            conn,
+            free_agent_id=free_agent_id,
+            profile_id=profile_id,
+        )
         return player_id
 
     def _apply_free_agent_contract_to_active_player(
@@ -17601,6 +18018,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         team_code: str,
         agent: Dict[str, Any],
         player_payload: Dict[str, Any],
+        *,
+        commit: bool = True,
     ) -> Optional[int]:
         player = conn.execute(
             """
@@ -17746,7 +18165,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
             free_agent_id=free_agent_id,
             profile_id=parse_int(player["profile_id"]),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         return player_id
 
     def cut_player(self, player_id: int, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -19214,7 +19634,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
             "selections": selections,
         })
 
-    def process_trade_from_payload(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def process_trade_from_payload(
+        self,
+        payload: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Optional[Dict[str, Any]]:
         normalized = self._trade_machine_normalized_request(payload)
         teams = normalized.get("teams") or []
         selections = normalized.get("selections") or []
@@ -19222,7 +19646,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
         if len(teams) < 2 or (not selections and not cash_transfers):
             return None
 
-        with self.connect() as conn:
+        owns_connection = conn is None
+        with (self.connect() if owns_connection else nullcontext(conn)) as conn:
             team_rows: Dict[str, sqlite3.Row] = {}
             for code in teams:
                 row = conn.execute("SELECT id, code FROM teams WHERE code = ?", (code,)).fetchone()
@@ -19587,7 +20012,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     settings=settings,
                 )
 
-            conn.commit()
+            if owns_connection:
+                conn.commit()
 
         team_results = [summaries[code] for code in teams]
         result: Dict[str, Any] = {
@@ -19622,6 +20048,87 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
         return result
 
+    def process_trade_command(
+        self,
+        payload: Dict[str, Any],
+        *,
+        validation: Optional[Dict[str, Any]] = None,
+        notify_discord: bool = False,
+        generate_image: bool = False,
+        custom_image: Optional[Dict[str, Any]] = None,
+        legacy: bool = False,
+    ) -> Dict[str, Any]:
+        result: Optional[Dict[str, Any]] = None
+        applied_hard_caps: List[Dict[str, Any]] = []
+        outbox_event_ids: List[int] = []
+        with self.transaction("IMMEDIATE") as conn:
+            if legacy:
+                result = self.process_trade(
+                    normalize_team_code(payload.get("team_a")) or "",
+                    normalize_team_code(payload.get("team_b")) or "",
+                    payload.get("players_a") if isinstance(payload.get("players_a"), list) else [],
+                    payload.get("players_b") if isinstance(payload.get("players_b"), list) else [],
+                    pick_ids_a=payload.get("pick_ids_a") if isinstance(payload.get("pick_ids_a"), list) else [],
+                    pick_ids_b=payload.get("pick_ids_b") if isinstance(payload.get("pick_ids_b"), list) else [],
+                    right_ids_a=payload.get("right_ids_a") if isinstance(payload.get("right_ids_a"), list) else [],
+                    right_ids_b=payload.get("right_ids_b") if isinstance(payload.get("right_ids_b"), list) else [],
+                    no_count_players_a=payload.get("no_count_players_a") if isinstance(payload.get("no_count_players_a"), list) else [],
+                    no_count_players_b=payload.get("no_count_players_b") if isinstance(payload.get("no_count_players_b"), list) else [],
+                    pick_actions_a=payload.get("pick_actions_a"),
+                    pick_actions_b=payload.get("pick_actions_b"),
+                    trade_bucket=payload.get("trade_bucket"),
+                    conn=conn,
+                )
+            else:
+                result = self.process_trade_from_payload(payload, conn=conn)
+
+            if not result:
+                return {"result": None, "applied_hard_caps": [], "outbox_event_ids": []}
+
+            settings_cur = conn.execute("SELECT key, value FROM app_settings")
+            settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+            season_year = (
+                parse_int(result.get("season"))
+                or parse_int(payload.get("season"))
+                or parse_int(settings.get("current_year"))
+                or 2025
+            )
+            result["season"] = int(season_year)
+
+            if validation:
+                applied_hard_caps = self.apply_trade_hard_cap_triggers(validation, int(season_year), conn=conn)
+                if applied_hard_caps:
+                    result["applied_hard_caps"] = applied_hard_caps
+
+            if notify_discord:
+                team_codes = result.get("team_codes") if isinstance(result.get("team_codes"), list) else []
+                if not team_codes:
+                    team_codes = []
+                    for key in ("team_a", "team_b"):
+                        info = result.get(key)
+                        if isinstance(info, dict) and info.get("code"):
+                            team_codes.append(str(info.get("code")))
+                aggregate_id = "-".join([str(code) for code in team_codes if code]) or f"trade-{now_iso()}"
+                event_id = self.enqueue_outbox_event_conn(
+                    conn,
+                    "discord.trade_processed",
+                    {
+                        "result": result,
+                        "generate_image": bool(generate_image),
+                        "custom_image": custom_image if isinstance(custom_image, dict) else None,
+                    },
+                    aggregate_type="trade",
+                    aggregate_id=aggregate_id,
+                )
+                if event_id:
+                    outbox_event_ids.append(int(event_id))
+
+        return {
+            "result": result,
+            "applied_hard_caps": applied_hard_caps,
+            "outbox_event_ids": outbox_event_ids,
+        }
+
     def process_trade(
         self,
         team_a_code: str,
@@ -19637,6 +20144,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         pick_actions_a: Optional[Any] = None,
         pick_actions_b: Optional[Any] = None,
         trade_bucket: Optional[str] = None,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> Optional[Dict[str, Any]]:
         def clean_ids(values: Any) -> List[int]:
             if not isinstance(values, list):
@@ -19670,13 +20178,19 @@ class LeagueDB(DatabaseMaintenanceMixin):
         if not ids_b and not pick_b_all and not right_b:
             return None
 
-        with self.connect() as conn:
+        owns_connection = conn is None
+        with (self.connect() if owns_connection else nullcontext(conn)) as conn:
             team_a = conn.execute("SELECT id, code FROM teams WHERE code = ?", (team_a_code.upper(),)).fetchone()
             team_b = conn.execute("SELECT id, code FROM teams WHERE code = ?", (team_b_code.upper(),)).fetchone()
             if not team_a or not team_b or team_a["id"] == team_b["id"]:
                 return None
 
-            current_year = parse_int(self.get_settings().get("current_year")) or 2025
+            if owns_connection:
+                current_year = parse_int(self.get_settings().get("current_year")) or 2025
+            else:
+                settings_cur = conn.execute("SELECT key, value FROM app_settings")
+                settings_for_year = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
+                current_year = parse_int(settings_for_year.get("current_year")) or 2025
             if current_year < PLAYER_CONTRACT_MIN_YEAR or current_year > PLAYER_CONTRACT_MAX_START_YEAR:
                 current_year = 2025
 
@@ -20092,7 +20606,8 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     settings=settings,
                 )
 
-            conn.commit()
+            if owns_connection:
+                conn.commit()
             return {
                 "ok": True,
                 "trade_bucket": bucket,
@@ -20346,6 +20861,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Request-ID", self._request_id())
+        header_keys = {str(key).lower() for key in (headers or {}).keys()}
+        if "cache-control" not in header_keys:
+            self.send_header("Cache-Control", "no-store")
         self._send_extra_headers(headers)
         self.end_headers()
         try:
@@ -20388,6 +20906,16 @@ class Handler(SimpleHTTPRequestHandler):
         if not raw:
             return {}
         return json.loads(raw.decode("utf-8"))
+
+    def _require_json_write_content_type(self) -> bool:
+        length = parse_int(self.headers.get("Content-Length")) or 0
+        if length <= 0:
+            return True
+        content_type = str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type == "application/json":
+            return True
+        self._json(415, {"error": "unsupported_media_type"})
+        return False
 
     def _read_multipart_image_upload(self, field_name: str) -> tuple[bytes, str, str]:
         content_type = str(self.headers.get("Content-Type") or "")
@@ -21948,6 +22476,58 @@ QUALITY REQUIREMENTS
             generate_image=generate_image,
             custom_image=custom_image,
         )
+
+    def _dispatch_outbox_events(self, event_ids: Optional[List[int]]) -> List[int]:
+        delivered: List[int] = []
+        for raw_event_id in event_ids or []:
+            event_id = parse_int(raw_event_id)
+            if event_id is None:
+                continue
+            event = self.db.get_outbox_event(event_id)
+            if not event:
+                continue
+            event_type = str(event.get("event_type") or "").strip()
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            try:
+                if event_type == "discord.free_agent_signed":
+                    player = self.db.get_player_record(payload.get("player_id"))
+                    if not player:
+                        self.db.mark_outbox_event_failed(event_id, "player_not_found")
+                        continue
+                    offer_payload = payload.get("offer_payload") if isinstance(payload.get("offer_payload"), dict) else {}
+                    custom_image = payload.get("custom_image") if isinstance(payload.get("custom_image"), dict) else None
+                    sent = self._notify_free_agent_signed(
+                        player,
+                        offer_payload=offer_payload,
+                        offer_type=payload.get("offer_type"),
+                        generate_image=parse_bool(payload.get("generate_image")),
+                        custom_image=custom_image,
+                    )
+                    if sent:
+                        self.db.mark_outbox_event_succeeded(event_id)
+                        delivered.append(int(event_id))
+                    else:
+                        self.db.mark_outbox_event_failed(event_id, "delivery_returned_false")
+                    continue
+                if event_type == "discord.trade_processed":
+                    result = payload.get("result") if isinstance(payload.get("result"), dict) else None
+                    if not result:
+                        self.db.mark_outbox_event_failed(event_id, "result_missing")
+                        continue
+                    custom_image = payload.get("custom_image") if isinstance(payload.get("custom_image"), dict) else None
+                    self._notify_trade_processed(
+                        result,
+                        generate_image=parse_bool(payload.get("generate_image")),
+                        custom_image=custom_image,
+                    )
+                    self.db.mark_outbox_event_succeeded(event_id)
+                    delivered.append(int(event_id))
+                    continue
+                self.db.mark_outbox_event_failed(event_id, f"unknown_event_type:{event_type}")
+            except Exception as err:
+                self.log_error("Outbox event delivery failed id=%s type=%s: %s", event_id, event_type, err)
+                self.db.mark_outbox_event_failed(event_id, str(err)[:500])
+        return delivered
 
     def _notify_free_agent_signed(
         self,
@@ -23644,6 +24224,8 @@ QUALITY REQUIREMENTS
             self._json(200, {"ok": True, "background_url": background_url, "owner_office": owner_office})
             return
 
+        if not self._require_json_write_content_type():
+            return
         payload = self._read_json()
 
         if parsed.path == "/api/admin/gm-minimum-targets/remove":
@@ -25291,19 +25873,21 @@ QUALITY REQUIREMENTS
                     if selection.get("type") in {"pick", "right"}
                 ]
                 trade_before = self.db.audit_trade_snapshot(teams, trade_player_ids, trade_asset_ids)
-                result = self.db.process_trade_from_payload(
+                command_result = self.db.process_trade_command(
                     {
                         **payload,
                         "teams": teams,
                         "selections": normalized.get("selections") or [],
                         "cash": normalized.get("cash") or [],
-                    }
+                    },
+                    validation=validation,
+                    notify_discord=self._discord_notify_requested(payload),
+                    generate_image=self._discord_image_requested(payload),
+                    custom_image=payload.get("discord_custom_image") if isinstance(payload.get("discord_custom_image"), dict) else None,
                 )
+                result = command_result.get("result")
                 if result:
-                    season_year = parse_int(result.get("season")) or parse_int(payload.get("season")) or parse_int(self.db.get_settings().get("current_year")) or 2025
-                    applied_hard_caps = self.db.apply_trade_hard_cap_triggers(validation, season_year)
-                    if applied_hard_caps:
-                        result["applied_hard_caps"] = applied_hard_caps
+                    applied_hard_caps = command_result.get("applied_hard_caps") or []
                     trade_after = self.db.audit_trade_snapshot(teams, trade_player_ids, trade_asset_ids)
                     self._log_admin_action(
                         "trade",
@@ -25325,12 +25909,9 @@ QUALITY REQUIREMENTS
                         after=trade_after,
                         team_codes=teams,
                     )
-                    if self._discord_notify_requested(payload):
-                        self._notify_trade_processed(
-                            result,
-                            generate_image=self._discord_image_requested(payload),
-                            custom_image=payload.get("discord_custom_image"),
-                        )
+                    delivered_events = self._dispatch_outbox_events(command_result.get("outbox_event_ids"))
+                    if delivered_events:
+                        result["delivered_events"] = delivered_events
                 self._json(200 if result else 404, result or {"ok": False})
                 return
             team_a = normalize_team_code(payload.get("team_a")) or ""
@@ -25372,26 +25953,32 @@ QUALITY REQUIREMENTS
                 if isinstance(values, list):
                     trade_asset_ids.extend(values)
             trade_before = self.db.audit_trade_snapshot([team_a, team_b], trade_player_ids, trade_asset_ids)
-            result = self.db.process_trade(
-                team_a,
-                team_b,
-                players_a,
-                players_b,
-                pick_ids_a=pick_ids_a,
-                pick_ids_b=pick_ids_b,
-                right_ids_a=right_ids_a,
-                right_ids_b=right_ids_b,
-                no_count_players_a=no_count_players_a,
-                no_count_players_b=no_count_players_b,
-                pick_actions_a=pick_actions_a,
-                pick_actions_b=pick_actions_b,
-                trade_bucket=trade_bucket,
+            command_result = self.db.process_trade_command(
+                {
+                    **payload,
+                    "team_a": team_a,
+                    "team_b": team_b,
+                    "players_a": players_a if isinstance(players_a, list) else [],
+                    "players_b": players_b if isinstance(players_b, list) else [],
+                    "pick_ids_a": pick_ids_a if isinstance(pick_ids_a, list) else [],
+                    "pick_ids_b": pick_ids_b if isinstance(pick_ids_b, list) else [],
+                    "right_ids_a": right_ids_a if isinstance(right_ids_a, list) else [],
+                    "right_ids_b": right_ids_b if isinstance(right_ids_b, list) else [],
+                    "no_count_players_a": no_count_players_a if isinstance(no_count_players_a, list) else [],
+                    "no_count_players_b": no_count_players_b if isinstance(no_count_players_b, list) else [],
+                    "pick_actions_a": pick_actions_a,
+                    "pick_actions_b": pick_actions_b,
+                    "trade_bucket": trade_bucket,
+                },
+                validation=validation,
+                notify_discord=self._discord_notify_requested(payload),
+                generate_image=self._discord_image_requested(payload),
+                custom_image=payload.get("discord_custom_image") if isinstance(payload.get("discord_custom_image"), dict) else None,
+                legacy=True,
             )
+            result = command_result.get("result")
             if result:
-                season_year = parse_int(result.get("season")) or parse_int(payload.get("season")) or parse_int(self.db.get_settings().get("current_year")) or 2025
-                applied_hard_caps = self.db.apply_trade_hard_cap_triggers(validation, season_year)
-                if applied_hard_caps:
-                    result["applied_hard_caps"] = applied_hard_caps
+                applied_hard_caps = command_result.get("applied_hard_caps") or []
                 trade_after = self.db.audit_trade_snapshot([team_a, team_b], trade_player_ids, trade_asset_ids)
                 self._log_admin_action(
                     "trade",
@@ -25427,12 +26014,9 @@ QUALITY REQUIREMENTS
                     after=trade_after,
                     team_codes=[team_a, team_b],
                 )
-                if self._discord_notify_requested(payload):
-                    self._notify_trade_processed(
-                        result,
-                        generate_image=self._discord_image_requested(payload),
-                        custom_image=payload.get("discord_custom_image"),
-                )
+                delivered_events = self._dispatch_outbox_events(command_result.get("outbox_event_ids"))
+                if delivered_events:
+                    result["delivered_events"] = delivered_events
             self._json(200 if result else 400, {"ok": bool(result), "result": result, "validation": validation})
             return
 
@@ -25577,6 +26161,8 @@ QUALITY REQUIREMENTS
         if not self._require_csrf():
             return
         if not self._require_sensitive_rate_limit("admin_patch"):
+            return
+        if not self._require_json_write_content_type():
             return
         parsed = urlparse(self.path)
         payload = self._read_json()
@@ -25810,32 +26396,23 @@ QUALITY REQUIREMENTS
                 return
 
             if admin_decision == "rejected":
-                updated = self.db.mark_gm_free_agent_offer_request_decided(
-                    request_id,
-                    "rejected",
-                    self._current_session() or {},
-                    str(payload.get("note") or "").strip() or None,
-                )
-                if not updated:
-                    self._json(409, {"error": "request_already_decided"})
+                try:
+                    result = self.db.decide_gm_free_agent_offer_request_command(
+                        request_id,
+                        "rejected",
+                        self._current_session() or {},
+                        note=str(payload.get("note") or "").strip() or None,
+                    )
+                except ValueError as err:
+                    message = str(err) or "gm_free_agent_offer_decision_failed"
+                    if message in {"request_already_decided"}:
+                        self._json(409, {"error": message})
+                    elif message in {"request_not_found"}:
+                        self._json(404, {"error": message})
+                    else:
+                        self._json(400, {"error": message})
                     return
-                player_name = str(request.get("player_name") or "el agente libre").strip()
-                team_code = normalize_team_code(request.get("team_code")) or str(request.get("team_code") or "").upper()
-                offer_type = str(request.get("offer_type") or "").strip().lower()
-                offer_label = "oferta de renovación" if offer_type == "renewal" else "oferta"
-                note = str(payload.get("note") or "").strip()
-                notification_body = f"La administración ha rechazado la {offer_label} de {team_code} por {player_name}."
-                if note:
-                    notification_body = f"{notification_body} Nota: {note}"
-                self.db.create_user_notification(
-                    user_id=request.get("requester_user_id"),
-                    email=request.get("requester_email"),
-                    title=f"Oferta rechazada: {player_name}",
-                    body=notification_body,
-                    kind="free_agent_offer_rejected",
-                    entity_type="gm_free_agent_offer_request",
-                    entity_id=request_id,
-                )
+                updated = result.get("request")
                 self._log_admin_action(
                     "reject",
                     "gm_free_agent_offer_request",
@@ -25869,9 +26446,18 @@ QUALITY REQUIREMENTS
                 return
             sign_payload = self._player_payload_from_free_agent_offer(free_agent, offer_payload)
             try:
-                self.db.ensure_free_agent_offer_request_promise_capacity(
+                result = self.db.decide_gm_free_agent_offer_request_command(
                     request_id,
+                    "approved",
+                    self._current_session() or {},
+                    note=str(payload.get("note") or "").strip() or None,
+                    sign_payload=sign_payload,
+                    offer_payload=offer_payload,
+                    notify_discord=self._discord_notify_requested(payload),
+                    generate_image=self._discord_image_requested(payload),
+                    custom_image=payload.get("discord_custom_image") if isinstance(payload.get("discord_custom_image"), dict) else None,
                     promise_context={"free_agent": free_agent},
+                    bypass_role_limits=str((self._current_session() or {}).get("role") or "").strip().lower() == "admin",
                 )
             except ValueError as err:
                 message = str(err) or "promise_role_limit_exceeded"
@@ -25887,15 +26473,14 @@ QUALITY REQUIREMENTS
                         },
                     )
                     return
+                if message in {"profile_has_active_contract", "request_already_decided"}:
+                    self._json(409, {"error": message})
+                    return
+                if message in {"free_agent_not_found", "request_not_found"}:
+                    self._json(404, {"error": message})
+                    return
                 self._json(400, {"error": message})
                 return
-            try:
-                player_id = self.db.sign_free_agent(free_agent_id, team_code, sign_payload)
-            except ValueError as err:
-                if str(err) == "profile_has_active_contract":
-                    self._json(409, {"error": "profile_has_active_contract"})
-                    return
-                raise
             except sqlite3.Error as err:
                 self.log_error(
                     "GM free-agent offer approval DB failure request=%s free_agent=%s team=%s: %s",
@@ -25906,31 +26491,18 @@ QUALITY REQUIREMENTS
                 )
                 self._json(500, {"error": "offer_approval_failed", "detail": str(err)[:200]})
                 return
+            player_id = result.get("player_id")
+            player_after = result.get("player")
+            updated = result.get("request")
             if not player_id:
                 self._json(404, {"error": "free_agent_or_team_not_found"})
                 return
-            player_after = self.db.get_player_record(player_id)
-            updated = self.db.mark_gm_free_agent_offer_request_decided(
-                request_id,
-                "approved",
-                self._current_session() or {},
-                str(payload.get("note") or "").strip() or None,
-                promise_context={"free_agent": free_agent},
-            )
-            if not updated:
-                self._json(409, {"error": "request_already_decided"})
-                return
-            if request.get("player_name") and str(updated.get("player_name") or "Agente libre") == "Agente libre":
+            if request.get("player_name") and updated and str(updated.get("player_name") or "Agente libre") == "Agente libre":
                 updated["player_name"] = request.get("player_name")
             discord_sent = False
-            if player_after and self._discord_notify_requested(payload):
-                discord_sent = self._notify_free_agent_signed(
-                    player_after,
-                    offer_payload=offer_payload,
-                    offer_type=request.get("offer_type"),
-                    generate_image=self._discord_image_requested(payload),
-                    custom_image=payload.get("discord_custom_image"),
-                )
+            if self._discord_notify_requested(payload):
+                delivered_events = self._dispatch_outbox_events(result.get("outbox_event_ids"))
+                discord_sent = bool(delivered_events)
             self._log_admin_action(
                 "approve",
                 "gm_free_agent_offer_request",
@@ -27068,6 +27640,8 @@ QUALITY REQUIREMENTS
         if not self._require_csrf():
             return
         if not self._require_sensitive_rate_limit("admin_delete"):
+            return
+        if not self._require_json_write_content_type():
             return
         parsed = urlparse(self.path)
 

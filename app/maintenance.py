@@ -5,9 +5,10 @@ import re
 import secrets
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 
 CURRENT_SCHEMA_VERSION = 2026062101
@@ -43,6 +44,23 @@ class DatabaseMaintenanceMixin:
 
     def connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.db_path)
+
+    @contextmanager
+    def transaction(self, mode: str = "IMMEDIATE") -> Iterator[sqlite3.Connection]:
+        normalized_mode = str(mode or "IMMEDIATE").strip().upper()
+        if normalized_mode not in {"DEFERRED", "IMMEDIATE", "EXCLUSIVE"}:
+            raise ValueError("invalid_transaction_mode")
+
+        conn = self.connect()
+        try:
+            conn.execute(f"BEGIN {normalized_mode}")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def backup_dir(self) -> Path:
         configured = str(os.getenv("BACKUP_DIR") or "").strip()

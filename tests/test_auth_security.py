@@ -9,6 +9,7 @@ from app.server import (
     LeagueDB,
     authorize_action,
     pbkdf2_sha256_password_hash,
+    session_token_digest,
     verify_admin_password,
 )
 from app.xlsx_import import create_schema, now_iso
@@ -125,6 +126,66 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Lax", cookie)
         self.assertNotIn("Secure", cookie)
+
+    def test_sessions_store_token_digests_for_new_sessions(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="anba-auth-session-", suffix=".db")
+        os.close(fd)
+        try:
+            with sqlite3.connect(path) as conn:
+                conn.row_factory = sqlite3.Row
+                create_schema(conn)
+                conn.commit()
+
+            db = LeagueDB(path)
+            db.ensure_auth_schema()
+            self.assertTrue(db.create_session("raw-session-token", {"role": "admin"}, now_iso(), 4_102_444_800))
+
+            with db.connect() as conn:
+                row = conn.execute("SELECT session_token, session_token_hash FROM sessions").fetchone()
+
+            expected = session_token_digest("raw-session-token")
+            self.assertEqual(expected, row["session_token"])
+            self.assertEqual(expected, row["session_token_hash"])
+            self.assertNotEqual("raw-session-token", row["session_token"])
+            self.assertEqual({"role": "admin"}, db.get_session("raw-session-token", now_ts=1_800_000_000))
+
+            db.delete_session("raw-session-token")
+            self.assertIsNone(db.get_session("raw-session-token", now_ts=1_800_000_000))
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+    def test_legacy_raw_session_rows_remain_readable_until_expiry(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="anba-auth-legacy-session-", suffix=".db")
+        os.close(fd)
+        try:
+            with sqlite3.connect(path) as conn:
+                conn.row_factory = sqlite3.Row
+                create_schema(conn)
+                conn.commit()
+
+            db = LeagueDB(path)
+            db.ensure_auth_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO sessions (session_token, data_json, created_at, expires_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    ("legacy-token", '{"role":"gm"}', now_iso(), 4_102_444_800),
+                )
+                conn.commit()
+
+            self.assertEqual({"role": "gm"}, db.get_session("legacy-token", now_ts=1_800_000_000))
+            db.delete_session("legacy-token")
+            self.assertIsNone(db.get_session("legacy-token", now_ts=1_800_000_000))
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
 
     def test_same_site_none_forces_secure_cookie(self) -> None:
         handler = make_handler({"Host": "127.0.0.1:8000"})

@@ -109,6 +109,75 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("approved", updated["status"])
         self.assertEqual("admin@example.com", updated["admin_email"])
 
+    def test_free_agent_offer_request_decision_is_single_use(self) -> None:
+        request = self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {"contract_type": "Min", "years": 1},
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        first = self.db.mark_gm_free_agent_offer_request_decided(
+            int(request["id"]),
+            "approved",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+        second = self.db.mark_gm_free_agent_offer_request_decided(
+            int(request["id"]),
+            "rejected",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+        stored = self.db.get_gm_free_agent_offer_request(int(request["id"]))
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertIsNotNone(stored)
+        self.assertEqual("approved", stored["status"])
+
+    def test_decided_free_agent_offer_request_cannot_be_cancelled(self) -> None:
+        request = self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {"contract_type": "Min", "years": 1},
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+        self.db.mark_gm_free_agent_offer_request_decided(
+            int(request["id"]),
+            "approved",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            self.db.cancel_gm_free_agent_offer_request(int(request["id"]), "ATL")
+
+        self.assertEqual("offer_not_pending", str(ctx.exception))
+        self.assertIsNotNone(self.db.get_gm_free_agent_offer_request(int(request["id"])))
+
+    def test_outbox_events_are_idempotent_by_key(self) -> None:
+        first = self.db.enqueue_outbox_event(
+            "discord.free_agent_offer",
+            {"request_id": 1, "player": "Test Free Agent"},
+            aggregate_type="gm_free_agent_offer_request",
+            aggregate_id=1,
+            idempotency_key="gm-free-agent-offer:1:approved",
+        )
+        second = self.db.enqueue_outbox_event(
+            "discord.free_agent_offer",
+            {"request_id": 1, "player": "Test Free Agent"},
+            aggregate_type="gm_free_agent_offer_request",
+            aggregate_id=1,
+            idempotency_key="gm-free-agent-offer:1:approved",
+        )
+
+        with sqlite3.connect(self.db_path) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM outbox_events WHERE idempotency_key = ?",
+                ("gm-free-agent-offer:1:approved",),
+            ).fetchone()[0]
+
+        self.assertEqual(first, second)
+        self.assertEqual(1, count)
+
     def test_approved_offer_with_role_creates_agent_promise(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("UPDATE free_agents SET agent = ? WHERE id = ?", ("Agent One", self.free_agent_id))
@@ -428,6 +497,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         handler.path = f"/api/admin/gm-option-requests/{request['id']}"
         handler._require_admin = lambda: True
         handler._require_csrf = lambda: True
+        handler._require_json_write_content_type = lambda: True
         handler._require_sensitive_rate_limit = lambda _bucket: True
         handler._require_team_write_access = lambda _team_code: True
         handler._read_json = lambda: {"decision": "approved"}
