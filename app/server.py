@@ -229,6 +229,9 @@ PLAYER_CONTRACT_MAX_YEAR = max(PLAYER_CONTRACT_SEASONS)
 PLAYER_CONTRACT_WINDOW_SIZE = 6
 PLAYER_CONTRACT_MAX_START_YEAR = PLAYER_CONTRACT_MAX_YEAR - PLAYER_CONTRACT_WINDOW_SIZE + 1
 CONTRACT_TERMINATING_OPTION_VALUES = {"TO", "PO"}
+PLAYER_ROW_STATE_ACTIVE = "active_contract"
+PLAYER_ROW_STATE_RETAINED_RIGHTS = "retained_rights"
+PLAYER_ROW_STATES = {PLAYER_ROW_STATE_ACTIVE, PLAYER_ROW_STATE_RETAINED_RIGHTS}
 OWNER_SEASON_OBJECTIVES = [
     "Campeones",
     "Finalistas",
@@ -2692,6 +2695,11 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if "profile_id" not in cols:
                 conn.execute("ALTER TABLE players ADD COLUMN profile_id INTEGER REFERENCES player_profiles(id) ON DELETE SET NULL")
                 cols.add("profile_id")
+            if "row_state" not in cols:
+                conn.execute(
+                    f"ALTER TABLE players ADD COLUMN row_state TEXT NOT NULL DEFAULT '{PLAYER_ROW_STATE_ACTIVE}'"
+                )
+                cols.add("row_state")
             free_agent_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(free_agents)").fetchall()
@@ -2707,6 +2715,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             if "rights_team_code" not in free_agent_cols:
                 conn.execute("ALTER TABLE free_agents ADD COLUMN rights_team_code TEXT")
             self._backfill_player_profiles(conn)
+            self._backfill_player_row_states(conn)
             profile_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(player_profiles)").fetchall()
@@ -2729,20 +2738,26 @@ class LeagueDB(DatabaseMaintenanceMixin):
             }
             if "salary_type" not in salary_history_cols:
                 conn.execute("ALTER TABLE player_salary_history ADD COLUMN salary_type TEXT")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS player_profile_aliases (
+                    old_profile_id INTEGER PRIMARY KEY,
+                    target_profile_id INTEGER NOT NULL REFERENCES player_profiles(id) ON DELETE CASCADE,
+                    reason TEXT NOT NULL DEFAULT 'merge',
+                    actor TEXT,
+                    details_json TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_player_profile_aliases_target
+                ON player_profile_aliases(target_profile_id)
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_players_profile_id ON players(profile_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_profiles_status ON player_profiles(profile_status)")
-            duplicate_active_profile = conn.execute(
-                """
-                SELECT profile_id
-                FROM players
-                WHERE profile_id IS NOT NULL
-                GROUP BY profile_id
-                HAVING COUNT(*) > 1
-                LIMIT 1
-                """
-            ).fetchone()
-            if not duplicate_active_profile:
-                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_players_unique_active_profile ON players(profile_id) WHERE profile_id IS NOT NULL")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_profile_id ON free_agents(profile_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_free_agents_source ON free_agents(source)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_player_profiles_name ON player_profiles(name)")
@@ -2777,6 +2792,39 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 conn.execute("ALTER TABLE assets ADD COLUMN generated_exception_key TEXT")
             if "generated_exception_season" not in asset_cols:
                 conn.execute("ALTER TABLE assets ADD COLUMN generated_exception_season INTEGER")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS draft_picks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    draft_year INTEGER NOT NULL,
+                    draft_round TEXT NOT NULL CHECK(draft_round IN ('1st', '2nd')),
+                    original_team TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(draft_year, draft_round, original_team)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS draft_pick_holdings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    draft_pick_id INTEGER NOT NULL REFERENCES draft_picks(id) ON DELETE CASCADE,
+                    holder_team TEXT NOT NULL,
+                    asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL,
+                    acquired_transaction_id INTEGER,
+                    conditions TEXT,
+                    frozen_status TEXT,
+                    holding_type TEXT NOT NULL DEFAULT 'held',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(draft_pick_id, holder_team, asset_id)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_pick_holdings_pick ON draft_pick_holdings(draft_pick_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_pick_holdings_holder ON draft_pick_holdings(holder_team)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_pick_holdings_asset ON draft_pick_holdings(asset_id)")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS frozen_draft_picks (
@@ -2840,6 +2888,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             )
             self._migrate_legacy_dead_cap_assets(conn)
             self._backfill_dead_contract_profiles(conn)
+            self._backfill_draft_pick_identity(conn)
             self._backfill_player_transactions(conn)
             self._backfill_player_salary_history_from_snapshots(conn)
             current_year_row = conn.execute("SELECT value FROM app_settings WHERE key = 'current_year'").fetchone()
@@ -2891,9 +2940,259 @@ class LeagueDB(DatabaseMaintenanceMixin):
         return int(cur.lastrowid)
 
     def _drop_player_identity_guards(self, conn: sqlite3.Connection) -> None:
+        conn.execute("DROP INDEX IF EXISTS idx_players_unique_active_profile")
         for table in ["players", "free_agents", "dead_contracts"]:
             conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_profile_required_insert")
             conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_profile_required_update")
+
+    def _current_year_conn(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = 'current_year'").fetchone()
+        return parse_int(row["value"] if row else None) or PLAYER_CONTRACT_SEASONS[0]
+
+    def _players_have_row_state_conn(self, conn: sqlite3.Connection) -> bool:
+        return any(
+            row["name"] == "row_state"
+            for row in conn.execute("PRAGMA table_info(players)").fetchall()
+        )
+
+    def _infer_player_row_state_conn(
+        self,
+        conn: sqlite3.Connection,
+        player: sqlite3.Row,
+        current_year: Optional[int] = None,
+    ) -> str:
+        year = int(current_year if current_year is not None else self._current_year_conn(conn))
+        if self._player_row_is_retained_rights_only(player, year, conn):
+            return PLAYER_ROW_STATE_RETAINED_RIGHTS
+        return PLAYER_ROW_STATE_ACTIVE
+
+    def _sync_player_row_state_conn(
+        self,
+        conn: sqlite3.Connection,
+        player_id: Any,
+        timestamp: Optional[str] = None,
+    ) -> Optional[str]:
+        if not self._players_have_row_state_conn(conn):
+            return None
+        parsed_player_id = parse_int(player_id)
+        if parsed_player_id is None:
+            return None
+        row = conn.execute(
+            """
+            SELECT p.*, t.code AS team_code
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+            WHERE p.id = ?
+            """,
+            (int(parsed_player_id),),
+        ).fetchone()
+        if not row:
+            return None
+        state = self._infer_player_row_state_conn(conn, row)
+        if str(row["row_state"] or "") != state:
+            conn.execute(
+                """
+                UPDATE players
+                SET row_state = ?,
+                    updated_at = COALESCE(?, updated_at)
+                WHERE id = ?
+                """,
+                (state, timestamp, int(parsed_player_id)),
+            )
+        return state
+
+    def _backfill_player_row_states(self, conn: sqlite3.Connection) -> int:
+        if not self._players_have_row_state_conn(conn):
+            return 0
+        current_year = self._current_year_conn(conn)
+        rows = conn.execute(
+            """
+            SELECT p.*, t.code AS team_code
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+            ORDER BY p.id
+            """
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            state = self._infer_player_row_state_conn(conn, row, current_year)
+            if str(row["row_state"] or "") != state:
+                conn.execute("UPDATE players SET row_state = ? WHERE id = ?", (state, int(row["id"])))
+                changed += 1
+        return changed
+
+    def _duplicate_active_profile_ids_conn(self, conn: sqlite3.Connection) -> List[int]:
+        if not self._players_have_row_state_conn(conn):
+            return []
+        rows = conn.execute(
+            """
+            SELECT profile_id
+            FROM players
+            WHERE profile_id IS NOT NULL
+              AND row_state = ?
+            GROUP BY profile_id
+            HAVING COUNT(*) > 1
+            """,
+            (PLAYER_ROW_STATE_ACTIVE,),
+        ).fetchall()
+        return [int(row["profile_id"]) for row in rows if parse_int(row["profile_id"]) is not None]
+
+    def _profile_has_active_contract_conn(self, conn: sqlite3.Connection, profile_id: Any) -> bool:
+        parsed_profile_id = parse_int(profile_id)
+        if parsed_profile_id is None:
+            return False
+        current_year = self._current_year_conn(conn)
+        rows = conn.execute(
+            """
+            SELECT p.*, t.code AS team_code
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+            WHERE p.profile_id = ?
+            """,
+            (int(parsed_profile_id),),
+        ).fetchall()
+        has_row_state = self._players_have_row_state_conn(conn)
+        has_active_contract = False
+        for row in rows:
+            inferred_state = self._infer_player_row_state_conn(conn, row, int(current_year))
+            if has_row_state and str(row["row_state"] or "") != inferred_state:
+                conn.execute(
+                    "UPDATE players SET row_state = ? WHERE id = ?",
+                    (inferred_state, int(row["id"])),
+                )
+            if inferred_state == PLAYER_ROW_STATE_ACTIVE:
+                has_active_contract = True
+        return has_active_contract
+
+    def _upsert_draft_pick_identity_conn(
+        self,
+        conn: sqlite3.Connection,
+        draft_year: Any,
+        draft_round: Any,
+        original_team: Any,
+        timestamp: Optional[str] = None,
+    ) -> Optional[int]:
+        year = parse_int(draft_year)
+        round_value = normalize_pick_round(draft_round)
+        team_code = normalize_team_code(original_team)
+        if year is None or round_value not in {"1st", "2nd"} or not team_code:
+            return None
+        now = timestamp or now_iso()
+        conn.execute(
+            """
+            INSERT INTO draft_picks (
+                draft_year, draft_round, original_team, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(draft_year, draft_round, original_team) DO UPDATE SET
+                updated_at = excluded.updated_at
+            """,
+            (int(year), round_value, team_code, now, now),
+        )
+        row = conn.execute(
+            """
+            SELECT id
+            FROM draft_picks
+            WHERE draft_year = ? AND draft_round = ? AND original_team = ?
+            """,
+            (int(year), round_value, team_code),
+        ).fetchone()
+        return int(row["id"]) if row else None
+
+    def _sync_draft_pick_asset_identity_conn(
+        self,
+        conn: sqlite3.Connection,
+        asset_id: Any,
+        timestamp: Optional[str] = None,
+    ) -> None:
+        parsed_asset_id = parse_int(asset_id)
+        if parsed_asset_id is None:
+            return
+        if not self._table_exists_conn(conn, "draft_picks") or not self._table_exists_conn(conn, "draft_pick_holdings"):
+            return
+        now = timestamp or now_iso()
+        conn.execute("DELETE FROM draft_pick_holdings WHERE asset_id = ?", (int(parsed_asset_id),))
+        row = conn.execute(
+            """
+            SELECT a.*, t.code AS holder_team
+            FROM assets a
+            JOIN teams t ON t.id = a.team_id
+            WHERE a.id = ? AND a.asset_type = 'draft_pick'
+            """,
+            (int(parsed_asset_id),),
+        ).fetchone()
+        if not row:
+            return
+        draft_year = parse_int(row["year"])
+        draft_round = normalize_pick_round(row["draft_round"])
+        holder_team = normalize_team_code(row["holder_team"])
+        if draft_year is None or draft_round not in {"1st", "2nd"} or not holder_team:
+            return
+
+        pick_type = normalize_pick_type(row["draft_pick_type"]) or "own"
+        original_owner = normalize_team_code(row["original_owner"])
+        original_teams: List[str]
+        holder_teams: List[str]
+        if pick_type == "sold":
+            original_teams = [original_owner or holder_team]
+            holder_teams = normalize_team_codes(row["draft_pick_sold_to"]) or [holder_team]
+        elif pick_type == "conditional":
+            original_teams = normalize_team_codes(row["draft_pick_conditional_teams"]) or [original_owner or holder_team]
+            holder_teams = [holder_team]
+        elif pick_type == "acquired":
+            original_teams = [original_owner or holder_team]
+            holder_teams = [holder_team]
+        else:
+            original_teams = [holder_team]
+            holder_teams = [holder_team]
+
+        conditions = str(row["detail"] or "").strip() or None
+        frozen_status = "frozen" if parse_bool(row["draft_pick_frozen"]) else None
+        for original_team in sorted({team for team in original_teams if team}):
+            draft_pick_id = self._upsert_draft_pick_identity_conn(
+                conn,
+                int(draft_year),
+                draft_round,
+                original_team,
+                now,
+            )
+            if draft_pick_id is None:
+                continue
+            for holding_team in sorted({team for team in holder_teams if team}):
+                conn.execute(
+                    """
+                    INSERT INTO draft_pick_holdings (
+                        draft_pick_id, holder_team, asset_id, acquired_transaction_id,
+                        conditions, frozen_status, holding_type, created_at, updated_at
+                    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                    ON CONFLICT(draft_pick_id, holder_team, asset_id) DO UPDATE SET
+                        conditions = excluded.conditions,
+                        frozen_status = excluded.frozen_status,
+                        holding_type = excluded.holding_type,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        int(draft_pick_id),
+                        holding_team,
+                        int(parsed_asset_id),
+                        conditions,
+                        frozen_status,
+                        pick_type,
+                        now,
+                        now,
+                    ),
+                )
+
+    def _backfill_draft_pick_identity(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists_conn(conn, "assets"):
+            return
+        if not self._table_exists_conn(conn, "draft_picks") or not self._table_exists_conn(conn, "draft_pick_holdings"):
+            return
+        rows = conn.execute(
+            "SELECT id FROM assets WHERE asset_type = 'draft_pick' ORDER BY id"
+        ).fetchall()
+        now = now_iso()
+        for row in rows:
+            self._sync_draft_pick_asset_identity_conn(conn, row["id"], now)
 
     def _existing_profile_id(self, conn: sqlite3.Connection, profile_id: Any) -> Optional[int]:
         parsed_profile_id = parse_int(profile_id)
@@ -2922,11 +3221,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 if status_row and is_unavailable_player_profile_status(status_row["profile_status"]):
                     raise ValueError("profile_unavailable")
             if forbid_active_contract:
-                active = conn.execute(
-                    "SELECT id FROM players WHERE profile_id = ? LIMIT 1",
-                    (profile_id,),
-                ).fetchone()
-                if active:
+                if self._profile_has_active_contract_conn(conn, profile_id):
                     raise ValueError("profile_has_active_contract")
             return profile_id
 
@@ -3038,6 +3333,26 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 END
                 """
             )
+
+        if self._players_have_row_state_conn(conn):
+            duplicate_profile_ids = self._duplicate_active_profile_ids_conn(conn)
+            if duplicate_profile_ids:
+                sample = ", ".join(str(profile_id) for profile_id in duplicate_profile_ids[:10])
+                suffix = "..." if len(duplicate_profile_ids) > 10 else ""
+                print(
+                    "Skipping idx_players_unique_active_profile; "
+                    f"duplicate active profile_id values exist: {sample}{suffix}",
+                    flush=True,
+                )
+            else:
+                conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_players_unique_active_profile
+                    ON players(profile_id)
+                    WHERE profile_id IS NOT NULL
+                      AND row_state = 'active_contract'
+                    """
+                )
             conn.execute(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS trg_{table}_profile_required_update
@@ -9132,17 +9447,6 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 """,
             ),
             (
-                "duplicate_active_contract_profiles",
-                """
-                SELECT profile_id
-                FROM players
-                WHERE profile_id IS NOT NULL
-                GROUP BY profile_id
-                HAVING COUNT(*) > 1
-                ORDER BY profile_id
-                """,
-            ),
-            (
                 "active_and_free_agent_profiles",
                 """
                 SELECT DISTINCT p.profile_id
@@ -9209,6 +9513,29 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 ORDER BY tx.id
                 """,
             ),
+            (
+                "draft_pick_holdings_orphan_asset",
+                """
+                SELECT h.id
+                FROM draft_pick_holdings h
+                LEFT JOIN assets a ON a.id = h.asset_id
+                WHERE h.asset_id IS NOT NULL AND a.id IS NULL
+                ORDER BY h.id
+                """,
+            ),
+            (
+                "draft_pick_assets_missing_identity",
+                """
+                SELECT a.id
+                FROM assets a
+                LEFT JOIN draft_pick_holdings h ON h.asset_id = a.id
+                WHERE a.asset_type = 'draft_pick'
+                  AND a.year IS NOT NULL
+                  AND COALESCE(a.draft_round, '') != ''
+                  AND h.id IS NULL
+                ORDER BY a.id
+                """,
+            ),
         ]
         errors: List[Dict[str, Any]] = []
         with self.connect() as conn:
@@ -9237,6 +9564,36 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     {
                         "check": check_name,
                         "ids": [row[first_key] for row in rows],
+                    }
+                )
+            current_year = self._current_year_conn(conn)
+            player_rows = conn.execute(
+                """
+                SELECT p.*, t.code AS team_code
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.profile_id IS NOT NULL
+                ORDER BY p.profile_id, p.id
+                """
+            ).fetchall()
+            active_by_profile: Dict[int, List[int]] = {}
+            for row in player_rows:
+                profile_id = parse_int(row["profile_id"])
+                if profile_id is None:
+                    continue
+                if self._player_row_is_retained_rights_only(row, int(current_year), conn):
+                    continue
+                active_by_profile.setdefault(int(profile_id), []).append(int(row["id"]))
+            duplicate_active_profiles = [
+                {"profile_id": profile_id, "player_ids": player_ids}
+                for profile_id, player_ids in active_by_profile.items()
+                if len(player_ids) > 1
+            ]
+            if duplicate_active_profiles:
+                errors.append(
+                    {
+                        "check": "duplicate_active_contract_profiles",
+                        "ids": duplicate_active_profiles,
                     }
                 )
         return {"ok": not errors, "errors": errors}
@@ -14806,6 +15163,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                         f"UPDATE player_profiles SET {', '.join(profile_updates)} WHERE id = ?",
                         profile_values,
                     )
+            self._sync_player_row_state_conn(conn, player_id, timestamp)
             self._sync_free_agency_generated_rows_if_needed(conn, payload)
             conn.commit()
             return row_changed
@@ -15305,23 +15663,43 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     (int(target_id), timestamp, int(source_id)),
                 )
 
+            merge_details = {
+                "source_profile_id": int(source_id),
+                "target_profile_id": int(target_id),
+                "source_name": source_profile["name"],
+                "target_name": target_profile["name"],
+                "deleted_player_rows": deleted_player_rows,
+                "moved_player_rows": moved_player_rows,
+                "moved_dead_contracts": moved_dead_contracts,
+                "moved_salary_history": moved_salary_history,
+                "deleted_salary_history": deleted_salary_history,
+                "deleted_free_agents": deleted_free_agents,
+            }
+            conn.execute(
+                """
+                INSERT INTO player_profile_aliases (
+                    old_profile_id, target_profile_id, reason, actor, details_json, created_at
+                ) VALUES (?, ?, 'merge', NULL, ?, ?)
+                ON CONFLICT(old_profile_id) DO UPDATE SET
+                    target_profile_id = excluded.target_profile_id,
+                    reason = excluded.reason,
+                    actor = excluded.actor,
+                    details_json = excluded.details_json,
+                    created_at = excluded.created_at
+                """,
+                (
+                    int(source_id),
+                    int(target_id),
+                    json.dumps(merge_details, ensure_ascii=True, sort_keys=True),
+                    timestamp,
+                ),
+            )
             self._record_player_transaction(
                 conn,
                 int(target_id),
                 "merge_profile",
                 f"Perfil fusionado: {source_profile['name']} -> {target_profile['name']}",
-                details={
-                    "source_profile_id": int(source_id),
-                    "target_profile_id": int(target_id),
-                    "source_name": source_profile["name"],
-                    "target_name": target_profile["name"],
-                    "deleted_player_rows": deleted_player_rows,
-                    "moved_player_rows": moved_player_rows,
-                    "moved_dead_contracts": moved_dead_contracts,
-                    "moved_salary_history": moved_salary_history,
-                    "deleted_salary_history": deleted_salary_history,
-                    "deleted_free_agents": deleted_free_agents,
-                },
+                details=merge_details,
             )
             conn.execute("DELETE FROM player_profiles WHERE id = ?", (int(source_id),))
             conn.commit()
@@ -18229,7 +18607,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             draft_pick_stepien_restricted = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_stepien_restricted")) else 0
             draft_pick_protected = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_protected")) else 0
             draft_pick_frozen = 1 if asset_type == "draft_pick" and parse_bool(payload.get("draft_pick_frozen")) else 0
-            if asset_type == "draft_pick" and draft_pick_type != "acquired":
+            if asset_type == "draft_pick" and draft_pick_type not in {"acquired", "sold", "conditional"}:
                 original_owner = None
             if asset_type == "draft_pick" and draft_pick_type != "sold":
                 draft_pick_sold_to = None
@@ -18268,8 +18646,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     now,
                 ),
             )
+            asset_id = int(cur.lastrowid)
+            self._sync_draft_pick_asset_identity_conn(conn, asset_id, now)
             conn.commit()
-            return int(cur.lastrowid)
+            return asset_id
 
     def update_asset(self, asset_id: int, payload: Dict[str, Any]) -> bool:
         fields = [
@@ -18311,7 +18691,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             vals.append(parse_float(payload["amount_text"]))
         if "draft_pick_type" in payload:
             pick_type = normalize_pick_type(payload["draft_pick_type"])
-            if pick_type != "acquired":
+            if pick_type not in {"acquired", "sold", "conditional"}:
                 assigns.append("original_owner = ?")
                 vals.append(None)
             if pick_type != "sold":
@@ -18322,11 +18702,14 @@ class LeagueDB(DatabaseMaintenanceMixin):
                 vals.append(None)
         if not assigns:
             return False
+        updated_at = now_iso()
         assigns.append("updated_at = ?")
-        vals.append(now_iso())
+        vals.append(updated_at)
         vals.append(asset_id)
         with self.connect() as conn:
             cur = conn.execute(f"UPDATE assets SET {', '.join(assigns)} WHERE id = ?", vals)
+            if cur.rowcount > 0:
+                self._sync_draft_pick_asset_identity_conn(conn, asset_id, updated_at)
             conn.commit()
             return cur.rowcount > 0
 

@@ -101,6 +101,22 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
                 0,
                 conn.execute("SELECT COUNT(*) FROM dead_contracts WHERE profile_id IS NULL").fetchone()[0],
             )
+            player_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(players)").fetchall()
+            }
+            self.assertIn("row_state", player_cols)
+            self.assertEqual(
+                0,
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM players
+                    WHERE row_state IS NULL
+                       OR row_state NOT IN ('active_contract', 'retained_rights')
+                    """
+                ).fetchone()[0],
+            )
             team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute(
@@ -224,6 +240,12 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual(1, len(player_rows))
             self.assertEqual(int(active_player_id), int(player_rows[0]["id"]))
+            alias = conn.execute(
+                "SELECT target_profile_id FROM player_profile_aliases WHERE old_profile_id = ?",
+                (source_profile_id,),
+            ).fetchone()
+            self.assertIsNotNone(alias)
+            self.assertEqual(target_profile_id, int(alias["target_profile_id"]))
 
     def test_merge_player_profiles_blocks_two_active_contracts(self) -> None:
         first_player_id = self.db.create_player(
@@ -257,6 +279,118 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
         with self.assertRaises(ValueError):
             self.db.create_player("BOS", {"name": "Duplicate Contract", "profile_id": profile_id})
+        self.db.assert_player_identity_integrity()
+
+    def test_retained_rights_row_does_not_block_active_contract_profile(self) -> None:
+        profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
+        now = now_iso()
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('current_year', '2026', ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (now,),
+            )
+            conn.execute(
+                """
+                UPDATE players
+                SET salary_2025_text = NULL,
+                    salary_2025_num = NULL,
+                    salary_2026_text = 'FB',
+                    salary_2026_num = NULL,
+                    salary_2027_text = NULL,
+                    salary_2027_num = NULL,
+                    salary_2028_text = NULL,
+                    salary_2028_num = NULL,
+                    salary_2029_text = NULL,
+                    salary_2029_num = NULL,
+                    salary_2030_text = NULL,
+                    salary_2030_num = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, self.legacy_atl_player_id),
+            )
+            conn.commit()
+
+        new_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Legacy Hawk",
+                "profile_id": profile_id,
+                "position": "PG",
+                "salary_2026_text": "4.000.000",
+            },
+        )
+
+        self.assertIsNotNone(new_id)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, row_state FROM players WHERE profile_id = ? ORDER BY id",
+                (profile_id,),
+            ).fetchall()
+            self.assertEqual(2, len(rows))
+            self.assertEqual("retained_rights", rows[0]["row_state"])
+            self.assertEqual("active_contract", rows[1]["row_state"])
+            bos_team_id = conn.execute("SELECT id FROM teams WHERE code = 'BOS'").fetchone()["id"]
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    """
+                    INSERT INTO players (
+                        team_id, profile_id, row_state, row_order,
+                        bird_rights, rating, name, position, years_left,
+                        salary_2026_text, salary_2026_num,
+                        notes, is_two_way, created_at, updated_at
+                    ) VALUES (?, ?, 'active_contract', 999, 'Reg', '70', 'Duplicate Active',
+                        'PG', 1, '5.000.000', 5000000, NULL, 0, ?, ?)
+                    """,
+                    (bos_team_id, profile_id, now_iso(), now_iso()),
+                )
+        self.db.assert_player_identity_integrity()
+
+    def test_draft_pick_assets_are_synced_to_canonical_identity(self) -> None:
+        asset_id = self.db.create_asset(
+            "ATL",
+            {
+                "asset_type": "draft_pick",
+                "year": 2027,
+                "draft_round": "1st",
+                "draft_pick_type": "acquired",
+                "original_owner": "DAL",
+                "label": "2027 1st DAL",
+                "detail": "Top protected",
+            },
+        )
+
+        self.assertIsNotNone(asset_id)
+        with self.db.connect() as conn:
+            pick = conn.execute(
+                """
+                SELECT id
+                FROM draft_picks
+                WHERE draft_year = 2027
+                  AND draft_round = '1st'
+                  AND original_team = 'DAL'
+                """
+            ).fetchone()
+            self.assertIsNotNone(pick)
+            holding = conn.execute(
+                """
+                SELECT holder_team, asset_id, conditions, holding_type
+                FROM draft_pick_holdings
+                WHERE draft_pick_id = ?
+                """,
+                (pick["id"],),
+            ).fetchone()
+            self.assertIsNotNone(holding)
+            self.assertEqual("ATL", holding["holder_team"])
+            self.assertEqual(asset_id, int(holding["asset_id"]))
+            self.assertEqual("Top protected", holding["conditions"])
+            self.assertEqual("acquired", holding["holding_type"])
         self.db.assert_player_identity_integrity()
 
     def test_profile_can_have_active_contract_and_multiple_dead_contracts(self) -> None:
