@@ -38,18 +38,32 @@ function renderArticle(article) {
     articleEl.innerHTML = '<div class="news-empty">No se encontró el artículo.</div>';
     return;
   }
-  articleEl.innerHTML = `
-    ${article.image_url ? `<img class="news-hero-image" src="${article.image_url}" alt="">` : ''}
-    <div class="news-article-body">
-      <div class="news-date"></div>
-      <h2></h2>
-      <div class="news-full-text"></div>
-    </div>
-  `;
-  setText(articleEl, '.news-date', formatDate(article.created_at));
-  setText(articleEl, 'h2', article.title || 'ANBA News');
-  const textNode = articleEl.querySelector('.news-full-text');
-  if (textNode) textNode.textContent = article.body || '';
+  articleEl.innerHTML = '';
+
+  if (article.image_url) {
+    const image = document.createElement('img');
+    image.className = 'news-hero-image';
+    image.src = article.image_url;
+    image.alt = '';
+    articleEl.appendChild(image);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'news-article-body';
+
+  const date = document.createElement('div');
+  date.className = 'news-date';
+  date.textContent = formatDate(article.created_at);
+
+  const title = document.createElement('h2');
+  title.textContent = article.title || 'ANBA News';
+
+  const text = document.createElement('div');
+  text.className = 'news-full-text';
+  text.textContent = article.body || '';
+
+  body.append(date, title, text);
+  articleEl.appendChild(body);
 }
 
 function renderFeed(articles, selectedId) {

@@ -7272,27 +7272,12 @@ class LeagueDB(DatabaseMaintenanceMixin):
             ).fetchone()
             if not row:
                 return None
-            stored_token = str(row["session_token"] or "")
             expires_at = int(row["expires_at"] or 0)
             if expires_at <= current_ts:
-                try:
-                    conn.execute("DELETE FROM sessions WHERE session_token = ?", (stored_token,))
-                    conn.commit()
-                except sqlite3.OperationalError as exc:
-                    if "database is locked" not in str(exc).lower():
-                        raise
-                    print(f"Expired session cleanup skipped: {exc}", flush=True)
                 return None
             try:
                 payload = json.loads(str(row["data_json"] or "{}"))
             except json.JSONDecodeError:
-                try:
-                    conn.execute("DELETE FROM sessions WHERE session_token = ?", (stored_token,))
-                    conn.commit()
-                except sqlite3.OperationalError as exc:
-                    if "database is locked" not in str(exc).lower():
-                        raise
-                    print(f"Invalid session cleanup skipped: {exc}", flush=True)
                 return None
             return payload if isinstance(payload, dict) else None
 
@@ -9678,7 +9663,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             conn.commit()
         return self.list_gm_history(code)
 
-    def list_tracker(self, season_year: Optional[int] = None, busy_timeout_ms: int = 750) -> Dict[str, Any]:
+    def list_tracker(self, season_year: Optional[int] = None, busy_timeout_ms: int = 5000) -> Dict[str, Any]:
         timings: Dict[str, float] = {}
         started = time.perf_counter()
         requested_year = parse_int(season_year)
@@ -12250,25 +12235,57 @@ class LeagueDB(DatabaseMaintenanceMixin):
         )
         salary_floor = salary_floor_for_season(settings, current_year, salary_cap)
 
+        player_metric_cache: Dict[tuple, float] = {}
+
+        def player_cache_id(player: Dict[str, Any]) -> int:
+            return int(player.get("id") or id(player))
+
+        def cached_player_metric(player: Dict[str, Any], metric: str, calculator: Any) -> float:
+            key = (metric, player_cache_id(player))
+            if key not in player_metric_cache:
+                player_metric_cache[key] = float(calculator() or 0.0)
+            return player_metric_cache[key]
+
+        def player_cap_hold(player: Dict[str, Any]) -> float:
+            return cached_player_metric(
+                player,
+                "cap_hold",
+                lambda: cap_hold_amount(player, current_year, settings, salary_cap),
+            )
+
+        def player_minimum_team_salary(player: Dict[str, Any]) -> float:
+            return cached_player_metric(
+                player,
+                "minimum_team_salary",
+                lambda: minimum_contract_team_salary(player, current_year, salary_cap),
+            )
+
+        def player_apron_yos_adjustment(player: Dict[str, Any]) -> float:
+            return cached_player_metric(
+                player,
+                "apron_yos_adjustment",
+                lambda: apron_yos_adjustment(player, current_year, salary_cap),
+            )
+
         def player_salary_for_gasto(player: Dict[str, Any]) -> float:
             if is_exhibit10_player(player):
                 return 0.0
-            return minimum_contract_team_salary(player, current_year, salary_cap)
+            return player_minimum_team_salary(player)
 
         def player_salary_for_cap(player: Dict[str, Any]) -> float:
-            hold = cap_hold_amount(player, current_year, settings, salary_cap)
+            hold = player_cap_hold(player)
             if hold > 0:
                 return hold
             if is_two_way_player(player) or is_exhibit10_player(player):
                 return 0.0
-            return minimum_contract_team_salary(player, current_year, salary_cap)
+            return player_minimum_team_salary(player)
 
         def player_salary_for_apron(player: Dict[str, Any]) -> float:
-            if cap_hold_amount(player, current_year, settings, salary_cap) > 0:
+            if player_cap_hold(player) > 0:
                 return 0.0
             if is_two_way_player(player) or is_exhibit10_player(player):
                 return 0.0
-            return minimum_contract_team_salary(player, current_year, salary_cap) + apron_yos_adjustment(player, current_year, salary_cap)
+            return player_minimum_team_salary(player) + player_apron_yos_adjustment(player)
 
         # CAP Total: player team salary excluding Two-Way and Exhibit 10 contracts.
         cap_figure_players = sum(player_salary_for_cap(p) for p in players)
@@ -12361,7 +12378,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         def cap_player_detail_lines() -> List[Dict[str, Any]]:
             lines: List[Dict[str, Any]] = []
             for player in players:
-                hold = cap_hold_amount(player, current_year, settings, salary_cap)
+                hold = player_cap_hold(player)
                 if hold > 0:
                     lines.append(
                         breakdown_amount(
@@ -12372,7 +12389,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     continue
                 if is_two_way_player(player) or is_exhibit10_player(player):
                     continue
-                salary = minimum_contract_team_salary(player, current_year, salary_cap)
+                salary = player_minimum_team_salary(player)
                 if salary > 0:
                     lines.append(breakdown_amount(f"Jugador - {player_name(player)}", salary))
             return lines
@@ -12382,7 +12399,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
             for player in players:
                 if is_exhibit10_player(player):
                     continue
-                salary = minimum_contract_team_salary(player, current_year, salary_cap)
+                salary = player_minimum_team_salary(player)
                 if salary > 0:
                     label = f"Jugador - {player_name(player)}"
                     if is_two_way_player(player):
@@ -12393,7 +12410,7 @@ class LeagueDB(DatabaseMaintenanceMixin):
         def apron_player_detail_lines() -> List[Dict[str, Any]]:
             lines: List[Dict[str, Any]] = []
             for player in players:
-                hold = cap_hold_amount(player, current_year, settings, salary_cap)
+                hold = player_cap_hold(player)
                 if hold > 0:
                     lines.append(
                         breakdown_text(
@@ -12404,10 +12421,10 @@ class LeagueDB(DatabaseMaintenanceMixin):
                     continue
                 if is_two_way_player(player) or is_exhibit10_player(player):
                     continue
-                salary = minimum_contract_team_salary(player, current_year, salary_cap)
+                salary = player_minimum_team_salary(player)
                 if salary > 0:
                     lines.append(breakdown_amount(f"Jugador - {player_name(player)}", salary))
-                yos_adjustment = apron_yos_adjustment(player, current_year, salary_cap)
+                yos_adjustment = player_apron_yos_adjustment(player)
                 if yos_adjustment > 0:
                     lines.append(breakdown_amount(f"Ajuste 0-1 YOS - {player_name(player)}", yos_adjustment))
             return lines
@@ -21267,7 +21284,29 @@ class Handler(SimpleHTTPRequestHandler):
         path = parsed.path.lower()
         query = parsed.query
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "font-src 'self' data:; "
+            "img-src 'self' data: https:; "
+            "connect-src 'self'; "
+            "media-src 'self'; "
+            "manifest-src 'self'; "
+            "worker-src 'none'; "
+            "frame-src 'none'; "
+            "object-src 'none'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'",
+        )
+        if self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower() == "https":
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         if path.endswith(".html") or path in {"/", "/login", "/admin", "/news"}:
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         elif path.endswith((".css", ".js", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico")):
@@ -21422,7 +21461,12 @@ class Handler(SimpleHTTPRequestHandler):
         if now_ts - self._last_session_cleanup_ts < self.session_cleanup_interval_seconds:
             return
         type(self)._last_session_cleanup_ts = now_ts
-        self.db.cleanup_expired_sessions(now_ts)
+        try:
+            self.db.cleanup_expired_sessions(now_ts)
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            print(f"Session cleanup skipped from request path: {exc}", flush=True)
 
     def _current_session(self) -> Optional[Dict[str, Any]]:
         self._maybe_cleanup_sessions()

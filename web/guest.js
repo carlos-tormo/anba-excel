@@ -687,40 +687,51 @@ function canViewGmNotifications() {
   return Boolean(state.auth?.authenticated && hasGmLevelRole(state.auth?.role));
 }
 
-function gmNotificationHtml(notification) {
-  const id = escapeHtml(notification?.id);
-  const kind = escapeHtml(notification?.kind || 'info');
-  const title = escapeHtml(notification?.title || 'Notificación');
-  const body = String(notification?.body || '').trim();
-  return `
-    <article class="gm-notification-card gm-notification-card--${kind}">
-      <div class="gm-notification-copy">
-        <strong>${title}</strong>
-        ${body ? `<p>${escapeHtml(body)}</p>` : ''}
-      </div>
-      <button type="button" data-gm-notification-read="${id}">Cerrar</button>
-    </article>
-  `;
-}
-
 function renderGmNotifications() {
   const panel = document.getElementById('gmNotificationsPanel');
   if (!panel) return;
   const notifications = Array.isArray(state.gmNotifications) ? state.gmNotifications : [];
   panel.classList.toggle('section-hidden', !notifications.length);
   if (!notifications.length) {
-    panel.innerHTML = '';
+    panel.replaceChildren();
     return;
   }
-  panel.innerHTML = `
-    <div class="gm-notifications-head">
-      <strong>Notificaciones</strong>
-      <span>${notifications.length} pendiente${notifications.length === 1 ? '' : 's'}</span>
-    </div>
-    <div class="gm-notifications-list">
-      ${notifications.map((notification) => gmNotificationHtml(notification)).join('')}
-    </div>
-  `;
+  panel.replaceChildren();
+
+  const head = document.createElement('div');
+  head.className = 'gm-notifications-head';
+  const title = document.createElement('strong');
+  title.textContent = 'Notificaciones';
+  const count = document.createElement('span');
+  count.textContent = `${notifications.length} pendiente${notifications.length === 1 ? '' : 's'}`;
+  head.append(title, count);
+
+  const list = document.createElement('div');
+  list.className = 'gm-notifications-list';
+  notifications.forEach((notification) => {
+    const card = document.createElement('article');
+    card.className = `gm-notification-card gm-notification-card--${safeCssToken(notification?.kind || 'info', 'info')}`;
+
+    const copy = document.createElement('div');
+    copy.className = 'gm-notification-copy';
+    const notificationTitle = document.createElement('strong');
+    notificationTitle.textContent = String(notification?.title || 'Notificación');
+    copy.appendChild(notificationTitle);
+    const body = String(notification?.body || '').trim();
+    if (body) {
+      const bodyEl = document.createElement('p');
+      bodyEl.textContent = body;
+      copy.appendChild(bodyEl);
+    }
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.gmNotificationRead = String(notification?.id ?? '');
+    button.textContent = 'Cerrar';
+    card.append(copy, button);
+    list.appendChild(card);
+  });
+  panel.append(head, list);
   panel.querySelectorAll('[data-gm-notification-read]').forEach((button) => {
     button.addEventListener('click', async () => {
       const id = Number(button.dataset.gmNotificationRead);
@@ -995,6 +1006,38 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
 }
+
+function safeCssToken(value, fallback = 'item') {
+  const token = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return token || fallback;
+}
+
+function setupImageFallbackHandlers() {
+  if (setupImageFallbackHandlers.bound) return;
+  setupImageFallbackHandlers.bound = true;
+
+  document.addEventListener('load', (event) => {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement) || !img.dataset.fallbackImage) return;
+    const fallback = img.previousElementSibling;
+    if (fallback) fallback.style.display = 'none';
+    img.style.display = '';
+  }, true);
+
+  document.addEventListener('error', (event) => {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement) || !img.dataset.fallbackImage) return;
+    const fallback = img.previousElementSibling;
+    img.style.display = 'none';
+    if (fallback) fallback.style.display = img.dataset.fallbackDisplay || 'inline-flex';
+  }, true);
+}
+
+setupImageFallbackHandlers();
 
 function typeClass(value) {
   const v = String(value || '').toLowerCase().replaceAll('(', '').replaceAll(')', '').replaceAll('/', '').replaceAll(' ', '');
@@ -2579,7 +2622,7 @@ function tradeMachineTeamLogoHtml(code) {
   return `
     <span class="trade-machine-team-kicker-logo" aria-hidden="true">
       <span>${escapeHtml(normalized)}</span>
-      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+      <img src="${escapeHtml(src)}" alt="" data-fallback-image="1" data-fallback-display="inline-flex">
     </span>
   `;
 }
@@ -2591,7 +2634,7 @@ function tradeMachineSummaryLogoHtml(code, className = 'trade-machine-summary-mi
   return `
     <span class="${className}" title="${escapeHtml(normalized)}" aria-label="${escapeHtml(normalized)}">
       <span>${escapeHtml(normalized)}</span>
-      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+      <img src="${escapeHtml(src)}" alt="" data-fallback-image="1" data-fallback-display="inline-flex">
     </span>
   `;
 }
@@ -5228,14 +5271,28 @@ function renderWaiversPanel() {
   });
 }
 
-function freeAgentActionSummary(agent, includeAgent = false) {
-  const parts = [
-    `<strong>${escapeHtml(agent?.name || 'Agente libre')}</strong>`,
-    agent?.position ? escapeHtml(agent.position) : '',
-    agent?.rating ? `Rating ${escapeHtml(agent.rating)}` : '',
-    includeAgent && agent?.agent ? `Agente: ${escapeHtml(agent.agent)}` : '',
-  ].filter(Boolean);
-  return parts.join(' · ');
+function renderFreeAgentActionSummary(container, agent, options = {}) {
+  if (!container) return;
+  container.replaceChildren();
+  const name = document.createElement('strong');
+  name.textContent = String(agent?.name || 'Agente libre');
+  container.appendChild(name);
+
+  [
+    agent?.position ? String(agent.position) : '',
+    agent?.rating ? `Rating ${String(agent.rating)}` : '',
+    options.includeAgent && agent?.agent ? `Agente: ${String(agent.agent)}` : '',
+  ].filter(Boolean).forEach((part) => {
+    container.appendChild(document.createTextNode(` · ${part}`));
+  });
+
+  if (options.badgeText) {
+    container.appendChild(document.createTextNode(' · '));
+    const badge = document.createElement('span');
+    badge.className = options.badgeClass || 'free-agent-offer-kind';
+    badge.textContent = options.badgeText;
+    container.appendChild(badge);
+  }
 }
 
 function freeAgentOfferIsRenewal(agent, teamCode) {
@@ -5402,10 +5459,11 @@ function updateFreeAgentOfferSummary() {
   const summary = document.getElementById('freeAgentOfferSummary');
   if (!agent || !summary) return;
   const teamCode = document.getElementById('freeAgentOfferTeam')?.value || '';
-  const renewalBadge = freeAgentOfferIsRenewal(agent, teamCode)
-    ? ' · <span class="free-agent-offer-kind free-agent-offer-kind--renewal">Oferta de renovación</span>'
-    : ' · <span class="free-agent-offer-kind">Oferta FA</span>';
-  summary.innerHTML = `${freeAgentActionSummary(agent)}${renewalBadge}`;
+  const isRenewal = freeAgentOfferIsRenewal(agent, teamCode);
+  renderFreeAgentActionSummary(summary, agent, {
+    badgeText: isRenewal ? 'Oferta de renovación' : 'Oferta FA',
+    badgeClass: `free-agent-offer-kind${isRenewal ? ' free-agent-offer-kind--renewal' : ''}`,
+  });
 }
 
 function renderFreeAgentOfferYearsTable(options = {}) {
@@ -5545,7 +5603,7 @@ function openFreeAgentNegotiateModal(agent) {
   }
   if (!agent) return;
   state.ui.freeAgentActionId = Number(agent.id);
-  document.getElementById('freeAgentNegotiateSummary').innerHTML = freeAgentActionSummary(agent, true);
+  renderFreeAgentActionSummary(document.getElementById('freeAgentNegotiateSummary'), agent, { includeAgent: true });
   populateFreeAgentActionTeams('freeAgentNegotiateTeam');
   document.getElementById('freeAgentNegotiateEconomic').value = '';
   document.getElementById('freeAgentNegotiateRole').value = '';
@@ -7015,7 +7073,7 @@ function draftOrderLogoHtml(code, className = 'draft-order-team-logo') {
   return `
     <span class="${className}" title="${escapeHtml(normalized)}" aria-label="${escapeHtml(normalized)}">
       <span>${escapeHtml(normalized)}</span>
-      <img src="${escapeHtml(src)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='inline-flex'">
+      <img src="${escapeHtml(src)}" alt="" data-fallback-image="1" data-fallback-display="inline-flex">
     </span>
   `;
 }
@@ -7573,7 +7631,7 @@ function ownerOfficeProfileAvatarHtml(profile) {
   return `
     <div class="owner-office-avatar" aria-hidden="true">
       <span class="owner-office-avatar-fallback">${escapeHtml(initials)}</span>
-      ${photoUrl ? `<img src="${escapeHtml(photoUrl)}" alt="" onload="this.previousElementSibling.style.display='none'" onerror="this.style.display='none';this.previousElementSibling.style.display='grid'">` : ''}
+      ${photoUrl ? `<img src="${escapeHtml(photoUrl)}" alt="" data-fallback-image="1" data-fallback-display="grid">` : ''}
     </div>
   `;
 }
