@@ -42,6 +42,127 @@ class TradeValidationServerTests(unittest.TestCase):
         except FileNotFoundError:
             pass
 
+    def _two_team_player_trade(self):
+        atl_player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Atlanta Trade Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2026_text": "10000000",
+            },
+        )
+        bos_player_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Boston Trade Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "salary_2026_text": "10000000",
+            },
+        )
+        payload = {
+            "teams": ["ATL", "BOS"],
+            "season": 2026,
+            "trade_bucket": "pre30",
+            "selections": [
+                {
+                    "type": "player",
+                    "id": atl_player_id,
+                    "from_team": "ATL",
+                    "to_team": "BOS",
+                },
+                {
+                    "type": "player",
+                    "id": bos_player_id,
+                    "from_team": "BOS",
+                    "to_team": "ATL",
+                },
+            ],
+            "cash": [],
+        }
+        return atl_player_id, bos_player_id, payload
+
+    def _player_team_code(self, player_id: int) -> str:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT teams.code
+                FROM players
+                JOIN teams ON teams.id = players.team_id
+                WHERE players.id = ?
+                """,
+                (player_id,),
+            ).fetchone()
+        return str(row[0]) if row else ""
+
+    def test_trade_validation_signature_ignores_browser_derived_fields(self) -> None:
+        _atl_player_id, _bos_player_id, payload = self._two_team_player_trade()
+        clean = self.db.validate_trade_machine(payload)
+        browser_claims = self.db.validate_trade_machine(
+            {
+                **payload,
+                "salary_totals": {"ATL": 1, "BOS": 999999999},
+                "matching_status": "legal",
+                "tax_position": {"ATL": "under_cap"},
+                "exception_eligibility": ["NTMLE"],
+                "roster_counts": {"ATL": 1},
+                "stepien_compliance": True,
+                "hard_cap_consequences": [],
+            }
+        )
+
+        self.assertEqual(clean["validation_hash"], browser_claims["validation_hash"])
+        self.assertEqual(clean["rules_version"], browser_claims["rules_version"])
+        self.assertEqual(64, len(clean["validation_hash"]))
+
+    def test_trade_command_requires_validation_signature_without_mutating(self) -> None:
+        atl_player_id, bos_player_id, payload = self._two_team_player_trade()
+
+        command = self.db.process_trade_command(
+            payload,
+            require_validation_hash=True,
+            notify_discord=False,
+        )
+
+        self.assertEqual("trade_validation_required", command["error"])
+        self.assertEqual("ATL", self._player_team_code(atl_player_id))
+        self.assertEqual("BOS", self._player_team_code(bos_player_id))
+
+    def test_trade_command_rejects_stale_signature_without_mutating(self) -> None:
+        atl_player_id, bos_player_id, payload = self._two_team_player_trade()
+        preview = self.db.validate_trade_machine(payload)
+        self.assertTrue(self.db.update_player(atl_player_id, {"salary_2026_text": "12000000"}))
+
+        command = self.db.process_trade_command(
+            payload,
+            expected_validation_hash=preview["validation_hash"],
+            require_validation_hash=True,
+            notify_discord=False,
+        )
+
+        self.assertEqual("trade_validation_stale", command["error"])
+        self.assertNotEqual(preview["validation_hash"], command["validation"]["validation_hash"])
+        self.assertEqual("ATL", self._player_team_code(atl_player_id))
+        self.assertEqual("BOS", self._player_team_code(bos_player_id))
+
+    def test_trade_command_revalidates_and_processes_signed_source_inputs(self) -> None:
+        atl_player_id, bos_player_id, payload = self._two_team_player_trade()
+        preview = self.db.validate_trade_machine(payload)
+        self.assertNotEqual("illegal", preview["status"])
+
+        command = self.db.process_trade_command(
+            payload,
+            expected_validation_hash=preview["validation_hash"],
+            require_validation_hash=True,
+            notify_discord=False,
+        )
+
+        self.assertIsNotNone(command["result"])
+        self.assertEqual(preview["validation_hash"], command["validation"]["validation_hash"])
+        self.assertEqual("BOS", self._player_team_code(atl_player_id))
+        self.assertEqual("ATL", self._player_team_code(bos_player_id))
+
     def test_discord_trade_summary_lists_pick_rounds(self) -> None:
         handler = object.__new__(Handler)
 

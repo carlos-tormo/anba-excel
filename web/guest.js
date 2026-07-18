@@ -4728,10 +4728,10 @@ function usagePercent(available, limit) {
   return { raw, clamped: Math.max(0, Math.min(100, raw)) };
 }
 
-function gaugeColor(percent) {
+function gaugeColorClass(percent) {
   const clamped = Math.max(0, Math.min(100, Number(percent || 0)));
-  const hue = Math.round((clamped / 100) * 145);
-  return `hsl(${hue} 70% 34%)`;
+  const bucket = Math.round(clamped / 5) * 5;
+  return `usage-gauge-card--pct-${bucket}`;
 }
 
 function availableAmount(used, limit) {
@@ -4761,12 +4761,12 @@ function buildUsageGaugeCard({ label, available, limit, valueText, limitText, un
   const pct = usagePercent(available, limit);
   const displayPct = Math.round(pct.raw);
   const isOver = pct.raw > 100;
-  const color = gaugeColor(pct.clamped);
+  const colorClass = gaugeColorClass(pct.clamped);
   const progressPath = pct.clamped > 0
     ? `<path class="usage-gauge-progress" pathLength="100" stroke-dasharray="${pct.clamped} 100" d="M18 58 A42 42 0 0 1 102 58"></path>`
     : '';
   return `
-    <article class="usage-gauge-card usage-gauge-card--${tone}${isOver ? ' is-over' : ''}" style="--gauge-color: ${color};">
+    <article class="usage-gauge-card usage-gauge-card--${tone} ${colorClass}${isOver ? ' is-over' : ''}">
       <div class="usage-gauge-title">${escapeHtml(label)}</div>
       <div class="usage-gauge-visual" aria-label="${escapeHtml(`${label}: ${displayPct}% ${unitText}`)}">
         <svg class="usage-gauge-svg" viewBox="0 0 120 72" role="img" aria-hidden="true">

@@ -4867,6 +4867,27 @@ section {
 .usage-gauge-card.is-over .usage-gauge-progress {
   stroke: #b42318;
 }
+.usage-gauge-card--pct-0 { --gauge-color: hsl(0 70% 34%); }
+.usage-gauge-card--pct-5 { --gauge-color: hsl(7 70% 34%); }
+.usage-gauge-card--pct-10 { --gauge-color: hsl(15 70% 34%); }
+.usage-gauge-card--pct-15 { --gauge-color: hsl(22 70% 34%); }
+.usage-gauge-card--pct-20 { --gauge-color: hsl(29 70% 34%); }
+.usage-gauge-card--pct-25 { --gauge-color: hsl(36 70% 34%); }
+.usage-gauge-card--pct-30 { --gauge-color: hsl(44 70% 34%); }
+.usage-gauge-card--pct-35 { --gauge-color: hsl(51 70% 34%); }
+.usage-gauge-card--pct-40 { --gauge-color: hsl(58 70% 34%); }
+.usage-gauge-card--pct-45 { --gauge-color: hsl(65 70% 34%); }
+.usage-gauge-card--pct-50 { --gauge-color: hsl(72 70% 34%); }
+.usage-gauge-card--pct-55 { --gauge-color: hsl(80 70% 34%); }
+.usage-gauge-card--pct-60 { --gauge-color: hsl(87 70% 34%); }
+.usage-gauge-card--pct-65 { --gauge-color: hsl(94 70% 34%); }
+.usage-gauge-card--pct-70 { --gauge-color: hsl(102 70% 34%); }
+.usage-gauge-card--pct-75 { --gauge-color: hsl(109 70% 34%); }
+.usage-gauge-card--pct-80 { --gauge-color: hsl(116 70% 34%); }
+.usage-gauge-card--pct-85 { --gauge-color: hsl(123 70% 34%); }
+.usage-gauge-card--pct-90 { --gauge-color: hsl(130 70% 34%); }
+.usage-gauge-card--pct-95 { --gauge-color: hsl(138 70% 34%); }
+.usage-gauge-card--pct-100 { --gauge-color: hsl(145 70% 34%); }
 .usage-gauge-card.is-over .usage-gauge-center strong,
 .usage-gauge-card.is-over .usage-gauge-meta strong {
   color: #991b1b;

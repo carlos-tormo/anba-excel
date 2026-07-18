@@ -6,6 +6,7 @@ import unittest
 
 from app.server import Handler, LeagueDB
 from app.domain_rules import minimum_salary_for_season
+from app.services.free_agency import FreeAgencyService, OfferDecisionOptions
 from app.xlsx_import import create_schema, now_iso
 
 
@@ -52,6 +53,156 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
             os.unlink(self.db_path)
         except FileNotFoundError:
             pass
+
+    def test_free_agency_service_submits_normalized_offer(self) -> None:
+        service = FreeAgencyService(
+            self.db,
+            contract_seasons=range(2025, 2032),
+        )
+
+        submission = service.submit_offer(
+            self.free_agent_id,
+            "atl",
+            {
+                "contract_type": "Reg",
+                "years": 2,
+                "annual_raise_percent": 5,
+                "salary_by_season": {"2025": "10.000.000"},
+                "option_by_season": {},
+            },
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        self.assertEqual("ATL", submission["team_code"])
+        self.assertEqual("free_agent_offer", submission["offer_type"])
+        self.assertEqual("10.500.000", submission["payload"]["salary_by_season"]["2026"])
+        self.assertEqual("pending", submission["request"]["status"])
+
+    def test_free_agency_service_approves_offer_and_signs_player(self) -> None:
+        service = FreeAgencyService(self.db, contract_seasons=range(2025, 2032))
+        submission = service.submit_offer(
+            self.free_agent_id,
+            "ATL",
+            {
+                "contract_type": "Reg",
+                "years": 1,
+                "annual_raise_percent": 0,
+                "role": "Titular",
+                "salary_by_season": {"2025": "10.000.000"},
+                "option_by_season": {},
+            },
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        result = service.decide_offer(
+            int(submission["request"]["id"]),
+            "approved",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            options=OfferDecisionOptions(note="Approved in service test", bypass_role_limits=True),
+            request=submission["request"],
+        )
+
+        self.assertEqual("approved", result["decision"])
+        self.assertEqual("approved", result["request"]["status"])
+        self.assertIsNotNone(result["player_id"])
+        self.assertEqual("10.000.000", result["player"]["salary_2025_text"])
+        self.assertIsNone(self.db.get_free_agent(self.free_agent_id))
+
+    def test_free_agency_service_rejects_offer_without_signing_player(self) -> None:
+        service = FreeAgencyService(self.db, contract_seasons=range(2025, 2032))
+        submission = service.submit_offer(
+            self.free_agent_id,
+            "ATL",
+            {
+                "contract_type": "Reg",
+                "years": 1,
+                "annual_raise_percent": 0,
+                "salary_by_season": {"2025": "10.000.000"},
+                "option_by_season": {},
+            },
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        result = service.decide_offer(
+            int(submission["request"]["id"]),
+            "rejected",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            request=submission["request"],
+        )
+
+        self.assertEqual("rejected", result["decision"])
+        self.assertEqual("rejected", result["request"]["status"])
+        self.assertIsNotNone(self.db.get_free_agent(self.free_agent_id))
+
+    def test_free_agency_service_manages_negotiation_favorite_and_cancellation(self) -> None:
+        service = FreeAgencyService(self.db, contract_seasons=range(2025, 2032))
+        actor = {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"}
+
+        negotiation = service.negotiate(
+            self.free_agent_id,
+            "ATL",
+            {"economic_offer": "10M", "role_offer": "Titular", "comments": "Interested"},
+            actor,
+        )
+        favorite = service.set_favorite(
+            self.free_agent_id,
+            "ATL",
+            actor,
+            favorite=True,
+        )
+        submission = service.submit_offer(
+            self.free_agent_id,
+            "ATL",
+            {
+                "contract_type": "Reg",
+                "years": 1,
+                "annual_raise_percent": 0,
+                "salary_by_season": {"2025": "10.000.000"},
+                "option_by_season": {},
+            },
+            actor,
+        )
+        cancellation = service.cancel_offer(
+            int(submission["request"]["id"]),
+            actor,
+            request=submission["request"],
+        )
+        unfavorite = service.set_favorite(
+            self.free_agent_id,
+            "ATL",
+            actor,
+            favorite=False,
+        )
+
+        self.assertEqual("ATL", negotiation["team_code"])
+        self.assertEqual("10M", negotiation["interest"]["economic_offer"])
+        self.assertTrue(favorite["is_favorite"])
+        self.assertEqual("cancelled", cancellation["request"]["status"])
+        self.assertFalse(unfavorite["is_favorite"])
+
+    def test_free_agency_service_creates_and_updates_manual_promise(self) -> None:
+        service = FreeAgencyService(self.db, contract_seasons=range(2025, 2032))
+        admin = {"email": "admin@example.com", "name": "Admin", "role": "admin"}
+
+        promise = service.create_promise(
+            {
+                "player_name": "Manual Promise",
+                "team_code": "ATL",
+                "role": "Titular",
+                "season_year": 2025,
+                "status": "pending",
+            },
+            admin,
+        )
+        updated = service.update_promise(
+            int(promise["id"]),
+            {"status": "fulfilled"},
+            admin,
+        )
+
+        self.assertEqual("pending", promise["status"])
+        self.assertIsNotNone(updated)
+        self.assertEqual("fulfilled", updated["status"])
 
     def test_free_agent_offer_request_updates_pending_row_and_lists_with_gm_requests(self) -> None:
         requester = {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"}
