@@ -5,10 +5,14 @@ import re
 import secrets
 import sqlite3
 import tempfile
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
+
+try:
+    from .db.connection import ClosingSQLiteConnection, DatabaseConnectionMixin, connect_sqlite
+except ImportError:  # pragma: no cover - supports direct script execution.
+    from db.connection import ClosingSQLiteConnection, DatabaseConnectionMixin, connect_sqlite
 
 
 CURRENT_SCHEMA_VERSION = 2026062101
@@ -23,45 +27,7 @@ def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
     return {cursor.description[idx][0]: row[idx] for idx in range(len(cursor.description))}
 
 
-class ClosingSQLiteConnection(sqlite3.Connection):
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            return super().__exit__(exc_type, exc_value, traceback)
-        finally:
-            self.close()
-
-
-def connect_sqlite(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, timeout=15.0, factory=ClosingSQLiteConnection)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 15000")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    return conn
-
-
-class DatabaseMaintenanceMixin:
-    db_path: str
-
-    def connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.db_path)
-
-    @contextmanager
-    def transaction(self, mode: str = "IMMEDIATE") -> Iterator[sqlite3.Connection]:
-        normalized_mode = str(mode or "IMMEDIATE").strip().upper()
-        if normalized_mode not in {"DEFERRED", "IMMEDIATE", "EXCLUSIVE"}:
-            raise ValueError("invalid_transaction_mode")
-
-        conn = self.connect()
-        try:
-            conn.execute(f"BEGIN {normalized_mode}")
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+class DatabaseMaintenanceMixin(DatabaseConnectionMixin):
 
     def backup_dir(self) -> Path:
         configured = str(os.getenv("BACKUP_DIR") or "").strip()

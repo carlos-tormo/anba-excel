@@ -1,0 +1,389 @@
+"""Free-agency and waiver HTTP route functions."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+from urllib.parse import ParseResult, parse_qs
+
+try:
+    from ..auth.policies import normalize_team_code
+    from ..domain_rules import parse_int
+    from ..routing import exact_route, predicate_route
+except ImportError:  # pragma: no cover - supports direct script execution.
+    from auth.policies import normalize_team_code
+    from domain_rules import parse_int
+    from routing import exact_route, predicate_route
+
+
+def _segments(path: str) -> list[str]:
+    return path.strip("/").split("/")
+
+
+def _free_agent_action(path: str, actions: set[str]) -> bool:
+    parts = _segments(path)
+    return len(parts) == 4 and parts[:2] == ["api", "free-agents"] and parts[3] in actions
+
+
+def _request_action(path: str, collection: str, action: str) -> bool:
+    parts = _segments(path)
+    return len(parts) == 4 and parts[:2] == ["api", collection] and parts[3] == action
+
+
+def get_cartera_promises(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
+    if not handler._authorize("coadmin.cartera.view"):
+        return
+    query = parse_qs(parsed.query)
+    status = (query.get("status") or ["all"])[0].strip().lower() or "all"
+    try:
+        handler._json(200, handler._free_agency_service().list_promises(handler._current_session() or {}, status=status))
+    except ValueError as err:
+        handler._json(400, {"error": str(err) or "invalid_status"})
+    except PermissionError as err:
+        handler._json(403, {"error": str(err) or "admin_or_coadmin_required"})
+
+
+def get_free_agents(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
+    free_agents = handler.db.list_free_agents()
+    team_codes = handler._current_session_team_codes()
+    if len(team_codes) == 1:
+        favorite_ids = handler.db.free_agent_favorite_ids_for_team(team_codes[0])
+        for item in free_agents:
+            item["is_favorite"] = int(item.get("id") or 0) in favorite_ids
+            item["favorite_team_code"] = team_codes[0]
+    else:
+        for item in free_agents:
+            item["is_favorite"] = False
+    handler._json(200, {"free_agents": free_agents})
+
+
+def request_bird_rights_renunciation(
+    handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]
+) -> None:
+    payload = payload or {}
+    if not handler._require_csrf() or not handler._validate_free_agency_route_payload(payload, "bird_renounce"):
+        return
+    player_id = parse_int(payload.get("player_id"))
+    season_year = parse_int(payload.get("season_year"))
+    rights_value = str(payload.get("rights_value") or "").strip().upper()
+    if player_id is None:
+        handler._json(400, {"error": "invalid_player_id"})
+        return
+    if season_year is None:
+        handler._json(400, {"error": "invalid_renounce_season"})
+        return
+    player = handler.db.get_player_record(player_id)
+    if not player:
+        handler._json(404, {"error": "player_not_found"})
+        return
+    if not handler._authorize("gm.bird_rights_renounce.create", {"team_code": player.get("team_code")}):
+        return
+    try:
+        result = handler._free_agency_service().request_bird_rights_renunciation(
+            player_id,
+            season_year,
+            rights_value,
+            handler._current_session() or {},
+            player=player,
+        )
+    except ValueError as err:
+        message = str(err)
+        if message == "free_agency_mode_required":
+            handler._json(409, {"error": "free_agency_mode_required"})
+        elif message == "invalid_renounce_season":
+            handler._json(400, {"error": "invalid_renounce_season"})
+        elif message == "invalid_bird_rights_value":
+            handler._json(400, {"error": "invalid_bird_rights_value"})
+        elif message == "bird_rights_mismatch":
+            handler._json(409, {"error": "bird_rights_changed"})
+        else:
+            raise
+        return
+    handler._json(201, {"ok": True, "request": result["request"]})
+
+
+def submit_free_agent_action(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+    payload = payload or {}
+    if not handler._require_csrf() or not handler._require_sensitive_rate_limit("free_agent_action"):
+        return
+    parts = _segments(parsed.path)
+    try:
+        free_agent_id = int(parts[2])
+    except ValueError:
+        handler._json(400, {"error": "invalid_free_agent_id"})
+        return
+    action = parts[3]
+    if not handler._validate_free_agency_route_payload(payload, action):
+        return
+    team_code = normalize_team_code(payload.get("team_code"))
+    if not team_code:
+        team_codes = handler._current_session_team_codes()
+        if len(team_codes) == 1:
+            team_code = team_codes[0]
+    if not team_code:
+        handler._json(400, {"error": "team_code_required"})
+        return
+    if not handler._authorize("gm.free_agent_offer.create", {"team_code": team_code}):
+        return
+    if action == "offer":
+        try:
+            submission = handler._free_agency_service().submit_offer(
+                free_agent_id, team_code, payload, handler._current_session() or {}
+            )
+        except ValueError as err:
+            message = str(err) or "invalid_free_agent_offer"
+            handler._json(404 if message == "free_agent_not_found" else 400, {"error": message})
+            return
+        free_agent = submission["free_agent"]
+        team_code = submission["team_code"]
+        offer_type = submission["offer_type"]
+        normalized_payload = submission["payload"]
+        request = submission["request"]
+        discord_result = handler._notify_free_agent_offer(
+            free_agent,
+            team_code,
+            normalized_payload,
+            offer_type,
+            handler._free_agent_agent_discord_id(free_agent),
+        )
+        sent = bool(discord_result.get("thread_sent") and discord_result.get("agent_dm_sent"))
+        handler._json(
+            201,
+            {
+                "ok": True,
+                "request": request,
+                "offer_type": offer_type,
+                "discord_sent": sent,
+                "discord_thread_sent": bool(discord_result.get("thread_sent")),
+                "agent_dm_sent": bool(discord_result.get("agent_dm_sent")),
+                "agent_discord_configured": bool(discord_result.get("agent_discord_configured")),
+            },
+        )
+        return
+    try:
+        negotiation = handler._free_agency_service().negotiate(
+            free_agent_id, team_code, payload, handler._current_session() or {}
+        )
+    except ValueError as err:
+        message = str(err) or "invalid_negotiation"
+        handler._json(404 if message == "free_agent_not_found" else 400, {"error": message})
+        return
+    handler._log_admin_action(
+        "negotiate",
+        "free_agent",
+        str(free_agent_id),
+        negotiation["team_code"],
+        negotiation["audit"],
+    )
+    handler._json(201, {"ok": True, "interest": negotiation["interest"], "interest_recorded": True})
+
+
+def set_free_agent_favorite(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+    payload = payload or {}
+    if not handler._require_csrf() or not handler._validate_free_agency_route_payload(payload, "favorite"):
+        return
+    parts = _segments(parsed.path)
+    try:
+        free_agent_id = int(parts[2])
+    except ValueError:
+        handler._json(400, {"error": "invalid_free_agent_id"})
+        return
+    action = parts[3]
+    team_code = normalize_team_code(payload.get("team_code"))
+    if not team_code:
+        team_codes = handler._current_session_team_codes()
+        if len(team_codes) == 1:
+            team_code = team_codes[0]
+    if not team_code:
+        handler._json(400, {"error": "team_code_required"})
+        return
+    if not handler._authorize("gm.free_agent_favorite.update", {"team_code": team_code}):
+        return
+    try:
+        result = handler._free_agency_service().set_favorite(
+            free_agent_id,
+            team_code,
+            handler._current_session() or {},
+            favorite=action == "favorite",
+        )
+    except ValueError as err:
+        message = str(err) or "invalid_free_agent_favorite"
+        handler._json(404 if message == "free_agent_not_found" else 400, {"error": message})
+        return
+    response = {"ok": True, "is_favorite": result["is_favorite"]}
+    if result["is_favorite"]:
+        response["favorite"] = result.get("favorite")
+    handler._json(200, response)
+
+
+def cancel_free_agent_offer(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+    payload = payload or {}
+    if not handler._require_csrf() or not handler._validate_free_agency_route_payload(payload, "cancel"):
+        return
+    request_id = parse_int(_segments(parsed.path)[2])
+    if request_id is None:
+        handler._json(400, {"error": "invalid_request_id"})
+        return
+    request = handler.db.get_gm_free_agent_offer_request(request_id)
+    if not request:
+        handler._json(404, {"error": "request_not_found"})
+        return
+    team_code = normalize_team_code(request.get("team_code"))
+    if not team_code:
+        handler._json(400, {"error": "team_code_required"})
+        return
+    if not handler._authorize("gm.free_agent_offer.cancel", {"team_code": team_code}):
+        return
+    try:
+        result = handler._free_agency_service().cancel_offer(
+            request_id, handler._current_session() or {}, request=request
+        )
+    except ValueError as err:
+        message = str(err) or "invalid_request"
+        status = 409 if message == "offer_not_pending" else 404 if message == "request_not_found" else 400
+        handler._json(status, {"error": message})
+        return
+    canceled = result["request"]
+    handler._log_admin_action(
+        "cancel",
+        "gm_free_agent_offer_request",
+        str(request_id),
+        team_code,
+        {"player_name": canceled.get("player_name"), "offer_type": canceled.get("offer_type")},
+    )
+    handler._json(200, {"ok": True, "request": canceled})
+
+
+def submit_waiver_claim(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+    payload = payload or {}
+    if not handler._require_csrf() or not handler._validate_free_agency_route_payload(payload, "waiver_claim"):
+        return
+    waiver_id = parse_int(_segments(parsed.path)[2])
+    if waiver_id is None:
+        handler._json(400, {"error": "invalid_waiver_id"})
+        return
+    team_code = normalize_team_code(payload.get("team_code"))
+    if not team_code:
+        team_codes = handler._current_session_team_codes()
+        if len(team_codes) == 1:
+            team_code = team_codes[0]
+    if not team_code:
+        handler._json(400, {"error": "team_code_required"})
+        return
+    if not handler._authorize("gm.waiver_claim.create", {"team_code": team_code}):
+        return
+    try:
+        result = handler._waiver_service().submit_claim(
+            waiver_id, team_code, payload, handler._current_session() or {}
+        )
+    except ValueError as err:
+        message = str(err) or "not_eligible"
+        status = 409 if message == "claim_already_submitted" else 404 if message == "waiver_not_found" else 400
+        handler._json(status, {"error": message})
+        return
+    handler._json(201, {"ok": True, "claim": result["claim"]})
+
+
+def decide_waiver_claim(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+    payload = payload or {}
+    if not handler._validate_free_agency_route_payload(payload, "admin_decision"):
+        return
+    request_id = parse_int(_segments(parsed.path)[3])
+    if request_id is None:
+        handler._json(400, {"error": "invalid_request_id"})
+        return
+    decision = str(payload.get("decision") or "").strip().lower()
+    request = handler._waiver_service().claim_request(request_id)
+    if not request:
+        handler._json(404, {"error": "request_not_found"})
+        return
+    if str(request.get("status") or "").lower() != "pending":
+        handler._json(409, {"error": "request_already_decided", "request": request})
+        return
+    if not handler._authorize("admin.waiver_claim_request.decide", {"team_code": request.get("team_code")}):
+        return
+    try:
+        result = handler._waiver_service().decide_claim(
+            request_id,
+            decision,
+            handler._current_session() or {},
+            note=str(payload.get("note") or "").strip() or None,
+            request=request,
+        )
+    except ValueError as err:
+        message = str(err)
+        status = 409 if message in {"request_already_decided", "waiver_not_available"} else 404 if message == "request_not_found" else 400
+        handler._json(status, {"error": message or "waiver_claim_decision_failed"})
+        return
+    handler._log_admin_action(
+        decision.rstrip("d"),
+        "waiver_claim_request",
+        str(request_id),
+        request.get("team_code"),
+        {
+            "waiver_player_id": result.get("waiver_player_id"),
+            "player_name": result.get("player_name"),
+            "from_team_code": result.get("from_team_code"),
+        },
+        before={"request": result.get("request_before")},
+        after={"result": result.get("result")},
+    )
+    handler._json(200, {"ok": True, "result": result["result"]})
+
+
+def update_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+    payload = payload or {}
+    if not handler._authorize("admin.free_agent.write"):
+        return
+    free_agent_id = parse_int(_segments(parsed.path)[2])
+    if free_agent_id is None:
+        handler._json(400, {"error": "invalid_free_agent_id"})
+        return
+    if not handler._validate_free_agent_route_update_payload(payload):
+        return
+    ok = handler.db.update_free_agent(free_agent_id, payload)
+    if ok:
+        handler._log_admin_action("update", "free_agent", str(free_agent_id), None, {"fields": sorted(payload.keys())})
+    handler._json(200 if ok else 404, {"ok": ok})
+
+
+FREE_AGENCY_GET_ROUTES = (
+    exact_route("/api/cartera/promises", get_cartera_promises),
+    exact_route("/api/free-agents", get_free_agents),
+)
+
+FREE_AGENCY_POST_ROUTES = (
+    exact_route("/api/gm/bird-rights-renounce-requests", request_bird_rights_renunciation),
+    predicate_route(
+        "free-agent:offer-or-negotiate",
+        lambda path: _free_agent_action(path, {"offer", "negotiate"}),
+        submit_free_agent_action,
+    ),
+    predicate_route(
+        "free-agent:favorite",
+        lambda path: _free_agent_action(path, {"favorite", "unfavorite"}),
+        set_free_agent_favorite,
+    ),
+    predicate_route(
+        "free-agent-offer:cancel",
+        lambda path: _request_action(path, "gm-free-agent-offer-requests", "cancel"),
+        cancel_free_agent_offer,
+    ),
+    predicate_route(
+        "waiver:claim",
+        lambda path: _request_action(path, "waivers", "claims"),
+        submit_waiver_claim,
+    ),
+)
+
+FREE_AGENCY_PATCH_ROUTES = (
+    predicate_route(
+        "waiver-claim:decision",
+        lambda path: len(_segments(path)) == 4 and _segments(path)[:3] == ["api", "admin", "waiver-claims"],
+        decide_waiver_claim,
+    ),
+    predicate_route(
+        "free-agent:update",
+        lambda path: len(_segments(path)) == 3 and _segments(path)[:2] == ["api", "free-agents"],
+        update_free_agent,
+    ),
+)

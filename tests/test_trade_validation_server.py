@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from app.server import Handler, LeagueDB
+from app.services.notifications import NotificationCompositionService
 from app.xlsx_import import create_schema, now_iso
 
 
@@ -164,10 +165,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual("ATL", self._player_team_code(bos_player_id))
 
     def test_discord_trade_summary_lists_pick_rounds(self) -> None:
-        handler = object.__new__(Handler)
-
-        result = Handler._trade_asset_summary(
-            handler,
+        result = NotificationCompositionService.trade_asset_summary(
             ["Example Player"],
             2,
             0,

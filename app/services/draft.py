@@ -9,43 +9,48 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+try:
+    from ..db.repositories.draft import DraftRepository
+except ImportError:  # pragma: no cover - supports direct script execution.
+    from db.repositories.draft import DraftRepository
+
 
 class DraftService:
     def __init__(self, db: Any) -> None:
-        self.db = db
+        self.repository = db if isinstance(db, DraftRepository) else DraftRepository(db)
 
     def current_year(self) -> int:
-        return int(self.db.current_draft_year())
+        return int(self.repository.current_year())
 
     def list_order(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
-        return self.db.list_draft_order(draft_year)
+        return self.repository.list_order(draft_year)
 
     def list_pick_ledger(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
-        return self.db.list_draft_pick_ledger(draft_year)
+        return self.repository.list_pick_ledger(draft_year)
 
     def order_entry(self, draft_order_id: int) -> Optional[Dict[str, Any]]:
-        return self.db.get_draft_order_entry(int(draft_order_id))
+        return self.repository.order_entry(int(draft_order_id))
 
     def create_order_entry(self, payload: Dict[str, Any]) -> int:
-        return int(self.db.create_draft_order_entry(payload))
+        return int(self.repository.create_order_entry(payload))
 
     def update_order_entry(self, draft_order_id: int, payload: Dict[str, Any]) -> bool:
-        return bool(self.db.update_draft_order_entry(int(draft_order_id), payload))
+        return bool(self.repository.update_order_entry(int(draft_order_id), payload))
 
     def delete_order_entry(self, draft_order_id: int) -> bool:
-        return bool(self.db.delete_draft_order_entry(int(draft_order_id)))
+        return bool(self.repository.delete_order_entry(int(draft_order_id)))
 
     def list_live(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
-        return self.db.list_draft_live(draft_year)
+        return self.repository.list_live(draft_year)
 
     def update_live_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self.db.update_draft_live_settings(payload)
+        return self.repository.update_live_settings(payload)
 
     def control_live(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self.db.control_draft_live(payload)
+        return self.repository.control_live(payload)
 
     def process_results(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
-        return self.db.process_draft_results(draft_year)
+        return self.repository.process_results(draft_year)
 
     def submit_pick(
         self,
@@ -61,7 +66,7 @@ class DraftService:
             raise ValueError("draft_pick_not_found")
 
         if is_admin:
-            live = self.db.submit_draft_live_pick(
+            live = self.repository.submit_live_pick(
                 int(draft_order_id), payload, actor or {}, is_admin=True
             )
             return {
@@ -71,7 +76,7 @@ class DraftService:
                 "submitted_for_review": False,
             }
 
-        request = self.db.create_gm_draft_pick_request(
+        request = self.repository.create_pick_request(
             int(draft_order_id), payload, actor or {}
         )
         if not request:
@@ -86,7 +91,7 @@ class DraftService:
         }
 
     def pick_request(self, request_id: int) -> Optional[Dict[str, Any]]:
-        return self.db.get_gm_draft_pick_request(int(request_id))
+        return self.repository.pick_request(int(request_id))
 
     def decide_pick_request(
         self,
@@ -108,7 +113,7 @@ class DraftService:
 
         normalized_note = str(note or "").strip() or None
         if normalized_decision == "rejected":
-            updated = self.db.mark_gm_draft_pick_request_decided(
+            updated = self.repository.mark_pick_request_decided(
                 int(request_id), "rejected", actor or {}, normalized_note
             )
             if not updated:
@@ -125,7 +130,7 @@ class DraftService:
             "name": request_before.get("requester_name"),
             "role": "gm",
         }
-        self.db.submit_draft_live_pick(
+        self.repository.submit_live_pick(
             int(request_before.get("draft_order_id")),
             {
                 "option_value": request_before.get("option_value") or "__other__",
@@ -139,7 +144,7 @@ class DraftService:
             requester,
             is_admin=True,
         )
-        updated = self.db.mark_gm_draft_pick_request_decided(
+        updated = self.repository.mark_pick_request_decided(
             int(request_id), "approved", actor or {}, normalized_note
         )
         if not updated:

@@ -9,21 +9,26 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+try:
+    from ..db.repositories.trades import TradeRepository
+except ImportError:  # pragma: no cover - supports direct script execution.
+    from db.repositories.trades import TradeRepository
+
 
 class TradeService:
     """Thin service facade for trade validation and processing workflows."""
 
     def __init__(self, db: Any):
-        self.db = db
+        self.repository = db if isinstance(db, TradeRepository) else TradeRepository(db)
 
     def normalize_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self.db._trade_machine_normalized_request(payload)
+        return self.repository.normalize_request(payload)
 
     def validate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self.db.validate_trade_machine(payload)
+        return self.repository.validate(payload)
 
     def validate_process_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self.db.trade_validation_from_process_payload(payload)
+        return self.repository.validation_from_process_payload(payload)
 
     def process_command(
         self,
@@ -40,7 +45,7 @@ class TradeService:
         actor: Optional[Dict[str, Any]] = None,
         command_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self.db.process_trade_command(
+        return self.repository.process_command(
             payload,
             validation=validation,
             expected_validation_hash=expected_validation_hash,
@@ -53,4 +58,3 @@ class TradeService:
             actor=actor,
             command_id=command_id,
         )
-

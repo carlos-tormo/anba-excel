@@ -10,8 +10,12 @@ from typing import Any, Callable, ContextManager, Dict, Optional
 
 try:
     from ...auth.sessions import session_token_digest
+    from ...observability.logging import get_logger
 except ImportError:  # pragma: no cover - supports direct script execution.
     from auth.sessions import session_token_digest
+    from observability.logging import get_logger
+
+logger = get_logger("sessions")
 
 ConnectionFactory = Callable[[], ContextManager[sqlite3.Connection]]
 
@@ -98,7 +102,7 @@ def cleanup_expired_sessions(
     except sqlite3.OperationalError as exc:
         if "database is locked" not in str(exc).lower():
             raise
-        print(f"Session cleanup skipped: {exc}", flush=True)
+        logger.warning("Session cleanup skipped: %s", exc)
         return 0
     finally:
         cleanup_lock.release()

@@ -10,19 +10,21 @@ from typing import Any, Dict, List, Optional
 
 try:
     from ..auth.policies import normalize_team_code
+    from ..db.repositories.waivers import WaiverRepository
 except ImportError:  # pragma: no cover - supports direct script execution.
     from auth.policies import normalize_team_code
+    from db.repositories.waivers import WaiverRepository
 
 
 class WaiverService:
     def __init__(self, db: Any) -> None:
-        self.db = db
+        self.repository = db if isinstance(db, WaiverRepository) else WaiverRepository(db)
 
     def list_waivers(self, actor: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return self.db.list_waivers(actor)
+        return self.repository.list(actor)
 
     def process_expired(self) -> Dict[str, Any]:
-        return self.db.process_expired_waivers_command()
+        return self.repository.process_expired()
 
     def submit_claim(
         self,
@@ -34,7 +36,7 @@ class WaiverService:
         normalized_team = normalize_team_code(team_code)
         if not normalized_team:
             raise ValueError("team_code_required")
-        claim = self.db.create_waiver_claim(
+        claim = self.repository.create_claim(
             int(waiver_player_id),
             normalized_team,
             payload,
@@ -47,7 +49,7 @@ class WaiverService:
         }
 
     def claim_requests(self, *, status: Optional[str] = None) -> List[Dict[str, Any]]:
-        return self.db.list_waiver_claim_requests(status=status)
+        return self.repository.list_claim_requests(status=status)
 
     def claim_request(self, request_id: int) -> Optional[Dict[str, Any]]:
         parsed_id = int(request_id)
@@ -77,7 +79,7 @@ class WaiverService:
             raise ValueError("request_not_found")
         if str(request_before.get("status") or "").strip().lower() != "pending":
             raise ValueError("request_already_decided")
-        result = self.db.decide_waiver_claim_request(
+        result = self.repository.decide_claim_request(
             int(request_id),
             normalized_decision,
             actor or {},

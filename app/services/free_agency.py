@@ -14,30 +14,28 @@ from typing import Any, Dict, Iterable, Optional
 
 try:
     from ..auth.policies import normalize_team_code
-    from ..domain_rules import (
-        CAP_FORECAST_MAX_YEAR,
-        CAP_FORECAST_MIN_YEAR,
+    from ..db.repositories.free_agency import FreeAgencyRepository
+    from ..domain._values import parse_amount_like, parse_int
+    from ..domain.cap import CAP_FORECAST_MAX_YEAR, CAP_FORECAST_MIN_YEAR
+    from ..domain.contracts import (
         TWO_WAY_MINIMUM_BASE_SALARY,
         cap_hold_bird_code_from_years,
         maximum_salary_for_experience,
         minimum_salary_for_season,
         normalize_experience_years,
-        parse_amount_like,
-        parse_int,
         scaled_minimum_salary,
     )
 except ImportError:  # pragma: no cover - supports direct script execution.
     from auth.policies import normalize_team_code
-    from domain_rules import (
-        CAP_FORECAST_MAX_YEAR,
-        CAP_FORECAST_MIN_YEAR,
+    from db.repositories.free_agency import FreeAgencyRepository
+    from domain._values import parse_amount_like, parse_int
+    from domain.cap import CAP_FORECAST_MAX_YEAR, CAP_FORECAST_MIN_YEAR
+    from domain.contracts import (
         TWO_WAY_MINIMUM_BASE_SALARY,
         cap_hold_bird_code_from_years,
         maximum_salary_for_experience,
         minimum_salary_for_season,
         normalize_experience_years,
-        parse_amount_like,
-        parse_int,
         scaled_minimum_salary,
     )
 
@@ -69,7 +67,9 @@ class FreeAgencyService:
         contract_seasons: Iterable[int],
         cap_hold_source: str = "cap_hold",
     ) -> None:
-        self.db = db
+        self.repository = (
+            db if isinstance(db, FreeAgencyRepository) else FreeAgencyRepository(db)
+        )
         self.contract_seasons = tuple(sorted({int(season) for season in contract_seasons}))
         if not self.contract_seasons:
             raise ValueError("contract_seasons_required")
@@ -85,7 +85,7 @@ class FreeAgencyService:
         actor: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Validate, normalize, classify, and persist a GM offer."""
-        free_agent = self.db.get_free_agent(int(free_agent_id))
+        free_agent = self.repository.free_agent(int(free_agent_id))
         if not free_agent:
             raise ValueError("free_agent_not_found")
         normalized_team = normalize_team_code(team_code)
@@ -93,7 +93,7 @@ class FreeAgencyService:
             raise ValueError("invalid_team_code")
         offer_type = "renewal" if self.is_renewal(free_agent, normalized_team) else "free_agent_offer"
         normalized_payload = self.normalize_offer(free_agent, normalized_team, payload)
-        request = self.db.create_gm_free_agent_offer_request(
+        request = self.repository.create_offer_request(
             int(free_agent_id),
             normalized_team,
             normalized_payload,
@@ -111,7 +111,7 @@ class FreeAgencyService:
         }
 
     def offer_request(self, request_id: int) -> Optional[Dict[str, Any]]:
-        return self.db.get_gm_free_agent_offer_request(int(request_id))
+        return self.repository.offer_request(int(request_id))
 
     def negotiate(
         self,
@@ -120,13 +120,13 @@ class FreeAgencyService:
         payload: Dict[str, Any],
         actor: Dict[str, Any],
     ) -> Dict[str, Any]:
-        free_agent = self.db.get_free_agent(int(free_agent_id))
+        free_agent = self.repository.free_agent(int(free_agent_id))
         if not free_agent:
             raise ValueError("free_agent_not_found")
         normalized_team = normalize_team_code(team_code)
         if not normalized_team:
             raise ValueError("invalid_team_code")
-        interest = self.db.record_free_agent_interest(
+        interest = self.repository.record_interest(
             int(free_agent_id), normalized_team, payload, actor or {}
         )
         return {
@@ -154,11 +154,11 @@ class FreeAgencyService:
         if not normalized_team:
             raise ValueError("invalid_team_code")
         if favorite:
-            row = self.db.set_free_agent_favorite(
+            row = self.repository.set_favorite(
                 int(free_agent_id), normalized_team, actor or {}
             )
             return {"favorite": row, "is_favorite": True, "team_code": normalized_team}
-        self.db.delete_free_agent_favorite(int(free_agent_id), normalized_team)
+        self.repository.delete_favorite(int(free_agent_id), normalized_team)
         return {"favorite": None, "is_favorite": False, "team_code": normalized_team}
 
     def cancel_offer(
@@ -174,7 +174,7 @@ class FreeAgencyService:
         team_code = normalize_team_code(request_before.get("team_code"))
         if not team_code:
             raise ValueError("team_code_required")
-        canceled = self.db.cancel_gm_free_agent_offer_request(
+        canceled = self.repository.cancel_offer_request(
             int(request_id), team_code, actor=actor or {}
         )
         if not canceled:
@@ -194,19 +194,19 @@ class FreeAgencyService:
         normalized_team = normalize_team_code(team_code)
         if not normalized_team:
             raise ValueError("team_code_required")
-        player_id = self.db.sign_free_agent(int(free_agent_id), normalized_team, payload)
+        player_id = self.repository.sign(int(free_agent_id), normalized_team, payload)
         if not player_id:
             raise ValueError("free_agent_or_team_not_found")
         return {
             "free_agent_id": int(free_agent_id),
             "team_code": normalized_team,
             "player_id": player_id,
-            "player": self.db.get_player_record(player_id),
+            "player": self.repository.player_record(player_id),
         }
 
     def create_promise(self, payload: Dict[str, Any], actor: Dict[str, Any]) -> Dict[str, Any]:
         is_admin = str((actor or {}).get("role") or "").strip().lower() == "admin"
-        return self.db.create_free_agent_offer_promise(
+        return self.repository.create_promise(
             payload,
             actor or {},
             bypass_role_limits=is_admin,
@@ -218,7 +218,7 @@ class FreeAgencyService:
         *,
         status: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self.db.list_free_agent_offer_promises(actor or {}, status=status)
+        return self.repository.list_promises(actor or {}, status=status)
 
     def update_promise(
         self,
@@ -227,7 +227,7 @@ class FreeAgencyService:
         actor: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         is_admin = str((actor or {}).get("role") or "").strip().lower() == "admin"
-        return self.db.update_free_agent_offer_promise(
+        return self.repository.update_promise(
             int(promise_id),
             payload,
             actor or {},
@@ -243,10 +243,10 @@ class FreeAgencyService:
         *,
         player: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        player_record = player or self.db.get_player_record(int(player_id))
+        player_record = player or self.repository.player_record(int(player_id))
         if not player_record:
             raise ValueError("player_not_found")
-        request = self.db.create_gm_bird_rights_renounce_request(
+        request = self.repository.create_bird_rights_renounce_request(
             int(player_id), int(season_year), rights_value, actor or {}
         )
         if not request:
@@ -274,7 +274,7 @@ class FreeAgencyService:
             raise ValueError("request_already_decided")
 
         if normalized_decision == "rejected":
-            result = self.db.decide_gm_free_agent_offer_request_command(
+            result = self.repository.decide_offer_request(
                 int(request_id),
                 "rejected",
                 actor or {},
@@ -293,7 +293,7 @@ class FreeAgencyService:
         free_agent_id = parse_int(request_before.get("free_agent_id"))
         if free_agent_id is None:
             raise ValueError("invalid_free_agent_id")
-        free_agent = self.db.get_free_agent(free_agent_id)
+        free_agent = self.repository.free_agent(free_agent_id)
         if not free_agent:
             raise ValueError("free_agent_not_found")
         team_code = normalize_team_code(request_before.get("team_code"))
@@ -307,7 +307,7 @@ class FreeAgencyService:
         if request_before.get("player_name"):
             offer_payload.setdefault("player_name", request_before.get("player_name"))
         sign_payload = self.player_payload_from_offer(free_agent, offer_payload)
-        result = self.db.decide_gm_free_agent_offer_request_command(
+        result = self.repository.decide_offer_request(
             int(request_id),
             "approved",
             actor or {},
@@ -472,7 +472,7 @@ class FreeAgencyService:
     ) -> Dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("invalid_free_agent_offer")
-        settings = self.db.get_settings()
+        settings = self.repository.settings()
         start_season = self.offer_start_season(settings)
         years = max(1, min(5, int(parse_int(payload.get("years")) or 1)))
         contract_type = str(payload.get("contract_type") or "").strip()

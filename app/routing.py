@@ -1,10 +1,12 @@
-"""Framework-neutral request validation shared by HTTP routes."""
+"""Framework-neutral route dispatch and request validation."""
 
 from __future__ import annotations
 
 import math
 import re
-from typing import Any, Dict, Iterable, List
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from urllib.parse import ParseResult
 
 try:
     from .domain_rules import parse_float, parse_int
@@ -20,6 +22,43 @@ class RequestValidationError(ValueError):
 
     def response_payload(self) -> Dict[str, Any]:
         return {"error": self.error, **self.details}
+
+
+RouteHandler = Callable[[Any, ParseResult, Optional[Dict[str, Any]]], None]
+PathMatcher = Callable[[str], bool]
+
+
+@dataclass(frozen=True)
+class Route:
+    name: str
+    matches: PathMatcher
+    handler: RouteHandler
+
+
+def exact_route(path: str, handler: RouteHandler, *, name: Optional[str] = None) -> Route:
+    return Route(name or f"exact:{path}", lambda candidate: candidate == path, handler)
+
+
+def prefix_route(prefix: str, handler: RouteHandler, *, name: Optional[str] = None) -> Route:
+    return Route(name or f"prefix:{prefix}", lambda candidate: candidate.startswith(prefix), handler)
+
+
+def predicate_route(name: str, matches: PathMatcher, handler: RouteHandler) -> Route:
+    """Register a route whose path shape is more specific than a plain prefix."""
+    return Route(name, matches, handler)
+
+
+def dispatch_routes(
+    request_handler: Any,
+    parsed: ParseResult,
+    routes: Sequence[Route],
+    payload: Optional[Dict[str, Any]] = None,
+) -> bool:
+    for route in routes:
+        if route.matches(parsed.path):
+            route.handler(request_handler, parsed, payload)
+            return True
+    return False
 
 
 def validate_json_structure(
