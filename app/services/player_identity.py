@@ -1,8 +1,7 @@
 """Player identity and canonical-profile synchronization service.
 
-The service coordinates profile operations and generated identity projections.
-SQL-heavy persistence primitives remain on ``LeagueDB`` during the incremental
-extraction, while callers use this stable application boundary.
+The service coordinates profile operations and generated identity projections
+through configured repositories while callers use one stable application boundary.
 """
 
 from __future__ import annotations
@@ -89,10 +88,8 @@ class PlayerIdentityService:
             return self._empty_sync_result()
         return self.synchronize_generated_free_agents(conn, settings)
 
-    @staticmethod
-    def _settings(conn: Any) -> Dict[str, str]:
-        rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
-        return {str(row["key"]): str(row["value"]) for row in rows}
+    def _settings(self, conn: Any) -> Dict[str, str]:
+        return self.repository.settings(conn)
 
     @staticmethod
     def _empty_sync_result() -> Dict[str, int]:

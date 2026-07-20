@@ -2,6 +2,7 @@ import unittest
 from unittest import mock
 
 from app import server
+from app.routes import validation as route_validation
 from app.server import (
     ASSET_UPDATE_FIELDS,
     PLAYER_UPDATE_ALLOWED_FIELDS,
@@ -44,7 +45,7 @@ class RequestValidationTests(unittest.TestCase):
             validate_json_structure(payload)
 
     def test_json_structure_rejects_oversized_container_and_key(self) -> None:
-        with mock.patch.object(server, "JSON_MAX_CONTAINER_ITEMS", 2):
+        with mock.patch.object(route_validation, "JSON_MAX_CONTAINER_ITEMS", 2):
             with self.assertRaisesRegex(RequestValidationError, "list_too_large"):
                 validate_json_structure({"items": [1, 2, 3]})
 

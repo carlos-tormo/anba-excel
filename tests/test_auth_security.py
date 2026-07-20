@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import (
     AuthorizationError,
     Handler,
@@ -131,7 +133,7 @@ class AuthSecurityTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-auth-session-", suffix=".db")
         os.close(fd)
         try:
-            with sqlite3.connect(path) as conn:
+            with connect_test_db(path) as conn:
                 conn.row_factory = sqlite3.Row
                 create_schema(conn)
                 conn.commit()
@@ -161,7 +163,7 @@ class AuthSecurityTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-auth-legacy-session-", suffix=".db")
         os.close(fd)
         try:
-            with sqlite3.connect(path) as conn:
+            with connect_test_db(path) as conn:
                 conn.row_factory = sqlite3.Row
                 create_schema(conn)
                 conn.commit()
@@ -234,7 +236,7 @@ class AuthSecurityTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-auth-coadmin-", suffix=".db")
         os.close(fd)
         try:
-            with sqlite3.connect(path) as conn:
+            with connect_test_db(path) as conn:
                 conn.row_factory = sqlite3.Row
                 create_schema(conn)
                 insert_team(conn, "ATL", "Atlanta Hawks")

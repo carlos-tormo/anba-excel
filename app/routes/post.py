@@ -8,15 +8,13 @@ from urllib.parse import ParseResult
 try:
     from ..domain_rules import parse_bool, parse_int
     from ..routing import exact_route, prefix_route
-    from ..services.trades import TradeService
 except ImportError:  # pragma: no cover - supports direct script execution.
     from domain_rules import parse_bool, parse_int
     from routing import exact_route, prefix_route
-    from services.trades import TradeService
 
 
 def validate_trade(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
-    handler._json(200, TradeService(handler.db).validate(payload or {}))
+    handler._json(200, handler.app.trades.validate(payload or {}))
 
 
 def update_draft_live_settings(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
@@ -24,7 +22,7 @@ def update_draft_live_settings(handler: Any, _parsed: ParseResult, payload: Opti
     if not handler._authorize("admin.draft_live.write") or not handler._require_csrf():
         return
     try:
-        result = handler._draft_service().update_live_settings(payload)
+        result = handler.app.draft.update_live_settings(payload)
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_draft_live_settings"})
         return
@@ -47,7 +45,7 @@ def control_draft_live(handler: Any, _parsed: ParseResult, payload: Optional[Dic
     if not handler._authorize("admin.draft_live.write") or not handler._require_csrf():
         return
     try:
-        result = handler._draft_service().control_live(payload)
+        result = handler.app.draft.control_live(payload)
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_draft_live_control"})
         return
@@ -67,7 +65,7 @@ def process_draft_live(handler: Any, _parsed: ParseResult, payload: Optional[Dic
         return
     draft_year = parse_int(str(payload.get("draft_year") or "")) or None
     try:
-        result = handler._draft_service().process_results(draft_year)
+        result = handler.app.draft.process_results(draft_year)
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_draft_processing"})
         return
@@ -94,7 +92,7 @@ def submit_draft_live_pick(handler: Any, parsed: ParseResult, payload: Optional[
     except ValueError:
         handler._json(400, {"error": "invalid_draft_order_id"})
         return
-    draft_service = handler._draft_service()
+    draft_service = handler.app.draft
     pick = draft_service.order_entry(draft_order_id)
     if not pick:
         handler._json(404, {"error": "draft_pick_not_found"})

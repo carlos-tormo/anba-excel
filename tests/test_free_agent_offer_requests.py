@@ -4,6 +4,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import Handler, LeagueDB
 from app.domain_rules import minimum_salary_for_season
 from app.services.free_agency import FreeAgencyService, OfferDecisionOptions
@@ -29,7 +31,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-fa-offer-requests-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -320,7 +322,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
             idempotency_key="gm-free-agent-offer:1:approved",
         )
 
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM outbox_events WHERE idempotency_key = ?",
                 ("gm-free-agent-offer:1:approved",),
@@ -329,8 +331,31 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(1, count)
 
+    def test_outbox_repository_owns_delivery_and_retry_state(self) -> None:
+        event_id = self.db.enqueue_outbox_event(
+            "discord.free_agent_offer",
+            {"request_id": 7, "player": "Test Free Agent"},
+            idempotency_key="gm-free-agent-offer:7:approved",
+        )
+        self.assertIsNotNone(event_id)
+        event = self.db.get_outbox_event(event_id)
+        self.assertEqual("pending", event["status"])
+        self.assertEqual(7, event["payload"]["request_id"])
+
+        self.assertTrue(self.db.mark_outbox_event_failed(event_id, "temporary delivery error"))
+        failed = self.db.get_outbox_event(event_id)
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual(1, failed["attempts"])
+        self.assertEqual("temporary delivery error", failed["last_error"])
+
+        self.assertTrue(self.db.mark_outbox_event_succeeded(event_id))
+        delivered = self.db.get_outbox_event(event_id)
+        self.assertEqual("delivered", delivered["status"])
+        self.assertIsNotNone(delivered["delivered_at"])
+        self.assertIsNone(delivered["last_error"])
+
     def test_approved_offer_with_role_creates_agent_promise(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.execute("UPDATE free_agents SET agent = ? WHERE id = ?", ("Agent One", self.free_agent_id))
             conn.commit()
 
@@ -741,7 +766,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
     def test_player_payload_from_free_agent_offer_adds_post_contract_bird_markers(self) -> None:
         handler = object.__new__(Handler)
 
-        one_year = handler._player_payload_from_free_agent_offer(
+        one_year = handler.app.free_agency.player_payload_from_offer(
             {"name": "One Year FA"},
             {
                 "contract_type": "Reg",
@@ -751,7 +776,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertEqual("NB", one_year["salary_2027_text"])
 
-        two_year = handler._player_payload_from_free_agent_offer(
+        two_year = handler.app.free_agency.player_payload_from_offer(
             {"name": "Two Year FA"},
             {
                 "contract_type": "Reg",
@@ -764,7 +789,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertEqual("EB", two_year["salary_2028_text"])
 
-        long_contract = handler._player_payload_from_free_agent_offer(
+        long_contract = handler.app.free_agency.player_payload_from_offer(
             {"name": "Long FA"},
             {
                 "contract_type": "Reg",
@@ -781,7 +806,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
     def test_player_payload_from_two_way_offer_adds_qo_two_way_marker(self) -> None:
         handler = object.__new__(Handler)
 
-        payload = handler._player_payload_from_free_agent_offer(
+        payload = handler.app.free_agency.player_payload_from_offer(
             {"name": "Two Way FA"},
             {
                 "contract_type": "Two-way",
@@ -796,7 +821,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
     def test_player_payload_from_free_agent_offer_skips_post_contract_marker_when_final_year_has_option(self) -> None:
         handler = object.__new__(Handler)
 
-        payload = handler._player_payload_from_free_agent_offer(
+        payload = handler.app.free_agency.player_payload_from_offer(
             {"name": "Option FA"},
             {
                 "contract_type": "Reg",
@@ -815,19 +840,17 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         handler = object.__new__(Handler)
         captured = {}
 
-        def fake_news_image_prompt(*_args, **_kwargs):
-            return "prompt"
+        class FakeDelivery:
+            def deliver_event(self, event, **_kwargs):
+                captured["title"] = event.title
+                captured["description"] = event.description
+                captured["fields"] = event.fields
+                return True
 
-        def fake_notify_discord(title, description, **kwargs):
-            captured["title"] = title
-            captured["description"] = description
-            captured["fields"] = kwargs.get("fields") or []
-            return True
+        handler.app.__dict__["discord_notifications"] = FakeDelivery()
+        handler.app.__dict__.pop("notifications", None)
 
-        handler._news_image_prompt = fake_news_image_prompt
-        handler._notify_discord = fake_notify_discord
-
-        sent = handler._notify_free_agent_signed(
+        sent = handler.app.notifications.free_agent_signed(
             {
                 "team_code": "ATL",
                 "team_name": "Atlanta Hawks",
@@ -1023,7 +1046,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         handler = object.__new__(Handler)
         handler.db = self.db
 
-        normalized = handler._validate_and_normalize_free_agent_offer_payload(
+        normalized = handler.app.free_agency.normalize_offer(
             {
                 "name": "Bird Rights Free Agent",
                 "source": "cap_hold",
@@ -1049,7 +1072,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         handler = object.__new__(Handler)
         handler.db = self.db
 
-        normalized = handler._validate_and_normalize_free_agent_offer_payload(
+        normalized = handler.app.free_agency.normalize_offer(
             {
                 "name": "Declining Free Agent",
                 "source": "manual",
@@ -1079,7 +1102,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "offer_role_required"):
-            handler._validate_and_normalize_free_agent_offer_payload(
+            handler.app.free_agency.normalize_offer(
                 free_agent,
                 "ATL",
                 {
@@ -1090,7 +1113,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
                 },
             )
 
-        normalized = handler._validate_and_normalize_free_agent_offer_payload(
+        normalized = handler.app.free_agency.normalize_offer(
             free_agent,
             "ATL",
             {
@@ -1108,7 +1131,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         handler = object.__new__(Handler)
         handler.db = self.db
 
-        normalized = handler._validate_and_normalize_free_agent_offer_payload(
+        normalized = handler.app.free_agency.normalize_offer(
             {
                 "name": "Veteran Minimum Free Agent",
                 "source": "manual",
@@ -1146,22 +1169,24 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         calls = []
         dms = []
 
-        def fake_post_discord_json(payload, **kwargs):
-            calls.append({"payload": payload, "kwargs": kwargs})
-            if kwargs.get("thread_name"):
-                return {"channel_id": "1520310271862902864"}
-            return {}
+        class FakeDiscord:
+            def post_webhook_json(self, payload, **kwargs):
+                calls.append({"payload": payload, "kwargs": kwargs})
+                if kwargs.get("thread_name"):
+                    return {"channel_id": "1520310271862902864"}
+                return {}
 
-        def fake_send_discord_dm(user_id, payload):
-            dms.append({"user_id": user_id, "payload": payload})
-            return True
+            def send_dm(self, user_id, payload):
+                dms.append({"user_id": user_id, "payload": payload})
+                return True
 
-        handler._post_discord_json = fake_post_discord_json
-        handler._send_discord_dm = fake_send_discord_dm
+        handler.app.__dict__["discord"] = FakeDiscord()
+        handler.app.__dict__.pop("free_agent_offer_notifications", None)
         self.db.update_free_agent(self.free_agent_id, {"agent": "Agent Smith"})
         self.db.update_setting("free_agent_rep_discord_ids", json.dumps({"Agent Smith": "123456789012345678"}))
         free_agent = self.db.get_free_agent(self.free_agent_id)
-        agent_discord_id = handler._free_agent_agent_discord_id(free_agent)
+        service = handler.app.free_agent_offer_notifications
+        agent_discord_id = service.agent_discord_id(free_agent)
         self.assertEqual("123456789012345678", agent_discord_id)
         offer_payload = {
             "contract_type": "Reg",
@@ -1170,14 +1195,14 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
             "notes": "Private offer details",
         }
 
-        first_result = handler._notify_free_agent_offer(
+        first_result = service.notify(
             free_agent,
             "ATL",
             offer_payload,
             "free_agent_offer",
             agent_discord_id,
         )
-        second_result = handler._notify_free_agent_offer(
+        second_result = service.notify(
             free_agent,
             "ATL",
             offer_payload,
@@ -1214,7 +1239,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertIn("Reg", private_payload_text)
 
     def test_free_agent_team_appeal_import_preview_and_apply(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             insert_team(conn, "BOS", "Boston Celtics")
             conn.commit()
@@ -1254,7 +1279,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
     def test_minimum_target_order_includes_bird_rights_bonus(self) -> None:
         user = self.db.upsert_google_user("google-atl-gm", "atl-gm@example.com", "ATL GM", None)
         self.db.replace_user_team_assignments(int(user["id"]), ["ATL"])
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.execute(
                 "UPDATE free_agents SET rights_team_code = ? WHERE id = ?",
                 ("ATL", self.free_agent_id),

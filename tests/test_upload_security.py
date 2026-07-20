@@ -6,12 +6,11 @@ import unittest
 import io
 import zipfile
 
-from app.server import (
-    LeagueDB,
-    _spreadsheet_rows_from_payload,
-    detect_safe_image_type,
-    public_backup_metadata,
-)
+from tests.db_helpers import connect_test_db
+
+from app.import_export.spreadsheets import spreadsheet_rows_from_payload
+from app.db.maintenance import public_backup_metadata
+from app.server import LeagueDB, detect_safe_image_type
 from app.xlsx_import import create_schema, now_iso
 
 
@@ -41,7 +40,7 @@ class UploadSecurityTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-upload-security-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -100,7 +99,7 @@ class UploadSecurityTests(unittest.TestCase):
             archive.writestr("xl/worksheets/sheet1.xml", b"A" * 1_000_000)
 
         with self.assertRaisesRegex(ValueError, "xlsx_suspicious_compression"):
-            _spreadsheet_rows_from_payload(
+            spreadsheet_rows_from_payload(
                 file_name="bomb.xlsx",
                 file_data_base64=base64.b64encode(output.getvalue()).decode("ascii"),
             )

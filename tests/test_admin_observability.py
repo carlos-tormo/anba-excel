@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
@@ -27,7 +29,7 @@ class AdminObservabilityTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-admin-observability-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -77,7 +79,7 @@ class AdminObservabilityTests(unittest.TestCase):
         self.assertEqual("pre30", log["details"]["trade_bucket"])
 
     def test_existing_admin_logs_table_is_migrated(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.execute("DROP TABLE admin_logs")
             conn.execute(
                 """

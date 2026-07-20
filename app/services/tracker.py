@@ -8,8 +8,10 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 try:
+    from ..db.repositories.tracker import TrackerRepository
     from ..domain_rules import parse_int
 except ImportError:  # pragma: no cover
+    from db.repositories.tracker import TrackerRepository
     from domain_rules import parse_int
 
 
@@ -27,7 +29,10 @@ class TrackerOperations:
 
 class TrackerService:
     def __init__(self, db: Any, operations: TrackerOperations, *, min_year: int, max_year: int) -> None:
-        self._db = db
+        self._repository = (
+            db if isinstance(db, TrackerRepository)
+            else getattr(db, "_tracker_repository", None) or TrackerRepository(db)
+        )
         self._operations = operations
         self._min_year = min_year
         self._max_year = max_year
@@ -44,10 +49,8 @@ class TrackerService:
             return current
 
         try:
-            with self._db.connect() as conn:
-                if busy_timeout_ms is not None:
-                    conn.execute(f"PRAGMA busy_timeout = {max(100, min(int(busy_timeout_ms), 15000))}")
-                settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings")}
+            with self._repository.connection(busy_timeout_ms) as conn:
+                settings = self._repository.settings(conn)
                 checkpoint = mark("settings_ms", started)
                 current_year = parse_int(settings.get("current_year")) or 2025
                 if current_year < self._min_year or current_year > self._max_year:
@@ -55,7 +58,7 @@ class TrackerService:
                 tracker_year = requested_year if requested_year is not None else current_year
                 tracker_year = max(self._min_year, min(self._max_year, tracker_year))
                 cache_lookup_year = tracker_year
-                teams = [dict(row) for row in conn.execute("SELECT * FROM teams ORDER BY code").fetchall()]
+                teams = self._repository.teams(conn)
                 checkpoint = mark("teams_ms", checkpoint)
                 result_rows: List[Dict[str, Any]] = []
                 draft_year_start = current_year + 1
@@ -87,16 +90,10 @@ class TrackerService:
                     players = self._operations.select_players(conn, team_id)
                     players_ms = round((time.perf_counter() - query_started) * 1000, 2)
                     query_started = time.perf_counter()
-                    assets = [dict(row) for row in conn.execute(
-                        "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
-                        (team_id,),
-                    ).fetchall()]
+                    assets = self._repository.assets(conn, team_id)
                     assets_ms = round((time.perf_counter() - query_started) * 1000, 2)
                     query_started = time.perf_counter()
-                    dead_contracts = [dict(row) for row in conn.execute(
-                        "SELECT * FROM dead_contracts WHERE team_id = ? ORDER BY dead_type, row_order, id",
-                        (team_id,),
-                    ).fetchall()]
+                    dead_contracts = self._repository.dead_contracts(conn, team_id)
                     dead_ms = round((time.perf_counter() - query_started) * 1000, 2)
                     query_started = time.perf_counter()
                     luxury_repeater = self._operations.luxury_repeater(conn, team_id, tracker_year)
@@ -138,7 +135,7 @@ class TrackerService:
                         )
                 mark("rows_ms", checkpoint)
                 timings.update({"total_ms": round((time.perf_counter() - started) * 1000, 2), "row_count": float(len(result_rows))})
-                setattr(self._db, "_last_tracker_timings", timings)
+                self._repository.record_timings(timings)
                 result = {
                     "rows": result_rows, "season_year": tracker_year,
                     "seasons": [current_year + index for index in range(6)], "timings": timings,

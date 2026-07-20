@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import ParseResult
@@ -12,20 +11,17 @@ try:
     from ..auth.sessions import verify_admin_password
     from ..domain.trade_rules import normalize_trade_bucket
     from ..domain_rules import parse_bool, parse_int, public_settings_payload
-    from ..routing import (
-        RequestValidationError,
-        exact_route,
-        predicate_route,
-        validate_payload_fields,
-    )
-    from ..services.trades import TradeService
+    from ..routing import exact_route, predicate_route
+    from .validation import validate_coadmin_vote_submit_payload, validate_gm_option_request_payload
+    from ..services.notifications import discord_image_requested, discord_notify_requested
 except ImportError:  # pragma: no cover
     from auth.policies import normalize_team_code
     from auth.sessions import verify_admin_password
     from domain.trade_rules import normalize_trade_bucket
     from domain_rules import parse_bool, parse_int, public_settings_payload
-    from routing import RequestValidationError, exact_route, predicate_route, validate_payload_fields
-    from services.trades import TradeService
+    from routing import exact_route, predicate_route
+    from routes.validation import validate_coadmin_vote_submit_payload, validate_gm_option_request_payload
+    from services.notifications import discord_image_requested, discord_notify_requested
 
 
 PLAYER_CONTRACT_SEASONS = [2025, 2026, 2027, 2028, 2029, 2030, 2031]
@@ -35,39 +31,6 @@ PLAYER_CONTRACT_MAX_YEAR = max(PLAYER_CONTRACT_SEASONS)
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def validate_gm_option_request_payload(payload: Dict[str, Any]) -> None:
-    fields = {"player_id", "option_field", "option_value", "action"}
-    validate_payload_fields(payload, fields, required_fields=fields)
-    player_id = parse_int(payload.get("player_id"))
-    if player_id is None or player_id <= 0:
-        raise RequestValidationError("invalid_id", field="player_id")
-    option_field = str(payload.get("option_field") or "").strip()
-    if not re.fullmatch(r"option_(20\d{2})", option_field) or int(option_field[-4:]) not in PLAYER_CONTRACT_SEASONS:
-        raise RequestValidationError("invalid_option_field", field="option_field")
-    if str(payload.get("option_value") or "").strip().upper() not in {"TO", "PO", "QO", "GAP"}:
-        raise RequestValidationError("invalid_enum", field="option_value")
-    if str(payload.get("action") or "").strip().lower() not in {"accepted", "rejected"}:
-        raise RequestValidationError("invalid_enum", field="action")
-
-
-def validate_coadmin_vote_submit_payload(payload: Dict[str, Any]) -> None:
-    validate_payload_fields(payload, {"scores"}, required_fields={"scores"})
-    scores = payload.get("scores")
-    if not isinstance(scores, dict) or len(scores) > 30:
-        raise RequestValidationError("invalid_field", field="scores")
-    normalized_codes = set()
-    for team_code, score in scores.items():
-        normalized = normalize_team_code(team_code)
-        if not normalized or not re.fullmatch(r"[A-Z]{3}", normalized):
-            raise RequestValidationError("invalid_team_code", field=f"scores.{team_code}")
-        if normalized in normalized_codes:
-            raise RequestValidationError("duplicate_value", field="scores.team_code", value=normalized)
-        parsed = parse_int(score)
-        if parsed is None or not 1 <= parsed <= 100:
-            raise RequestValidationError("invalid_integer_range", field=f"scores.{team_code}", minimum=1, maximum=100)
-        normalized_codes.add(normalized)
 
 
 def logout(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
@@ -99,13 +62,13 @@ def update_cartera_ruleout(handler: Any, parsed: ParseResult, payload: Optional[
         return
     try:
         if ruled_out:
-            rows = handler.db.set_free_agent_team_ruleout(
+            rows = handler.app.free_agency.repository.set_ruleout(
                 free_agent_id,
                 team_code,
                 handler._current_session() or {},
             )
         else:
-            rows = handler.db.delete_free_agent_team_ruleout(
+            rows = handler.app.free_agency.repository.delete_ruleout(
                 free_agent_id,
                 team_code,
                 handler._current_session() or {},
@@ -171,7 +134,7 @@ def validate_trade_process(handler: Any, parsed: ParseResult, payload: Optional[
     payload = payload or {}
     if not handler._require_csrf():
         return
-    trade_service = TradeService(handler.db)
+    trade_service = handler.app.trades
     if isinstance(payload.get("selections"), (list, dict)) or isinstance(payload.get("teams"), list):
         normalized = trade_service.normalize_request(payload)
         for code in normalized.get("teams") or []:
@@ -214,14 +177,14 @@ def request_gm_option(handler: Any, parsed: ParseResult, payload: Optional[Dict[
     option_field = str(payload.get("option_field") or "").strip()
     option_value = str(payload.get("option_value") or "").strip().upper()
     option_action = str(payload.get("action") or "").strip().lower()
-    player = handler.db.get_player_record(player_id)
+    player = handler.app.players.record(player_id)
     if not player:
         handler._json(404, {"error": "player_not_found"})
         return
     if not handler._authorize("gm.option_request.create", {"team_code": player.get("team_code")}):
         return
     try:
-        request = handler.db.create_gm_option_request(
+        request = handler.app.gm_request_queries.create_option(
             player_id,
             option_field,
             option_value,
@@ -267,7 +230,7 @@ def submit_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dic
         handler._json(400, {"error": "invalid_vote_id"})
         return
     try:
-        vote = handler.db.submit_coadmin_vote(vote_id, payload.get("scores"), session)
+        vote = handler.app.coadmin_votes.submit_coadmin_vote(vote_id, payload.get("scores"), session)
     except ValueError as err:
         message = str(err) or "invalid_vote"
         status = 409 if message in {"vote_closed", "vote_not_found"} or message.startswith("missing_scores:") else 400
@@ -285,7 +248,7 @@ def create_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dic
     if not handler._authorize("admin.coadmin_vote.write"):
         return
     try:
-        vote = handler.db.create_coadmin_vote(payload.get("title"), handler._current_session() or {})
+        vote = handler.app.coadmin_votes.create_coadmin_vote(payload.get("title"), handler._current_session() or {})
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_vote"})
         return
@@ -309,7 +272,7 @@ def create_offer_promise(handler: Any, parsed: ParseResult, payload: Optional[Di
         return
     try:
         session = handler._current_session() or {}
-        promise = handler._free_agency_service().create_promise(payload, session)
+        promise = handler.app.free_agency.create_promise(payload, session)
     except ValueError as err:
         message = str(err) or "invalid_promise"
         if message.startswith("promise_role_limit_exceeded:"):
@@ -357,7 +320,7 @@ def generate_offseason_exceptions(handler: Any, parsed: ParseResult, payload: Op
         handler._json(400, {"error": "invalid_season_year"})
         return
     try:
-        result = handler.db.generate_offseason_exceptions(
+        result = handler.app.offseason_exceptions.generate(
             season_year,
             team_codes=payload.get("team_codes") if isinstance(payload.get("team_codes"), list) else None,
             choices=payload.get("choices") if isinstance(payload.get("choices"), dict) else None,
@@ -388,7 +351,7 @@ def bulk_create_free_agents(handler: Any, parsed: ParseResult, payload: Optional
     if not handler._authorize("admin.free_agent.write"):
         return
     try:
-        result = handler.db.bulk_create_free_agents(payload.get("names") or payload.get("text") or "")
+        result = handler.app.free_agency.repository.bulk_create_free_agents(payload.get("names") or payload.get("text") or "")
     except ValueError as err:
         if str(err) == "too_many_names":
             handler._json(400, {"error": "too_many_names"})
@@ -416,7 +379,7 @@ def create_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         return
     if not handler._authorize("admin.free_agent.write"):
         return
-    free_agent_id = handler.db.create_free_agent(payload)
+    free_agent_id = handler.app.free_agency.repository.create_free_agent(payload)
     if not free_agent_id:
         handler._json(400, {"error": "name_required"})
         return
@@ -433,7 +396,7 @@ def create_draft_order(handler: Any, parsed: ParseResult, payload: Optional[Dict
     if not handler._authorize("admin.draft_order.write"):
         return
     try:
-        draft_order_id = handler._draft_service().create_order_entry(payload)
+        draft_order_id = handler.app.draft.create_order_entry(payload)
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_draft_order"})
         return
@@ -474,7 +437,7 @@ def sign_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[st
     if not handler._authorize("admin.free_agent.sign", {"team_code": team_code}):
         return
     try:
-        result = handler._free_agency_service().sign_free_agent(free_agent_id, team_code, payload)
+        result = handler.app.free_agency.sign_free_agent(free_agent_id, team_code, payload)
     except ValueError as err:
         if str(err) == "profile_has_active_contract":
             handler._json(409, {"error": "profile_has_active_contract"})
@@ -493,10 +456,10 @@ def sign_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[st
         {"player_id": player_id, "name": payload.get("name")},
         after=player_after,
     )
-    if player_after and handler._discord_notify_requested(payload):
-        handler._notify_free_agent_signed(
+    if player_after and discord_notify_requested(payload):
+        handler.app.notifications.free_agent_signed(
             player_after,
-            generate_image=handler._discord_image_requested(payload),
+            generate_image=discord_image_requested(payload),
             custom_image=payload.get("discord_custom_image"),
         )
     handler._json(200, {"ok": True, "player_id": player_id})
@@ -524,7 +487,7 @@ def merge_player_profiles(handler: Any, parsed: ParseResult, payload: Optional[D
         handler._json(400, {"error": "source_profile_id_required"})
         return
     try:
-        result = handler._player_identity_service().merge_profiles(
+        result = handler.app.player_identity.merge_profiles(
             int(source_profile_id), int(target_profile_id)
         )
     except Exception as err:
@@ -575,7 +538,7 @@ def create_salary_history(handler: Any, parsed: ParseResult, payload: Optional[D
         handler._json(400, {"error": "invalid_profile_id"})
         return
     try:
-        row = handler.db.create_player_salary_history(profile_id, payload)
+        row = handler.app.players.create_salary_history(profile_id, payload)
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_salary_history"})
         return
@@ -609,7 +572,7 @@ def create_player_transaction(handler: Any, parsed: ParseResult, payload: Option
     except ValueError:
         handler._json(400, {"error": "invalid_profile_id"})
         return
-    transaction_id = handler.db.create_player_transaction(profile_id, payload)
+    transaction_id = handler.app.players.create_transaction(profile_id, payload)
     if not transaction_id:
         handler._json(400, {"error": "transaction_summary_required_or_profile_not_found"})
         return
@@ -625,229 +588,40 @@ def create_player_transaction(handler: Any, parsed: ParseResult, payload: Option
 
 def process_trade(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
     payload = payload or {}
-    if not handler._require_csrf():
+    if not handler._require_csrf() or not handler._require_sensitive_rate_limit("admin_post"):
         return
-    if not handler._require_sensitive_rate_limit("admin_post"):
-        return
-    if not handler._require_csrf():
-        return
-    trade_service = TradeService(handler.db)
-    if isinstance(payload.get("selections"), (list, dict)) or isinstance(payload.get("teams"), list):
-        normalized = trade_service.normalize_request(payload)
-        teams = normalized.get("teams") or []
-        for code in teams:
-            if not handler._authorize("admin.trade.process", {"team_code": code}):
-                return
-        force_trade = parse_bool(payload.get("force_trade"))
-        validation = trade_service.validate(
-            {
-                **payload,
-                "teams": teams,
-                "selections": normalized.get("selections") or [],
-                "cash": normalized.get("cash") or [],
-            }
-        )
-        illegal_validation_issues = [
-            issue for issue in (validation.get("issues") or [])
-            if issue.get("severity") == "illegal"
-        ]
-        if illegal_validation_issues and not force_trade:
-            handler._json(422, {"ok": False, "error": "trade_invalid", "validation": validation})
+    service = handler.app.trades
+    teams = service.request_team_codes(payload)
+    for team_code in teams:
+        if not handler._authorize("admin.trade.process", {"team_code": team_code}):
             return
-        trade_player_ids = [
-            selection.get("id")
-            for selection in normalized.get("selections") or []
-            if selection.get("type") == "player"
-        ]
-        trade_asset_ids = [
-            selection.get("id")
-            for selection in normalized.get("selections") or []
-            if selection.get("type") in {"pick", "right"}
-        ]
-        trade_before = handler.db.audit_trade_snapshot(teams, trade_player_ids, trade_asset_ids)
-        command_payload = {
-            "teams": teams,
-            "season": parse_int(payload.get("season")),
-            "selections": normalized.get("selections") or [],
-            "cash": normalized.get("cash") or [],
-            "trade_bucket": normalize_trade_bucket(payload.get("trade_bucket")),
-        }
-        command_result = trade_service.process_command(
-            command_payload,
-            validation=validation,
-            expected_validation_hash=payload.get("validation_hash"),
-            require_validation_hash=True,
-            force_trade=force_trade,
-            notify_discord=handler._discord_notify_requested(payload),
-            generate_image=handler._discord_image_requested(payload),
-            custom_image=payload.get("discord_custom_image") if isinstance(payload.get("discord_custom_image"), dict) else None,
+    try:
+        outcome = service.process_request(
+            payload,
             actor=handler._current_session(),
             command_id=str(handler.headers.get("Idempotency-Key") or "").strip() or None,
+            notify_discord=discord_notify_requested(payload),
+            generate_image=discord_image_requested(payload),
+            custom_image=(
+                payload.get("discord_custom_image")
+                if isinstance(payload.get("discord_custom_image"), dict)
+                else None
+            ),
         )
-        result = command_result.get("result")
-        authoritative_validation = command_result.get("validation") or validation
-        if not result and command_result.get("error"):
-            handler._json(
-                int(command_result.get("status_code") or 409),
-                {
-                    "ok": False,
-                    "error": command_result.get("error"),
-                    "validation": authoritative_validation,
-                },
-            )
-            return
-        if result:
-            applied_hard_caps = command_result.get("applied_hard_caps") or []
-            trade_after = handler.db.audit_trade_snapshot(teams, trade_player_ids, trade_asset_ids)
-            handler._log_admin_action(
-                "trade",
-                "trade",
-                None,
-                None,
-                {
-                    "teams": teams,
-                    "season": result.get("season"),
-                    "selection_count": len(normalized.get("selections") or []),
-                    "trade_bucket": result.get("trade_bucket"),
-                    "force_trade": bool(force_trade),
-                    "team_results": result.get("teams") or [],
-                    "validation_issues": authoritative_validation.get("issues") or [],
-                    "forced_validation_issues": illegal_validation_issues if force_trade else [],
-                    "applied_hard_caps": applied_hard_caps,
-                },
-                before=trade_before,
-                after=trade_after,
-                team_codes=teams,
-            )
-            delivered_events = handler._dispatch_outbox_events(command_result.get("outbox_event_ids"))
-            if delivered_events:
-                result["delivered_events"] = delivered_events
-        handler._json(200 if result else 404, result or {"ok": False})
+    except ValueError as err:
+        handler._json(409, {"ok": False, "error": str(err) or "trade_processing_failed"})
         return
-    team_a = normalize_team_code(payload.get("team_a")) or ""
-    team_b = normalize_team_code(payload.get("team_b")) or ""
-    players_a = payload.get("players_a")
-    players_b = payload.get("players_b")
-    pick_ids_a = payload.get("pick_ids_a")
-    pick_ids_b = payload.get("pick_ids_b")
-    pick_actions_a = payload.get("pick_actions_a")
-    pick_actions_b = payload.get("pick_actions_b")
-    right_ids_a = payload.get("right_ids_a")
-    right_ids_b = payload.get("right_ids_b")
-    no_count_players_a = payload.get("no_count_players_a")
-    no_count_players_b = payload.get("no_count_players_b")
-    trade_bucket = payload.get("trade_bucket")
-    force_trade = parse_bool(payload.get("force_trade"))
-    if not handler._authorize("admin.trade.process", {"team_code": team_a}):
-        return
-    if not handler._authorize("admin.trade.process", {"team_code": team_b}):
-        return
-    validation = trade_service.validate_process_payload({
-        **payload,
-        "team_a": team_a,
-        "team_b": team_b,
-    })
-    illegal_validation_issues = [
-        issue for issue in (validation.get("issues") or [])
-        if issue.get("severity") == "illegal"
-    ]
-    if illegal_validation_issues and not force_trade:
-        handler._json(422, {"ok": False, "error": "trade_invalid", "validation": validation})
-        return
-    trade_player_ids: List[Any] = []
-    for values in [players_a, players_b]:
-        if isinstance(values, list):
-            trade_player_ids.extend(values)
-    trade_asset_ids: List[Any] = []
-    for values in [pick_ids_a, pick_ids_b, right_ids_a, right_ids_b]:
-        if isinstance(values, list):
-            trade_asset_ids.extend(values)
-    trade_before = handler.db.audit_trade_snapshot([team_a, team_b], trade_player_ids, trade_asset_ids)
-    legacy_command_payload = {
-        "team_a": team_a,
-        "team_b": team_b,
-        "season": parse_int(payload.get("season")),
-        "players_a": players_a if isinstance(players_a, list) else [],
-        "players_b": players_b if isinstance(players_b, list) else [],
-        "pick_ids_a": pick_ids_a if isinstance(pick_ids_a, list) else [],
-        "pick_ids_b": pick_ids_b if isinstance(pick_ids_b, list) else [],
-        "right_ids_a": right_ids_a if isinstance(right_ids_a, list) else [],
-        "right_ids_b": right_ids_b if isinstance(right_ids_b, list) else [],
-        "no_count_players_a": no_count_players_a if isinstance(no_count_players_a, list) else [],
-        "no_count_players_b": no_count_players_b if isinstance(no_count_players_b, list) else [],
-        "pick_actions_a": pick_actions_a if isinstance(pick_actions_a, (dict, list)) else {},
-        "pick_actions_b": pick_actions_b if isinstance(pick_actions_b, (dict, list)) else {},
-        "trade_bucket": normalize_trade_bucket(trade_bucket),
-    }
-    command_result = trade_service.process_command(
-        legacy_command_payload,
-        validation=validation,
-        expected_validation_hash=payload.get("validation_hash"),
-        require_validation_hash=True,
-        force_trade=force_trade,
-        notify_discord=handler._discord_notify_requested(payload),
-        generate_image=handler._discord_image_requested(payload),
-        custom_image=payload.get("discord_custom_image") if isinstance(payload.get("discord_custom_image"), dict) else None,
-        legacy=True,
-        actor=handler._current_session(),
-        command_id=str(handler.headers.get("Idempotency-Key") or "").strip() or None,
-    )
-    result = command_result.get("result")
-    authoritative_validation = command_result.get("validation") or validation
-    if not result and command_result.get("error"):
-        handler._json(
-            int(command_result.get("status_code") or 409),
-            {
-                "ok": False,
-                "error": command_result.get("error"),
-                "validation": authoritative_validation,
-            },
-        )
-        return
-    if result:
-        applied_hard_caps = command_result.get("applied_hard_caps") or []
-        trade_after = handler.db.audit_trade_snapshot([team_a, team_b], trade_player_ids, trade_asset_ids)
+    audit = outcome.get("audit")
+    if audit:
         handler._log_admin_action(
-            "trade",
-            "trade",
-            None,
-            None,
-            {
-                "team_a": team_a,
-                "team_b": team_b,
-                "players_a_count": len(players_a or []),
-                "players_b_count": len(players_b or []),
-                "rights_a_count": len(right_ids_a or []),
-                "rights_b_count": len(right_ids_b or []),
-                "players_a": players_a or [],
-                "players_b": players_b or [],
-                "pick_ids_a": pick_ids_a or [],
-                "pick_ids_b": pick_ids_b or [],
-                "pick_actions_a": pick_actions_a or {},
-                "pick_actions_b": pick_actions_b or {},
-                "right_ids_a": right_ids_a or [],
-                "right_ids_b": right_ids_b or [],
-                "no_count_players_a": no_count_players_a or [],
-                "no_count_players_b": no_count_players_b or [],
-                "trade_bucket": result.get("trade_bucket"),
-                "force_trade": bool(force_trade),
-                "move_count_a": result.get("team_a", {}).get("move_count"),
-                "move_count_b": result.get("team_b", {}).get("move_count"),
-                "validation_issues": authoritative_validation.get("issues") or [],
-                "forced_validation_issues": illegal_validation_issues if force_trade else [],
-                "applied_hard_caps": applied_hard_caps,
-            },
-            before=trade_before,
-            after=trade_after,
-            team_codes=[team_a, team_b],
+            "trade", "trade", None, None, audit.get("details"),
+            before=audit.get("before"), after=audit.get("after"),
+            team_codes=outcome.get("team_codes") or [],
         )
-        delivered_events = handler._dispatch_outbox_events(command_result.get("outbox_event_ids"))
-        if delivered_events:
-            result["delivered_events"] = delivered_events
-    handler._json(
-        200 if result else 400,
-        {"ok": bool(result), "result": result, "validation": authoritative_validation},
-    )
+    delivered = handler.app.outbox_delivery.dispatch(outcome.get("outbox_event_ids"))
+    if delivered and isinstance(outcome.get("result"), dict):
+        outcome["result"]["delivered_events"] = delivered
+    handler._json(int(outcome.get("status_code") or 200), outcome["response"])
     return
 
 def create_move_adjustment(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
@@ -873,7 +647,7 @@ def create_move_adjustment(handler: Any, parsed: ParseResult, payload: Optional[
         return
     if not handler._authorize("admin.team_moves.write", {"team_code": code}):
         return
-    result = handler.db.adjust_team_move_remaining(code, season_year, bucket, target_remaining, note)
+    result = handler.app.trade_repository.adjust_team_move_remaining(code, season_year, bucket, target_remaining, note)
     if result:
         handler._log_admin_action("update", "team_move", code.upper(), code.upper(), result)
     handler._json(200 if result else 404, {"ok": bool(result), "result": result})
@@ -894,7 +668,7 @@ def create_asset(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, 
     if str(payload.get("asset_type") or "").strip().lower() == "dead_cap":
         handler._json(400, {"error": "dead_cap_moved_to_dead_contracts"})
         return
-    asset_id = handler.db.create_asset(team_code, payload)
+    asset_id = handler.app.assets.create_asset(team_code, payload)
     if not asset_id:
         handler._json(404, {"error": "team_not_found"})
         return
@@ -914,7 +688,7 @@ def create_frozen_draft_pick(handler: Any, parsed: ParseResult, payload: Optiona
         return
     if not handler._authorize("admin.frozen_draft_pick.write", {"team_code": team_code}):
         return
-    row = handler.db.create_frozen_draft_pick(team_code, payload)
+    row = handler.app.assets.create_frozen_pick(team_code, payload)
     if not row:
         handler._json(400, {"error": "invalid_frozen_pick"})
         return
@@ -940,7 +714,7 @@ def create_dead_contract(handler: Any, parsed: ParseResult, payload: Optional[Di
         return
     if not handler._authorize("admin.dead_contract.write", {"team_code": team_code}):
         return
-    dead_contract_id = handler.db.create_dead_contract(team_code, payload)
+    dead_contract_id = handler.app.assets.create_dead_contract(team_code, payload)
     if not dead_contract_id:
         handler._json(404, {"error": "team_not_found"})
         return
@@ -971,7 +745,7 @@ def create_gm_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         handler._json(400, {"error": "entries_required"})
         return
     try:
-        rows = handler.db.replace_gm_history(team_code, raw_entries)
+        rows = handler.app.teams.replace_gm_history(team_code, raw_entries)
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_gm_history"})
         return
@@ -997,13 +771,13 @@ def progress_settings_year(handler: Any, parsed: ParseResult, payload: Optional[
     if not handler._authorize("admin.global.write"):
         return
     try:
-        result = handler._season_rollover_service().progress_to_next_year()
+        result = handler.app.season_rollover.progress_to_next_year()
     except ValueError as err:
         if str(err) in {"cannot_progress_beyond_2030", "cannot_progress_beyond_contract_window"}:
             handler._json(400, {"error": "cannot_progress_beyond_contract_window"})
             return
         raise
-    merged = handler.db.get_settings()
+    merged = handler.app.settings_repository.get_all()
     handler._log_admin_action("update", "settings", None, None, {"progress_year": result})
     handler._json(
         200,

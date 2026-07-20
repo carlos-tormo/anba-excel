@@ -27,7 +27,7 @@ def list_notifications(handler: Any, parsed: ParseResult, _payload: Optional[Dic
     query = parse_qs(parsed.query)
     unread_raw = str((query.get("unread") or ["1"])[0] or "").strip().lower()
     limit = parse_int((query.get("limit") or ["20"])[0]) or 20
-    notifications = handler.db.list_user_notifications_for_session(
+    notifications = handler.app.user_notifications.list_for_session(
         session, unread_only=unread_raw not in {"0", "false", "no"}, limit=limit
     )
     handler._json(200, {"notifications": notifications})
@@ -45,7 +45,7 @@ def get_article(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, 
         handler._json(400, {"error": "invalid_article_id"})
         return
     if len(parts) == 5 and parts[4] == "image":
-        image = handler.db.get_press_article_image(article_id)
+        image = handler.app.press_articles.image(article_id)
         if not image:
             handler._json(404, {"error": "not_found"})
             return
@@ -60,7 +60,7 @@ def get_article(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, 
     if len(parts) == 5:
         handler._json(404, {"error": "not_found"})
         return
-    article = handler.db.get_press_article(article_id)
+    article = handler.app.press_articles.get(article_id)
     if not article:
         handler._json(404, {"error": "article_not_found"})
         return
@@ -80,7 +80,7 @@ def mark_notification_read(handler: Any, parsed: ParseResult, _payload: Optional
     except ValueError:
         handler._json(400, {"error": "invalid_notification_id"})
         return
-    if not handler.db.mark_user_notification_read(notification_id, handler._current_session() or {}):
+    if not handler.app.user_notifications.mark_read(notification_id, handler._current_session() or {}):
         handler._json(404, {"error": "notification_not_found"})
         return
     handler._json(200, {"ok": True})
@@ -94,14 +94,12 @@ def publish_article(handler: Any, _parsed: ParseResult, payload: Optional[Dict[s
         return
     article_text = str(payload.get("text") or payload.get("article_text") or "").strip()
     try:
-        image_attachment = handler._discord_custom_image_attachment(payload.get("discord_custom_image"))
-        if not image_attachment:
-            raise ValueError("article_image_required")
-        file_bytes, _filename, mime_type = image_attachment
-        article = handler.db.create_press_article(article_text, file_bytes, mime_type, handler._current_session() or {})
-        article_id = int(article.get("id") or 0)
-        result = handler._post_press_article(article_text, handler._public_url(f"/news?article={article_id}"), image_attachment)
-        handler.db.update_press_article_discord(article_id, str(result.get("channel_id") or ""), str(result.get("message_id") or ""))
+        result = handler.app.press_publication.publish(
+            article_text,
+            lambda article_id: handler._public_url(f"/news?article={article_id}"),
+            payload.get("discord_custom_image"),
+            handler._current_session() or {},
+        )
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_article"})
         return
@@ -133,4 +131,3 @@ PRESS_POST_ROUTES = (
     predicate_route("notification-read", _notification_read_path, mark_notification_read),
     exact_route("/api/admin/launch-article", publish_article),
 )
-

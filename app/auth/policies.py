@@ -39,6 +39,53 @@ def normalize_team_codes(value: Any) -> List[str]:
     return codes
 
 
+def parse_gm_account_map(value: Any) -> Dict[str, List[str]]:
+    if value is None:
+        return {}
+    raw = str(value or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        parsed_items: List[Any] = [
+            {"email": email, "teams": teams} for email, teams in parsed.items()
+        ]
+    elif isinstance(parsed, list):
+        parsed_items = parsed
+    else:
+        parsed_items = re.split(r"[\n,]+", raw)
+
+    mapping: Dict[str, List[str]] = {}
+    for item in parsed_items:
+        if isinstance(item, dict):
+            email = str(item.get("email") or "").strip().lower()
+            teams_value = item.get("teams") or item.get("team_codes") or item.get("team_code")
+        else:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if "=" in text:
+                email, teams_value = text.split("=", 1)
+            elif ":" in text:
+                email, teams_value = text.split(":", 1)
+            else:
+                continue
+            email = email.strip().lower()
+        if email and "@" in email:
+            team_codes = normalize_team_codes(teams_value)
+            if team_codes:
+                mapping[email] = team_codes
+    return mapping
+
+
+def serialize_team_codes(value: Any) -> Optional[str]:
+    codes = normalize_team_codes(value)
+    return json.dumps(codes, ensure_ascii=True) if codes else None
+
+
 class AuthorizationError(Exception):
     def __init__(self, status: int, error: str) -> None:
         super().__init__(error)
@@ -142,4 +189,3 @@ def authorize_action(
         if team_code not in normalize_team_codes(actor.get("team_codes")):
             raise AuthorizationError(403, "team_access_required")
     return True
-

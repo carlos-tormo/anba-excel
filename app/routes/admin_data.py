@@ -9,10 +9,14 @@ from typing import Any, Dict, Optional
 from urllib.parse import ParseResult
 
 try:
+    from ..db.maintenance import public_backup_metadata
     from ..domain_rules import parse_bool
+    from ..import_export.spreadsheets import spreadsheet_rows_from_payload
     from ..routing import exact_route
 except ImportError:  # pragma: no cover
+    from db.maintenance import public_backup_metadata
     from domain_rules import parse_bool
+    from import_export.spreadsheets import spreadsheet_rows_from_payload
     from routing import exact_route
 
 
@@ -21,7 +25,7 @@ def _require_admin_post(handler: Any) -> bool:
 
 
 def export_league(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    workbook = handler.db.export_league_workbook()
+    workbook = handler.app.league_exports.export()
     filename = f"anba-league-export-{datetime.now(UTC).strftime('%Y%m%d')}.xlsx"
     handler._bytes_response(200, workbook, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={
         "Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store",
@@ -36,7 +40,7 @@ def preview_owner_import(handler: Any, parsed: ParseResult, payload: Optional[Di
     if len(csv_text.encode("utf-8")) > 2_000_000:
         handler._json(413, {"error": "csv_too_large"})
         return
-    method = handler.db.preview_owner_economy_csv if "economy-import" in parsed.path else handler.db.preview_owner_office_csv
+    method = handler.app.owner_imports.preview_owner_economy_csv if "economy-import" in parsed.path else handler.app.owner_imports.preview_owner_office_csv
     handler._json(200, method(csv_text))
 
 
@@ -47,12 +51,12 @@ def apply_owner_import(handler: Any, parsed: ParseResult, payload: Optional[Dict
     economy = "economy-import" in parsed.path
     entity = "owner_economy" if economy else "owner_office"
     try:
-        backup = handler.db.create_verified_backup(f"pre_{entity}_import")
+        backup = handler.app.maintenance.create_verified_backup(f"pre_{entity}_import")
     except (OSError, sqlite3.Error, ValueError) as err:
         handler._json(500, {"error": "pre_import_backup_failed", "detail": str(err)})
         return
     try:
-        method = handler.db.apply_owner_economy_import if economy else handler.db.apply_owner_office_import
+        method = handler.app.owner_imports.apply_owner_economy_import if economy else handler.app.owner_imports.apply_owner_office_import
         result = method(payload.get("records"))
     except ValueError as err:
         if str(err) == "records_required":
@@ -66,7 +70,7 @@ def apply_owner_import(handler: Any, parsed: ParseResult, payload: Optional[Dict
         "record_count": result.get("record_count"), "group_count": result.get("group_count"),
         "backup_id": backup.get("id"), "backup_sha256": backup.get("sha256"),
     })
-    result["backup"] = handler._public_backup_metadata(backup)
+    result["backup"] = public_backup_metadata(backup)
     handler._json(200, result)
 
 
@@ -82,7 +86,7 @@ def _spreadsheet_error_result(handler: Any, message: str, *, appeal: bool) -> Di
             "ok": False, "errors": [{"line": None, "message": label}], "records": [],
             "summary": {"record_count": 0, "team_count": 0},
             "columns": [{"key": key, "label": f"{group} · {sub}", "group": group, "sub_label": sub}
-                        for key, group, sub in handler.db.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS],
+                        for key, group, sub in handler.app.free_agent_appeal.FREE_AGENT_TEAM_APPEAL_RANKING_COLUMNS],
             "rankings": [],
         }
     return {
@@ -97,16 +101,16 @@ def preview_free_agent_import(handler: Any, parsed: ParseResult, payload: Option
     if not _require_admin_post(handler) or not handler._authorize("admin.import.write"):
         return
     appeal = "appeal-import" in parsed.path
-    if appeal and not parse_bool(handler.db.get_settings().get("free_agency_mode")):
+    if appeal and not parse_bool(handler.app.settings_repository.get_all().get("free_agency_mode")):
         handler._json(409, {"error": "free_agency_mode_required"})
         return
     try:
-        rows = handler._spreadsheet_rows_from_payload(
+        rows = spreadsheet_rows_from_payload(
             file_name=str(payload.get("file_name") or ""),
             file_data_base64=str(payload.get("file_data_base64") or ""),
             csv_text=str(payload.get("csv_text") or ""),
         )
-        method = handler.db.preview_free_agent_team_appeal_import if appeal else handler.db.preview_free_agent_agent_import
+        method = handler.app.free_agent_appeal.preview if appeal else handler.app.free_agent_agent_import.preview
         result = method(rows)
     except ValueError as err:
         result = _spreadsheet_error_result(handler, str(err) or "invalid_file", appeal=appeal)
@@ -118,18 +122,18 @@ def apply_free_agent_import(handler: Any, parsed: ParseResult, payload: Optional
     if not _require_admin_post(handler) or not handler._authorize("admin.import.write"):
         return
     appeal = "appeal-import" in parsed.path
-    if appeal and not parse_bool(handler.db.get_settings().get("free_agency_mode")):
+    if appeal and not parse_bool(handler.app.settings_repository.get_all().get("free_agency_mode")):
         handler._json(409, {"error": "free_agency_mode_required"})
         return
     entity = "free_agent_team_appeal" if appeal else "free_agent_agents"
     reason = "pre_free_agent_appeal_import" if appeal else "pre_free_agent_agent_import"
     try:
-        backup = handler.db.create_verified_backup(reason)
+        backup = handler.app.maintenance.create_verified_backup(reason)
     except (OSError, sqlite3.Error, ValueError) as err:
         handler._json(500, {"error": "pre_import_backup_failed", "detail": str(err)})
         return
     try:
-        method = handler.db.apply_free_agent_team_appeal_import if appeal else handler.db.apply_free_agent_agent_import
+        method = handler.app.free_agent_appeal.apply if appeal else handler.app.free_agent_agent_import.apply
         result = method(payload.get("records"))
     except ValueError as err:
         if str(err) in {"records_required", "invalid_records"}:
@@ -140,7 +144,7 @@ def apply_free_agent_import(handler: Any, parsed: ParseResult, payload: Optional
     if not appeal:
         details.update({"changed_count": result.get("changed_count"), "new_agents": result.get("new_agents")})
     handler._log_admin_action("import", entity, "bulk", None, details)
-    result["backup"] = handler._public_backup_metadata(backup)
+    result["backup"] = public_backup_metadata(backup)
     handler._json(200, result)
 
 
@@ -148,7 +152,7 @@ def download_backup(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[
     if not _require_admin_post(handler) or not handler._authorize("admin.backup.create"):
         return
     try:
-        backup = handler.db.create_verified_backup("manual_download")
+        backup = handler.app.maintenance.create_verified_backup("manual_download")
         data = Path(str(backup["path"])).read_bytes()
     except (OSError, sqlite3.Error):
         handler._json(500, {"error": "backup_failed"})
@@ -178,4 +182,3 @@ ADMIN_DATA_POST_ROUTES = (
     exact_route("/api/admin/free-agent-appeal-import/import", apply_free_agent_import),
     exact_route("/api/admin/backup", download_backup),
 )
-

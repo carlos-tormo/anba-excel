@@ -100,6 +100,14 @@ class PlayerRepository(LeagueRepository):
         players = self.rows_from_cursor(cursor, cursor.fetchall())
         return self._attach_salary_history(conn, players)
 
+    def attach_salary_history(
+        self,
+        conn: Any,
+        players: list[Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        """Attach persisted salary history to an existing player-like read model."""
+        return self._attach_salary_history(conn, players)
+
     @staticmethod
     def attach_option_decisions(conn: Any, players: list[Dict[str, Any]], team_id: int) -> None:
         if not players:

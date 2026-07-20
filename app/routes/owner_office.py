@@ -8,12 +8,12 @@ from urllib.parse import ParseResult
 
 try:
     from ..auth.policies import normalize_team_code
-    from ..domain_rules import parse_bool, parse_int
     from ..routing import predicate_route
+    from ..services.owner_office import OwnerExitInterviewError
 except ImportError:  # pragma: no cover - supports direct script execution.
     from auth.policies import normalize_team_code
-    from domain_rules import parse_bool, parse_int
     from routing import predicate_route
+    from services.owner_office import OwnerExitInterviewError
 
 
 OWNER_BACKGROUND_EXTENSIONS = {
@@ -34,7 +34,7 @@ def get_owner_background_image(handler: Any, parsed: ParseResult, _payload: Opti
     if not code:
         handler._json(400, {"error": "invalid_team"})
         return
-    image = handler.db.get_owner_background_image(code)
+    image = handler.app.owner_office.get_background_image(code)
     if not image:
         handler._json(404, {"error": "not_found"})
         return
@@ -56,7 +56,7 @@ def get_owner_office(handler: Any, parsed: ParseResult, _payload: Optional[Dict[
     code = parsed.path.strip("/").split("/")[2]
     if not handler._authorize("owner_office.view", {"team_code": code}):
         return
-    data = handler.db.get_team_owner_office(code, include_private=handler._is_admin())
+    data = handler.app.owner_office.get(code, include_private=handler._is_admin())
     if not data:
         handler._json(404, {"error": "team_not_found"})
         return
@@ -74,7 +74,7 @@ def upload_owner_background(handler: Any, parsed: ParseResult, _payload: Optiona
         return
     try:
         file_bytes, _ext, mime_type = handler._read_multipart_image_upload("background")
-        owner_office = handler.db.update_owner_background_image(code, file_bytes, mime_type)
+        owner_office = handler.app.owner_office.update_background_image(code, file_bytes, mime_type)
     except ValueError as err:
         error = str(err) or "invalid_upload"
         handler._json(413 if error == "upload_too_large" else 400, {"error": error})
@@ -102,7 +102,7 @@ def update_owner_office(handler: Any, parsed: ParseResult, payload: Optional[Dic
     if not handler._authorize("admin.team.write", {"team_code": code}):
         return
     try:
-        owner_office = handler.db.update_team_owner_office(code, payload)
+        owner_office = handler.app.owner_office.update(code, payload)
     except ValueError as err:
         if str(err) == "invalid_season_year":
             handler._json(400, {"error": "invalid_season_year"})
@@ -129,85 +129,31 @@ def update_owner_exit_interview(handler: Any, parsed: ParseResult, payload: Opti
         return
     if not handler._authorize("owner_exit_interview.update", {"team_code": code}):
         return
-    settings = handler.db.get_settings()
-    current_year = parse_int(settings.get("current_year")) or 2025
-    season_year = parse_int(payload.get("season_year")) or current_year
-    if season_year != current_year:
-        handler._json(400, {"error": "invalid_exit_interview_season", "season_year": current_year})
+    is_admin = handler._is_admin()
+    if action == "reset" and not is_admin:
+        handler._json(403, {"error": "admin_required"})
         return
-    if action == "reset":
-        if not handler._is_admin():
-            handler._json(403, {"error": "admin_required"})
-            return
-        if not handler.db.reset_owner_exit_interview(code, season_year):
-            handler._json(404, {"error": "team_not_found"})
-            return
-        refreshed = handler.db.get_team_owner_office(code, include_private=True)
-        handler._log_admin_action(
-            "reset",
-            "owner_exit_interview",
-            f"{code.upper()}:{season_year}",
-            code.upper(),
-            {"season_year": season_year},
+    try:
+        result = handler.app.owner_office.update_exit_interview(
+            code,
+            action,
+            payload,
+            handler._current_session() or {},
+            include_private=is_admin,
         )
-        handler._json(200, {"ok": True, "owner_office": refreshed})
+    except OwnerExitInterviewError as err:
+        status = 404 if err.code in {"team_not_found", "interview_not_found"} else (
+            409 if err.code in {"free_agency_mode_required", "interview_not_started"} else 400
+        )
+        handler._json(status, {"error": err.code, **err.details})
         return
-    if not parse_bool(settings.get("free_agency_mode")):
-        handler._json(409, {"error": "free_agency_mode_required"})
-        return
-    owner_office = handler.db.get_team_owner_office(code, include_private=True)
-    if not owner_office:
-        handler._json(404, {"error": "team_not_found"})
-        return
-    session = handler._current_session() or {}
-    if action == "start":
-        existing = handler.db.get_owner_exit_interview(code, season_year)
-        owner_message = str(existing.get("owner_message") or "").strip() if existing else ""
-        if not owner_message:
-            owner_message = handler._owner_interview_service().opening_message(owner_office, season_year, session=session)
-        interview = handler.db.start_owner_exit_interview(code, season_year, session, owner_message)
-        if not interview:
-            handler._json(404, {"error": "team_not_found"})
-            return
-        refreshed = handler.db.get_team_owner_office(code, include_private=handler._is_admin())
-        handler._json(200, {"ok": True, "interview": interview, "owner_office": refreshed})
-        return
-
-    gm_response = str(payload.get("gm_response") or "").strip()
-    if not gm_response:
-        handler._json(400, {"error": "gm_response_required"})
-        return
-    if len(gm_response) > 4000:
-        handler._json(400, {"error": "gm_response_too_long"})
-        return
-    existing = handler.db.get_owner_exit_interview(code, season_year)
-    if not existing or not str(existing.get("owner_message") or "").strip():
-        handler._json(409, {"error": "interview_not_started"})
-        return
-    if str(existing.get("status") or "").lower() == "completed":
-        handler._json(200, {"ok": True, "interview": existing})
-        return
-    final_message, conclusion_message, trust_delta = handler._owner_interview_service().final_reply(
-        owner_office,
-        season_year,
-        str(existing.get("owner_message") or ""),
-        gm_response,
-        session=session,
-    )
-    interview = handler.db.complete_owner_exit_interview(
-        code,
-        season_year,
-        session,
-        gm_response,
-        final_message,
-        conclusion_message,
-        trust_delta,
-    )
-    if not interview:
-        handler._json(404, {"error": "interview_not_found"})
-        return
-    refreshed = handler.db.get_team_owner_office(code, include_private=handler._is_admin())
-    handler._json(200, {"ok": True, "interview": interview, "owner_office": refreshed})
+    audit = result.get("audit")
+    if audit:
+        handler._log_admin_action(
+            audit["action"], audit["entity"], audit["entity_id"],
+            audit["team_code"], audit["details"],
+        )
+    handler._json(200, result["response"])
 
 
 def _owner_office_path(path: str) -> bool:

@@ -4,7 +4,10 @@ import sqlite3
 import tempfile
 import unittest
 
-from app.server import LeagueDB, _spreadsheet_rows_from_payload, _xlsx_workbook_bytes
+from tests.db_helpers import connect_test_db
+
+from app.import_export.spreadsheets import spreadsheet_rows_from_payload, xlsx_workbook_bytes
+from app.server import LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
 
@@ -27,7 +30,7 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-fa-agent-import-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -90,7 +93,7 @@ class FreeAgentAgentImportTests(unittest.TestCase):
         self.assertIn("Old Rep", settings.get("free_agent_reps", ""))
 
     def test_xlsx_payload_rows_are_supported(self) -> None:
-        data = _xlsx_workbook_bytes(
+        data = xlsx_workbook_bytes(
             [
                 {
                     "name": "Agents",
@@ -101,7 +104,7 @@ class FreeAgentAgentImportTests(unittest.TestCase):
                 }
             ]
         )
-        rows = _spreadsheet_rows_from_payload(
+        rows = spreadsheet_rows_from_payload(
             file_name="agents.xlsx",
             file_data_base64=base64.b64encode(data).decode("ascii"),
         )

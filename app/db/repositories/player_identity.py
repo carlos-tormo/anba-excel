@@ -7,9 +7,35 @@ import json
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
 
 try:
-    from ...domain_rules import parse_int
+    from ...domain_rules import (
+        cap_hold_amount,
+        cap_hold_bird_code_from_years,
+        has_standard_cap_hold_marker,
+        is_exhibit10_player,
+        is_two_way_player,
+        normalize_bird_years,
+        parse_amount_like,
+        parse_bool,
+        parse_float,
+        parse_int,
+        row_salary_num,
+        season_label,
+    )
 except ImportError:  # pragma: no cover
-    from domain_rules import parse_int
+    from domain_rules import (
+        cap_hold_amount,
+        cap_hold_bird_code_from_years,
+        has_standard_cap_hold_marker,
+        is_exhibit10_player,
+        is_two_way_player,
+        normalize_bird_years,
+        parse_amount_like,
+        parse_bool,
+        parse_float,
+        parse_int,
+        row_salary_num,
+        season_label,
+    )
 
 from .base import LeagueRepository
 
@@ -25,6 +51,18 @@ class PlayerIdentityRepository(LeagueRepository):
         current_year: Optional[Callable[..., int]] = None,
         record_transaction: Optional[Callable[..., Any]] = None,
         table_exists: Optional[Callable[..., bool]] = None,
+        select_team_players: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+        attach_option_decisions: Optional[Callable[..., Any]] = None,
+        cleanup_minimum_targets: Optional[Callable[..., Any]] = None,
+        ensure_profile: Optional[Callable[..., Optional[int]]] = None,
+        unavailable_profile_status: Optional[Callable[[Any], bool]] = None,
+        free_agent_type_restricted: str = "Restringido",
+        free_agent_type_unrestricted: str = "No restringido",
+        free_agent_source_cap_hold: str = "cap_hold",
+        free_agent_source_renounced_rights: str = "renounced_rights",
+        free_agent_source_uncontracted: str = "uncontracted_profile",
+        unavailable_profile_statuses: Optional[Iterable[str]] = None,
+        profile_repository: Any = None,
     ) -> None:
         super().__init__(db)
         self._now = now
@@ -33,26 +71,47 @@ class PlayerIdentityRepository(LeagueRepository):
         self._current_year = current_year
         self._record_transaction = record_transaction
         self._table_exists = table_exists
+        self._select_team_players = select_team_players
+        self._attach_option_decisions = attach_option_decisions
+        self._cleanup_minimum_targets = cleanup_minimum_targets
+        self._ensure_profile = ensure_profile
+        self._unavailable_profile_status = unavailable_profile_status
+        self._free_agent_type_restricted = free_agent_type_restricted
+        self._free_agent_type_unrestricted = free_agent_type_unrestricted
+        self._free_agent_source_cap_hold = free_agent_source_cap_hold
+        self._free_agent_source_renounced_rights = free_agent_source_renounced_rights
+        self._free_agent_source_uncontracted = free_agent_source_uncontracted
+        self._unavailable_profile_statuses = tuple(unavailable_profile_statuses or ("outside_nba", "retired"))
+        self._profile_repository = profile_repository
 
     @property
     def configured(self) -> bool:
         return all((self._now, self._contract_seasons, self._retained_rights_only,
                     self._current_year, self._record_transaction, self._table_exists))
 
+    @staticmethod
+    def settings(conn: Any) -> Dict[str, str]:
+        rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
     def update_profile(self, profile_id: int, payload: Any) -> Any:
-        return self.db.update_player_profile(profile_id, payload)
+        if not self._profile_repository:
+            raise RuntimeError("player_identity_repository_not_configured")
+        return self._profile_repository.update_profile(profile_id, payload)
 
     def delete_profile(self, profile_id: int) -> Any:
-        return self.db.delete_player_profile(profile_id)
+        if not self._profile_repository:
+            raise RuntimeError("player_identity_repository_not_configured")
+        return self._profile_repository.delete_profile(profile_id)
 
     def merge_profiles(self, source_profile_id: int, target_profile_id: int) -> Any:
         if not self.configured:
-            return self.db.merge_player_profiles(source_profile_id, target_profile_id)
+            raise RuntimeError("player_identity_repository_not_configured")
         return self._merge_profiles(source_profile_id, target_profile_id)
 
     def integrity_report(self) -> Any:
         if not self.configured:
-            return self.db.player_identity_integrity_report()
+            raise RuntimeError("player_identity_repository_not_configured")
         checks = (
             ("players_missing_profile", "SELECT id FROM players WHERE profile_id IS NULL ORDER BY id"),
             ("players_orphan_profile", """SELECT p.id FROM players p LEFT JOIN player_profiles pp ON pp.id = p.profile_id
@@ -331,11 +390,249 @@ class PlayerIdentityRepository(LeagueRepository):
             deleted += 1
         return moved, deleted
 
-    def sync_cap_hold_free_agents(self, *args: Any, **kwargs: Any) -> Any:
-        return self.db._sync_cap_hold_free_agents(*args, **kwargs)
+    def _has_future_contract_salary(self, player: Dict[str, Any], season: int) -> bool:
+        rights_markers = {"NB", "EB", "FB", "QO", "GAP"}
+        for future_season in self._contract_seasons:
+            if int(future_season) <= int(season):
+                continue
+            salary_text = str(player.get(f"salary_{future_season}_text") or "").strip()
+            salary_code = salary_text.upper()
+            option_code = str(player.get(f"option_{future_season}") or "").strip().upper()
+            salary_num = parse_float(player.get(f"salary_{future_season}_num"))
+            if salary_num is not None and abs(float(salary_num)) > 0:
+                return True
+            salary_text_amount = parse_amount_like(salary_text)
+            if salary_text_amount is not None and abs(float(salary_text_amount)) > 0:
+                return True
+            if salary_text and salary_text != "-" and salary_code not in rights_markers:
+                return True
+            if option_code and option_code not in rights_markers:
+                return True
+        return False
 
-    def sync_uncontracted_profile_free_agents(self, *args: Any, **kwargs: Any) -> Any:
-        return self.db._sync_uncontracted_profile_free_agents(*args, **kwargs)
+    def _free_agent_type(self, player: Dict[str, Any], season: int) -> str:
+        decision = (player.get("option_decisions") or {}).get(f"option_{int(season)}") or {}
+        option_value = str(decision.get("option_value") or "").strip().upper()
+        option_action = str(decision.get("action") or "").strip().lower()
+        option_status = str(decision.get("status") or "").strip().lower()
+        salary_text_code = str(player.get(f"salary_{int(season)}_text") or "").strip().upper()
+        option_code = str(player.get(f"option_{int(season)}") or "").strip().upper()
+        if salary_text_code == "QO" or option_code == "QO":
+            return self._free_agent_type_restricted
+        if (
+            option_value in {"QO", "GAP"}
+            and option_action == "accepted"
+            and option_status == "approved"
+            and (option_code in {"QO", "GAP"} or not self._has_future_contract_salary(player, season))
+        ):
+            return self._free_agent_type_restricted
+        return self._free_agent_type_unrestricted
+
+    @staticmethod
+    def _empty_contract_cell(value: Any) -> bool:
+        return str(value or "").strip() in {"", "-", "—", "0"}
+
+    def _is_expiring_contract(self, player: Dict[str, Any], current_year: int, next_year: int) -> bool:
+        if is_two_way_player(player) or is_exhibit10_player(player):
+            return False
+        if row_salary_num(player, current_year) <= 0 or row_salary_num(player, next_year) > 0:
+            return False
+        return self._empty_contract_cell(player.get(f"salary_{next_year}_text")) and self._empty_contract_cell(
+            player.get(f"option_{next_year}")
+        )
+
+    @staticmethod
+    def _bird_rights_code(player: Dict[str, Any], season: int) -> Optional[str]:
+        for key in (f"salary_{season}_text", f"option_{season}"):
+            code = str(player.get(key) or "").strip().upper()
+            if code in {"NB", "EB", "FB"}:
+                return code
+        return cap_hold_bird_code_from_years(player.get("years_left")) or None
+
+    def _cleanup_active_contract_free_agents(self, conn: Any, current_year: int) -> int:
+        active_profile_ids: List[int] = []
+        for team in conn.execute("SELECT id FROM teams ORDER BY id").fetchall():
+            team_id = parse_int(team["id"])
+            if team_id is None:
+                continue
+            players = self._select_team_players(conn, team_id)
+            self._attach_option_decisions(conn, players, team_id)
+            for player in players:
+                profile_id = parse_int(player.get("profile_id"))
+                if profile_id is None:
+                    continue
+                for season in self._contract_seasons:
+                    if int(season) < current_year:
+                        continue
+                    option_code = str(player.get(f"option_{season}") or "").strip().upper()
+                    decision = (player.get("option_decisions") or {}).get(f"option_{season}") or {}
+                    decision_option = str(decision.get("option_value") or "").strip().upper()
+                    if (
+                        decision_option in {"QO", "GAP"}
+                        and str(decision.get("action") or "").strip().lower() == "accepted"
+                        and str(decision.get("status") or "").strip().lower() == "approved"
+                        and (option_code in {"QO", "GAP"} or not self._has_future_contract_salary(player, season))
+                    ):
+                        continue
+                    salary_num = parse_float(player.get(f"salary_{season}_num"))
+                    salary_text_amount = parse_amount_like(player.get(f"salary_{season}_text"))
+                    if (salary_num is not None and abs(float(salary_num)) > 0) or (
+                        salary_text_amount is not None and abs(float(salary_text_amount)) > 0
+                    ):
+                        active_profile_ids.append(profile_id)
+                        break
+        if not active_profile_ids:
+            return 0
+        unique_ids = sorted(set(active_profile_ids))
+        placeholders = ",".join("?" for _ in unique_ids)
+        rows = conn.execute(
+            f"SELECT id FROM free_agents WHERE profile_id IN ({placeholders}) AND COALESCE(source, '') != ?",
+            (*unique_ids, self._free_agent_source_cap_hold),
+        ).fetchall()
+        self._cleanup_minimum_targets(conn, [row["id"] for row in rows])
+        cur = conn.execute(
+            f"DELETE FROM free_agents WHERE profile_id IN ({placeholders}) AND COALESCE(source, '') != ?",
+            (*unique_ids, self._free_agent_source_cap_hold),
+        )
+        return int(cur.rowcount or 0)
+
+    def sync_cap_hold_free_agents(self, conn: Any, settings: Dict[str, str]) -> int:
+        timestamp = self._now()
+        if not parse_bool(settings.get("free_agency_mode")):
+            rows = conn.execute(
+                "SELECT id FROM free_agents WHERE source = ?", (self._free_agent_source_cap_hold,)
+            ).fetchall()
+            self._cleanup_minimum_targets(conn, [row["id"] for row in rows])
+            cur = conn.execute("DELETE FROM free_agents WHERE source = ?", (self._free_agent_source_cap_hold,))
+            return int(cur.rowcount or 0)
+
+        current_year = parse_int(settings.get("current_year")) or 2025
+        season = int(current_year)
+        salary_cap = parse_float(settings.get(f"salary_cap_{season}")) or parse_float(
+            settings.get("salary_cap_2025")
+        ) or 0.0
+        valid_profile_ids: List[int] = []
+        changed = 0
+        for team in conn.execute("SELECT id, code FROM teams ORDER BY code").fetchall():
+            team_id = int(team["id"])
+            team_code = str(team["code"] or "").strip().upper()
+            players = self._select_team_players(conn, team_id)
+            self._attach_option_decisions(conn, players, team_id)
+            for player in players:
+                profile_id = parse_int(player.get("profile_id"))
+                if profile_id is not None:
+                    status_row = conn.execute(
+                        "SELECT profile_status FROM player_profiles WHERE id = ?", (profile_id,)
+                    ).fetchone()
+                    if status_row and self._unavailable_profile_status(status_row["profile_status"]):
+                        continue
+                free_agent_type = self._free_agent_type(player, season)
+                restricted = free_agent_type == self._free_agent_type_restricted
+                hold_amount = cap_hold_amount(player, season, settings, salary_cap)
+                hold_marker = has_standard_cap_hold_marker(player, season)
+                expiring = self._is_expiring_contract(player, current_year - 1, season)
+                if not restricted and hold_amount <= 0 and not hold_marker and not expiring:
+                    continue
+                retained_rights = restricted or hold_amount > 0 or hold_marker
+                player_id = parse_int(player.get("id"))
+                if player_id is None:
+                    continue
+                if profile_id is None:
+                    profile_id = self._ensure_profile(conn, player_id, timestamp)
+                if profile_id is None:
+                    continue
+                name = str(player.get("name") or player.get("profile_name") or "Agente libre").strip() or "Agente libre"
+                default_notes = (
+                    f"Cap hold retenido por {team_code} para {season_label(season)}"
+                    if retained_rights
+                    else f"Contrato expirado tras {season_label(current_year - 1)}"
+                )
+                bird_rights = self._bird_rights_code(player, season) if retained_rights else None
+                rights_team_code = team_code if retained_rights else None
+                existing = conn.execute(
+                    "SELECT id, notes, source FROM free_agents WHERE profile_id = ? LIMIT 1", (profile_id,)
+                ).fetchone()
+                if existing and str(existing["source"] or "").strip() == self._free_agent_source_renounced_rights:
+                    continue
+                valid_profile_ids.append(profile_id)
+                values = (
+                    name,
+                    str(player.get("position") or "").strip() or None,
+                    bird_rights,
+                    str(player.get("rating") or "").strip() or None,
+                    normalize_bird_years(player.get("years_left")),
+                    free_agent_type,
+                    self._free_agent_source_cap_hold,
+                    rights_team_code,
+                    default_notes,
+                    timestamp,
+                )
+                if existing:
+                    cur = conn.execute(
+                        """UPDATE free_agents SET name = ?, position = ?, bird_rights = ?, rating = ?,
+                               years_left = ?, free_agent_type = ?, source = ?, rights_team_code = ?,
+                               notes = CASE WHEN notes IS NULL OR TRIM(notes) = ''
+                                   OR notes LIKE 'Cap hold retenido por %' OR notes LIKE 'Contrato expirado tras %'
+                                   THEN ? ELSE notes END, updated_at = ? WHERE id = ?""",
+                        (*values, int(existing["id"])),
+                    )
+                else:
+                    cur = conn.execute(
+                        """INSERT INTO free_agents (profile_id, name, position, bird_rights, rating, years_left,
+                               free_agent_type, source, rights_team_code, notes, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (profile_id, *values[:-1], timestamp, timestamp),
+                    )
+                changed += int(cur.rowcount or 0)
+
+        if valid_profile_ids:
+            placeholders = ",".join("?" for _ in valid_profile_ids)
+            condition = f"source = ? AND (profile_id IS NULL OR profile_id NOT IN ({placeholders}))"
+            params: tuple[Any, ...] = (self._free_agent_source_cap_hold, *valid_profile_ids)
+        else:
+            condition = "source = ?"
+            params = (self._free_agent_source_cap_hold,)
+        rows = conn.execute(f"SELECT id FROM free_agents WHERE {condition}", params).fetchall()
+        self._cleanup_minimum_targets(conn, [row["id"] for row in rows])
+        cur = conn.execute(f"DELETE FROM free_agents WHERE {condition}", params)
+        changed += int(cur.rowcount or 0)
+        changed += self._cleanup_active_contract_free_agents(conn, current_year)
+        return changed
+
+    def sync_uncontracted_profile_free_agents(self, conn: Any) -> int:
+        timestamp = self._now()
+        rows = conn.execute(
+            """SELECT id FROM free_agents WHERE source = ? AND profile_id IN
+                   (SELECT DISTINCT profile_id FROM players WHERE profile_id IS NOT NULL)""",
+            (self._free_agent_source_uncontracted,),
+        ).fetchall()
+        self._cleanup_minimum_targets(conn, [row["id"] for row in rows])
+        changed = int(conn.execute(
+            """DELETE FROM free_agents WHERE source = ? AND profile_id IN
+                   (SELECT DISTINCT profile_id FROM players WHERE profile_id IS NOT NULL)""",
+            (self._free_agent_source_uncontracted,),
+        ).rowcount or 0)
+        cur = conn.execute(
+            """INSERT INTO free_agents (
+                   profile_id, name, position, bird_rights, rating, years_left, free_agent_type,
+                   source, rights_team_code, agent, notes, created_at, updated_at)
+               SELECT pp.id, pp.name, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL,
+                   'Agente libre sin derechos Bird retenidos.', ?, ?
+               FROM player_profiles pp
+               LEFT JOIN players p ON p.profile_id = pp.id
+               LEFT JOIN free_agents f ON f.profile_id = pp.id
+               WHERE p.id IS NULL AND f.id IS NULL
+                   AND COALESCE(pp.profile_status, 'active') NOT IN (?, ?)
+                   AND TRIM(COALESCE(pp.name, '')) != ''""",
+            (
+                self._free_agent_type_unrestricted,
+                self._free_agent_source_uncontracted,
+                timestamp,
+                timestamp,
+                *self._unavailable_profile_statuses,
+            ),
+        )
+        return changed + int(cur.rowcount or 0)
 
     @contextmanager
     def synchronized_transaction(self) -> Iterator[Any]:

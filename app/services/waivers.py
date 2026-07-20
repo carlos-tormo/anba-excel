@@ -18,13 +18,21 @@ except ImportError:  # pragma: no cover - supports direct script execution.
 
 class WaiverService:
     def __init__(self, db: Any) -> None:
-        self.repository = db if isinstance(db, WaiverRepository) else WaiverRepository(db)
+        if isinstance(db, WaiverRepository):
+            self.repository = db
+        else:
+            self.repository = getattr(db, "_waiver_repository", None) or WaiverRepository(db)
 
     def list_waivers(self, actor: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return self.repository.list(actor)
 
     def process_expired(self) -> Dict[str, Any]:
         return self.repository.process_expired()
+
+    def cut_player(
+        self, player_id: int, payload: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        return self.repository.cut_player(player_id, payload)
 
     def submit_claim(
         self,

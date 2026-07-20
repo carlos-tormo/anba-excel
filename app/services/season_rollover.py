@@ -14,11 +14,9 @@ from typing import Any, Dict
 try:
     from ..db.repositories.season_rollover import SeasonRolloverRepository
     from ..domain._values import parse_int
-    from ..maintenance import now_iso
 except ImportError:  # pragma: no cover - supports direct script execution.
     from db.repositories.season_rollover import SeasonRolloverRepository
     from domain._values import parse_int
-    from maintenance import now_iso
 
 
 class SeasonRolloverService:
@@ -29,10 +27,9 @@ class SeasonRolloverService:
         contract_min_year: int,
         contract_max_start_year: int,
     ) -> None:
-        self.repository = (
-            db
-            if isinstance(db, SeasonRolloverRepository)
-            else SeasonRolloverRepository(db)
+        configured_repository = getattr(db, "_season_rollover_repository", None)
+        self.repository = db if isinstance(db, SeasonRolloverRepository) else (
+            configured_repository or SeasonRolloverRepository(db)
         )
         self.contract_min_year = int(contract_min_year)
         self.contract_max_start_year = int(contract_max_start_year)
@@ -66,8 +63,7 @@ class SeasonRolloverService:
             )
 
     def _settings(self, conn: Any) -> Dict[str, str]:
-        rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
-        return {str(row["key"]): str(row["value"]) for row in rows}
+        return self.repository.settings(conn)
 
     def _current_year(self, settings: Dict[str, str]) -> int:
         current_year = parse_int(settings.get("current_year")) or self.contract_min_year
@@ -84,12 +80,11 @@ class SeasonRolloverService:
         next_year: int,
         create_snapshot: bool,
     ) -> Dict[str, Any]:
-        timestamp = now_iso()
+        timestamp = self.repository.now()
         if create_snapshot:
             snapshot = self.repository.snapshot_payload(conn, previous_year, settings)
-            conn.execute(
-                "INSERT INTO season_snapshots (season_year, payload_json, created_at) VALUES (?, ?, ?)",
-                (previous_year, json.dumps(snapshot), timestamp),
+            self.repository.insert_snapshot(
+                conn, previous_year, json.dumps(snapshot), timestamp
             )
 
         delta = max(0, int(next_year) - int(previous_year))
@@ -100,15 +95,7 @@ class SeasonRolloverService:
             if delta > 0
             else 0
         )
-        conn.execute(
-            """
-            INSERT INTO app_settings (key, value, updated_at)
-            VALUES ('current_year', ?, ?)
-            ON CONFLICT(key)
-            DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-            """,
-            (str(next_year), timestamp),
-        )
+        self.repository.update_current_year(conn, next_year, timestamp)
         updated_bird_years = self.repository.increment_bird_years(
             conn, delta, timestamp
         )

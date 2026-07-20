@@ -46,7 +46,7 @@ def delete_free_agent(handler: Any, parsed: ParseResult, _payload: Optional[Dict
         policy="admin.free_agent.write",
         invalid_id_error="invalid_free_agent_id",
         entity="free_agent",
-        delete=handler.db.delete_free_agent,
+        delete=handler.app.free_agency.repository.delete_free_agent,
     )
 
 
@@ -57,7 +57,7 @@ def delete_draft_order(handler: Any, parsed: ParseResult, _payload: Optional[Dic
         policy="admin.draft_order.write",
         invalid_id_error="invalid_draft_order_id",
         entity="draft_order",
-        delete=handler._draft_service().delete_order_entry,
+        delete=handler.app.draft.delete_order_entry,
     )
 
 
@@ -68,7 +68,7 @@ def delete_player_transaction(handler: Any, parsed: ParseResult, _payload: Optio
         policy="admin.player_profile.write",
         invalid_id_error="invalid_transaction_id",
         entity="player_transaction",
-        delete=handler.db.delete_player_transaction,
+        delete=handler.app.players.delete_transaction,
     )
 
 
@@ -79,7 +79,7 @@ def delete_salary_history(handler: Any, parsed: ParseResult, _payload: Optional[
         policy="admin.player_profile.write",
         invalid_id_error="invalid_salary_history_id",
         entity="player_salary_history",
-        delete=handler.db.delete_player_salary_history,
+        delete=handler.app.players.delete_salary_history,
     )
 
 
@@ -89,7 +89,7 @@ def delete_player_profile(handler: Any, parsed: ParseResult, _payload: Optional[
     profile_id = _path_id(handler, parsed, "invalid_profile_id")
     if profile_id is None:
         return
-    result = handler._player_identity_service().delete_profile(profile_id)
+    result = handler.app.player_identity.delete_profile(profile_id)
     if not result.get("ok"):
         handler._json(404, {"error": result.get("error") or "not_found"})
         return
@@ -144,8 +144,8 @@ def delete_player(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str
         missing_error="player_not_found",
         policy="admin.player.remove",
         entity="player",
-        get_record=handler.db.get_player_record,
-        delete=handler.db.delete_player,
+        get_record=handler.app.players.record,
+        delete=handler.app.players.delete,
     )
 
 
@@ -157,8 +157,8 @@ def delete_asset(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str,
         missing_error="asset_not_found",
         policy="admin.draft_asset.write",
         entity="asset",
-        get_record=handler.db.get_asset_record,
-        delete=handler.db.delete_asset,
+        get_record=handler.app.assets.asset,
+        delete=handler.app.assets.delete_asset,
     )
 
 
@@ -170,8 +170,8 @@ def delete_dead_contract(handler: Any, parsed: ParseResult, _payload: Optional[D
         missing_error="dead_contract_not_found",
         policy="admin.dead_contract.write",
         entity="dead_contract",
-        get_record=handler.db.get_dead_contract_record,
-        delete=handler.db.delete_dead_contract,
+        get_record=handler.app.assets.dead_contract,
+        delete=handler.app.assets.delete_dead_contract,
     )
 
 

@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB
 from app.workflow_states import WorkflowTransitionError, workflow_definition
 from app.xlsx_import import create_schema, now_iso
@@ -27,7 +29,7 @@ class WorkflowStateMachineTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-workflows-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -62,7 +64,7 @@ class WorkflowStateMachineTests(unittest.TestCase):
         return request
 
     def workflow_log(self, request_id: int) -> list[sqlite3.Row]:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             return conn.execute(
                 """
@@ -150,7 +152,7 @@ class WorkflowStateMachineTests(unittest.TestCase):
 
         self.assertFalse(first["idempotent"])
         self.assertTrue(second["idempotent"])
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM workflow_transition_log WHERE command_id = ?",
                 (command_id,),

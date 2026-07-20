@@ -17,7 +17,10 @@ except ImportError:  # pragma: no cover - supports direct script execution.
 
 class DraftService:
     def __init__(self, db: Any) -> None:
-        self.repository = db if isinstance(db, DraftRepository) else DraftRepository(db)
+        if isinstance(db, DraftRepository):
+            self.repository = db
+        else:
+            self.repository = getattr(db, "_draft_repository", None) or DraftRepository(db)
 
     def current_year(self) -> int:
         return int(self.repository.current_year())

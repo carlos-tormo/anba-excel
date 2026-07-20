@@ -6,6 +6,7 @@ import json
 import logging
 import secrets
 import sqlite3
+from datetime import UTC, datetime
 from typing import Any, Dict, List
 
 try:
@@ -19,12 +20,6 @@ try:
         parse_amount_like,
         parse_int,
     )
-    from ..maintenance import (
-        CURRENT_SCHEMA_MIGRATION_KEY,
-        CURRENT_SCHEMA_VERSION,
-        now_iso,
-        row_to_dict,
-    )
 except ImportError:  # pragma: no cover
     from auth.policies import normalize_team_code
     from domain_rules import (
@@ -36,12 +31,21 @@ except ImportError:  # pragma: no cover
         parse_amount_like,
         parse_int,
     )
-    from maintenance import CURRENT_SCHEMA_MIGRATION_KEY, CURRENT_SCHEMA_VERSION, now_iso, row_to_dict
 
 
 logger = logging.getLogger("anba.migrations")
+CURRENT_SCHEMA_VERSION = 2026062101
+CURRENT_SCHEMA_MIGRATION_KEY = f"{CURRENT_SCHEMA_VERSION}_runtime_schema_contract"
 MIGRATION_CONTRACT_SEASONS = (2025, 2026, 2027, 2028, 2029, 2030, 2031)
 MIGRATION_PLAYER_ROW_STATE_ACTIVE = "active_contract"
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
+    return {cursor.description[idx][0]: row[idx] for idx in range(len(cursor.description))}
 
 
 def dead_contract_salary_num(dead_contract: Dict[str, Any], season: int) -> float:
@@ -94,6 +98,13 @@ DEFAULT_TEAM_ECONOMY_2025 = {
 
 
 class DatabaseMigrationsMixin:
+    def _enable_wal_mode(self) -> None:
+        with self.connect() as conn:
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError as exc:
+                logger.warning("SQLite WAL setup skipped: %s", exc)
+
     def _ensure_gm_free_agent_offer_requests_are_retained(self, conn: sqlite3.Connection) -> None:
             fk_rows = conn.execute("PRAGMA foreign_key_list(gm_free_agent_offer_requests)").fetchall()
             has_free_agent_cascade = any(
@@ -268,11 +279,8 @@ class DatabaseMigrationsMixin:
                 conn.execute("PRAGMA foreign_keys = ON")
 
     def ensure_auth_schema(self) -> None:
+            self._enable_wal_mode()
             with self.transaction("IMMEDIATE") as conn:
-                try:
-                    conn.execute("PRAGMA journal_mode = WAL")
-                except sqlite3.OperationalError as exc:
-                    logger.warning("SQLite WAL setup skipped: %s", exc)
                 self._ensure_maintenance_schema(conn)
                 conn.execute(
                     """
@@ -1732,7 +1740,7 @@ class DatabaseMigrationsMixin:
                 current_year_row = conn.execute("SELECT value FROM app_settings WHERE key = 'current_year'").fetchone()
                 current_year = parse_int(current_year_row["value"] if current_year_row else None)
                 if current_year is not None:
-                    self._cleanup_inactive_dead_contracts_conn(conn, current_year)
+                    self._season_rollover_repository.cleanup_inactive_dead_contracts(conn, current_year)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_dead_contracts_profile_id ON dead_contracts(profile_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_player_transactions_profile_created ON player_transactions(profile_id, created_at DESC, id DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_player_transactions_source_log ON player_transactions(source_log_id)")
@@ -2178,4 +2186,3 @@ class DatabaseMigrationsMixin:
                     source_log_id=source_log_id,
                     created_at=created_at,
                 )
-

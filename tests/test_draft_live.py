@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
@@ -26,7 +28,7 @@ class DraftLiveTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-draft-live-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -209,7 +211,7 @@ class DraftLiveTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(1, len(result["created_cap_holds"]))
         self.assertEqual(0, len(result["created_player_rights"]))
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -294,7 +296,7 @@ class DraftLiveTests(unittest.TestCase):
         self.assertEqual(0, len(result["created_cap_holds"]))
         self.assertEqual(1, len(result["created_player_rights"]))
         self.assertEqual(0, len(result_again["created_player_rights"]))
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rights_count = conn.execute(
                 "SELECT COUNT(*) FROM assets WHERE asset_type = 'player_right' AND label = 'Second Rounder'"

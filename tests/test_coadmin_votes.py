@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
@@ -27,7 +29,7 @@ class CoadminVoteTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-coadmin-votes-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(path) as conn:
+        with connect_test_db(path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")

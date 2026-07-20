@@ -66,10 +66,18 @@ class FreeAgencyService:
         *,
         contract_seasons: Iterable[int],
         cap_hold_source: str = "cap_hold",
+        gm_requests: Any = None,
+        offer_promises: Any = None,
+        players: Any = None,
     ) -> None:
-        self.repository = (
-            db if isinstance(db, FreeAgencyRepository) else FreeAgencyRepository(db)
-        )
+        if isinstance(db, FreeAgencyRepository):
+            self.repository = db
+        else:
+            self.repository = getattr(db, "_free_agency_repository", None) or FreeAgencyRepository(db)
+        backing_db = getattr(self.repository, "db", db)
+        self.gm_requests = gm_requests or getattr(backing_db, "_gm_request_service", None) or getattr(backing_db, "_gm_request_repository", None)
+        self.offer_promises = offer_promises or getattr(backing_db, "_offer_promise_service", None) or getattr(backing_db, "_offer_promise_repository", None)
+        self.players = players or getattr(backing_db, "_player_repository", None)
         self.contract_seasons = tuple(sorted({int(season) for season in contract_seasons}))
         if not self.contract_seasons:
             raise ValueError("contract_seasons_required")
@@ -93,7 +101,7 @@ class FreeAgencyService:
             raise ValueError("invalid_team_code")
         offer_type = "renewal" if self.is_renewal(free_agent, normalized_team) else "free_agent_offer"
         normalized_payload = self.normalize_offer(free_agent, normalized_team, payload)
-        request = self.repository.create_offer_request(
+        request = self.gm_requests.create_gm_free_agent_offer_request(
             int(free_agent_id),
             normalized_team,
             normalized_payload,
@@ -111,7 +119,7 @@ class FreeAgencyService:
         }
 
     def offer_request(self, request_id: int) -> Optional[Dict[str, Any]]:
-        return self.repository.offer_request(int(request_id))
+        return self.gm_requests.get_gm_free_agent_offer_request(int(request_id))
 
     def negotiate(
         self,
@@ -174,7 +182,7 @@ class FreeAgencyService:
         team_code = normalize_team_code(request_before.get("team_code"))
         if not team_code:
             raise ValueError("team_code_required")
-        canceled = self.repository.cancel_offer_request(
+        canceled = self.gm_requests.cancel_gm_free_agent_offer_request(
             int(request_id), team_code, actor=actor or {}
         )
         if not canceled:
@@ -201,12 +209,12 @@ class FreeAgencyService:
             "free_agent_id": int(free_agent_id),
             "team_code": normalized_team,
             "player_id": player_id,
-            "player": self.repository.player_record(player_id),
+            "player": self.players.record(player_id),
         }
 
     def create_promise(self, payload: Dict[str, Any], actor: Dict[str, Any]) -> Dict[str, Any]:
         is_admin = str((actor or {}).get("role") or "").strip().lower() == "admin"
-        return self.repository.create_promise(
+        return self.offer_promises.create_free_agent_offer_promise(
             payload,
             actor or {},
             bypass_role_limits=is_admin,
@@ -218,7 +226,7 @@ class FreeAgencyService:
         *,
         status: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self.repository.list_promises(actor or {}, status=status)
+        return self.offer_promises.list_free_agent_offer_promises(actor or {}, status=status)
 
     def update_promise(
         self,
@@ -227,7 +235,7 @@ class FreeAgencyService:
         actor: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         is_admin = str((actor or {}).get("role") or "").strip().lower() == "admin"
-        return self.repository.update_promise(
+        return self.offer_promises.update_free_agent_offer_promise(
             int(promise_id),
             payload,
             actor or {},
@@ -243,10 +251,10 @@ class FreeAgencyService:
         *,
         player: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        player_record = player or self.repository.player_record(int(player_id))
+        player_record = player or self.players.record(int(player_id))
         if not player_record:
             raise ValueError("player_not_found")
-        request = self.repository.create_bird_rights_renounce_request(
+        request = self.gm_requests.create_gm_bird_rights_renounce_request(
             int(player_id), int(season_year), rights_value, actor or {}
         )
         if not request:
@@ -274,7 +282,7 @@ class FreeAgencyService:
             raise ValueError("request_already_decided")
 
         if normalized_decision == "rejected":
-            result = self.repository.decide_offer_request(
+            result = self.gm_requests.decide_gm_free_agent_offer_request_command(
                 int(request_id),
                 "rejected",
                 actor or {},
@@ -307,7 +315,7 @@ class FreeAgencyService:
         if request_before.get("player_name"):
             offer_payload.setdefault("player_name", request_before.get("player_name"))
         sign_payload = self.player_payload_from_offer(free_agent, offer_payload)
-        result = self.repository.decide_offer_request(
+        result = self.gm_requests.decide_gm_free_agent_offer_request_command(
             int(request_id),
             "approved",
             actor or {},
@@ -338,6 +346,54 @@ class FreeAgencyService:
             "team_code": team_code,
             "offer_type": request_before.get("offer_type"),
             "offer_payload": offer_payload,
+        }
+
+    @staticmethod
+    def admin_decision_output(
+        request_id: int,
+        result: Dict[str, Any],
+        *,
+        discord_sent: bool = False,
+    ) -> Dict[str, Any]:
+        request_before = result.get("request_before") or {}
+        request = result.get("request")
+        decision = str(result.get("decision") or "").strip().lower()
+        if decision == "rejected":
+            return {
+                "response": {"ok": True, "request": request},
+                "audit": {
+                    "action": "reject",
+                    "details": {
+                        "free_agent_id": result.get("free_agent_id"),
+                        "player_name": request_before.get("player_name"),
+                        "offer_type": result.get("offer_type"),
+                    },
+                    "before": {"request": request_before},
+                    "after": {"request": request},
+                },
+            }
+        offer_payload = result.get("offer_payload") or {}
+        return {
+            "response": {
+                "ok": True,
+                "request": request,
+                "player_id": result.get("player_id"),
+                "discord_sent": bool(discord_sent),
+            },
+            "audit": {
+                "action": "approve",
+                "details": {
+                    "free_agent_id": result.get("free_agent_id"),
+                    "player_id": result.get("player_id"),
+                    "player_name": request_before.get("player_name"),
+                    "offer_type": request_before.get("offer_type"),
+                    "contract_type": offer_payload.get("contract_type"),
+                    "years": offer_payload.get("years"),
+                    "sent_to_discord": bool(discord_sent),
+                },
+                "before": {"request": request_before},
+                "after": {"request": request, "player": result.get("player")},
+            },
         }
 
     def is_renewal(self, free_agent: Dict[str, Any], team_code: str) -> bool:

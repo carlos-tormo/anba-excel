@@ -14,17 +14,17 @@ except ImportError:  # pragma: no cover - supports direct script execution.
 
 
 def get_teams(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    handler._json(200, {"teams": handler.db.list_teams()})
+    handler._json(200, {"teams": handler.app.teams.list()})
 
 
 def get_news_articles(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
     query = parse_qs(parsed.query)
     limit = parse_int((query.get("limit") or ["50"])[0]) or 50
-    handler._json(200, {"articles": handler.db.list_press_articles(limit=limit)})
+    handler._json(200, {"articles": handler.app.press_articles.list(limit=limit)})
 
 
 def get_waivers(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    handler._json(200, handler._waiver_service().list_waivers(handler._current_session()))
+    handler._json(200, handler.app.waivers.list_waivers(handler._current_session()))
 
 
 def _draft_year(handler: Any, parsed: ParseResult) -> tuple[bool, Optional[int]]:
@@ -42,13 +42,13 @@ def _draft_year(handler: Any, parsed: ParseResult) -> tuple[bool, Optional[int]]
 def get_draft_order(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
     valid, draft_year = _draft_year(handler, parsed)
     if valid:
-        handler._json(200, handler._draft_service().list_order(draft_year))
+        handler._json(200, handler.app.draft.list_order(draft_year))
 
 
 def get_draft_pick_ledger(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
     valid, draft_year = _draft_year(handler, parsed)
     if valid:
-        handler._json(200, handler._draft_service().list_pick_ledger(draft_year))
+        handler._json(200, handler.app.draft.list_pick_ledger(draft_year))
 
 
 def get_draft_live(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
@@ -56,13 +56,13 @@ def get_draft_live(handler: Any, parsed: ParseResult, _payload: Optional[Dict[st
     if not valid:
         return
     try:
-        handler._json(200, handler._draft_service().list_live(draft_year))
+        handler._json(200, handler.app.draft.list_live(draft_year))
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_draft_live"})
 
 
 def get_settings(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    handler._json(200, {"settings": public_settings_payload(handler.db.get_settings())})
+    handler._json(200, {"settings": public_settings_payload(handler.app.settings_repository.get_all())})
 
 
 def get_admin_logs(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
@@ -72,12 +72,12 @@ def get_admin_logs(handler: Any, parsed: ParseResult, _payload: Optional[Dict[st
     action = (query.get("action") or [""])[0].strip() or None
     entity = (query.get("entity") or [""])[0].strip() or None
     limit = parse_int((query.get("limit") or ["200"])[0]) or 200
-    handler._json(200, {"logs": handler.db.list_admin_logs(action=action, entity=entity, limit=limit)})
+    handler._json(200, {"logs": handler.app.audit_logs.list(action=action, entity=entity, limit=limit)})
 
 
 def get_admin_maintenance(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
     if handler._authorize("admin.maintenance.view"):
-        handler._json(200, handler.db.maintenance_status())
+        handler._json(200, handler.app.maintenance.status())
 
 
 GET_ROUTES = (

@@ -9,10 +9,12 @@ try:
     from ..auth.policies import normalize_team_code
     from ..domain_rules import parse_int
     from ..routing import exact_route, predicate_route
+    from ..services.notifications import discord_image_requested, discord_notify_requested
 except ImportError:  # pragma: no cover
     from auth.policies import normalize_team_code
     from domain_rules import parse_int
     from routing import exact_route, predicate_route
+    from services.notifications import discord_image_requested, discord_notify_requested
 
 
 def _player_action_path(path: str) -> bool:
@@ -31,36 +33,26 @@ def mutate_roster_player(handler: Any, parsed: ParseResult, payload: Optional[Di
         handler._json(400, {"error": "invalid_player_id"})
         return
     action = parts[3]
-    player_before = handler.db.get_player_record(player_id)
+    service = handler.app.player_roster
+    player_before = service.player(player_id)
     if not player_before:
         handler._json(404, {"error": "player_not_found"})
         return
     if not handler._authorize(f"admin.player.{action}", {"team_code": player_before.get("team_code")}):
         return
-    result = handler.db.remove_player_from_roster(player_id) if action == "remove" else handler.db.cut_player(player_id, payload)
-    if not result:
+    outcome = service.mutate(player_id, action, payload, before=player_before)
+    if not outcome:
         handler._json(404, {"error": "player_not_found"})
         return
-    details = {
-        "profile_id": result.get("profile_id"),
-        "player_name": result.get("player_name"),
-        "free_agent_id": result.get("free_agent_id"),
-    }
-    if action == "cut":
-        details["dead_contract_id"] = result.get("dead_contract_id")
+    result, audit = outcome["result"], outcome["audit"]
     handler._log_admin_action(
-        action,
-        "player",
-        str(player_id),
-        str(result.get("team_code") or ""),
-        details,
-        before=player_before,
-        after={f"{action}_result": result},
+        audit["action"], audit["entity"], audit["entity_id"], audit["team_code"],
+        audit["details"], before=audit["before"], after=audit["after"],
     )
-    if action == "cut" and handler._discord_notify_requested(payload):
-        handler._notify_player_cut(
+    if action == "cut" and discord_notify_requested(payload):
+        handler.app.notifications.player_cut(
             result,
-            generate_image=handler._discord_image_requested(payload),
+            generate_image=discord_image_requested(payload),
             custom_image=payload.get("discord_custom_image"),
         )
     handler._json(200, {"ok": True, "result": result})
@@ -77,7 +69,7 @@ def create_player(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str
     if not handler._authorize("admin.player.write", {"team_code": team_code}):
         return
     try:
-        player_id = handler.db.create_player(team_code, payload)
+        player_id = handler.app.players.create(team_code, payload)
     except ValueError as err:
         if str(err) == "profile_has_active_contract":
             handler._json(409, {"error": "profile_has_active_contract"})
@@ -86,7 +78,7 @@ def create_player(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str
     if not player_id:
         handler._json(404, {"error": "team_not_found"})
         return
-    player_after = handler.db.get_player_record(player_id)
+    player_after = handler.app.players.record(player_id)
     handler._log_admin_action("create", "player", str(player_id), team_code, {"name": payload.get("name")}, after=player_after)
     handler._json(201, {"player_id": player_id})
 
@@ -104,7 +96,8 @@ def move_player(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, 
     if parsed_player_id is None:
         handler._json(400, {"error": "invalid_player_id"})
         return
-    player_before = handler.db.get_player_record(parsed_player_id)
+    service = handler.app.player_roster
+    player_before = service.player(parsed_player_id)
     if not player_before:
         handler._json(404, {"error": "player_not_found"})
         return
@@ -112,16 +105,15 @@ def move_player(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, 
         return
     if not handler._authorize("admin.player.move", {"team_code": to_team_code}):
         return
-    ok = handler.db.move_player(parsed_player_id, to_team_code)
-    if ok:
-        player_after = handler.db.get_player_record(parsed_player_id)
+    result = service.move(parsed_player_id, to_team_code, before=player_before)
+    audit = result["audit"]
+    if audit:
         handler._log_admin_action(
-            "move", "player", str(parsed_player_id), str(player_before.get("team_code") or ""),
-            {"from_team_code": player_before.get("team_code"), "to_team_code": to_team_code},
-            before=player_before, after=player_after,
-            team_codes=[player_before.get("team_code"), to_team_code],
+            audit["action"], audit["entity"], audit["entity_id"], audit["team_code"],
+            audit["details"], before=audit["before"], after=audit["after"],
+            team_codes=audit["team_codes"],
         )
-    handler._json(200 if ok else 404, {"ok": ok})
+    handler._json(200 if result["ok"] else 404, {"ok": result["ok"]})
 
 
 PLAYER_POST_ROUTES = (

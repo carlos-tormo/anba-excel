@@ -26,7 +26,7 @@ def update_team_economy(handler: Any, _parsed: ParseResult, payload: Optional[Di
         handler._json(400, {"error": "rows_required"})
         return
     try:
-        result = handler.db.upsert_team_economy(season_year, rows)
+        result = handler.app.settings_repository.upsert_team_economy(season_year, rows)
     except ValueError as err:
         message = str(err)
         if message.startswith("invalid_team_code:"):
@@ -55,7 +55,7 @@ def update_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dic
         handler._json(400, {"error": "invalid_vote_id"})
         return
     try:
-        vote = handler.db.set_coadmin_vote_status(vote_id, payload.get("status"), handler._current_session() or {})
+        vote = handler.app.coadmin_votes.set_coadmin_vote_status(vote_id, payload.get("status"), handler._current_session() or {})
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_vote"})
         return

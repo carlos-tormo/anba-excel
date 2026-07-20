@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB, PLAYER_CONTRACT_SEASONS
 from app.services.player_identity import PlayerIdentityService
 from app.xlsx_import import create_schema, now_iso
@@ -14,7 +16,7 @@ class PlayerIdentityServiceTests(unittest.TestCase):
             prefix="anba-player-identity-service-", suffix=".db"
         )
         os.close(descriptor)
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             timestamp = now_iso()

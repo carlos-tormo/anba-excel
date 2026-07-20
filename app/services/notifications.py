@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
 try:
-    from ..domain._values import parse_float, parse_int
+    from ..domain._values import parse_amount_like, parse_bool, parse_float, parse_int, season_label
+    from ..domain.cap import CAP_FORECAST_MAX_YEAR, CAP_FORECAST_MIN_YEAR
     from ..domain.trade_rules import format_trade_money, normalize_trade_bucket
     from ..integrations.discord import truncate_text
 except ImportError:  # pragma: no cover - supports direct app imports.
-    from domain._values import parse_float, parse_int
+    from domain._values import parse_amount_like, parse_bool, parse_float, parse_int, season_label
+    from domain.cap import CAP_FORECAST_MAX_YEAR, CAP_FORECAST_MIN_YEAR
     from domain.trade_rules import format_trade_money, normalize_trade_bucket
     from integrations.discord import truncate_text
 
@@ -27,6 +29,75 @@ class EventNotification:
     image_prompt: Dict[str, Any]
     image_reference_url: str = ""
     image_fallback_prompt: Optional[Dict[str, Any]] = None
+
+
+def contract_offer_salary_lines(payload: Dict[str, Any]) -> str:
+    """Format contract salaries consistently for notification composition."""
+    raw_by_season = payload.get("salary_by_season")
+    raw_options_by_season = payload.get("option_by_season")
+    options_by_season = raw_options_by_season if isinstance(raw_options_by_season, dict) else {}
+
+    def value_with_option(season: int, value: str) -> str:
+        option = str(
+            options_by_season.get(str(season))
+            if str(season) in options_by_season
+            else options_by_season.get(season, "")
+        ).strip().upper()
+        return f"{value} ({option})" if option else value
+
+    lines: List[str] = []
+    if isinstance(raw_by_season, dict):
+        for season_key in sorted(raw_by_season, key=lambda value: parse_int(str(value)) or 9999):
+            season = parse_int(str(season_key))
+            if season is None:
+                continue
+            value = str(raw_by_season.get(season_key) or "").strip()
+            if value:
+                lines.append(f"{season_label(season)}: {value_with_option(season, value)}")
+    for season in range(CAP_FORECAST_MIN_YEAR, CAP_FORECAST_MAX_YEAR + 1):
+        value = str(payload.get(f"salary_{season}") or "").strip()
+        if value and not any(line.startswith(season_label(season)) for line in lines):
+            lines.append(f"{season_label(season)}: {value_with_option(season, value)}")
+    return "\n".join(lines[:8]) or "Sin importes detallados"
+
+
+def discord_notify_requested(payload: Dict[str, Any]) -> bool:
+    return True if "notify_discord" not in payload else parse_bool(payload.get("notify_discord"))
+
+
+def discord_image_requested(payload: Dict[str, Any]) -> bool:
+    return True if "generate_discord_image" not in payload else parse_bool(payload.get("generate_discord_image"))
+
+
+def free_agent_signed_notification(
+    player: Dict[str, Any],
+    *,
+    offer_payload: Any = None,
+    offer_type: Optional[str] = None,
+) -> EventNotification:
+    """Compose a signing notification from either offer or persisted salary data."""
+    salary_summary = ""
+    if isinstance(offer_payload, dict) and isinstance(offer_payload.get("salary_by_season"), dict):
+        salary_summary = contract_offer_salary_lines(offer_payload)
+    if not salary_summary or salary_summary == "Sin importes detallados":
+        lines: List[str] = []
+        for season in range(CAP_FORECAST_MIN_YEAR, CAP_FORECAST_MAX_YEAR + 1):
+            salary_text = str(player.get(f"salary_{season}_text") or "").strip()
+            if not salary_text:
+                continue
+            amount = parse_amount_like(salary_text)
+            if amount is not None:
+                salary_text = f"{int(round(amount)):,}".replace(",", ".")
+            option_text = str(player.get(f"option_{season}") or "").strip().upper()
+            if option_text:
+                salary_text = f"{salary_text} ({option_text})"
+            lines.append(f"{season_label(season)}: {salary_text}")
+        salary_summary = "\n".join(lines[:3]) or "Sin salario registrado"
+    return NotificationCompositionService.free_agent_signed(
+        player,
+        salary_summary=salary_summary,
+        offer_type=offer_type,
+    )
 
 
 class NotificationCompositionService:

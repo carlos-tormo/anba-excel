@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.db_helpers import connect_test_db
+
 from app.server import CURRENT_SCHEMA_VERSION, LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
@@ -28,7 +30,7 @@ class MigrationBackupDisciplineTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-maintenance-", suffix=".db")
         os.close(fd)
         self.db_path = Path(path)
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_test_db(self.db_path)
         try:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
@@ -67,7 +69,7 @@ class MigrationBackupDisciplineTests(unittest.TestCase):
         self.assertEqual("ok", backup["integrity_check"].lower())
         self.assertEqual(64, len(backup["sha256"]))
 
-        conn = sqlite3.connect(path)
+        conn = connect_test_db(path)
         try:
             team_count = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
         finally:

@@ -117,17 +117,17 @@ def validate_gm_depth_chart_payload(payload: Dict[str, Any]) -> None:
 
 def get_admin_minimum_targets(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
     if handler._authorize("admin.gm_minimum_targets.view"):
-        handler._json(200, {"lists": handler.db.list_admin_gm_minimum_targets()})
+        handler._json(200, {"lists": handler.app.gm_minimum_targets.list_admin()})
 
 
 def get_admin_minimum_target_order(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
     if handler._authorize("admin.gm_minimum_targets.view"):
-        handler._json(200, {"scores": handler.db.list_admin_gm_minimum_target_order()})
+        handler._json(200, {"scores": handler.app.gm_minimum_targets.score_order()})
 
 
 def get_admin_minimum_target_handicaps(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
     if handler._authorize("admin.gm_minimum_targets.view"):
-        handler._json(200, {"handicaps": handler.db.list_gm_minimum_target_handicaps()})
+        handler._json(200, {"handicaps": handler.app.gm_minimum_targets.list_handicaps()})
 
 
 def get_gm_office(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
@@ -139,10 +139,10 @@ def get_gm_office(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str
     if not handler._authorize("gm_office.view", {"team_code": team_code}):
         return
     try:
-        data = handler.db.list_gm_office(team_code)
+        data = handler.app.gm_office.get(team_code)
         session = handler._current_session() or {}
         if parse_int(session.get("user_id")):
-            data["minimum_targets"] = handler.db.get_gm_minimum_targets(session.get("user_id"), team_code)
+            data["minimum_targets"] = handler.app.gm_minimum_targets.get(session.get("user_id"), team_code)
         handler._json(200, data)
     except ValueError as err:
         message = str(err) or "invalid_gm_office"
@@ -156,7 +156,7 @@ def get_gm_minimum_targets(handler: Any, parsed: ParseResult, _payload: Optional
         return
     session = handler._current_session() or {}
     try:
-        handler._json(200, handler.db.get_gm_minimum_targets(session.get("user_id"), team_code))
+        handler._json(200, handler.app.gm_minimum_targets.get(session.get("user_id"), team_code))
     except ValueError as err:
         message = str(err) or "invalid_minimum_targets"
         handler._json(404 if message in {"team_not_found", "user_not_found"} else 400, {"error": message})
@@ -167,7 +167,7 @@ def remove_admin_minimum_target(handler: Any, _parsed: ParseResult, payload: Opt
     if not handler._authorize("admin.gm_minimum_targets.write") or not handler._require_csrf():
         return
     try:
-        result = handler.db.remove_admin_gm_minimum_target(payload.get("user_id"), payload.get("rank"))
+        result = handler.app.gm_minimum_targets.remove(payload.get("user_id"), payload.get("rank"))
     except ValueError as err:
         handler._json(400, {"error": str(err) or "invalid_minimum_target"})
         return
@@ -180,7 +180,7 @@ def update_admin_minimum_target_handicap(handler: Any, _parsed: ParseResult, pay
     if not handler._authorize("admin.gm_minimum_targets.write") or not handler._require_csrf():
         return
     try:
-        result = handler.db.set_gm_minimum_target_handicap(payload.get("team_code"), payload.get("handicap"))
+        result = handler.app.gm_minimum_targets.set_handicap(payload.get("team_code"), payload.get("handicap"))
     except ValueError as err:
         message = str(err) or "invalid_handicap"
         handler._json(404 if message == "team_not_found" else 400, {"error": message})
@@ -200,7 +200,7 @@ def update_spending_limit(handler: Any, _parsed: ParseResult, payload: Optional[
     if not handler._authorize("gm_office.free_agent_spending_limit.update", {"team_code": team_code}):
         return
     try:
-        value = handler.db.set_gm_free_agent_spending_limit(team_code, payload.get("amount_millions"), handler._current_session() or {})
+        value = handler.app.free_agency.repository.set_spending_limit(team_code, payload.get("amount_millions"), handler._current_session() or {})
     except ValueError as err:
         message = str(err) or "invalid_spending_limit"
         handler._json(404 if message == "team_not_found" else 400, {"error": message})
@@ -221,7 +221,7 @@ def update_minimum_targets(handler: Any, parsed: ParseResult, payload: Optional[
     if not handler._authorize("gm_office.minimum_targets.update", {"team_code": team_code}):
         return
     try:
-        value = handler.db.omit_gm_minimum_targets(session.get("user_id"), team_code) if omit else handler.db.set_gm_minimum_targets(session.get("user_id"), team_code, payload.get("targets") or [])
+        value = handler.app.gm_minimum_targets.omit(session.get("user_id"), team_code) if omit else handler.app.gm_minimum_targets.set(session.get("user_id"), team_code, payload.get("targets") or [])
     except ValueError as err:
         message = str(err) or "invalid_minimum_targets"
         handler._json(404 if message in {"team_not_found", "user_not_found", "free_agent_not_found"} else 400, {"error": message})
@@ -240,7 +240,7 @@ def update_depth_chart(handler: Any, _parsed: ParseResult, payload: Optional[Dic
     if not handler._authorize("gm_office.depth_chart.update", {"team_code": team_code}):
         return
     try:
-        depth_chart = handler.db.set_team_depth_chart(team_code, payload.get("entries") or [])
+        depth_chart = handler.app.depth_charts.set(team_code, payload.get("entries") or [])
     except ValueError as err:
         message = str(err) or "invalid_depth_chart"
         handler._json(404 if message == "team_not_found" else 400, {"error": message})

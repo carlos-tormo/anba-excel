@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List
 
+try:
+    from ..db.repositories.admin_exports import AdminExportRepository
+except ImportError:  # pragma: no cover
+    from db.repositories.admin_exports import AdminExportRepository
+
 
 class LeagueWorkbookExportService:
     def __init__(
@@ -25,7 +30,10 @@ class LeagueWorkbookExportService:
         min_year: int,
         max_year: int,
     ) -> None:
-        self._db = db
+        self._repository = (
+            db if isinstance(db, AdminExportRepository)
+            else getattr(db, "_admin_export_repository", None) or AdminExportRepository(db)
+        )
         self._get_settings = get_settings
         self._list_teams = list_teams
         self._list_tracker = list_tracker
@@ -396,16 +404,7 @@ class LeagueWorkbookExportService:
                     ]
                 )
 
-        with self._db.connect() as conn:
-            economy_cur = conn.execute(
-                """
-                SELECT t.code AS team_code, t.name AS team_name, e.season_year, e.balance, e.revenue, e.expenses
-                FROM team_economy e
-                JOIN teams t ON t.id = e.team_id
-                ORDER BY e.season_year, t.code
-                """
-            )
-            economy_rows = [["Equipo", "Nombre", "Temporada", "Balance", "Ingresos", "Gastos"]] + [
+        economy_rows = [["Equipo", "Nombre", "Temporada", "Balance", "Ingresos", "Gastos"]] + [
                 [
                     row["team_code"],
                     row["team_name"],
@@ -414,27 +413,9 @@ class LeagueWorkbookExportService:
                     row["revenue"],
                     row["expenses"],
                 ]
-                for row in economy_cur.fetchall()
+                for row in self._repository.economy_rows()
             ]
-            draft_cur = conn.execute(
-                """
-                SELECT
-                    d.*,
-                    COALESCE(owner.name, d.owner_team_code) AS owner_team_name,
-                    COALESCE(original.name, d.original_team_code) AS original_team_name,
-                    s.selection_text,
-                    COALESCE(s.skipped, 0) AS skipped
-                FROM draft_order d
-                LEFT JOIN teams owner ON owner.code = d.owner_team_code
-                LEFT JOIN teams original ON original.code = d.original_team_code
-                LEFT JOIN draft_live_selections s ON s.draft_order_id = d.id
-                ORDER BY d.draft_year,
-                    CASE d.draft_round WHEN '1st' THEN 1 WHEN '2nd' THEN 2 ELSE 3 END,
-                    d.pick_number,
-                    d.id
-                """
-            )
-            draft_order_rows = [
+        draft_order_rows = [
                 ["Draft year", "Ronda", "#", "Equipo dueño", "Nombre dueño", "Vía", "Nombre original", "Selección"]
             ] + [
                 [
@@ -447,7 +428,7 @@ class LeagueWorkbookExportService:
                     "" if row["owner_team_code"] == row["original_team_code"] else row["original_team_name"],
                     "Saltado" if self._parse_bool(row["skipped"]) else row["selection_text"],
                 ]
-                for row in draft_cur.fetchall()
+                for row in self._repository.draft_order_rows()
             ]
 
         public_settings = self._public_settings_payload(settings)
@@ -475,4 +456,3 @@ class LeagueWorkbookExportService:
                 {"name": "GM history", "rows": gm_history_rows},
             ]
         )
-

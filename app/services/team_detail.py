@@ -31,29 +31,22 @@ class TeamDetailOperations:
 
 
 class TeamDetailService:
-    def __init__(self, db: Any, operations: TeamDetailOperations) -> None:
-        self._db = db
+    def __init__(self, repository: Any, operations: TeamDetailOperations) -> None:
+        self.repository = repository
         self._operations = operations
 
     def get(self, code: str, move_season_year: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        with self._db.connect() as conn:
-            row = conn.execute("SELECT * FROM teams WHERE code = ?", (code.upper(),)).fetchone()
-            if not row:
+        with self.repository.connect() as conn:
+            team = self.repository.team(conn, code)
+            if not team:
                 return None
-            team = dict(row)
             team_id = int(team["id"])
 
             players = self._operations.select_players(conn, team_id)
             self._operations.attach_option_decisions(conn, players, team_id)
-            assets = [dict(item) for item in conn.execute(
-                "SELECT * FROM assets WHERE team_id = ? AND asset_type != 'dead_cap' ORDER BY asset_type, row_order, id",
-                (team_id,),
-            ).fetchall()]
+            assets = self.repository.assets(conn, team_id)
             frozen_draft_picks = self._operations.select_frozen_draft_picks(conn, team_id)
-            dead_contracts = [dict(item) for item in conn.execute(
-                "SELECT * FROM dead_contracts WHERE team_id = ? ORDER BY dead_type, row_order, id",
-                (team_id,),
-            ).fetchall()]
+            dead_contracts = self.repository.dead_contracts(conn, team_id)
 
             settings = self._operations.get_settings()
             current_year = parse_int(settings.get("current_year")) or 2025
@@ -86,13 +79,7 @@ class TeamDetailService:
                 conn, team_id, summary_year, team.get("apron_hard_cap")
             )
             depth_chart = self._operations.depth_chart(conn, team_id)
-            gm_history = [dict(item) for item in conn.execute(
-                """SELECT h.id, t.code AS team_code, t.name AS team_name, h.row_order,
-                          h.gm_name, h.start_date, h.color, h.created_at, h.updated_at
-                   FROM team_gm_history h JOIN teams t ON t.id = h.team_id
-                   WHERE h.team_id = ? ORDER BY h.start_date, h.row_order, h.id""",
-                (team_id,),
-            ).fetchall()]
+            gm_history = self.repository.gm_history(conn, team_id)
             return {
                 "team": team,
                 "players": players,

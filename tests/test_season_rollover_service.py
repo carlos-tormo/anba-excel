@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB
 from app.services.season_rollover import SeasonRolloverService
 from app.xlsx_import import create_schema, now_iso
@@ -15,7 +17,7 @@ class SeasonRolloverServiceTests(unittest.TestCase):
             prefix="anba-season-rollover-service-", suffix=".db"
         )
         os.close(descriptor)
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             timestamp = now_iso()
@@ -60,8 +62,8 @@ class SeasonRolloverServiceTests(unittest.TestCase):
 
     def test_failure_rolls_back_snapshot_and_year_change(self) -> None:
         with mock.patch.object(
-            self.db,
-            "_rollover_draft_assets_conn",
+            self.service.repository,
+            "rollover_draft_assets",
             side_effect=RuntimeError("forced_rollover_failure"),
         ):
             with self.assertRaisesRegex(RuntimeError, "forced_rollover_failure"):

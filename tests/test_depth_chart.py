@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
@@ -26,7 +28,7 @@ class TeamDepthChartTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-depth-chart-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -128,7 +130,7 @@ class TeamDepthChartTests(unittest.TestCase):
             "ATL",
             [{"position": "PG", "depth_order": 1, "player_id": self.atl_guard_id}],
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             bos_id = conn.execute("SELECT id FROM teams WHERE code = 'BOS'").fetchone()[0]
             conn.execute("UPDATE players SET team_id = ? WHERE id = ?", (bos_id, self.atl_guard_id))
             conn.commit()

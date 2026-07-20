@@ -6,9 +6,11 @@ import time
 from typing import Any, Callable, Dict, List
 
 try:
+    from ..db.repositories.player_catalog import PlayerCatalogRepository
     from ..domain.contracts import normalize_bird_years
     from ..domain_rules import parse_amount_like, parse_float, parse_int
 except ImportError:  # pragma: no cover
+    from db.repositories.player_catalog import PlayerCatalogRepository
     from domain.contracts import normalize_bird_years
     from domain_rules import parse_amount_like, parse_float, parse_int
 
@@ -26,14 +28,20 @@ class PlayerCatalogService:
         min_contract_year: int,
         max_contract_start_year: int,
     ) -> None:
-        self._db = db
+        self._repository = (
+            db if isinstance(db, PlayerCatalogRepository)
+            else getattr(db, "_player_catalog_repository", None) or PlayerCatalogRepository(db)
+        )
         self._normalize_profile_status = normalize_profile_status
         self._is_unavailable = is_unavailable_profile_status
         self._profile_status_label = profile_status_label
         self._sync_generated = sync_generated
-        self._table_exists = table_exists
         self._min_contract_year = min_contract_year
         self._max_contract_start_year = max_contract_start_year
+
+    @property
+    def last_timings(self) -> Dict[str, float]:
+        return dict(getattr(self._repository.db, "_last_list_players_timings", {}) or {})
 
     def list_players(
         self,
@@ -51,23 +59,18 @@ class PlayerCatalogService:
                 timings[label] = round((current - since) * 1000, 2)
             return current
 
-        with self._db.connect() as conn:
-            settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings")}
+        with self._repository.connection() as conn:
+            settings = self._repository.settings(conn)
             checkpoint = mark("settings_ms", started)
             if sync_generated and self._sync_generated(conn, settings)["changed"]:
-                conn.commit()
+                self._repository.commit(conn)
             checkpoint = mark("sync_ms", checkpoint)
             current_year = parse_int(settings.get("current_year")) or 2025
             if current_year < self._min_contract_year or current_year > self._max_contract_start_year:
                 current_year = 2025
 
             profiles: Dict[int, Dict[str, Any]] = {}
-            rows = conn.execute(
-                """SELECT id, name, date_of_birth, nationality, experience_years, yos_source,
-                          reference_image_url, profile_notes, transaction_notes, happiness, profile_status,
-                          created_at, updated_at
-                   FROM player_profiles ORDER BY name COLLATE NOCASE, id"""
-            ).fetchall()
+            rows = self._repository.profiles(conn)
             for row in rows:
                 profile = dict(row)
                 profile_id = int(profile["id"])
@@ -89,15 +92,7 @@ class PlayerCatalogService:
                     profiles[profile_id]["happiness"] = happiness
             checkpoint = mark("profiles_ms", checkpoint)
 
-            rows = conn.execute(
-                f"""SELECT p.id AS player_id, p.profile_id, p.position, p.bird_rights, p.rating,
-                           p.years_left, p.signed_as_free_agent,
-                           p.salary_{current_year}_text AS current_salary_text,
-                           p.salary_{current_year}_num AS current_salary_num,
-                           p.option_{current_year} AS current_option, t.code AS team_code, t.name AS team_name
-                    FROM players p JOIN teams t ON t.id = p.team_id
-                    WHERE p.profile_id IS NOT NULL ORDER BY p.profile_id, p.row_order, p.id"""
-            ).fetchall()
+            rows = self._repository.active_contracts(conn, current_year)
             rights_markers = {"NB", "EB", "FB", "QO", "GAP"}
             for row in rows:
                 item = dict(row)
@@ -126,13 +121,7 @@ class PlayerCatalogService:
                 })
             checkpoint = mark("active_contracts_ms", checkpoint)
 
-            rows = conn.execute(
-                """SELECT f.id AS free_agent_id, f.profile_id, f.position, f.bird_rights, f.rating,
-                          f.years_left, f.free_agent_type, f.source, f.rights_team_code,
-                          rt.name AS rights_team_name
-                   FROM free_agents f LEFT JOIN teams rt ON rt.code = f.rights_team_code
-                   WHERE f.profile_id IS NOT NULL ORDER BY f.profile_id, f.id"""
-            ).fetchall()
+            rows = self._repository.free_agents(conn)
             for row in rows:
                 item = dict(row)
                 profile_id = parse_int(item.get("profile_id"))
@@ -152,12 +141,7 @@ class PlayerCatalogService:
                 })
             checkpoint = mark("free_agents_ms", checkpoint)
 
-            rows = conn.execute(
-                """SELECT d.id AS dead_contract_id, d.profile_id, d.dead_type, d.label,
-                          t.code AS team_code, t.name AS team_name
-                   FROM dead_contracts d JOIN teams t ON t.id = d.team_id
-                   WHERE d.profile_id IS NOT NULL ORDER BY d.profile_id, t.code, d.id DESC"""
-            ).fetchall()
+            rows = self._repository.dead_contracts(conn)
             for row in rows:
                 item = dict(row)
                 profile_id = parse_int(item.get("profile_id"))
@@ -172,13 +156,7 @@ class PlayerCatalogService:
                     target.update({"status": "dead_contract", "status_label": "CAP muerto", "team_code": item.get("team_code"), "team_name": item.get("team_name")})
             checkpoint = mark("dead_contracts_ms", checkpoint)
 
-            rows = conn.execute(
-                """SELECT id, profile_id, created_at, action, team_code, from_team_code, to_team_code, summary, details_json
-                   FROM (SELECT id, profile_id, created_at, action, team_code, from_team_code, to_team_code,
-                                summary, details_json, ROW_NUMBER() OVER (PARTITION BY profile_id ORDER BY created_at DESC, id DESC) AS rn
-                         FROM player_transactions)
-                   WHERE rn <= 10 ORDER BY profile_id, created_at DESC, id DESC"""
-            ).fetchall()
+            rows = self._repository.transactions(conn)
             for row in rows:
                 item = dict(row)
                 profile_id = parse_int(item.get("profile_id"))
@@ -186,16 +164,9 @@ class PlayerCatalogService:
                     profiles[profile_id]["transaction_logs"].append(item)
             checkpoint = mark("transactions_ms", checkpoint)
 
-            if include_private and include_salary_history and profiles and self._table_exists(conn, "player_salary_history"):
+            if include_private and include_salary_history and profiles and self._repository.has_salary_history(conn):
                 profile_ids = sorted(profiles)
-                placeholders = ",".join("?" for _ in profile_ids)
-                rows = conn.execute(
-                    f"""SELECT id, profile_id, player_id, team_code, season_year, salary_text,
-                               salary_num, salary_type, source, created_at, updated_at
-                        FROM player_salary_history WHERE profile_id IN ({placeholders})
-                        ORDER BY profile_id, season_year DESC, id DESC""",
-                    profile_ids,
-                ).fetchall()
+                rows = self._repository.salary_history(conn, profile_ids)
                 for row in rows:
                     item = dict(row)
                     profile_id = parse_int(item.get("profile_id"))
@@ -210,5 +181,5 @@ class PlayerCatalogService:
             mark("sort_ms", checkpoint)
             if collect_timings:
                 timings.update({"total_ms": round((time.perf_counter() - started) * 1000, 2), "row_count": float(len(result))})
-                setattr(self._db, "_last_list_players_timings", timings)
+                self._repository.record_timings(timings)
             return result

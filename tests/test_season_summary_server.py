@@ -6,6 +6,8 @@ import tempfile
 import unittest
 import zipfile
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB, contract_option_rejection_clear_payload
 from app.domain_rules import minimum_salary_for_season
 from app.xlsx_import import create_schema, now_iso
@@ -31,7 +33,7 @@ class SeasonSummaryServerTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-season-summary-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -223,7 +225,7 @@ class SeasonSummaryServerTests(unittest.TestCase):
         self.assertIsNotNone(player_id)
 
         self.db.progress_to_next_year()
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             snapshot_row = conn.execute(
                 "SELECT id, payload_json FROM season_snapshots ORDER BY id DESC LIMIT 1"
@@ -270,7 +272,7 @@ class SeasonSummaryServerTests(unittest.TestCase):
             },
         )
         self.assertIsNotNone(player_id)
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             profile_id = conn.execute(
                 "SELECT profile_id FROM players WHERE id = ?",
                 (int(player_id),),
@@ -321,7 +323,7 @@ class SeasonSummaryServerTests(unittest.TestCase):
             },
         )
         self.assertIsNotNone(player_id)
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             profile_id = conn.execute(
                 "SELECT profile_id FROM players WHERE id = ?",
                 (int(player_id),),

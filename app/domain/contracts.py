@@ -16,6 +16,7 @@ ROSTER_TWO_WAY_MAX_DEFAULT = 3
 CONTRACT_SEASON_MAX_YEAR = 2031
 CONTRACT_SEASON_WINDOW = 6
 CONTRACT_SEASON_MAX_START_YEAR = CONTRACT_SEASON_MAX_YEAR - CONTRACT_SEASON_WINDOW + 1
+PLAYER_CONTRACT_SEASONS = tuple(range(2025, CONTRACT_SEASON_MAX_YEAR + 1))
 MINIMUM_SALARY_BASE_CAP = 154_647_000.0
 MINIMUM_2_YOS_BASE_SALARY = 2_296_274.0
 TWO_WAY_MINIMUM_BASE_SALARY = 636_435.0
@@ -32,6 +33,22 @@ MINIMUM_SALARY_BASE_ROWS = {
     9: (3_493_898.0, 3_659_836.0, 3_825_773.0, 3_991_710.0, 4_157_649.0),
     10: (3_634_153.0, 3_815_861.0, 3_997_570.0, 4_179_277.0, 4_360_985.0),
 }
+
+
+def contract_option_rejection_clear_payload(season: int) -> Dict[str, Any]:
+    """Clear the rejected option season and every future contract year."""
+    payload: Dict[str, Any] = {}
+    for year in PLAYER_CONTRACT_SEASONS:
+        if year < season:
+            continue
+        payload[f"salary_{year}_text"] = None
+        payload[f"salary_{year}_guaranteed_text"] = None
+        payload[f"salary_{year}_note_text"] = None
+        payload[f"option_{year}"] = None
+        payload[f"salary_{year}_provisional"] = False
+        payload[f"salary_{year}_partially_guaranteed"] = False
+        payload[f"salary_{year}_note"] = False
+    return payload
 
 
 def normalize_bird_years(value: Any) -> Optional[str]:

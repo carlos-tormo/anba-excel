@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import LeagueDB
 from app.xlsx_import import create_schema, now_iso
 
@@ -43,7 +45,7 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-player-identity-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             atl_id = insert_team(conn, "ATL", "Atlanta Hawks")
@@ -747,7 +749,7 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
                 (cut_result["waiver_id"], team["id"], now, now),
             )
             claim = dict(conn.execute("SELECT * FROM waiver_claims WHERE id = ?", (claim_cur.lastrowid,)).fetchone())
-            result = self.db._approve_waiver_claim_conn(conn, claim, timestamp=now)
+            result = self.db._waiver_repository.approve_claim_conn(conn, claim, timestamp=now)
             conn.commit()
 
         self.assertIsNotNone(result)

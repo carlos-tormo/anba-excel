@@ -122,30 +122,36 @@ class RouteRegistryTests(unittest.TestCase):
             self.assertTrue(any(route.matches(path) for route in PATCH_ROUTES), path)
 
     def test_get_draft_route_rejects_invalid_year_before_service_call(self):
+        draft_service = Mock()
         handler = SimpleNamespace(
             _json=Mock(),
-            _draft_service=Mock(),
+            app=SimpleNamespace(draft=draft_service),
         )
 
         matched = dispatch_routes(handler, urlparse("/api/draft-order?year=invalid"), GET_ROUTES)
 
         self.assertTrue(matched)
         handler._json.assert_called_once_with(400, {"error": "invalid_draft_year"})
-        handler._draft_service.assert_not_called()
+        draft_service.list_order.assert_not_called()
 
     def test_delete_route_preserves_authorization_audit_and_response(self):
+        delete_free_agent = Mock(return_value=True)
         handler = SimpleNamespace(
             _authorize=Mock(return_value=True),
             _log_admin_action=Mock(),
             _json=Mock(),
-            db=SimpleNamespace(delete_free_agent=Mock(return_value=True)),
+            app=SimpleNamespace(
+                free_agency=SimpleNamespace(
+                    repository=SimpleNamespace(delete_free_agent=delete_free_agent)
+                )
+            ),
         )
 
         matched = dispatch_routes(handler, urlparse("/api/free-agents/17"), DELETE_ROUTES)
 
         self.assertTrue(matched)
         handler._authorize.assert_called_once_with("admin.free_agent.write")
-        handler.db.delete_free_agent.assert_called_once_with(17)
+        delete_free_agent.assert_called_once_with(17)
         handler._log_admin_action.assert_called_once_with("delete", "free_agent", "17")
         handler._json.assert_called_once_with(200, {"ok": True})
 
@@ -155,7 +161,7 @@ class RouteRegistryTests(unittest.TestCase):
         handler = SimpleNamespace(
             _authorize=Mock(return_value=True),
             _require_csrf=Mock(return_value=True),
-            _draft_service=Mock(return_value=draft_service),
+            app=SimpleNamespace(draft=draft_service),
             _log_admin_action=Mock(),
             _json=Mock(),
         )
@@ -173,11 +179,14 @@ class RouteRegistryTests(unittest.TestCase):
         handler._log_admin_action.assert_called_once()
 
     def test_patch_team_economy_route_validates_and_audits(self):
+        settings_repository = SimpleNamespace(
+            upsert_team_economy=Mock(return_value={"updated": 2})
+        )
         handler = SimpleNamespace(
             _authorize=Mock(return_value=True),
             _log_admin_action=Mock(),
             _json=Mock(),
-            db=SimpleNamespace(upsert_team_economy=Mock(return_value={"updated": 2})),
+            app=SimpleNamespace(settings_repository=settings_repository),
         )
 
         matched = dispatch_routes(
@@ -188,7 +197,7 @@ class RouteRegistryTests(unittest.TestCase):
         )
 
         self.assertTrue(matched)
-        handler.db.upsert_team_economy.assert_called_once_with(
+        settings_repository.upsert_team_economy.assert_called_once_with(
             2027,
             [{"team_code": "ATL"}, {"team_code": "BOS"}],
         )

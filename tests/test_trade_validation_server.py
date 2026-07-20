@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests.db_helpers import connect_test_db
+
 from app.server import Handler, LeagueDB
 from app.services.notifications import NotificationCompositionService
 from app.xlsx_import import create_schema, now_iso
@@ -28,7 +30,7 @@ class TradeValidationServerTests(unittest.TestCase):
         fd, path = tempfile.mkstemp(prefix="anba-trade-validation-", suffix=".db")
         os.close(fd)
         self.db_path = path
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
             insert_team(conn, "ATL", "Atlanta Hawks")
@@ -85,7 +87,7 @@ class TradeValidationServerTests(unittest.TestCase):
         return atl_player_id, bos_player_id, payload
 
     def _player_team_code(self, player_id: int) -> str:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT teams.code
@@ -235,7 +237,7 @@ class TradeValidationServerTests(unittest.TestCase):
         )
 
     def test_validation_counts_received_players_for_trade_moves(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
             conn.execute(
@@ -630,7 +632,7 @@ class TradeValidationServerTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             player_team = conn.execute(
                 """
@@ -670,7 +672,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual("BOS", acquired_pick["original_owner"])
 
     def test_selection_process_moves_acquired_pick_without_selling_source_own_pick(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             insert_team(conn, "MIA", "Miami Heat")
             insert_team(conn, "DAL", "Dallas Mavericks")
             conn.commit()
@@ -709,7 +711,7 @@ class TradeValidationServerTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             source_own_pick = conn.execute(
                 "SELECT draft_pick_type, draft_pick_sold_to FROM assets WHERE id = ?",
@@ -777,7 +779,7 @@ class TradeValidationServerTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(["2030 2ND (ATL)"], result["pick_refs_a"])
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             source_pick = conn.execute(
                 "SELECT draft_pick_type, draft_pick_sold_to FROM assets WHERE id = ?",
@@ -801,7 +803,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual(1, acquired_pick["draft_pick_protected"])
 
     def test_legacy_process_moves_acquired_pick_without_selling_source_own_pick(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             insert_team(conn, "MIA", "Miami Heat")
             insert_team(conn, "DAL", "Dallas Mavericks")
             conn.commit()
@@ -840,7 +842,7 @@ class TradeValidationServerTests(unittest.TestCase):
         result = self.db.process_trade("MIA", "ATL", [], [player_id], pick_ids_a=[dal_pick_id])
 
         self.assertIsNotNone(result)
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             source_own_pick = conn.execute(
                 "SELECT draft_pick_type, draft_pick_sold_to FROM assets WHERE id = ?",
@@ -918,7 +920,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertTrue(any(issue["rule"] == "missing_pick" for issue in ledger["issues"]))
 
     def test_draft_pick_ledger_reports_acquired_pick_holder(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             insert_team(conn, "DAL", "Dallas Mavericks")
             conn.commit()
         pick_id = self.db.create_asset(
@@ -942,7 +944,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual("2028-2ND-DAL", rows_by_team["DAL"]["second"]["canonical_id"])
 
     def test_move_summaries_reset_by_season(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
             conn.execute(
@@ -963,7 +965,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual(4, future_team["move_summary"]["remaining_post30"])
 
     def test_post30_trade_counts_players_and_next_first_before_post30(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
             conn.execute(
