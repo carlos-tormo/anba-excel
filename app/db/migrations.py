@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger("anba.migrations")
-CURRENT_SCHEMA_VERSION = 2026072201
+CURRENT_SCHEMA_VERSION = 2026072202
 CURRENT_SCHEMA_MIGRATION_KEY = f"{CURRENT_SCHEMA_VERSION}_runtime_schema_contract"
 MIGRATION_CONTRACT_SEASONS = (2025, 2026, 2027, 2028, 2029, 2030, 2031)
 MIGRATION_PLAYER_ROW_STATE_ACTIVE = "active_contract"
@@ -842,6 +842,50 @@ class DatabaseMigrationsMixin:
                     """
                     CREATE INDEX IF NOT EXISTS idx_workflow_transition_command
                     ON workflow_transition_log (command_id, created_at)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS trade_archive (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        external_trade_id TEXT UNIQUE,
+                        trade_date TEXT NOT NULL,
+                        season_year INTEGER NOT NULL CHECK(season_year >= 1900 AND season_year <= 2200),
+                        total_assets_moved INTEGER NOT NULL DEFAULT 0 CHECK(total_assets_moved >= 0),
+                        source TEXT NOT NULL DEFAULT 'manual',
+                        source_ref TEXT UNIQUE,
+                        notes TEXT,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS trade_archive_team_movements (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        trade_id INTEGER NOT NULL REFERENCES trade_archive(id) ON DELETE CASCADE,
+                        team_code TEXT NOT NULL,
+                        team_name TEXT,
+                        sent_json TEXT NOT NULL DEFAULT '{}',
+                        received_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(trade_id, team_code)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_trade_archive_season_date
+                    ON trade_archive (season_year, trade_date DESC, id DESC)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_trade_archive_movements_team
+                    ON trade_archive_team_movements (team_code, trade_id)
                     """
                 )
                 conn.execute(

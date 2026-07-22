@@ -71,8 +71,27 @@ class FrontendSafetyTests(unittest.TestCase):
         source = web_file("admin.html")
 
         dom_index = source.index('/dom.js')
+        trades_index = source.index('/trades_archive.js')
         admin_index = source.index('/admin.js')
         self.assertLess(dom_index, admin_index)
+        self.assertLess(dom_index, trades_index)
+        self.assertLess(trades_index, admin_index)
+
+    def test_trade_archive_frontend_uses_safe_dom_helpers_and_shared_api(self) -> None:
+        source = web_file("trades_archive.js")
+
+        self.assertIn("global.AnbaDom", source)
+        self.assertIn("global.AnbaApi?.request", source)
+        self.assertIn("global.AnbaTradesArchive", source)
+        self.assertNotIn(".innerHTML", source)
+        self.assertNotIn("insertAdjacentHTML", source)
+
+    def test_trade_archive_is_available_in_guest_and_admin_navigation(self) -> None:
+        for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
+            with self.subTest(file=name):
+                source = web_file(name)
+                self.assertIn('data-nav-view="trade-archive"', source)
+                self.assertLess(source.index("/trades_archive.js"), source.index(f"/{script}"))
 
 
 if __name__ == "__main__":

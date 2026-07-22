@@ -1,5 +1,7 @@
 import ast
 from pathlib import Path
+import runpy
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -52,6 +54,15 @@ class ServerUtilityBoundaryTests(unittest.TestCase):
         for name, expected_module in expected_modules.items():
             with self.subTest(name=name):
                 self.assertEqual(expected_module, getattr(server, name).__module__)
+
+    def test_server_supports_direct_script_import_startup_shape(self) -> None:
+        server_path = Path(server.__file__)
+        original_path = list(sys.path)
+        sys.path.insert(0, str(server_path.parent))
+        try:
+            runpy.run_path(str(server_path), run_name="__codex_import_probe__")
+        finally:
+            sys.path[:] = original_path
 
     def test_handler_uses_application_container_instead_of_service_factories(self) -> None:
         removed_factories = {

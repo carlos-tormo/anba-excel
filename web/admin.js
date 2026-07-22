@@ -4717,6 +4717,7 @@ function setViewMode(mode) {
   const showTracker = mode === 'tracker';
   const showFigures = mode === 'figures';
   const showDraftOrder = mode === 'draft-order';
+  const showTradeArchive = mode === 'trade-archive';
   const showFreeAgents = mode === 'free-agents';
   const showLeaguePlayers = mode === 'league-players';
   const showAdminLog = mode === 'admin-log';
@@ -4734,6 +4735,7 @@ function setViewMode(mode) {
   toggleSection('trackerSection', !showTracker);
   toggleSection('figuresSection', !showFigures);
   toggleSection('draftOrderSection', !showDraftOrder);
+  toggleSection('tradeArchiveSection', !showTradeArchive);
   toggleSection('freeAgentsSection', !showFreeAgents);
   toggleSection('leaguePlayersSection', !showLeaguePlayers);
   toggleSection('adminTabs', !isAdminViewMode(mode));
@@ -5402,6 +5404,7 @@ function setupAdminMobileNav() {
   const trackerBtn = document.getElementById('adminMobileTrackerBtn');
   const figuresBtn = document.getElementById('adminMobileFiguresBtn');
   const draftBtn = document.getElementById('adminMobileDraftBtn');
+  const tradeArchiveBtn = document.getElementById('adminMobileTradeArchiveBtn');
   const leaguePlayersBtn = document.getElementById('adminMobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('adminMobileFreeAgentsBtn');
   const logBtn = document.getElementById('adminMobileLogBtn');
@@ -5444,6 +5447,12 @@ function setupAdminMobileNav() {
     draftBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
       await loadDraftOrder();
+    });
+  }
+  if (tradeArchiveBtn) {
+    tradeArchiveBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      await loadTradeArchive();
     });
   }
   if (leaguePlayersBtn) {
@@ -11743,6 +11752,26 @@ async function loadDraftOrder(draftYearInput = null) {
   await refreshAdminLogsSafe();
 }
 
+async function loadTradeArchive() {
+  state.teamCode = null;
+  state.teamData = null;
+  state.selectedPlayerIds.clear();
+  applyTeamTheme('');
+  setViewMode('trade-archive');
+  setPageHeading('Traspasos', 'Archivo histórico de movimientos de la liga');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderTeamPicker();
+  renderAdminMobileTeamGrid();
+  window.AnbaTradesArchive.bindAdminControls();
+  await window.AnbaTradesArchive.load({
+    api,
+    admin: true,
+    setPageHeading,
+  });
+  await refreshAdminLogsSafe();
+}
+
 async function saveCurrentTeamGm(inputEl, buttonEl) {
   if (!state.teamCode) {
     alert('No team selected.');
@@ -13590,6 +13619,9 @@ async function init() {
   });
   document.getElementById('draftHomeBtn').addEventListener('click', async () => {
     await loadDraftOrder();
+  });
+  document.getElementById('tradeArchiveHomeBtn')?.addEventListener('click', async () => {
+    await loadTradeArchive();
   });
   document.getElementById('leaguePlayersHomeBtn').addEventListener('click', async () => {
     await loadLeaguePlayers();

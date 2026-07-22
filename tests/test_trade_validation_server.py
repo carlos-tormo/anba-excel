@@ -165,6 +165,12 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual(preview["validation_hash"], command["validation"]["validation_hash"])
         self.assertEqual("BOS", self._player_team_code(atl_player_id))
         self.assertEqual("ATL", self._player_team_code(bos_player_id))
+        archive = self.db._trade_archive_repository.list()
+        self.assertEqual(1, len(archive["trades"]))
+        archived = archive["trades"][0]
+        self.assertEqual(command["result"]["trade_archive_id"], archived["id"])
+        self.assertEqual(["ATL", "BOS"], archived["teams"])
+        self.assertEqual(2, archived["total_assets_moved"])
 
     def test_discord_trade_summary_lists_pick_rounds(self) -> None:
         result = NotificationCompositionService.trade_asset_summary(

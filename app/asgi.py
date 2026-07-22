@@ -15,12 +15,14 @@ try:
     from .routes.free_agency import FREE_AGENCY_GET_ROUTES
     from .routes.get import GET_ROUTES as BASE_GET_ROUTES
     from .routes.press import PRESS_GET_ROUTES
+    from .routes.trade_archive import TRADE_ARCHIVE_GET_ROUTES
     from .routing import Route, RouteResponse, dispatch_routes, error_response, route_with_method
     from .routes.validation import json_write_content_type_supported, parse_json_request_body
 except ImportError:  # pragma: no cover - direct script support
     from routes.free_agency import FREE_AGENCY_GET_ROUTES
     from routes.get import GET_ROUTES as BASE_GET_ROUTES
     from routes.press import PRESS_GET_ROUTES
+    from routes.trade_archive import TRADE_ARCHIVE_GET_ROUTES
     from routing import Route, RouteResponse, dispatch_routes, error_response, route_with_method
     from routes.validation import json_write_content_type_supported, parse_json_request_body
 
@@ -35,12 +37,13 @@ PUBLIC_ASGI_GET_ROUTE_NAMES = frozenset(
         "exact:/api/draft-live",
         "exact:/api/free-agents",
         "exact:/api/settings",
+        "exact:/api/trades/archive",
         "press-article",
     }
 )
 PUBLIC_ASGI_GET_ROUTES = tuple(
     route_with_method(route, "GET")
-    for route in (*BASE_GET_ROUTES, *FREE_AGENCY_GET_ROUTES, *PRESS_GET_ROUTES)
+    for route in (*BASE_GET_ROUTES, *FREE_AGENCY_GET_ROUTES, *PRESS_GET_ROUTES, *TRADE_ARCHIVE_GET_ROUTES)
     if route.name in PUBLIC_ASGI_GET_ROUTE_NAMES
 )
 

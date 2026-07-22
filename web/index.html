@@ -34,6 +34,7 @@
         <button id="trackerHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="tracker">Tracker</button>
         <button id="figuresHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="figures">Cifras</button>
         <button id="draftHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="draft-order">Draft</button>
+        <button id="tradeArchiveHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-archive">Traspasos</button>
         <button id="leaguePlayersHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="league-players">Jugadores</button>
       </div>
       <div class="sidebar-section">
@@ -74,6 +75,7 @@
         <button id="mobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥" data-nav-view="tracker">Tracker</button>
         <button id="mobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦" data-nav-view="figures">Cifras</button>
         <button id="mobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈" data-nav-view="draft-order">Draft</button>
+        <button id="mobileTradeArchiveBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-archive">Traspasos</button>
         <button id="mobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
         <button id="mobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Agentes libres</button>
         <button id="mobileGmOfficeBtn" type="button" class="mobile-nav-btn section-hidden" data-icon="♡" data-nav-view="gm-office">Despachos</button>
@@ -507,6 +509,17 @@
       <div id="draftOrderBoard" class="draft-order-board"></div>
     </section>
 
+    <section id="tradeArchiveSection" class="draft-order-section trade-archive-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Traspasos</h2>
+          <div class="section-subtitle">Archivo histórico de traspasos de la liga, ordenado por fecha y separado por temporadas.</div>
+        </div>
+      </div>
+      <div id="tradeArchiveStatus" class="locator-status" aria-live="polite"></div>
+      <div id="tradeArchiveBoard" class="draft-order-board trade-archive-board"></div>
+    </section>
+
     <section id="tradeMachineSection" class="trade-machine-section section-hidden">
       <div class="section-head trade-machine-head">
         <div>
@@ -902,6 +915,7 @@
   <script src="/api.js?v=20260721a" defer></script>
   <script src="/dom.js?v=20260721a" defer></script>
   <script src="/draft_live.js?v=20260721a" defer></script>
+  <script src="/trades_archive.js?v=20260722a" defer></script>
   <script src="/notifications.js?v=20260721a" defer></script>
   <script src="/guest.js?v=20260721a" defer></script>
 </body>

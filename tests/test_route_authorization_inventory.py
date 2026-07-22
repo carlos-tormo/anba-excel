@@ -98,6 +98,7 @@ class RouteAuthorizationInventoryTests(unittest.TestCase):
         by_path = {(route.method, route.path or route.name): route for route in UNSAFE_ROUTES}
         expected = {
             ("POST", "/api/trades/process"): ("admin.trade.process", True),
+            ("POST", "/api/trades/archive/import"): ("admin.trade_archive.write", True),
             ("POST", "/api/gm-office/depth-chart"): ("gm_office.depth_chart.update", True),
             ("PATCH", "/api/admin/gm-free-agent-offer-requests/"): (
                 "admin.gm_free_agent_offer_request.decide",

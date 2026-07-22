@@ -2469,6 +2469,70 @@ h1 {
   font-weight: 800;
   text-align: center;
 }
+
+.trade-archive-admin-controls {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.trade-archive-admin-controls label,
+.trade-archive-edit-form label {
+  display: grid;
+  gap: 0.35rem;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.trade-archive-admin-controls textarea,
+.trade-archive-edit-form textarea,
+.trade-archive-edit-form input {
+  width: 100%;
+}
+
+.trade-archive-teams-cell,
+.trade-archive-admin-actions,
+.trade-archive-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.trade-archive-team-btn {
+  min-width: 3.25rem;
+}
+
+.trade-archive-modal {
+  max-width: min(760px, 94vw);
+}
+
+.trade-archive-modal-body {
+  display: grid;
+  gap: 1rem;
+}
+
+.trade-archive-team-card {
+  border: 1px solid #d6e0ec;
+  border-radius: 0.9rem;
+  padding: 0.85rem;
+  background: #f8fafc;
+}
+
+.trade-archive-team-card h3,
+.trade-archive-modal-body h4 {
+  margin: 0 0 0.35rem;
+}
+
+.trade-archive-movement-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.trade-archive-edit-form {
+  display: grid;
+  gap: 0.75rem;
+}
 .draft-pick-ledger,
 .draft-pick-ledger-board {
   grid-column: 1 / -1;

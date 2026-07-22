@@ -45,6 +45,7 @@ try:
     from .services.settings import SettingsService
     from .services.team_admin import TeamAdminService
     from .services.trades import TradeService
+    from .services.trade_archive import TradeArchiveService
     from .services.waivers import WaiverService
 except ImportError:  # pragma: no cover - direct script support
     from integrations.discord import DiscordConfig, DiscordIntegration
@@ -81,6 +82,7 @@ except ImportError:  # pragma: no cover - direct script support
     from services.settings import SettingsService
     from services.team_admin import TeamAdminService
     from services.trades import TradeService
+    from services.trade_archive import TradeArchiveService
     from services.waivers import WaiverService
 
 
@@ -159,6 +161,7 @@ class ApplicationContainer:
         "_team_repository",
         "_tracker_service",
         "_trade_repository",
+        "_trade_archive_repository",
         "_user_repository",
         "_waiver_repository",
         "_workflow_repository",
@@ -283,6 +286,10 @@ class ApplicationContainer:
     def trade_repository(self) -> Any:
         return self._dependency("_trade_repository")
 
+    @property
+    def trade_archive_repository(self) -> Any:
+        return self._dependency("_trade_archive_repository")
+
     @cached_property
     def gm_request_queries(self) -> GMRequestQueryService:
         return GMRequestQueryService(
@@ -317,7 +324,12 @@ class ApplicationContainer:
             self._dependency("_trade_repository"),
             workflows=self._dependency("_workflow_repository"),
             outbox=self._dependency("_outbox_repository"),
+            archive=self._dependency("_trade_archive_repository"),
         )
+
+    @cached_property
+    def trade_archive(self) -> TradeArchiveService:
+        return TradeArchiveService(self._dependency("_trade_archive_repository"))
 
     @cached_property
     def waivers(self) -> WaiverService:

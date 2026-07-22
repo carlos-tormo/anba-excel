@@ -469,11 +469,14 @@ class RouteRegistryTests(unittest.TestCase):
             "/api/tracker",
             "/api/admin/users",
             "/api/teams/ATL",
+            "/api/trades/archive",
         ):
             self.assertTrue(any(route.matches(path) for route in GET_ROUTES), path)
         for path in (
             "/api/auth/login",
             "/api/trades/process",
+            "/api/trades/archive",
+            "/api/trades/archive/import",
             "/api/player-profiles/4/merge",
             "/api/assets",
             "/api/settings/progress-year",
@@ -481,12 +484,14 @@ class RouteRegistryTests(unittest.TestCase):
             self.assertTrue(any(route.matches(path) for route in POST_ROUTES), path)
         for path in (
             "/api/admin/gm-draft-pick-requests/4",
+            "/api/trades/archive/4",
             "/api/settings",
             "/api/players/4",
             "/api/teams/ATL",
             "/api/dead-contracts/4",
         ):
             self.assertTrue(any(route.matches(path) for route in PATCH_ROUTES), path)
+        self.assertTrue(any(route.matches("/api/trades/archive/4") for route in DELETE_ROUTES))
 
     def test_google_oauth_start_disabled_returns_route_redirect(self):
         handler = SimpleNamespace(
@@ -534,6 +539,43 @@ class RouteRegistryTests(unittest.TestCase):
             ["session=session-token; HttpOnly", "oauth_state=; Max-Age=0"],
             response.headers["Set-Cookie"],
         )
+
+    def test_trade_archive_get_route_returns_framework_neutral_response(self):
+        trade_archive = SimpleNamespace(list=Mock(return_value={"trades": [], "seasons": []}))
+        handler = SimpleNamespace(
+            _send_route_response=Mock(),
+            app=SimpleNamespace(trade_archive=trade_archive),
+        )
+
+        matched = dispatch_routes(handler, urlparse("/api/trades/archive?season=2026"), GET_ROUTES)
+
+        self.assertTrue(matched)
+        trade_archive.list.assert_called_once_with(season_year=2026)
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual({"trades": [], "seasons": []}, response.payload)
+
+    def test_trade_archive_import_route_uses_service_and_audits(self):
+        result = {"ok": True, "created": [{"id": 1}], "errors": []}
+        trade_archive = SimpleNamespace(import_trades=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(trade_archive=trade_archive),
+        )
+
+        matched = dispatch_routes(handler, urlparse("/api/trades/archive/import"), POST_ROUTES, {"trades": []})
+
+        self.assertTrue(matched)
+        handler._authorize.assert_called_once_with("admin.trade_archive.write")
+        trade_archive.import_trades.assert_called_once_with({"trades": []})
+        handler._log_admin_action.assert_called_once()
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(201, response.status)
+        self.assertEqual(result, response.payload)
 
     def test_get_draft_route_rejects_invalid_year_before_service_call(self):
         draft_service = Mock()

@@ -4850,6 +4850,7 @@ function setViewMode(mode) {
   const gmOfficeSection = document.getElementById('gmOfficeSection');
   const leaguePlayersSection = document.getElementById('leaguePlayersSection');
   const draftOrderSection = document.getElementById('draftOrderSection');
+  const tradeArchiveSection = document.getElementById('tradeArchiveSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
   const walletSection = document.getElementById('walletSection');
   const coadminVotesSection = document.getElementById('coadminVotesSection');
@@ -4859,6 +4860,7 @@ function setViewMode(mode) {
   const showGmOffice = mode === 'gm-office';
   const showLeaguePlayers = mode === 'league-players';
   const showDraftOrder = mode === 'draft-order';
+  const showTradeArchive = mode === 'trade-archive';
   const showTradeMachine = mode === 'trade-machine';
   const showWallet = mode === 'wallet';
   const showCoadminVotes = mode === 'coadmin-votes';
@@ -4869,6 +4871,7 @@ function setViewMode(mode) {
   if (gmOfficeSection) gmOfficeSection.classList.toggle('section-hidden', !showGmOffice);
   if (leaguePlayersSection) leaguePlayersSection.classList.toggle('section-hidden', !showLeaguePlayers);
   if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
+  if (tradeArchiveSection) tradeArchiveSection.classList.toggle('section-hidden', !showTradeArchive);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
   if (walletSection) walletSection.classList.toggle('section-hidden', !showWallet);
   if (coadminVotesSection) coadminVotesSection.classList.toggle('section-hidden', !showCoadminVotes);
@@ -10147,6 +10150,27 @@ async function loadDraftOrder(draftYearInput = null) {
   renderDraftOrder();
 }
 
+async function loadTradeArchive() {
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('trade-archive');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  await window.AnbaTradesArchive.load({
+    api,
+    admin: false,
+    setPageHeading,
+  });
+}
+
 function normalizeLocatorText(value) {
   return String(value || '')
     .normalize('NFD')
@@ -10483,6 +10507,7 @@ function setupMobileNav() {
   const trackerBtn = document.getElementById('mobileTrackerBtn');
   const figuresBtn = document.getElementById('mobileFiguresBtn');
   const draftBtn = document.getElementById('mobileDraftBtn');
+  const tradeArchiveBtn = document.getElementById('mobileTradeArchiveBtn');
   const leaguePlayersBtn = document.getElementById('mobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
   const gmOfficeBtn = document.getElementById('mobileGmOfficeBtn');
@@ -10525,6 +10550,12 @@ function setupMobileNav() {
     draftBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadDraftOrder();
+    });
+  }
+  if (tradeArchiveBtn) {
+    tradeArchiveBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadTradeArchive();
     });
   }
   if (leaguePlayersBtn) {
@@ -10614,6 +10645,9 @@ async function init() {
   });
   document.getElementById('draftHomeBtn').addEventListener('click', async () => {
     await loadDraftOrder();
+  });
+  document.getElementById('tradeArchiveHomeBtn')?.addEventListener('click', async () => {
+    await loadTradeArchive();
   });
   document.getElementById('leaguePlayersHomeBtn').addEventListener('click', async () => {
     await loadLeaguePlayers();

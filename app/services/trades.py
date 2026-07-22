@@ -13,15 +13,17 @@ try:
     from ..db.repositories.trades import TradeRepository
     from ..domain._values import parse_bool, parse_int
     from ..domain.trade_rules import normalize_trade_bucket
+    from .trade_archive import TradeArchiveService
 except ImportError:  # pragma: no cover
     from auth.policies import normalize_team_code
     from db.repositories.trades import TradeRepository
     from domain._values import parse_bool, parse_int
     from domain.trade_rules import normalize_trade_bucket
+    from services.trade_archive import TradeArchiveService
 
 
 class TradeService:
-    def __init__(self, db: Any, *, workflows: Any = None, outbox: Any = None):
+    def __init__(self, db: Any, *, workflows: Any = None, outbox: Any = None, archive: Any = None):
         configured_repository = getattr(db, "_trade_repository", None)
         self.repository = db if isinstance(db, TradeRepository) else (
             configured_repository or TradeRepository(db)
@@ -29,6 +31,7 @@ class TradeService:
         backing_db = getattr(self.repository, "db", db)
         self.workflows = workflows or getattr(backing_db, "_workflow_repository", None)
         self.outbox = outbox or getattr(backing_db, "_outbox_repository", None)
+        self.archive = archive or getattr(backing_db, "_trade_archive_repository", None)
 
     @staticmethod
     def _snapshot_hash(snapshot: Dict[str, Any]) -> str:
@@ -391,6 +394,16 @@ class TradeService:
                     or 2025
                 )
                 result["season"] = int(season_year)
+
+                if self.archive:
+                    archive_payload = TradeArchiveService.from_processed_trade_result(
+                        result,
+                        workflow_run_id=workflow_run_id,
+                        actor=actor,
+                        timestamp=timestamp,
+                    )
+                    archived_trade = self.archive.create_conn(conn, archive_payload)
+                    result["trade_archive_id"] = archived_trade.get("id")
 
                 if authoritative_validation:
                     applied_hard_caps = operations.apply_hard_cap_triggers(

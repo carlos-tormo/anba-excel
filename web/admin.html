@@ -23,6 +23,7 @@
         <button id="trackerHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="tracker">Tracker</button>
         <button id="figuresHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="figures">Cifras</button>
         <button id="draftHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="draft-order">Draft</button>
+        <button id="tradeArchiveHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-archive">Traspasos</button>
         <button id="leaguePlayersHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="league-players">Jugadores</button>
       </div>
       <div class="sidebar-section">
@@ -67,6 +68,7 @@
         <button id="adminMobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥" data-nav-view="tracker">Tracker</button>
         <button id="adminMobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦" data-nav-view="figures">Cifras</button>
         <button id="adminMobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈" data-nav-view="draft-order">Draft</button>
+        <button id="adminMobileTradeArchiveBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-archive">Traspasos</button>
         <button id="adminMobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
         <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Agentes libres</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡" data-nav-view="admin-log">Admin Log</button>
@@ -621,6 +623,24 @@
         </article>
       </div>
       <div id="draftPickLedgerBoard" class="draft-pick-ledger-board"></div>
+    </section>
+
+    <section id="tradeArchiveSection" class="draft-order-section trade-archive-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Traspasos</h2>
+          <div class="section-subtitle">Archivo histórico de traspasos de la liga, ordenado por fecha y separado por temporadas.</div>
+        </div>
+      </div>
+      <div id="tradeArchiveAdminControls" class="trade-archive-admin-controls">
+        <label for="tradeArchiveImportInput">
+          <span>Importar traspasos JSON</span>
+          <textarea id="tradeArchiveImportInput" rows="7" placeholder='[{"trade_date":"2026-07-01","season_year":2026,"team_movements":[{"team_code":"ATL","sent":{"players":["Jugador A"]},"received":{"picks":["2027 BOS 1st"]}},{"team_code":"BOS","sent":{"picks":["2027 BOS 1st"]},"received":{"players":["Jugador A"]}}]}]'></textarea>
+        </label>
+        <button id="tradeArchiveImportBtn" type="button">Importar traspasos</button>
+      </div>
+      <div id="tradeArchiveStatus" class="locator-status" aria-live="polite"></div>
+      <div id="tradeArchiveBoard" class="draft-order-board trade-archive-board"></div>
     </section>
 
     <nav id="teamTabs" class="team-tabs section-hidden" role="tablist" aria-label="Team sections">
@@ -1465,6 +1485,7 @@ LAL,MIN,LAL,MIN,MIN,MIN,BOS,CHA</pre>
   <script src="/api.js?v=20260721a" defer></script>
   <script src="/dom.js?v=20260721a" defer></script>
   <script src="/draft_live.js?v=20260721a" defer></script>
+  <script src="/trades_archive.js?v=20260722a" defer></script>
   <script src="/admin.js?v=20260721a" defer></script>
 </body>
 </html>

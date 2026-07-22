@@ -21,6 +21,7 @@ from .teams import TeamRepository
 from .team_detail import TeamDetailRepository
 from .season_rollover import SeasonRolloverRepository
 from .trades import TradeRepository
+from .trade_archive import TradeArchiveRepository
 from .tracker import TrackerRepository
 from .waivers import WaiverRepository
 from .workflows import WorkflowRepository
@@ -47,6 +48,7 @@ __all__ = [
     "TeamDetailRepository",
     "SeasonRolloverRepository",
     "TradeRepository",
+    "TradeArchiveRepository",
     "TrackerRepository",
     "WaiverRepository",
     "WorkflowRepository",

@@ -124,6 +124,7 @@ class AsgiAdapterTests(unittest.TestCase):
                 list_pick_ledger=lambda draft_year=None: {"draft_year": draft_year, "ledger": []},
                 list_live=lambda draft_year=None: {"draft_year": draft_year, "live": []},
             ),
+            trade_archive=SimpleNamespace(list=lambda season_year=None: {"trades": [], "seasons": []}),
         )
 
         status, body, _headers = run_asgi_request(create_asgi_app(application), path="/api/teams")
@@ -135,6 +136,11 @@ class AsgiAdapterTests(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertEqual({"free_agents": [{"id": 7, "name": "Player", "is_favorite": False}]}, body)
+
+        status, body, _headers = run_asgi_request(create_asgi_app(application), path="/api/trades/archive")
+
+        self.assertEqual(200, status)
+        self.assertEqual({"trades": [], "seasons": []}, body)
 
     def test_asgi_adapter_serves_public_article_json_and_image_routes(self):
         application = SimpleNamespace(
