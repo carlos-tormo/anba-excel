@@ -43,25 +43,6 @@
     return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`;
   }
 
-  function movementCount(movement) {
-    const row = movement && typeof movement === 'object' ? movement : {};
-    return ['players', 'picks', 'swaps', 'rights', 'cash'].reduce((total, key) => {
-      const values = row[key];
-      return total + (Array.isArray(values) ? values.length : 0);
-    }, row.cash_amount ? 1 : 0);
-  }
-
-  function movementSummary(movement) {
-    const row = movement && typeof movement === 'object' ? movement : {};
-    const parts = [];
-    if (Array.isArray(row.players) && row.players.length) parts.push(`${row.players.length} jugador(es)`);
-    if (Array.isArray(row.picks) && row.picks.length) parts.push(`${row.picks.length} pick(s)`);
-    if (Array.isArray(row.swaps) && row.swaps.length) parts.push(`${row.swaps.length} swap(s)`);
-    if (Array.isArray(row.rights) && row.rights.length) parts.push(`${row.rights.length} derecho(s)`);
-    if ((Array.isArray(row.cash) && row.cash.length) || row.cash_amount) parts.push('cash');
-    return parts.join(' · ') || 'Sin movimientos';
-  }
-
   function teamDisplayName(movement) {
     return text(movement?.team_name || movement?.team_code || '-');
   }
@@ -113,6 +94,72 @@
       img.src = path;
     }
     return wrap;
+  }
+
+  function assetLabel(value) {
+    if (value && typeof value === 'object') {
+      return text(value.name || value.label || value.title || value.detail || JSON.stringify(value));
+    }
+    return text(value);
+  }
+
+  function assetImageUrl(value) {
+    if (!value || typeof value !== 'object') return '';
+    return text(value.image_url || value.photo_url || value.reference_image_url || '');
+  }
+
+  function movementItems(movement) {
+    const row = movement && typeof movement === 'object' ? movement : {};
+    const groups = [
+      ['players', 'Jugador', 'player'],
+      ['picks', 'Pick', 'pick'],
+      ['swaps', 'Swap', 'swap'],
+      ['rights', 'Derecho', 'rights'],
+      ['cash', 'Cash', 'cash'],
+    ];
+    const items = [];
+    groups.forEach(([key, label, kind]) => {
+      const values = Array.isArray(row[key]) ? row[key] : [];
+      values.forEach((value) => {
+        const name = assetLabel(value);
+        if (name) items.push({ label, kind, name, imageUrl: assetImageUrl(value) });
+      });
+    });
+    if (row.cash_amount) {
+      items.push({ label: 'Cash', kind: 'cash', name: text(row.cash_amount), imageUrl: '' });
+    }
+    return items;
+  }
+
+  function addAssetRow(parent, item) {
+    const row = el(parent, 'div', { className: `trade-archive-asset-row trade-archive-asset-row--${item.kind || 'asset'}` });
+    const photo = el(row, 'div', { className: 'trade-archive-asset-photo' });
+    if (item.imageUrl) {
+      const img = el(photo, 'img', { attrs: { alt: '' } });
+      img.addEventListener('error', () => {
+        img.remove();
+        el(photo, 'span', { text: 'Foto' });
+      });
+      if (dom().setSafeImageSource) dom().setSafeImageSource(img, item.imageUrl);
+      else img.src = item.imageUrl;
+    } else {
+      el(photo, 'span', { text: item.kind === 'player' ? 'Foto' : item.label.slice(0, 1) });
+    }
+    const textWrap = el(row, 'div', { className: 'trade-archive-asset-text' });
+    el(textWrap, 'strong', { text: item.name });
+    el(textWrap, 'span', { text: item.label });
+  }
+
+  function addAssetSection(parent, title, movement, variant) {
+    const section = el(parent, 'section', { className: `trade-archive-detail-section trade-archive-detail-section--${variant}` });
+    el(section, 'h4', { text: title });
+    const list = el(section, 'div', { className: 'trade-archive-asset-list' });
+    const items = movementItems(movement);
+    if (!items.length) {
+      el(list, 'div', { className: 'trade-archive-asset-empty', text: 'Sin activos registrados.' });
+      return;
+    }
+    items.forEach((item) => addAssetRow(list, item));
   }
 
   function addMovementList(parent, title, movement) {
@@ -185,11 +232,12 @@
     });
   }
 
-  function showAggregateModal(trade) {
-    openModal(`Traspaso ${trade.trade_id || trade.id} · Total`, (body) => {
+  function showTradeDetailsModal(trade) {
+    openModal(`Traspaso ${trade.trade_id || trade.id} · Detalles`, (body) => {
       el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · Temporada ${formatSeasonLabel(trade.season_year)} · ${trade.total_assets_moved || 0} activo(s) movidos` });
+      const grid = el(body, 'div', { className: 'trade-archive-details-grid' });
       (trade.team_movements || []).forEach((movement) => {
-        const card = el(body, 'article', { className: 'trade-archive-team-card' });
+        const card = el(grid, 'article', { className: 'trade-archive-team-card trade-archive-detail-team-card' });
         const head = el(card, 'div', { className: 'trade-archive-team-card-head' });
         appendTeamLogo(head, movement.team_code);
         const titleWrap = el(head, 'div');
@@ -198,11 +246,9 @@
           el(titleWrap, 'p', { className: 'trade-archive-team-code-line', text: movement.team_code });
         }
         if (gmDisplayName(movement)) el(card, 'p', { className: 'trade-archive-gm-line', text: `GM: ${gmDisplayName(movement)}` });
-        const movementGrid = el(card, 'div', { className: 'trade-archive-aggregate-movements' });
-        const sent = el(movementGrid, 'div');
-        addMovementList(sent, 'Envió', movement.sent || {});
-        const received = el(movementGrid, 'div');
-        addMovementList(received, 'Recibió', movement.received || {});
+        const movementGrid = el(card, 'div', { className: 'trade-archive-detail-movements' });
+        addAssetSection(movementGrid, 'Recibe', movement.received || {}, 'received');
+        addAssetSection(movementGrid, 'Envía', movement.sent || {}, 'sent');
       });
     });
   }
@@ -221,11 +267,12 @@
     const headRow = el(thead, 'tr');
     ['Trade ID', 'Fecha', 'Equipos', 'Activos movidos'].forEach((label) => el(headRow, 'th', { text: label }));
     if (state.admin) el(headRow, 'th', { text: 'Admin' });
+    el(headRow, 'th', { text: 'Detalles' });
     const tbody = el(table, 'tbody');
     const trades = Array.isArray(season.trades) ? season.trades : [];
     if (!trades.length) {
       const row = el(tbody, 'tr');
-      el(row, 'td', { className: 'draft-order-empty', attrs: { colspan: state.admin ? 5 : 4 }, text: 'No hay traspasos registrados.' });
+      el(row, 'td', { className: 'draft-order-empty', attrs: { colspan: state.admin ? 6 : 5 }, text: 'No hay traspasos registrados.' });
       return;
     }
     trades.forEach((trade) => {
@@ -251,13 +298,7 @@
         }
         btn.addEventListener('click', () => showTeamModal(trade, movement));
       });
-      const totalCell = el(row, 'td');
-      const totalBtn = el(totalCell, 'button', {
-        className: 'ghost-link trade-archive-total-btn',
-        attrs: { type: 'button' },
-        text: String(trade.total_assets_moved || 0),
-      });
-      totalBtn.addEventListener('click', () => showAggregateModal(trade));
+      el(row, 'td', { className: 'trade-archive-total-static', text: String(trade.total_assets_moved || 0) });
       if (state.admin) {
         const adminCell = el(row, 'td', { className: 'trade-archive-admin-actions' });
         const editBtn = el(adminCell, 'button', { attrs: { type: 'button' }, text: 'Editar' });
@@ -265,6 +306,16 @@
         const deleteBtn = el(adminCell, 'button', { className: 'danger', attrs: { type: 'button' }, text: 'Eliminar' });
         deleteBtn.addEventListener('click', () => deleteTrade(trade.id));
       }
+      const detailsCell = el(row, 'td');
+      const detailsLink = el(detailsCell, 'a', {
+        className: 'trade-archive-details-link',
+        attrs: { href: '#', role: 'button' },
+        text: 'Ver detalles',
+      });
+      detailsLink.addEventListener('click', (event) => {
+        event.preventDefault();
+        showTradeDetailsModal(trade);
+      });
     });
   }
 

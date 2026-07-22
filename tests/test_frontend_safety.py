@@ -97,13 +97,18 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("`${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`", source)
         self.assertIn("movement?.timeline_gm_name", source)
         self.assertIn("trade-archive-gm-line", source)
-        self.assertIn("trade-archive-aggregate-movements", source)
+        self.assertIn("function showTradeDetailsModal", source)
+        self.assertIn("function addAssetSection", source)
+        self.assertIn("function addAssetRow", source)
+        self.assertIn("trade-archive-details-link", source)
+        self.assertIn("Ver detalles", source)
         self.assertNotIn(".innerHTML", source)
         self.assertNotIn("insertAdjacentHTML", source)
 
         styles = web_file("styles.css")
         self.assertIn(".trade-archive-team-btn:hover .trade-archive-gm-line", styles)
-        self.assertIn(".trade-archive-total-btn:hover", styles)
+        self.assertIn(".trade-archive-details-grid", styles)
+        self.assertIn(".trade-archive-asset-photo", styles)
 
     def test_trade_archive_is_available_in_guest_and_admin_navigation(self) -> None:
         for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
