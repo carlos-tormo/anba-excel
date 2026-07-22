@@ -54,7 +54,55 @@ class TradeArchiveRepository(LeagueRepository):
     def total_assets_moved(cls, team_movements: List[Dict[str, Any]]) -> int:
         return sum(cls._asset_count(row.get("sent") or {}) for row in team_movements if isinstance(row, dict))
 
-    def _row_to_trade(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Dict[str, Any]:
+    @staticmethod
+    def _gm_timeline_cache(conn: sqlite3.Connection) -> Dict[str, List[Dict[str, Any]]]:
+        rows = conn.execute(
+            """
+            SELECT t.code AS team_code, h.gm_name, h.start_date
+            FROM team_gm_history h
+            JOIN teams t ON t.id = h.team_id
+            ORDER BY t.code, h.start_date, h.row_order, h.id
+            """
+        ).fetchall()
+        cache: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            code = normalize_team_code(row["team_code"])
+            if not code:
+                continue
+            cache.setdefault(code, []).append(
+                {
+                    "gm_name": str(row["gm_name"] or "").strip(),
+                    "start_date": str(row["start_date"] or "").strip(),
+                }
+            )
+        return cache
+
+    @staticmethod
+    def _gm_from_timeline(
+        timeline_cache: Dict[str, List[Dict[str, Any]]],
+        team_code: Any,
+        trade_date: Any,
+    ) -> Optional[str]:
+        code = normalize_team_code(team_code)
+        date_key = str(trade_date or "").strip()[:10]
+        if not code or len(date_key) != 10:
+            return None
+        match = None
+        for row in timeline_cache.get(code) or []:
+            if str(row.get("start_date") or "") <= date_key:
+                match = row
+            else:
+                break
+        return str((match or {}).get("gm_name") or "").strip() or None
+
+    def _row_to_trade(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        timeline_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> Dict[str, Any]:
+        gm_timeline = timeline_cache if timeline_cache is not None else self._gm_timeline_cache(conn)
         trade_id = int(row["id"])
         movement_rows = conn.execute(
             """SELECT team_code, team_name, gm_name, sent_json, received_json
@@ -68,6 +116,11 @@ class TradeArchiveRepository(LeagueRepository):
                 "team_code": str(movement["team_code"] or ""),
                 "team_name": movement["team_name"],
                 "gm_name": movement["gm_name"],
+                "timeline_gm_name": (
+                    None
+                    if movement["gm_name"]
+                    else self._gm_from_timeline(gm_timeline, movement["team_code"], row["trade_date"])
+                ),
                 "sent": self._decode_json(movement["sent_json"], {}),
                 "received": self._decode_json(movement["received_json"], {}),
             }
@@ -102,12 +155,13 @@ class TradeArchiveRepository(LeagueRepository):
             rows = conn.execute(
                 f"""SELECT id, external_trade_id, trade_date, season_year, total_assets_moved,
                           source, source_ref, notes, version, created_at, updated_at
-                   FROM trade_archive
-                   {where}
-                   ORDER BY trade_date DESC, id DESC""",
+                  FROM trade_archive
+                  {where}
+                  ORDER BY trade_date DESC, id DESC""",
                 params,
             ).fetchall()
-            trades = [self._row_to_trade(conn, row) for row in rows]
+            timeline_cache = self._gm_timeline_cache(conn)
+            trades = [self._row_to_trade(conn, row, timeline_cache=timeline_cache) for row in rows]
         seasons_map: Dict[int, List[Dict[str, Any]]] = {}
         for trade in trades:
             season = parse_int(trade.get("season_year")) or 0

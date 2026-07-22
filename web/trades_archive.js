@@ -35,6 +35,12 @@
     return raw || '-';
   }
 
+  function formatSeasonLabel(value) {
+    const startYear = Number(value);
+    if (!Number.isInteger(startYear) || startYear < 1900 || startYear > 2200) return text(value || '-');
+    return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`;
+  }
+
   function movementCount(movement) {
     const row = movement && typeof movement === 'object' ? movement : {};
     return ['players', 'picks', 'swaps', 'rights', 'cash'].reduce((total, key) => {
@@ -59,7 +65,7 @@
   }
 
   function gmDisplayName(movement) {
-    return text(movement?.gm_name || movement?.gm || '');
+    return text(movement?.gm_name || movement?.gm || movement?.timeline_gm_name || '');
   }
 
   function teamLogoPath(code) {
@@ -152,7 +158,7 @@
     const code = text(movement?.team_code || '');
     const gmName = gmDisplayName(movement);
     openModal(`Traspaso ${trade.trade_id || trade.id} · ${code}`, (body) => {
-      el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · Temporada ${trade.season_year}` });
+      el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · Temporada ${formatSeasonLabel(trade.season_year)}` });
       if (gmName) el(body, 'p', { className: 'section-subtitle', text: `GM: ${gmName}` });
       addMovementList(body, 'Envió', movement?.sent || {});
       addMovementList(body, 'Recibió', movement?.received || {});
@@ -161,7 +167,7 @@
 
   function showAggregateModal(trade) {
     openModal(`Traspaso ${trade.trade_id || trade.id} · Total`, (body) => {
-      el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · ${trade.total_assets_moved || 0} activo(s) movidos` });
+      el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · Temporada ${formatSeasonLabel(trade.season_year)} · ${trade.total_assets_moved || 0} activo(s) movidos` });
       (trade.team_movements || []).forEach((movement) => {
         const card = el(body, 'article', { className: 'trade-archive-team-card' });
         const head = el(card, 'div', { className: 'trade-archive-team-card-head' });
@@ -188,7 +194,7 @@
 
   function renderRowsForSeason(container, season) {
     const article = el(container, 'article', { className: 'draft-order-round trade-archive-season' });
-    el(article, 'h3', { text: `Temporada ${season.season_year}` });
+    el(article, 'h3', { text: `Temporada ${formatSeasonLabel(season.season_year)}` });
     const wrap = el(article, 'div', { className: 'table-wrap draft-order-table-wrap' });
     const table = el(wrap, 'table', { className: 'draft-order-table trade-archive-table' });
     const thead = el(table, 'thead');
@@ -276,7 +282,7 @@
       .forEach((season) => {
         el(select, 'option', {
           attrs: { value: season.season_year, selected: Number(season.season_year) === Number(activeSeason?.season_year) },
-          text: String(season.season_year || '-'),
+          text: formatSeasonLabel(season.season_year),
         });
       });
     select.addEventListener('change', () => {

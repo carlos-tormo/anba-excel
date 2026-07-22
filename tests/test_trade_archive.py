@@ -123,6 +123,48 @@ class TradeArchiveTests(unittest.TestCase):
         self.assertEqual("Imported ATL GM", result["created"][0]["team_movements"][0]["gm_name"])
         self.assertIsNone(result["created"][0]["team_movements"][1]["gm_name"])
 
+    def test_trade_archive_uses_timeline_gm_when_import_has_no_override(self) -> None:
+        with connect_test_db(self.db_path) as conn:
+            timestamp = now_iso()
+            atl_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            bos_id = conn.execute("SELECT id FROM teams WHERE code = 'BOS'").fetchone()["id"]
+            conn.executemany(
+                """
+                INSERT INTO team_gm_history (
+                    team_id, row_order, gm_name, start_date, color, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?)
+                """,
+                [
+                    (atl_id, 1, "Old ATL GM", "2023-07-01", timestamp, timestamp),
+                    (atl_id, 2, "Current ATL GM", "2024-07-01", timestamp, timestamp),
+                    (bos_id, 1, "Future BOS GM", "2026-07-01", timestamp, timestamp),
+                ],
+            )
+            conn.commit()
+
+        trade = self.db._trade_archive_repository.create(
+            {
+                "external_trade_id": "timeline-1",
+                "trade_date": "2025-02-01",
+                "season_year": 2024,
+                "team_movements": [
+                    {"team_code": "ATL", "sent": {"players": ["A"]}, "received": {}},
+                    {"team_code": "BOS", "gm_name": "Imported BOS GM", "sent": {}, "received": {"players": ["A"]}},
+                ],
+            }
+        )
+
+        movements = {row["team_code"]: row for row in trade["team_movements"]}
+        self.assertIsNone(movements["ATL"]["gm_name"])
+        self.assertEqual("Current ATL GM", movements["ATL"]["timeline_gm_name"])
+        self.assertEqual("Imported BOS GM", movements["BOS"]["gm_name"])
+        self.assertIsNone(movements["BOS"]["timeline_gm_name"])
+
+        listed = self.db._trade_archive_repository.list()["trades"][0]
+        listed_movements = {row["team_code"]: row for row in listed["team_movements"]}
+        self.assertEqual("Current ATL GM", listed_movements["ATL"]["timeline_gm_name"])
+        self.assertIsNone(listed_movements["BOS"]["timeline_gm_name"])
+
     def test_trade_archive_import_rejects_oversized_batches(self) -> None:
         service = TradeArchiveService(self.db._trade_archive_repository, max_import_trades=1)
 
