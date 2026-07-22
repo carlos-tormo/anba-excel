@@ -88,6 +88,10 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("function loadImportFile", source)
         self.assertIn("function gmDisplayName", source)
         self.assertIn("function renderSeasonSelector", source)
+        self.assertIn("function renderFilters", source)
+        self.assertIn("function tradeMatchesFilters", source)
+        self.assertIn("id: 'tradeArchiveTeamFilter'", source)
+        self.assertIn("id: 'tradeArchiveGmFilter'", source)
         self.assertIn("function appendTeamLogo", source)
         self.assertIn("function formatSeasonLabel", source)
         self.assertIn("`${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`", source)
@@ -96,6 +100,10 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("trade-archive-aggregate-movements", source)
         self.assertNotIn(".innerHTML", source)
         self.assertNotIn("insertAdjacentHTML", source)
+
+        styles = web_file("styles.css")
+        self.assertIn(".trade-archive-team-btn:hover .trade-archive-gm-line", styles)
+        self.assertIn(".trade-archive-total-btn:hover", styles)
 
     def test_trade_archive_is_available_in_guest_and_admin_navigation(self) -> None:
         for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):

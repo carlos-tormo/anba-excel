@@ -5,6 +5,8 @@
     admin: false,
     trades: [],
     selectedSeasonYear: null,
+    selectedTeamCode: '',
+    selectedGmName: '',
   };
 
   function clear(node) {
@@ -66,6 +68,24 @@
 
   function gmDisplayName(movement) {
     return text(movement?.gm_name || movement?.gm || movement?.timeline_gm_name || '');
+  }
+
+  function tradeMatchesFilters(trade) {
+    const movements = Array.isArray(trade?.team_movements) ? trade.team_movements : [];
+    if (state.selectedTeamCode) {
+      const teamMatch = movements.some((movement) => text(movement?.team_code).toUpperCase() === state.selectedTeamCode);
+      if (!teamMatch) return false;
+    }
+    if (state.selectedGmName) {
+      const gmMatch = movements.some((movement) => gmDisplayName(movement) === state.selectedGmName);
+      if (!gmMatch) return false;
+    }
+    return true;
+  }
+
+  function filteredSeason(season) {
+    const trades = (Array.isArray(season?.trades) ? season.trades : []).filter(tradeMatchesFilters);
+    return { ...(season || {}), trades };
   }
 
   function teamLogoPath(code) {
@@ -269,11 +289,12 @@
       parent.insertBefore(controls, board);
     }
     clear(controls);
-    if (!Array.isArray(seasons) || seasons.length <= 1) {
+    if (!Array.isArray(seasons) || !seasons.length) {
       controls.classList.add('section-hidden');
       return;
     }
     controls.classList.remove('section-hidden');
+    if (seasons.length <= 1) return;
     const label = el(controls, 'label', { className: 'season-view-control', attrs: { for: 'tradeArchiveSeasonSelect' } });
     el(label, 'span', { text: 'Temporada' });
     const select = el(label, 'select', { attrs: { id: 'tradeArchiveSeasonSelect' } });
@@ -287,6 +308,65 @@
       });
     select.addEventListener('change', () => {
       state.selectedSeasonYear = Number(select.value);
+      render({ trades: state.trades, seasons });
+    });
+  }
+
+  function filterOptionsForSeason(season) {
+    const teams = new Map();
+    const gms = new Set();
+    (Array.isArray(season?.trades) ? season.trades : []).forEach((trade) => {
+      (Array.isArray(trade?.team_movements) ? trade.team_movements : []).forEach((movement) => {
+        const code = text(movement?.team_code).trim().toUpperCase();
+        if (code) teams.set(code, teamDisplayName(movement));
+        const gmName = gmDisplayName(movement);
+        if (gmName) gms.add(gmName);
+      });
+    });
+    return {
+      teams: [...teams.entries()].sort((a, b) => a[0].localeCompare(b[0], 'es')),
+      gms: [...gms].sort((a, b) => a.localeCompare(b, 'es')),
+    };
+  }
+
+  function renderFilters(seasons, activeSeason) {
+    const controls = document.getElementById('tradeArchiveSeasonControls');
+    if (!controls || !Array.isArray(seasons) || !seasons.length) return;
+    const options = filterOptionsForSeason(activeSeason);
+    if (state.selectedTeamCode && !options.teams.some(([code]) => code === state.selectedTeamCode)) {
+      state.selectedTeamCode = '';
+    }
+    if (state.selectedGmName && !options.gms.includes(state.selectedGmName)) {
+      state.selectedGmName = '';
+    }
+
+    const teamLabel = el(controls, 'label', { className: 'season-view-control', attrs: { for: 'tradeArchiveTeamFilter' } });
+    el(teamLabel, 'span', { text: 'Equipo' });
+    const teamSelect = el(teamLabel, 'select', { attrs: { id: 'tradeArchiveTeamFilter' } });
+    el(teamSelect, 'option', { attrs: { value: '' }, text: 'Todos' });
+    options.teams.forEach(([code, label]) => {
+      el(teamSelect, 'option', {
+        attrs: { value: code, selected: code === state.selectedTeamCode },
+        text: label && label !== code ? `${code} · ${label}` : code,
+      });
+    });
+    teamSelect.addEventListener('change', () => {
+      state.selectedTeamCode = text(teamSelect.value).toUpperCase();
+      render({ trades: state.trades, seasons });
+    });
+
+    const gmLabel = el(controls, 'label', { className: 'season-view-control', attrs: { for: 'tradeArchiveGmFilter' } });
+    el(gmLabel, 'span', { text: 'GM' });
+    const gmSelect = el(gmLabel, 'select', { attrs: { id: 'tradeArchiveGmFilter' } });
+    el(gmSelect, 'option', { attrs: { value: '' }, text: 'Todos' });
+    options.gms.forEach((gmName) => {
+      el(gmSelect, 'option', {
+        attrs: { value: gmName, selected: gmName === state.selectedGmName },
+        text: gmName,
+      });
+    });
+    gmSelect.addEventListener('change', () => {
+      state.selectedGmName = text(gmSelect.value);
       render({ trades: state.trades, seasons });
     });
   }
@@ -306,7 +386,8 @@
     }
     const activeSeason = selectedSeason(seasons);
     renderSeasonSelector(seasons, activeSeason);
-    renderRowsForSeason(board, activeSeason);
+    renderFilters(seasons, activeSeason);
+    renderRowsForSeason(board, filteredSeason(activeSeason));
   }
 
   async function load(options = {}) {

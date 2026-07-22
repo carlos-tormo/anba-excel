@@ -2487,7 +2487,10 @@ h1 {
 
 .trade-archive-season-controls {
   display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
   justify-content: flex-end;
+  align-items: flex-end;
   margin: 0 0 0.25rem;
 }
 
@@ -2564,6 +2567,35 @@ h1 {
   gap: 0.12rem;
   min-width: 4.9rem;
   text-align: left;
+}
+
+.trade-archive-team-btn:hover,
+.trade-archive-team-btn:focus-visible {
+  color: #ffffff;
+  text-decoration: none;
+}
+
+.trade-archive-team-btn:hover .trade-archive-team-name,
+.trade-archive-team-btn:focus-visible .trade-archive-team-name,
+.trade-archive-team-btn:hover .trade-archive-gm-line,
+.trade-archive-team-btn:focus-visible .trade-archive-gm-line {
+  color: #ffffff;
+}
+
+.trade-archive-team-btn:hover .trade-archive-team-logo,
+.trade-archive-team-btn:focus-visible .trade-archive-team-logo {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.48);
+  color: #ffffff;
+}
+
+.trade-archive-total-btn {
+  color: var(--team-primary);
+}
+
+.trade-archive-total-btn:hover,
+.trade-archive-total-btn:focus-visible {
+  color: #ffffff;
 }
 
 .trade-archive-team-main,
