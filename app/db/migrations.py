@@ -131,6 +131,28 @@ class DatabaseMigrationsMixin:
             return
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_ddl}")
 
+    @classmethod
+    def _migration_ensure_outbox_delivery_columns(cls, conn: sqlite3.Connection) -> None:
+        if not cls._migration_table_exists(conn, "outbox_events"):
+            return
+        for column_name, column_ddl in {
+            "next_attempt_at": "TEXT",
+            "available_at": "TEXT",
+            "locked_at": "TEXT",
+            "locked_by": "TEXT",
+            "last_error_code": "TEXT",
+            "last_error": "TEXT",
+            "delivered_at": "TEXT",
+        }.items():
+            cls._migration_ensure_column(conn, "outbox_events", column_name, column_ddl)
+        conn.execute(
+            """
+            UPDATE outbox_events
+            SET available_at = COALESCE(available_at, next_attempt_at, created_at)
+            WHERE available_at IS NULL
+            """
+        )
+
     @staticmethod
     def _migration_current_year(conn: sqlite3.Connection) -> int:
         row = conn.execute(
@@ -777,6 +799,7 @@ class DatabaseMigrationsMixin:
                     )
                     """
                 )
+                self._migration_ensure_outbox_delivery_columns(conn)
                 conn.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_outbox_events_status_created
@@ -1801,10 +1824,6 @@ class DatabaseMigrationsMixin:
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(owner_exit_interviews)").fetchall()
                 }
-                outbox_cols = {
-                    row["name"]
-                    for row in conn.execute("PRAGMA table_info(outbox_events)").fetchall()
-                }
                 owner_profile_cols = {
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(team_owner_profiles)").fetchall()
@@ -1821,23 +1840,7 @@ class DatabaseMigrationsMixin:
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(gm_minimum_targets)").fetchall()
                 }
-                outbox_add_columns = {
-                    "next_attempt_at": "TEXT",
-                    "available_at": "TEXT",
-                    "locked_at": "TEXT",
-                    "locked_by": "TEXT",
-                    "last_error_code": "TEXT",
-                }
-                for col, ddl in outbox_add_columns.items():
-                    if col not in outbox_cols:
-                        conn.execute(f"ALTER TABLE outbox_events ADD COLUMN {col} {ddl}")
-                conn.execute(
-                    """
-                    UPDATE outbox_events
-                    SET available_at = COALESCE(available_at, next_attempt_at, created_at)
-                    WHERE available_at IS NULL
-                    """
-                )
+                self._migration_ensure_outbox_delivery_columns(conn)
                 conn.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_outbox_events_delivery_available

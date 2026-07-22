@@ -59,6 +59,79 @@ class MigrationBackupDisciplineTests(unittest.TestCase):
         self.assertEqual(CURRENT_SCHEMA_VERSION, latest["schema_version"])
         self.assertIn("schema_signature", latest["details"])
 
+    def test_legacy_outbox_table_is_upgraded_before_delivery_index_creation(self) -> None:
+        timestamp = now_iso()
+        conn = connect_test_db(self.db_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS outbox_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    aggregate_type TEXT,
+                    aggregate_id TEXT,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    delivered_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO outbox_events (
+                    event_type, aggregate_type, aggregate_id, idempotency_key,
+                    payload_json, status, attempts, next_attempt_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "discord.trade",
+                    "trade",
+                    "legacy-1",
+                    "legacy-outbox-1",
+                    "{}",
+                    "pending",
+                    0,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.db.ensure_auth_schema()
+
+        conn = connect_test_db(self.db_path)
+        try:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(outbox_events)").fetchall()
+            }
+            indexes = {
+                row["name"]
+                for row in conn.execute("PRAGMA index_list(outbox_events)").fetchall()
+            }
+            row = conn.execute(
+                "SELECT available_at, locked_at, locked_by, last_error_code FROM outbox_events WHERE idempotency_key = ?",
+                ("legacy-outbox-1",),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIn("available_at", columns)
+        self.assertIn("locked_at", columns)
+        self.assertIn("locked_by", columns)
+        self.assertIn("last_error_code", columns)
+        self.assertIn("idx_outbox_events_delivery_available", indexes)
+        self.assertEqual(timestamp, row["available_at"])
+
     def test_verified_backup_is_persisted_and_restorable(self) -> None:
         self.db.ensure_auth_schema()
         backup = self.db.create_verified_backup("pre_test_import")
