@@ -57,7 +57,7 @@ class TradeArchiveRepository(LeagueRepository):
     def _row_to_trade(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Dict[str, Any]:
         trade_id = int(row["id"])
         movement_rows = conn.execute(
-            """SELECT team_code, team_name, sent_json, received_json
+            """SELECT team_code, team_name, gm_name, sent_json, received_json
                FROM trade_archive_team_movements
                WHERE trade_id = ?
                ORDER BY team_code""",
@@ -67,6 +67,7 @@ class TradeArchiveRepository(LeagueRepository):
             {
                 "team_code": str(movement["team_code"] or ""),
                 "team_name": movement["team_name"],
+                "gm_name": movement["gm_name"],
                 "sent": self._decode_json(movement["sent_json"], {}),
                 "received": self._decode_json(movement["received_json"], {}),
             }
@@ -229,12 +230,13 @@ class TradeArchiveRepository(LeagueRepository):
                 continue
             conn.execute(
                 """INSERT INTO trade_archive_team_movements (
-                       trade_id, team_code, team_name, sent_json, received_json, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       trade_id, team_code, team_name, gm_name, sent_json, received_json, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     trade_id,
                     team_code,
                     str(movement.get("team_name") or "").strip() or None,
+                    str(movement.get("gm_name") or movement.get("gm") or "").strip() or None,
                     self._encode_json(movement.get("sent") if isinstance(movement.get("sent"), dict) else {}),
                     self._encode_json(movement.get("received") if isinstance(movement.get("received"), dict) else {}),
                     ts,

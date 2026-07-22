@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger("anba.migrations")
-CURRENT_SCHEMA_VERSION = 2026072202
+CURRENT_SCHEMA_VERSION = 2026072203
 CURRENT_SCHEMA_MIGRATION_KEY = f"{CURRENT_SCHEMA_VERSION}_runtime_schema_contract"
 MIGRATION_CONTRACT_SEASONS = (2025, 2026, 2027, 2028, 2029, 2030, 2031)
 MIGRATION_PLAYER_ROW_STATE_ACTIVE = "active_contract"
@@ -891,6 +891,7 @@ class DatabaseMigrationsMixin:
                         trade_id INTEGER NOT NULL REFERENCES trade_archive(id) ON DELETE CASCADE,
                         team_code TEXT NOT NULL,
                         team_name TEXT,
+                        gm_name TEXT,
                         sent_json TEXT NOT NULL DEFAULT '{}',
                         received_json TEXT NOT NULL DEFAULT '{}',
                         created_at TEXT NOT NULL,
@@ -899,6 +900,7 @@ class DatabaseMigrationsMixin:
                     )
                     """
                 )
+                self._migration_ensure_column(conn, "trade_archive_team_movements", "gm_name", "TEXT")
                 conn.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_trade_archive_season_date

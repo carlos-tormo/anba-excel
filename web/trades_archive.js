@@ -53,6 +53,14 @@
     return parts.join(' · ') || 'Sin movimientos';
   }
 
+  function teamDisplayName(movement) {
+    return text(movement?.team_name || movement?.team_code || '-');
+  }
+
+  function gmDisplayName(movement) {
+    return text(movement?.gm_name || movement?.gm || '');
+  }
+
   function addMovementList(parent, title, movement) {
     el(parent, 'h4', { text: title });
     const row = movement && typeof movement === 'object' ? movement : {};
@@ -114,8 +122,10 @@
 
   function showTeamModal(trade, movement) {
     const code = text(movement?.team_code || '');
+    const gmName = gmDisplayName(movement);
     openModal(`Traspaso ${trade.trade_id || trade.id} · ${code}`, (body) => {
       el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · Temporada ${trade.season_year}` });
+      if (gmName) el(body, 'p', { className: 'section-subtitle', text: `GM: ${gmName}` });
       addMovementList(body, 'Envió', movement?.sent || {});
       addMovementList(body, 'Recibió', movement?.received || {});
     });
@@ -126,7 +136,8 @@
       el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · ${trade.total_assets_moved || 0} activo(s) movidos` });
       (trade.team_movements || []).forEach((movement) => {
         const card = el(body, 'article', { className: 'trade-archive-team-card' });
-        el(card, 'h3', { text: movement.team_code || '-' });
+        el(card, 'h3', { text: teamDisplayName(movement) });
+        if (gmDisplayName(movement)) el(card, 'p', { className: 'trade-archive-gm-line', text: `GM: ${gmDisplayName(movement)}` });
         el(card, 'p', { text: `Envió: ${movementSummary(movement.sent)}.` });
         el(card, 'p', { text: `Recibió: ${movementSummary(movement.received)}.` });
       });
@@ -163,8 +174,11 @@
         const btn = el(teamsCell, 'button', {
           className: 'tracker-team-btn trade-archive-team-btn',
           attrs: { type: 'button', 'data-trade-id': trade.id, 'data-team-code': movement.team_code },
-          text: movement.team_code || '-',
         });
+        el(btn, 'span', { className: 'trade-archive-team-name', text: teamDisplayName(movement) });
+        if (gmDisplayName(movement)) {
+          el(btn, 'span', { className: 'trade-archive-gm-line', text: `GM: ${gmDisplayName(movement)}` });
+        }
         btn.addEventListener('click', () => showTeamModal(trade, movement));
       });
       const totalCell = el(row, 'td');
@@ -220,22 +234,68 @@
     if (status) status.textContent = message || '';
   }
 
-  function parseTradeJson(raw) {
-    const parsed = JSON.parse(String(raw || '').trim() || '[]');
-    if (Array.isArray(parsed)) return { trades: parsed };
-    return parsed;
+  function renderImportErrors(errors = []) {
+    const container = document.getElementById('tradeArchiveImportErrors');
+    clear(container);
+    if (!container || !Array.isArray(errors) || !errors.length) return;
+    el(container, 'div', { className: 'trade-archive-import-error-title', text: 'Filas con error' });
+    const list = el(container, 'ul');
+    errors.slice(0, 25).forEach((error) => {
+      const index = Number(error?.index);
+      const rowLabel = Number.isFinite(index) ? `Fila ${index + 1}` : 'Fila desconocida';
+      el(list, 'li', { text: `${rowLabel}: ${text(error?.error || 'trade_import_failed')}` });
+    });
+    if (errors.length > 25) {
+      el(container, 'p', { text: `Hay ${errors.length - 25} error(es) adicionales no mostrados.` });
+    }
   }
 
-  async function importTrades() {
+  function parseTradeJson(raw) {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) throw new Error('Pega JSON o selecciona un archivo .json antes de importar.');
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return { trades: parsed };
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.trades)) return parsed;
+    throw new Error('El JSON debe ser un array de traspasos o un objeto con la propiedad "trades".');
+  }
+
+  async function loadImportFile(fileInput) {
+    const file = fileInput?.files?.[0];
+    if (!file) return;
+    if (file.size > 1024 * 1024) {
+      throw new Error('El archivo JSON supera 1 MB. Divide la importación en archivos más pequeños.');
+    }
     const textarea = document.getElementById('tradeArchiveImportInput');
-    const payload = parseTradeJson(textarea?.value || '');
-    const result = await state.api('/api/trades/archive/import', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }, { dedupe: true });
-    setStatus(`${(result.created || []).length} traspaso(s) importados; ${(result.errors || []).length} error(es).`);
-    if (textarea && !(result.errors || []).length) textarea.value = '';
-    await refresh();
+    if (textarea) textarea.value = await file.text();
+    renderImportErrors([]);
+    setStatus(`Archivo cargado: ${file.name}`);
+  }
+
+  async function importTrades(button = null) {
+    const submit = async () => {
+      renderImportErrors([]);
+      setStatus('');
+      const textarea = document.getElementById('tradeArchiveImportInput');
+      const payload = parseTradeJson(textarea?.value || '');
+      const result = await state.api('/api/trades/archive/import', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }, { dedupe: true, requestKey: 'POST /api/trades/archive/import' });
+      const createdCount = (result.created || []).length;
+      const errorCount = (result.errors || []).length;
+      const totalCount = result.total ?? createdCount + errorCount;
+      setStatus(`${createdCount}/${totalCount} traspaso(s) importados; ${errorCount} error(es).`);
+      renderImportErrors(result.errors || []);
+      if (textarea && !errorCount) textarea.value = '';
+      const fileInput = document.getElementById('tradeArchiveImportFile');
+      if (fileInput && !errorCount) fileInput.value = '';
+      await refresh();
+      return result;
+    };
+    if (global.AnbaApi?.withSubmissionLock) {
+      return global.AnbaApi.withSubmissionLock(button, submit, { pendingText: 'Importando...' });
+    }
+    return submit();
   }
 
   function openEditModal(trade) {
@@ -302,13 +362,32 @@
 
   function bindAdminControls() {
     const importBtn = document.getElementById('tradeArchiveImportBtn');
-    if (!importBtn || importBtn.dataset.tradeArchiveBound === 'true') return;
-    importBtn.dataset.tradeArchiveBound = 'true';
-    importBtn.addEventListener('click', () => {
-      importTrades().catch((err) => {
-        setStatus(`Import failed: ${err.message || err}`);
+    if (importBtn && importBtn.dataset.tradeArchiveBound !== 'true') {
+      importBtn.dataset.tradeArchiveBound = 'true';
+      importBtn.addEventListener('click', () => {
+        importTrades(importBtn).catch((err) => {
+          renderImportErrors([]);
+          setStatus(`Import failed: ${err.message || err}`);
+        });
       });
-    });
+    }
+    const fileInput = document.getElementById('tradeArchiveImportFile');
+    if (fileInput && fileInput.dataset.tradeArchiveBound !== 'true') {
+      fileInput.dataset.tradeArchiveBound = 'true';
+      fileInput.addEventListener('change', () => {
+        loadImportFile(fileInput).catch((err) => {
+          fileInput.value = '';
+          setStatus(`File load failed: ${err.message || err}`);
+        });
+      });
+    }
+    const textarea = document.getElementById('tradeArchiveImportInput');
+    if (textarea && textarea.dataset.tradeArchiveBound !== 'true') {
+      textarea.dataset.tradeArchiveBound = 'true';
+      textarea.addEventListener('input', () => {
+        renderImportErrors([]);
+      });
+    }
   }
 
   global.AnbaTradesArchive = {

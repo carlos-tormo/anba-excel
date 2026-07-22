@@ -577,6 +577,27 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(201, response.status)
         self.assertEqual(result, response.payload)
 
+    def test_trade_archive_import_route_accepts_raw_array_payload(self):
+        result = {"ok": True, "created": [{"id": 1}], "errors": [], "total": 1}
+        trade_archive = SimpleNamespace(import_trades=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(trade_archive=trade_archive),
+        )
+        payload = [{"trade_id": "legacy-1"}]
+
+        matched = dispatch_routes(handler, urlparse("/api/trades/archive/import"), POST_ROUTES, payload)
+
+        self.assertTrue(matched)
+        trade_archive.import_trades.assert_called_once_with(payload)
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(201, response.status)
+        self.assertEqual(result, response.payload)
+
     def test_get_draft_route_rejects_invalid_year_before_service_call(self):
         draft_service = Mock()
         handler = SimpleNamespace(

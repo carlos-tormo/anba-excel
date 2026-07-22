@@ -50,7 +50,7 @@ def create_trade_archive_entry(
 def import_trade_archive_entries(
     handler: Any,
     parsed: ParseResult,
-    payload: Optional[Dict[str, Any]],
+    payload: Optional[Any],
 ) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():

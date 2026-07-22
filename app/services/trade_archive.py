@@ -13,8 +13,17 @@ except ImportError:  # pragma: no cover
 
 
 class TradeArchiveService:
-    def __init__(self, repository: Any):
+    def __init__(self, repository: Any, *, max_import_trades: int = 1000):
         self.repository = repository
+        self.max_import_trades = max_import_trades
+
+    @staticmethod
+    def _optional_text(*values: Any) -> str | None:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return None
 
     @staticmethod
     def _movement_payload(value: Any) -> Dict[str, Any]:
@@ -45,7 +54,13 @@ class TradeArchiveService:
             movements.append(
                 {
                     "team_code": team_code,
-                    "team_name": str(item.get("team_name") or "").strip() or None,
+                    "team_name": cls._optional_text(item.get("team_name"), item.get("name")),
+                    "gm_name": cls._optional_text(
+                        item.get("gm_name"),
+                        item.get("gm"),
+                        item.get("general_manager"),
+                        item.get("team_gm"),
+                    ),
                     "sent": cls._movement_payload(item.get("sent")),
                     "received": cls._movement_payload(item.get("received")),
                 }
@@ -101,6 +116,7 @@ class TradeArchiveService:
                     {
                         "team_code": team.get("code"),
                         "team_name": team.get("name"),
+                        "gm_name": team.get("gm_name") or team.get("gm"),
                         "sent": team.get("sent") if isinstance(team.get("sent"), dict) else {},
                         "received": team.get("received") if isinstance(team.get("received"), dict) else {},
                     }
@@ -113,6 +129,8 @@ class TradeArchiveService:
             team_movements = [
                 {
                     "team_code": code_a,
+                    "team_name": team_a.get("name"),
+                    "gm_name": team_a.get("gm_name") or team_a.get("gm"),
                     "sent": {
                         "players": result.get("players_a") or [],
                         "picks": result.get("pick_refs_a") or [],
@@ -126,6 +144,8 @@ class TradeArchiveService:
                 },
                 {
                     "team_code": code_b,
+                    "team_name": team_b.get("name"),
+                    "gm_name": team_b.get("gm_name") or team_b.get("gm"),
                     "sent": {
                         "players": result.get("players_b") or [],
                         "picks": result.get("pick_refs_b") or [],
@@ -159,10 +179,17 @@ class TradeArchiveService:
     def create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self.repository.create(self.normalize_payload(payload))
 
-    def import_trades(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        raw_trades = payload.get("trades") if isinstance(payload, dict) else None
+    def import_trades(self, payload: Any) -> Dict[str, Any]:
+        if isinstance(payload, list):
+            raw_trades = payload
+        elif isinstance(payload, dict):
+            raw_trades = payload.get("trades")
+        else:
+            raw_trades = None
         if not isinstance(raw_trades, list):
             raise ValueError("trades_required")
+        if len(raw_trades) > self.max_import_trades:
+            raise ValueError("too_many_trades")
         created = []
         errors = []
         for index, raw in enumerate(raw_trades):
@@ -170,7 +197,7 @@ class TradeArchiveService:
                 created.append(self.repository.create(self.normalize_payload(raw, source="admin_import")))
             except Exception as err:  # noqa: BLE001 - return row-level import errors to admin.
                 errors.append({"index": index, "error": str(err) or "trade_import_failed"})
-        return {"ok": not errors, "created": created, "errors": errors}
+        return {"ok": not errors, "created": created, "errors": errors, "total": len(raw_trades)}
 
     def update(self, trade_id: Any, payload: Dict[str, Any]) -> Dict[str, Any] | None:
         existing = self.get(trade_id)

@@ -82,7 +82,12 @@ class FrontendSafetyTests(unittest.TestCase):
 
         self.assertIn("global.AnbaDom", source)
         self.assertIn("global.AnbaApi?.request", source)
+        self.assertIn("global.AnbaApi.withSubmissionLock", source)
         self.assertIn("global.AnbaTradesArchive", source)
+        self.assertIn("function renderImportErrors", source)
+        self.assertIn("function loadImportFile", source)
+        self.assertIn("function gmDisplayName", source)
+        self.assertIn("trade-archive-gm-line", source)
         self.assertNotIn(".innerHTML", source)
         self.assertNotIn("insertAdjacentHTML", source)
 
@@ -92,6 +97,14 @@ class FrontendSafetyTests(unittest.TestCase):
                 source = web_file(name)
                 self.assertIn('data-nav-view="trade-archive"', source)
                 self.assertLess(source.index("/trades_archive.js"), source.index(f"/{script}"))
+
+    def test_trade_archive_admin_importer_exposes_json_file_and_error_ui(self) -> None:
+        source = web_file("admin.html")
+
+        self.assertIn('id="tradeArchiveImportFile"', source)
+        self.assertIn('accept="application/json,.json"', source)
+        self.assertIn('id="tradeArchiveImportErrors"', source)
+        self.assertIn("Formato JSON soportado", source)
 
 
 if __name__ == "__main__":

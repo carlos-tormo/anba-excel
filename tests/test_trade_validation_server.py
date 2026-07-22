@@ -10,7 +10,7 @@ from app.services.notifications import NotificationCompositionService
 from app.xlsx_import import create_schema, now_iso
 
 
-def insert_team(conn: sqlite3.Connection, code: str, name: str) -> int:
+def insert_team(conn: sqlite3.Connection, code: str, name: str, gm: str | None = None) -> int:
     now = now_iso()
     cur = conn.execute(
         """
@@ -18,9 +18,9 @@ def insert_team(conn: sqlite3.Connection, code: str, name: str) -> int:
             code, name, gm, cash_note, apron_hard_cap,
             salary_cap, luxury_cap, first_apron, second_apron,
             created_at, updated_at
-        ) VALUES (?, ?, NULL, NULL, NULL, 154647000, 187896105, 195945000, 207824000, ?, ?)
+        ) VALUES (?, ?, ?, NULL, NULL, 154647000, 187896105, 195945000, 207824000, ?, ?)
         """,
-        (code, name, now, now),
+        (code, name, gm, now, now),
     )
     return int(cur.lastrowid)
 
@@ -33,8 +33,8 @@ class TradeValidationServerTests(unittest.TestCase):
         with connect_test_db(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             create_schema(conn)
-            insert_team(conn, "ATL", "Atlanta Hawks")
-            insert_team(conn, "BOS", "Boston Celtics")
+            insert_team(conn, "ATL", "Atlanta Hawks", "ATL Site GM")
+            insert_team(conn, "BOS", "Boston Celtics", "BOS Site GM")
             conn.commit()
         self.db = LeagueDB(self.db_path)
         self.db.ensure_auth_schema()
@@ -170,6 +170,7 @@ class TradeValidationServerTests(unittest.TestCase):
         archived = archive["trades"][0]
         self.assertEqual(command["result"]["trade_archive_id"], archived["id"])
         self.assertEqual(["ATL", "BOS"], archived["teams"])
+        self.assertEqual(["ATL Site GM", "BOS Site GM"], [row["gm_name"] for row in archived["team_movements"]])
         self.assertEqual(2, archived["total_assets_moved"])
 
     def test_discord_trade_summary_lists_pick_rounds(self) -> None:

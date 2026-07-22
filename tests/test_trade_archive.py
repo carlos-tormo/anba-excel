@@ -53,6 +53,7 @@ class TradeArchiveTests(unittest.TestCase):
                 "team_movements": [
                     {
                         "team_code": "ATL",
+                        "gm_name": "ATL GM",
                         "sent": {"players": ["Player A"]},
                         "received": {"picks": ["2027 BOS 1st"]},
                     },
@@ -66,6 +67,7 @@ class TradeArchiveTests(unittest.TestCase):
         )
 
         self.assertEqual(2, trade["total_assets_moved"])
+        self.assertEqual("ATL GM", trade["team_movements"][0]["gm_name"])
         listed = service.list()
         self.assertEqual([2026], [season["season_year"] for season in listed["seasons"]])
         self.assertEqual(["ATL", "BOS"], listed["trades"][0]["teams"])
@@ -95,8 +97,37 @@ class TradeArchiveTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
+        self.assertEqual(2, result["total"])
         self.assertEqual(1, len(result["created"]))
         self.assertEqual([{"index": 1, "error": "trade_date_required"}], result["errors"])
+
+    def test_trade_archive_import_accepts_raw_json_array(self) -> None:
+        result = TradeArchiveService(self.db._trade_archive_repository).import_trades(
+            [
+                {
+                    "trade_id": "past-1",
+                    "date": "2024-08-10",
+                    "season": 2024,
+                    "teams": [
+                        {"code": "ATL", "gm": "Imported ATL GM", "sent": {"players": ["A"]}, "received": {"rights": ["B rights"]}},
+                        {"code": "BOS", "sent": {"rights": ["B rights"]}, "received": {"players": ["A"]}},
+                    ],
+                }
+            ]
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["total"])
+        self.assertEqual("past-1", result["created"][0]["trade_id"])
+        self.assertEqual(["ATL", "BOS"], result["created"][0]["teams"])
+        self.assertEqual("Imported ATL GM", result["created"][0]["team_movements"][0]["gm_name"])
+        self.assertIsNone(result["created"][0]["team_movements"][1]["gm_name"])
+
+    def test_trade_archive_import_rejects_oversized_batches(self) -> None:
+        service = TradeArchiveService(self.db._trade_archive_repository, max_import_trades=1)
+
+        with self.assertRaisesRegex(ValueError, "too_many_trades"):
+            service.import_trades([{}, {}])
 
 
 if __name__ == "__main__":

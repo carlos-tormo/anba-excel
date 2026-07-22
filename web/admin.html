@@ -633,11 +633,41 @@
         </div>
       </div>
       <div id="tradeArchiveAdminControls" class="trade-archive-admin-controls">
+        <details class="trade-archive-import-guide">
+          <summary>Formato JSON soportado</summary>
+          <p>Puedes pegar un array de traspasos o un objeto con la propiedad <code>trades</code>. Cada traspaso necesita fecha, temporada y al menos dos equipos. <code>gm_name</code> es opcional.</p>
+          <pre><code>[
+  {
+    "trade_id": "2026-001",
+    "date": "2026-07-01",
+    "season": 2026,
+    "teams": [
+      {
+        "team_code": "ATL",
+        "gm_name": "GM Atlanta",
+        "sent": { "players": ["Jugador A"] },
+        "received": { "picks": ["2027 BOS 1st"] }
+      },
+      {
+        "team_code": "BOS",
+        "gm_name": "GM Boston",
+        "sent": { "picks": ["2027 BOS 1st"] },
+        "received": { "players": ["Jugador A"] }
+      }
+    ]
+  }
+]</code></pre>
+        </details>
+        <label for="tradeArchiveImportFile">
+          <span>Archivo JSON</span>
+          <input id="tradeArchiveImportFile" type="file" accept="application/json,.json">
+        </label>
         <label for="tradeArchiveImportInput">
           <span>Importar traspasos JSON</span>
           <textarea id="tradeArchiveImportInput" rows="7" placeholder='[{"trade_date":"2026-07-01","season_year":2026,"team_movements":[{"team_code":"ATL","sent":{"players":["Jugador A"]},"received":{"picks":["2027 BOS 1st"]}},{"team_code":"BOS","sent":{"picks":["2027 BOS 1st"]},"received":{"players":["Jugador A"]}}]}]'></textarea>
         </label>
         <button id="tradeArchiveImportBtn" type="button">Importar traspasos</button>
+        <div id="tradeArchiveImportErrors" class="trade-archive-import-errors" aria-live="polite"></div>
       </div>
       <div id="tradeArchiveStatus" class="locator-status" aria-live="polite"></div>
       <div id="tradeArchiveBoard" class="draft-order-board trade-archive-board"></div>

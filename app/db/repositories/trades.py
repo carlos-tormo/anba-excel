@@ -1052,7 +1052,7 @@ class TradeRepository(LeagueRepository):
         with (self.db.connect() if owns_connection else nullcontext(conn)) as conn:
             team_rows: Dict[str, sqlite3.Row] = {}
             for code in teams:
-                row = conn.execute("SELECT id, code FROM teams WHERE code = ?", (code,)).fetchone()
+                row = conn.execute("SELECT id, code, name, gm FROM teams WHERE code = ?", (code,)).fetchone()
                 if not row:
                     return None
                 team_rows[code] = row
@@ -1067,6 +1067,8 @@ class TradeRepository(LeagueRepository):
             summaries: Dict[str, Dict[str, Any]] = {
                 code: {
                     "code": code,
+                    "name": team_rows[code]["name"],
+                    "gm": team_rows[code]["gm"],
                     "move_count": 0,
                     "sent": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": [], "cash": [], "cash_amount": 0.0},
                     "received": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": [], "cash": [], "cash_amount": 0.0},
@@ -1430,8 +1432,18 @@ class TradeRepository(LeagueRepository):
             team_b = teams[1]
             result.update(
                 {
-                    "team_a": {"code": team_a, "move_count": summaries[team_a]["move_count"]},
-                    "team_b": {"code": team_b, "move_count": summaries[team_b]["move_count"]},
+                    "team_a": {
+                        "code": team_a,
+                        "name": summaries[team_a].get("name"),
+                        "gm": summaries[team_a].get("gm"),
+                        "move_count": summaries[team_a]["move_count"],
+                    },
+                    "team_b": {
+                        "code": team_b,
+                        "name": summaries[team_b].get("name"),
+                        "gm": summaries[team_b].get("gm"),
+                        "move_count": summaries[team_b]["move_count"],
+                    },
                     "players_a": summaries[team_a]["sent"]["players"],
                     "players_b": summaries[team_b]["sent"]["players"],
                     "pick_count_a": summaries[team_a]["sent"]["pick_count"],
@@ -1501,8 +1513,8 @@ class TradeRepository(LeagueRepository):
 
         owns_connection = conn is None
         with (self.db.connect() if owns_connection else nullcontext(conn)) as conn:
-            team_a = conn.execute("SELECT id, code FROM teams WHERE code = ?", (team_a_code.upper(),)).fetchone()
-            team_b = conn.execute("SELECT id, code FROM teams WHERE code = ?", (team_b_code.upper(),)).fetchone()
+            team_a = conn.execute("SELECT id, code, name, gm FROM teams WHERE code = ?", (team_a_code.upper(),)).fetchone()
+            team_b = conn.execute("SELECT id, code, name, gm FROM teams WHERE code = ?", (team_b_code.upper(),)).fetchone()
             if not team_a or not team_b or team_a["id"] == team_b["id"]:
                 return None
 
@@ -1932,8 +1944,18 @@ class TradeRepository(LeagueRepository):
             return {
                 "ok": True,
                 "trade_bucket": bucket,
-                "team_a": {"code": team_a["code"], "move_count": move_count_a},
-                "team_b": {"code": team_b["code"], "move_count": move_count_b},
+                "team_a": {
+                    "code": team_a["code"],
+                    "name": team_a["name"],
+                    "gm": team_a["gm"],
+                    "move_count": move_count_a,
+                },
+                "team_b": {
+                    "code": team_b["code"],
+                    "name": team_b["name"],
+                    "gm": team_b["gm"],
+                    "move_count": move_count_b,
+                },
                 "players_a": [row["name"] for row in players_a_rows],
                 "players_b": [row["name"] for row in players_b_rows],
                 "pick_count_a": len(picks_a_rows),

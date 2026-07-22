@@ -132,6 +132,58 @@ class MigrationBackupDisciplineTests(unittest.TestCase):
         self.assertIn("idx_outbox_events_delivery_available", indexes)
         self.assertEqual(timestamp, row["available_at"])
 
+    def test_legacy_trade_archive_movements_gain_optional_gm_name(self) -> None:
+        conn = connect_test_db(self.db_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_archive (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    external_trade_id TEXT UNIQUE,
+                    trade_date TEXT NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    total_assets_moved INTEGER NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    source_ref TEXT UNIQUE,
+                    notes TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_archive_team_movements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id INTEGER NOT NULL REFERENCES trade_archive(id) ON DELETE CASCADE,
+                    team_code TEXT NOT NULL,
+                    team_name TEXT,
+                    sent_json TEXT NOT NULL DEFAULT '{}',
+                    received_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(trade_id, team_code)
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.db.ensure_auth_schema()
+
+        conn = connect_test_db(self.db_path)
+        try:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(trade_archive_team_movements)").fetchall()
+            }
+        finally:
+            conn.close()
+
+        self.assertIn("gm_name", columns)
+
     def test_verified_backup_is_persisted_and_restorable(self) -> None:
         self.db.ensure_auth_schema()
         backup = self.db.create_verified_backup("pre_test_import")
