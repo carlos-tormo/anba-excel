@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger("anba.migrations")
-CURRENT_SCHEMA_VERSION = 2026072203
+CURRENT_SCHEMA_VERSION = 2026072205
 CURRENT_SCHEMA_MIGRATION_KEY = f"{CURRENT_SCHEMA_VERSION}_runtime_schema_contract"
 MIGRATION_CONTRACT_SEASONS = (2025, 2026, 2027, 2028, 2029, 2030, 2031)
 MIGRATION_PLAYER_ROW_STATE_ACTIVE = "active_contract"
@@ -911,6 +911,67 @@ class DatabaseMigrationsMixin:
                     """
                     CREATE INDEX IF NOT EXISTS idx_trade_archive_movements_team
                     ON trade_archive_team_movements (team_code, trade_id)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS waiting_list_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        position INTEGER NOT NULL CHECK(position >= 1),
+                        display_name TEXT NOT NULL,
+                        registered_at TEXT NOT NULL,
+                        discord_id TEXT UNIQUE,
+                        user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL,
+                        source TEXT NOT NULL DEFAULT 'manual',
+                        notes TEXT,
+                        last_interest_confirmed_at TEXT,
+                        last_interest_prompted_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_waiting_list_position
+                    ON waiting_list_entries (position, id)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_waiting_list_discord
+                    ON waiting_list_entries (discord_id)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS waiting_list_invites (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        token_digest TEXT NOT NULL UNIQUE,
+                        discord_id TEXT NOT NULL,
+                        discord_username TEXT,
+                        status TEXT NOT NULL DEFAULT 'pending'
+                            CHECK(status IN ('pending', 'accepted', 'declined', 'consumed', 'expired')),
+                        expires_at TEXT NOT NULL,
+                        accepted_at TEXT,
+                        declined_at TEXT,
+                        consumed_at TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_waiting_list_invites_discord
+                    ON waiting_list_invites (discord_id, status, expires_at)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_waiting_list_invites_status_expiry
+                    ON waiting_list_invites (status, expires_at)
                     """
                 )
                 conn.execute(

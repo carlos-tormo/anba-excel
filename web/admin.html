@@ -24,6 +24,7 @@
         <button id="figuresHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="figures">Cifras</button>
         <button id="draftHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="draft-order">Draft</button>
         <button id="tradeArchiveHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-archive">Traspasos</button>
+        <button id="waitingListHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="waiting-list">Lista de espera</button>
         <button id="leaguePlayersHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="league-players">Jugadores</button>
       </div>
       <div class="sidebar-section">
@@ -69,6 +70,7 @@
         <button id="adminMobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦" data-nav-view="figures">Cifras</button>
         <button id="adminMobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈" data-nav-view="draft-order">Draft</button>
         <button id="adminMobileTradeArchiveBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-archive">Traspasos</button>
+        <button id="adminMobileWaitingListBtn" type="button" class="mobile-nav-btn" data-icon="☷" data-nav-view="waiting-list">Lista de espera</button>
         <button id="adminMobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
         <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Agentes libres</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡" data-nav-view="admin-log">Admin Log</button>
@@ -671,6 +673,40 @@
       </div>
       <div id="tradeArchiveStatus" class="locator-status" aria-live="polite"></div>
       <div id="tradeArchiveBoard" class="draft-order-board trade-archive-board"></div>
+    </section>
+
+    <section id="waitingListSection" class="draft-order-section waiting-list-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>Lista de espera</h2>
+          <div class="section-subtitle">Usuarios esperando plaza para entrar en la liga.</div>
+        </div>
+      </div>
+      <form id="waitingListAdminForm" class="waiting-list-admin-form">
+        <label for="waitingListNameInput">
+          <span>Nombre</span>
+          <input id="waitingListNameInput" name="display_name" type="text" autocomplete="off" required>
+        </label>
+        <label for="waitingListDateInput">
+          <span>Fecha de inscripción</span>
+          <input id="waitingListDateInput" name="registered_at" type="date">
+        </label>
+        <label for="waitingListPositionInput">
+          <span>Plaza</span>
+          <input id="waitingListPositionInput" name="position" type="number" min="1" inputmode="numeric">
+        </label>
+        <label for="waitingListDiscordInput">
+          <span>Discord ID</span>
+          <input id="waitingListDiscordInput" name="discord_id" type="text" autocomplete="off">
+        </label>
+        <label for="waitingListNotesInput">
+          <span>Notas</span>
+          <input id="waitingListNotesInput" name="notes" type="text" autocomplete="off">
+        </label>
+        <button id="waitingListAddBtn" type="submit">Añadir</button>
+      </form>
+      <div id="waitingListStatus" class="locator-status" aria-live="polite"></div>
+      <div id="waitingListBoard" class="draft-order-board waiting-list-board"></div>
     </section>
 
     <nav id="teamTabs" class="team-tabs section-hidden" role="tablist" aria-label="Team sections">
@@ -1516,6 +1552,7 @@ LAL,MIN,LAL,MIN,MIN,MIN,BOS,CHA</pre>
   <script src="/dom.js?v=20260721a" defer></script>
   <script src="/draft_live.js?v=20260721a" defer></script>
   <script src="/trades_archive.js?v=20260722a" defer></script>
+  <script src="/waiting_list.js?v=20260722a" defer></script>
   <script src="/admin.js?v=20260721a" defer></script>
 </body>
 </html>

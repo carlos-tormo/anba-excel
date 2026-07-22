@@ -99,6 +99,9 @@ class RouteAuthorizationInventoryTests(unittest.TestCase):
         expected = {
             ("POST", "/api/trades/process"): ("admin.trade.process", True),
             ("POST", "/api/trades/archive/import"): ("admin.trade_archive.write", True),
+            ("POST", "/api/waiting-list"): ("admin.waiting_list.write", True),
+            ("PATCH", "/api/waiting-list/"): ("admin.waiting_list.write", True),
+            ("DELETE", "/api/waiting-list/"): ("admin.waiting_list.write", True),
             ("POST", "/api/gm-office/depth-chart"): ("gm_office.depth_chart.update", True),
             ("PATCH", "/api/admin/gm-free-agent-offer-requests/"): (
                 "admin.gm_free_agent_offer_request.decide",

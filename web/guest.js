@@ -4851,6 +4851,7 @@ function setViewMode(mode) {
   const leaguePlayersSection = document.getElementById('leaguePlayersSection');
   const draftOrderSection = document.getElementById('draftOrderSection');
   const tradeArchiveSection = document.getElementById('tradeArchiveSection');
+  const waitingListSection = document.getElementById('waitingListSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
   const walletSection = document.getElementById('walletSection');
   const coadminVotesSection = document.getElementById('coadminVotesSection');
@@ -4861,6 +4862,7 @@ function setViewMode(mode) {
   const showLeaguePlayers = mode === 'league-players';
   const showDraftOrder = mode === 'draft-order';
   const showTradeArchive = mode === 'trade-archive';
+  const showWaitingList = mode === 'waiting-list';
   const showTradeMachine = mode === 'trade-machine';
   const showWallet = mode === 'wallet';
   const showCoadminVotes = mode === 'coadmin-votes';
@@ -4872,6 +4874,7 @@ function setViewMode(mode) {
   if (leaguePlayersSection) leaguePlayersSection.classList.toggle('section-hidden', !showLeaguePlayers);
   if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
   if (tradeArchiveSection) tradeArchiveSection.classList.toggle('section-hidden', !showTradeArchive);
+  if (waitingListSection) waitingListSection.classList.toggle('section-hidden', !showWaitingList);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
   if (walletSection) walletSection.classList.toggle('section-hidden', !showWallet);
   if (coadminVotesSection) coadminVotesSection.classList.toggle('section-hidden', !showCoadminVotes);
@@ -10171,6 +10174,27 @@ async function loadTradeArchive() {
   });
 }
 
+async function loadWaitingList() {
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('waiting-list');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  await window.AnbaWaitingList.load({
+    api,
+    admin: false,
+    setPageHeading,
+  });
+}
+
 function normalizeLocatorText(value) {
   return String(value || '')
     .normalize('NFD')
@@ -10508,6 +10532,7 @@ function setupMobileNav() {
   const figuresBtn = document.getElementById('mobileFiguresBtn');
   const draftBtn = document.getElementById('mobileDraftBtn');
   const tradeArchiveBtn = document.getElementById('mobileTradeArchiveBtn');
+  const waitingListBtn = document.getElementById('mobileWaitingListBtn');
   const leaguePlayersBtn = document.getElementById('mobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('mobileFreeAgentsBtn');
   const gmOfficeBtn = document.getElementById('mobileGmOfficeBtn');
@@ -10556,6 +10581,12 @@ function setupMobileNav() {
     tradeArchiveBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadTradeArchive();
+    });
+  }
+  if (waitingListBtn) {
+    waitingListBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadWaitingList();
     });
   }
   if (leaguePlayersBtn) {
@@ -10648,6 +10679,9 @@ async function init() {
   });
   document.getElementById('tradeArchiveHomeBtn')?.addEventListener('click', async () => {
     await loadTradeArchive();
+  });
+  document.getElementById('waitingListHomeBtn')?.addEventListener('click', async () => {
+    await loadWaitingList();
   });
   document.getElementById('leaguePlayersHomeBtn').addEventListener('click', async () => {
     await loadLeaguePlayers();

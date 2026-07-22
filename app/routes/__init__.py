@@ -25,6 +25,12 @@ try:
         TRADE_ARCHIVE_PATCH_ROUTES,
         TRADE_ARCHIVE_POST_ROUTES,
     )
+    from .waiting_list import (
+        WAITING_LIST_DELETE_ROUTES,
+        WAITING_LIST_GET_ROUTES,
+        WAITING_LIST_PATCH_ROUTES,
+        WAITING_LIST_POST_ROUTES,
+    )
     from ..routing import route_with_method
 except ImportError:  # pragma: no cover - supports direct script execution via app/server.py.
     from routes.admin_data import ADMIN_DATA_GET_ROUTES, ADMIN_DATA_POST_ROUTES
@@ -51,6 +57,12 @@ except ImportError:  # pragma: no cover - supports direct script execution via a
         TRADE_ARCHIVE_PATCH_ROUTES,
         TRADE_ARCHIVE_POST_ROUTES,
     )
+    from routes.waiting_list import (
+        WAITING_LIST_DELETE_ROUTES,
+        WAITING_LIST_GET_ROUTES,
+        WAITING_LIST_PATCH_ROUTES,
+        WAITING_LIST_POST_ROUTES,
+    )
     from routing import route_with_method
 
 GET_ROUTES = tuple(route_with_method(route, "GET") for route in (
@@ -61,6 +73,7 @@ GET_ROUTES = tuple(route_with_method(route, "GET") for route in (
     *PRESS_GET_ROUTES,
     *ADMIN_DATA_GET_ROUTES,
     *TRADE_ARCHIVE_GET_ROUTES,
+    *WAITING_LIST_GET_ROUTES,
     *GET_REMAINING_ROUTES,
 ))
 POST_ROUTES = tuple(route_with_method(route, "POST") for route in (
@@ -72,6 +85,7 @@ POST_ROUTES = tuple(route_with_method(route, "POST") for route in (
     *PRESS_POST_ROUTES,
     *ADMIN_DATA_POST_ROUTES,
     *TRADE_ARCHIVE_POST_ROUTES,
+    *WAITING_LIST_POST_ROUTES,
     *POST_REMAINING_ROUTES,
 ))
 PATCH_ROUTES = tuple(route_with_method(route, "PATCH") for route in (
@@ -79,11 +93,13 @@ PATCH_ROUTES = tuple(route_with_method(route, "PATCH") for route in (
     *FREE_AGENCY_PATCH_ROUTES,
     *OWNER_OFFICE_PATCH_ROUTES,
     *TRADE_ARCHIVE_PATCH_ROUTES,
+    *WAITING_LIST_PATCH_ROUTES,
     *PATCH_REMAINING_ROUTES,
 ))
 DELETE_ROUTES = tuple(route_with_method(route, "DELETE") for route in (
     *BASE_DELETE_ROUTES,
     *TRADE_ARCHIVE_DELETE_ROUTES,
+    *WAITING_LIST_DELETE_ROUTES,
 ))
 EARLY_POST_ROUTES = tuple(route_with_method(route, "POST") for route in BASE_EARLY_POST_ROUTES)
 OWNER_OFFICE_MULTIPART_POST_ROUTES = tuple(

@@ -72,10 +72,13 @@ class FrontendSafetyTests(unittest.TestCase):
 
         dom_index = source.index('/dom.js')
         trades_index = source.index('/trades_archive.js')
+        waiting_list_index = source.index('/waiting_list.js')
         admin_index = source.index('/admin.js')
         self.assertLess(dom_index, admin_index)
         self.assertLess(dom_index, trades_index)
+        self.assertLess(dom_index, waiting_list_index)
         self.assertLess(trades_index, admin_index)
+        self.assertLess(waiting_list_index, admin_index)
 
     def test_trade_archive_frontend_uses_safe_dom_helpers_and_shared_api(self) -> None:
         source = web_file("trades_archive.js")
@@ -124,6 +127,32 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('accept="application/json,.json"', source)
         self.assertIn('id="tradeArchiveImportErrors"', source)
         self.assertIn("Formato JSON soportado", source)
+
+    def test_waiting_list_frontend_uses_safe_dom_helpers_and_shared_api(self) -> None:
+        source = web_file("waiting_list.js")
+
+        self.assertIn("global.AnbaDom", source)
+        self.assertIn("global.AnbaApi?.request", source)
+        self.assertIn("global.AnbaApi?.withSubmissionLock", source)
+        self.assertIn("global.AnbaWaitingList", source)
+        self.assertIn("function renderTable", source)
+        self.assertIn("function bindAdminControls", source)
+        self.assertIn("function showEditModal", source)
+        self.assertIn("Plaza", source)
+        self.assertIn("Fecha de inscripción", source)
+        self.assertNotIn(".innerHTML", source)
+        self.assertNotIn("insertAdjacentHTML", source)
+
+    def test_waiting_list_is_available_in_guest_and_admin_navigation(self) -> None:
+        for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
+            with self.subTest(file=name):
+                source = web_file(name)
+                self.assertIn('data-nav-view="waiting-list"', source)
+                self.assertLess(source.index("/waiting_list.js"), source.index(f"/{script}"))
+
+        admin_source = web_file("admin.html")
+        self.assertIn('id="waitingListAdminForm"', admin_source)
+        self.assertIn('id="waitingListDiscordInput"', admin_source)
 
 
 if __name__ == "__main__":

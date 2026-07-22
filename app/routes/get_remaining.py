@@ -3,20 +3,47 @@
 from __future__ import annotations
 
 import secrets
+import re
 import time
 from typing import Any, Dict, Optional
 from urllib.parse import ParseResult, parse_qs
 
 try:
+    from ..auth.sessions import build_cookie
     from ..auth.policies import normalize_team_codes
     from ..domain_rules import parse_bool, parse_int
     from ..routing import error_response, exact_route, json_response, predicate_route, prefix_route, redirect_response
     from ..services.authentication import GoogleOAuthCompletionError
 except ImportError:  # pragma: no cover
+    from auth.sessions import build_cookie
     from auth.policies import normalize_team_codes
     from domain_rules import parse_bool, parse_int
     from routing import error_response, exact_route, json_response, predicate_route, prefix_route, redirect_response
     from services.authentication import GoogleOAuthCompletionError
+
+
+def _waiting_list_token_cookie(handler: Any, token: str) -> str:
+    return build_cookie(
+        "waiting_list_token",
+        str(token or "").strip(),
+        path="/api/auth/google/callback",
+        same_site=getattr(handler, "cookie_same_site", "Lax"),
+        max_age=getattr(handler, "oauth_state_ttl_seconds", 600),
+        secure=handler._should_set_secure_cookie() if hasattr(handler, "_should_set_secure_cookie") else False,
+        domain=getattr(handler, "cookie_domain", None),
+    )
+
+
+def _clear_waiting_list_token_cookie(handler: Any) -> str:
+    return build_cookie(
+        "waiting_list_token",
+        "",
+        path="/api/auth/google/callback",
+        same_site=getattr(handler, "cookie_same_site", "Lax"),
+        max_age=0,
+        secure=handler._should_set_secure_cookie() if hasattr(handler, "_should_set_secure_cookie") else False,
+        domain=getattr(handler, "cookie_domain", None),
+    )
 
 
 def get_home_page(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
@@ -50,11 +77,18 @@ def start_google_oauth(handler: Any, parsed: ParseResult, payload: Optional[Dict
         return redirect_response("/login?error=google_not_configured")
     if not handler._require_oauth_start_rate_limit():
         return
+    qs = parse_qs(parsed.query)
+    waiting_list_token = str((qs.get("waiting_list_token") or [""])[0] or "").strip()
+    if waiting_list_token and not re.fullmatch(r"[A-Za-z0-9_-]{20,160}", waiting_list_token):
+        waiting_list_token = ""
     state = secrets.token_urlsafe(24)
     handler._store_oauth_state(state)
+    cookies = [handler._oauth_state_cookie(state)]
+    if waiting_list_token:
+        cookies.append(_waiting_list_token_cookie(handler, waiting_list_token))
     return redirect_response(
         handler.app.google_client.authorization_url(state),
-        headers={"Set-Cookie": handler._oauth_state_cookie(state)},
+        headers={"Set-Cookie": cookies},
     )
 
 def complete_google_oauth(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
@@ -82,9 +116,21 @@ def complete_google_oauth(handler: Any, parsed: ParseResult, payload: Optional[D
         )
     token, _ = handler._start_session(result["session"])
     cookie = handler._session_cookie(token)
+    clear_cookies = [cookie, handler._clear_oauth_state_cookie()]
+    waiting_list_token = handler._cookie_dict().get("waiting_list_token", "") if hasattr(handler, "_cookie_dict") else ""
+    if waiting_list_token and hasattr(handler.app, "waiting_list"):
+        try:
+            handler.app.waiting_list.consume_invite_token(
+                token=waiting_list_token,
+                user_id=result["session"].get("user_id"),
+                display_name=result["session"].get("name"),
+            )
+        except Exception as err:  # noqa: BLE001 - login should not fail because invite consumption failed.
+            handler.log_message("Waiting-list invite consumption failed: %s", err)
+        clear_cookies.append(_clear_waiting_list_token_cookie(handler))
     return redirect_response(
         handler._landing_path_for_session(result["role"], result["team_codes"]),
-        headers={"Set-Cookie": [cookie, handler._clear_oauth_state_cookie()]},
+        headers={"Set-Cookie": clear_cookies},
     )
 
 def get_auth_status(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):

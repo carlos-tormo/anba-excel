@@ -29,6 +29,12 @@ function authLandingPath(status) {
   return '/';
 }
 
+function waitingListTokenFromQuery() {
+  const params = new URLSearchParams(window.location.search);
+  const token = String(params.get('waiting_list_token') || '').trim();
+  return /^[A-Za-z0-9_-]{20,160}$/.test(token) ? token : '';
+}
+
 async function init() {
   const status = await api('/api/auth/status');
   if (status.authenticated) {
@@ -39,12 +45,18 @@ async function init() {
   const form = document.getElementById('loginForm');
   const errorEl = document.getElementById('loginError');
   const googleHelp = document.getElementById('googleHelp');
+  const googleBtn = document.getElementById('googleLoginBtn');
+  const waitingListToken = waitingListTokenFromQuery();
+  if (waitingListToken && googleBtn) {
+    googleBtn.href = `/api/auth/google/start?waiting_list_token=${encodeURIComponent(waitingListToken)}`;
+  }
 
   if (!status.google_enabled) {
     googleHelp.hidden = false;
-    const btn = document.getElementById('googleLoginBtn');
-    btn.setAttribute('aria-disabled', 'true');
-    btn.href = '#';
+    if (googleBtn) {
+      googleBtn.setAttribute('aria-disabled', 'true');
+      googleBtn.href = '#';
+    }
   }
 
   const queryErr = getErrorMessageFromQuery();

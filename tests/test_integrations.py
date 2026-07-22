@@ -79,6 +79,34 @@ class DiscordIntegrationTests(unittest.TestCase):
         self.assertEqual("https://discord.example/api/channels/channel-9/messages", second_request.full_url)
         self.assertEqual("Bot token", second_request.headers["Authorization"])
 
+    def test_bot_get_fetches_gateway_metadata(self):
+        opener = QueueOpener(FakeResponse(b'{"url":"wss://gateway.discord.gg"}'))
+        integration = DiscordIntegration(
+            DiscordConfig(bot_token="token", api_base_url="https://discord.example/api"),
+            opener=opener,
+        )
+
+        result = integration.get_bot_json("/gateway/bot")
+
+        self.assertEqual({"url": "wss://gateway.discord.gg"}, result)
+        request, options = opener.calls[0]
+        self.assertEqual("GET", request.get_method())
+        self.assertEqual("https://discord.example/api/gateway/bot", request.full_url)
+        self.assertEqual("Bot token", request.headers["Authorization"])
+
+    def test_interaction_response_uses_callback_endpoint(self):
+        opener = QueueOpener(FakeResponse(b'{}'))
+        integration = DiscordIntegration(
+            DiscordConfig(bot_token="token", api_base_url="https://discord.example/api"),
+            opener=opener,
+        )
+
+        integration.respond_to_interaction("interaction 123", "interaction-token", {"type": 4})
+
+        request, _options = opener.calls[0]
+        self.assertEqual("https://discord.example/api/interactions/123/interaction-token/callback", request.full_url)
+        self.assertEqual({"type": 4}, json.loads(request.data.decode("utf-8")))
+
     def test_bot_request_requires_token(self):
         integration = DiscordIntegration(DiscordConfig(), opener=QueueOpener())
         with self.assertRaisesRegex(RuntimeError, "DISCORD_BOT_TOKEN"):

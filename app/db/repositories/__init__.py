@@ -24,6 +24,7 @@ from .trades import TradeRepository
 from .trade_archive import TradeArchiveRepository
 from .tracker import TrackerRepository
 from .waivers import WaiverRepository
+from .waiting_list import WaitingListRepository
 from .workflows import WorkflowRepository
 from .users import UserRepository
 
@@ -51,6 +52,7 @@ __all__ = [
     "TradeArchiveRepository",
     "TrackerRepository",
     "WaiverRepository",
+    "WaitingListRepository",
     "WorkflowRepository",
     "UserRepository",
 ]

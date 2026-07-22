@@ -2393,6 +2393,54 @@ h1 {
 .draft-order-table td:first-child {
   width: 58px;
 }
+.waiting-list-board {
+  grid-template-columns: 1fr;
+}
+.waiting-list-table-wrap {
+  width: 100%;
+}
+.waiting-list-position-cell {
+  color: #0f172a;
+  font-weight: 900;
+}
+.waiting-list-name-cell {
+  font-weight: 800;
+}
+.waiting-list-admin-form,
+.waiting-list-edit-form {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+.waiting-list-admin-form {
+  grid-template-columns: minmax(180px, 1.3fr) minmax(150px, 0.8fr) minmax(90px, 0.45fr) minmax(160px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
+}
+.waiting-list-admin-form label,
+.waiting-list-edit-form label {
+  display: grid;
+  gap: 0.35rem;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+.waiting-list-admin-form input,
+.waiting-list-edit-form input {
+  width: 100%;
+}
+.waiting-list-actions,
+.waiting-list-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.waiting-list-edit-modal {
+  max-width: 520px;
+}
+@media (max-width: 900px) {
+  .waiting-list-admin-form {
+    grid-template-columns: 1fr;
+  }
+}
 .draft-order-number {
   color: #0f172a;
   font-size: 1.08rem;

@@ -154,6 +154,42 @@ class DiscordIntegration:
             record_external_call("discord", "bot_json", time.perf_counter() - started, ok=ok)
         return self._json_object(raw)
 
+    def get_bot_json(self, endpoint: str) -> Optional[Dict[str, Any]]:
+        self._require_bot_token()
+        endpoint_path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        request = Request(
+            f"{self.config.api_base_url.rstrip('/')}{endpoint_path}",
+            headers={
+                "Authorization": f"Bot {self.config.bot_token}",
+                "User-Agent": "anba-excel/1.0",
+            },
+            method="GET",
+        )
+        started = time.perf_counter()
+        ok = False
+        try:
+            with self._open(request, timeout=self.config.timeout_seconds) as response:
+                raw = response.read()
+            ok = True
+        finally:
+            record_external_call("discord", "bot_get", time.perf_counter() - started, ok=ok)
+        return self._json_object(raw)
+
+    def respond_to_interaction(
+        self,
+        interaction_id: str,
+        interaction_token: str,
+        payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        clean_id = re.sub(r"\D+", "", str(interaction_id or ""))
+        clean_token = str(interaction_token or "").strip()
+        if not clean_id or not clean_token:
+            return None
+        return self.post_bot_json(
+            f"/interactions/{clean_id}/{clean_token}/callback",
+            payload,
+        )
+
     def send_dm(self, user_id: str, payload: Dict[str, Any]) -> bool:
         clean_user_id = re.sub(r"\D+", "", str(user_id or ""))
         if not clean_user_id:

@@ -4718,6 +4718,7 @@ function setViewMode(mode) {
   const showFigures = mode === 'figures';
   const showDraftOrder = mode === 'draft-order';
   const showTradeArchive = mode === 'trade-archive';
+  const showWaitingList = mode === 'waiting-list';
   const showFreeAgents = mode === 'free-agents';
   const showLeaguePlayers = mode === 'league-players';
   const showAdminLog = mode === 'admin-log';
@@ -4736,6 +4737,7 @@ function setViewMode(mode) {
   toggleSection('figuresSection', !showFigures);
   toggleSection('draftOrderSection', !showDraftOrder);
   toggleSection('tradeArchiveSection', !showTradeArchive);
+  toggleSection('waitingListSection', !showWaitingList);
   toggleSection('freeAgentsSection', !showFreeAgents);
   toggleSection('leaguePlayersSection', !showLeaguePlayers);
   toggleSection('adminTabs', !isAdminViewMode(mode));
@@ -5405,6 +5407,7 @@ function setupAdminMobileNav() {
   const figuresBtn = document.getElementById('adminMobileFiguresBtn');
   const draftBtn = document.getElementById('adminMobileDraftBtn');
   const tradeArchiveBtn = document.getElementById('adminMobileTradeArchiveBtn');
+  const waitingListBtn = document.getElementById('adminMobileWaitingListBtn');
   const leaguePlayersBtn = document.getElementById('adminMobileLeaguePlayersBtn');
   const freeAgentsBtn = document.getElementById('adminMobileFreeAgentsBtn');
   const logBtn = document.getElementById('adminMobileLogBtn');
@@ -5453,6 +5456,12 @@ function setupAdminMobileNav() {
     tradeArchiveBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
       await loadTradeArchive();
+    });
+  }
+  if (waitingListBtn) {
+    waitingListBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      await loadWaitingList();
     });
   }
   if (leaguePlayersBtn) {
@@ -11772,6 +11781,26 @@ async function loadTradeArchive() {
   await refreshAdminLogsSafe();
 }
 
+async function loadWaitingList() {
+  state.teamCode = null;
+  state.teamData = null;
+  state.selectedPlayerIds.clear();
+  applyTeamTheme('');
+  setViewMode('waiting-list');
+  setPageHeading('Lista de espera', 'Usuarios esperando plaza para entrar en la liga');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderTeamPicker();
+  renderAdminMobileTeamGrid();
+  window.AnbaWaitingList.bindAdminControls();
+  await window.AnbaWaitingList.load({
+    api,
+    admin: true,
+    setPageHeading,
+  });
+  await refreshAdminLogsSafe();
+}
+
 async function saveCurrentTeamGm(inputEl, buttonEl) {
   if (!state.teamCode) {
     alert('No team selected.');
@@ -13622,6 +13651,9 @@ async function init() {
   });
   document.getElementById('tradeArchiveHomeBtn')?.addEventListener('click', async () => {
     await loadTradeArchive();
+  });
+  document.getElementById('waitingListHomeBtn')?.addEventListener('click', async () => {
+    await loadWaitingList();
   });
   document.getElementById('leaguePlayersHomeBtn').addEventListener('click', async () => {
     await loadLeaguePlayers();

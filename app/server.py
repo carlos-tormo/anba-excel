@@ -75,6 +75,7 @@ try:
     from .db.repositories.trades import TradeOperations, TradeRepository
     from .db.repositories.trade_archive import TradeArchiveRepository
     from .db.repositories.waivers import WaiverOperations, WaiverRepository
+    from .db.repositories.waiting_list import WaitingListRepository
     from .domain_rules import (
         CAP_FORECAST_MAX_YEAR,
         CAP_FORECAST_MIN_YEAR,
@@ -276,6 +277,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from db.repositories.trades import TradeOperations, TradeRepository
     from db.repositories.trade_archive import TradeArchiveRepository
     from db.repositories.waivers import WaiverOperations, WaiverRepository
+    from db.repositories.waiting_list import WaitingListRepository
     from domain_rules import (
         CAP_FORECAST_MAX_YEAR,
         CAP_FORECAST_MIN_YEAR,
@@ -817,6 +819,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             ),
         )
         self._trade_archive_repository = TradeArchiveRepository(self, now=now_iso)
+        self._waiting_list_repository = WaitingListRepository(self, now=now_iso)
         self._cartera_service = CarteraService(
             CarteraRepository(self),
             CarteraOperations(

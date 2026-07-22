@@ -121,6 +121,7 @@ AUTH_POLICIES: Dict[str, Dict[str, Any]] = {
     "admin.free_agent.sign": {"roles": {"admin"}, "team_scope": True},
     "admin.trade.process": {"roles": {"admin"}, "team_scope": True},
     "admin.trade_archive.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.waiting_list.write": {"roles": {"admin"}, "team_scope": False},
     "admin.team_moves.write": {"roles": {"admin"}, "team_scope": True},
     "admin.draft_asset.write": {"roles": {"admin"}, "team_scope": True},
     "admin.frozen_draft_pick.write": {"roles": {"admin"}, "team_scope": True},

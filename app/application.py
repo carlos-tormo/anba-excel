@@ -46,6 +46,7 @@ try:
     from .services.team_admin import TeamAdminService
     from .services.trades import TradeService
     from .services.trade_archive import TradeArchiveService
+    from .services.waiting_list import WaitingListService
     from .services.waivers import WaiverService
 except ImportError:  # pragma: no cover - direct script support
     from integrations.discord import DiscordConfig, DiscordIntegration
@@ -83,6 +84,7 @@ except ImportError:  # pragma: no cover - direct script support
     from services.team_admin import TeamAdminService
     from services.trades import TradeService
     from services.trade_archive import TradeArchiveService
+    from services.waiting_list import WaitingListService
     from services.waivers import WaiverService
 
 
@@ -164,6 +166,7 @@ class ApplicationContainer:
         "_trade_archive_repository",
         "_user_repository",
         "_waiver_repository",
+        "_waiting_list_repository",
         "_workflow_repository",
         "_audit_log_service",
     )
@@ -290,6 +293,10 @@ class ApplicationContainer:
     def trade_archive_repository(self) -> Any:
         return self._dependency("_trade_archive_repository")
 
+    @property
+    def waiting_list_repository(self) -> Any:
+        return self._dependency("_waiting_list_repository")
+
     @cached_property
     def gm_request_queries(self) -> GMRequestQueryService:
         return GMRequestQueryService(
@@ -330,6 +337,10 @@ class ApplicationContainer:
     @cached_property
     def trade_archive(self) -> TradeArchiveService:
         return TradeArchiveService(self._dependency("_trade_archive_repository"))
+
+    @cached_property
+    def waiting_list(self) -> WaitingListService:
+        return WaitingListService(self._dependency("_waiting_list_repository"))
 
     @cached_property
     def waivers(self) -> WaiverService:

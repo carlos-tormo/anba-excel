@@ -507,6 +507,29 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(b"", response.body)
         self.assertEqual("/login?error=google_not_configured", response.headers["Location"])
 
+    def test_google_oauth_start_preserves_waiting_list_token_cookie(self):
+        google_client = SimpleNamespace(authorization_url=Mock(return_value="https://google.example/auth"))
+        handler = SimpleNamespace(
+            _send_route_response=Mock(),
+            _require_oauth_start_rate_limit=Mock(return_value=True),
+            _store_oauth_state=Mock(),
+            _oauth_state_cookie=Mock(return_value="oauth_state=state; HttpOnly"),
+            app=SimpleNamespace(google_enabled=True, google_client=google_client),
+        )
+
+        matched = dispatch_routes(
+            handler,
+            urlparse("/api/auth/google/start?waiting_list_token=abcDEF1234567890_abcDEF1234567890"),
+            GET_ROUTES,
+        )
+
+        self.assertTrue(matched)
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual("https://google.example/auth", response.headers["Location"])
+        self.assertEqual("oauth_state=state; HttpOnly", response.headers["Set-Cookie"][0])
+        self.assertIn("waiting_list_token=abcDEF1234567890_abcDEF1234567890", response.headers["Set-Cookie"][1])
+        self.assertIn("Path=/api/auth/google/callback", response.headers["Set-Cookie"][1])
+
     def test_google_oauth_callback_success_returns_route_redirect_with_session_cookies(self):
         google_oauth = SimpleNamespace(
             complete=Mock(
@@ -524,6 +547,7 @@ class RouteRegistryTests(unittest.TestCase):
             _session_cookie=Mock(return_value="session=session-token; HttpOnly"),
             _clear_oauth_state_cookie=Mock(return_value="oauth_state=; Max-Age=0"),
             _landing_path_for_session=Mock(return_value="/"),
+            _cookie_dict=Mock(return_value={}),
             app=SimpleNamespace(google_oauth=google_oauth),
         )
 
@@ -539,6 +563,42 @@ class RouteRegistryTests(unittest.TestCase):
             ["session=session-token; HttpOnly", "oauth_state=; Max-Age=0"],
             response.headers["Set-Cookie"],
         )
+
+    def test_google_oauth_callback_consumes_waiting_list_token_after_login(self):
+        google_oauth = SimpleNamespace(
+            complete=Mock(
+                return_value={
+                    "session": {"user_id": 7, "name": "Candidate"},
+                    "role": "guest",
+                    "team_codes": [],
+                }
+            )
+        )
+        waiting_list = SimpleNamespace(consume_invite_token=Mock(return_value={"id": 1}))
+        handler = SimpleNamespace(
+            _send_route_response=Mock(),
+            _oauth_state_ok=Mock(return_value=True),
+            _start_session=Mock(return_value=("session-token", "csrf-token")),
+            _session_cookie=Mock(return_value="session=session-token; HttpOnly"),
+            _clear_oauth_state_cookie=Mock(return_value="oauth_state=; Max-Age=0"),
+            _landing_path_for_session=Mock(return_value="/"),
+            _cookie_dict=Mock(return_value={"waiting_list_token": "invite-token"}),
+            app=SimpleNamespace(google_oauth=google_oauth, waiting_list=waiting_list),
+        )
+
+        matched = dispatch_routes(handler, urlparse("/api/auth/google/callback?code=abc&state=state"), GET_ROUTES)
+
+        self.assertTrue(matched)
+        waiting_list.consume_invite_token.assert_called_once_with(
+            token="invite-token",
+            user_id=7,
+            display_name="Candidate",
+        )
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual("session=session-token; HttpOnly", response.headers["Set-Cookie"][0])
+        self.assertEqual("oauth_state=; Max-Age=0", response.headers["Set-Cookie"][1])
+        self.assertIn("waiting_list_token=", response.headers["Set-Cookie"][2])
+        self.assertIn("Max-Age=0", response.headers["Set-Cookie"][2])
 
     def test_trade_archive_get_route_returns_framework_neutral_response(self):
         trade_archive = SimpleNamespace(list=Mock(return_value={"trades": [], "seasons": []}))
@@ -597,6 +657,45 @@ class RouteRegistryTests(unittest.TestCase):
         response = handler._send_route_response.call_args.args[0]
         self.assertEqual(201, response.status)
         self.assertEqual(result, response.payload)
+
+    def test_waiting_list_routes_use_service_and_framework_neutral_responses(self):
+        waiting_list = SimpleNamespace(
+            list=Mock(return_value={"entries": []}),
+            create=Mock(return_value={"id": 1, "display_name": "Carlos", "position": 1}),
+            get=Mock(return_value={"id": 1, "display_name": "Carlos", "position": 1}),
+            update=Mock(return_value={"id": 1, "display_name": "Carlos T.", "position": 1}),
+            delete=Mock(return_value=True),
+        )
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(waiting_list=waiting_list),
+        )
+
+        self.assertTrue(dispatch_routes(handler, urlparse("/api/waiting-list"), GET_ROUTES))
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual({"entries": []}, response.payload)
+        waiting_list.list.assert_called_once_with()
+
+        self.assertTrue(dispatch_routes(handler, urlparse("/api/waiting-list"), POST_ROUTES, {"display_name": "Carlos"}))
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(201, response.status)
+        waiting_list.create.assert_called_once_with({"display_name": "Carlos"})
+        handler._authorize.assert_called_with("admin.waiting_list.write")
+
+        self.assertTrue(dispatch_routes(handler, urlparse("/api/waiting-list/1"), PATCH_ROUTES, {"display_name": "Carlos T."}))
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        waiting_list.update.assert_called_once_with(1, {"display_name": "Carlos T."})
+
+        self.assertTrue(dispatch_routes(handler, urlparse("/api/waiting-list/1"), DELETE_ROUTES))
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        waiting_list.delete.assert_called_once_with(1)
 
     def test_get_draft_route_rejects_invalid_year_before_service_call(self):
         draft_service = Mock()
