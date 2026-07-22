@@ -2476,6 +2476,21 @@ h1 {
   margin: 0 0 1rem;
 }
 
+.trade-archive-board {
+  grid-template-columns: 1fr;
+}
+
+.trade-archive-season {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.trade-archive-season-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 0.25rem;
+}
+
 .trade-archive-admin-controls label,
 .trade-archive-edit-form label {
   display: grid;
@@ -2547,12 +2562,50 @@ h1 {
 .trade-archive-team-btn {
   display: inline-grid;
   gap: 0.12rem;
-  min-width: 3.25rem;
+  min-width: 4.9rem;
   text-align: left;
+}
+
+.trade-archive-team-main,
+.trade-archive-team-card-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.trade-archive-team-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  overflow: hidden;
+  border: 1px solid #dbe5f0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f766e;
+  font-size: 0.58rem;
+  font-weight: 950;
+}
+
+.trade-archive-team-logo img {
+  display: block;
+  max-width: 82%;
+  max-height: 82%;
+  object-fit: contain;
 }
 
 .trade-archive-team-name {
   font-weight: 950;
+}
+
+.trade-archive-team-code-line {
+  margin: 0.1rem 0 0;
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 900;
 }
 
 .trade-archive-gm-line {
@@ -2581,6 +2634,12 @@ h1 {
 .trade-archive-team-card h3,
 .trade-archive-modal-body h4 {
   margin: 0 0 0.35rem;
+}
+
+.trade-archive-aggregate-movements {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
 }
 
 .trade-archive-movement-list {

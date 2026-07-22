@@ -87,7 +87,10 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("function renderImportErrors", source)
         self.assertIn("function loadImportFile", source)
         self.assertIn("function gmDisplayName", source)
+        self.assertIn("function renderSeasonSelector", source)
+        self.assertIn("function appendTeamLogo", source)
         self.assertIn("trade-archive-gm-line", source)
+        self.assertIn("trade-archive-aggregate-movements", source)
         self.assertNotIn(".innerHTML", source)
         self.assertNotIn("insertAdjacentHTML", source)
 

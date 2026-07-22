@@ -4,6 +4,7 @@
     api: null,
     admin: false,
     trades: [],
+    selectedSeasonYear: null,
   };
 
   function clear(node) {
@@ -12,7 +13,7 @@
   }
 
   function el(parent, tagName, options = {}) {
-    if (dom().appendElement) return dom().appendElement(parent, tagName, options);
+    if (dom().appendElement && parent) return dom().appendElement(parent, tagName, options);
     const node = document.createElement(tagName);
     if (options.className) node.className = options.className;
     if (options.text !== undefined) node.textContent = options.text == null ? '' : String(options.text);
@@ -59,6 +60,33 @@
 
   function gmDisplayName(movement) {
     return text(movement?.gm_name || movement?.gm || '');
+  }
+
+  function teamLogoPath(code) {
+    const normalized = text(code).trim().toUpperCase();
+    if (!normalized) return '';
+    const fileMap = { LAL: 'lal.png' };
+    return `/team-icons/${fileMap[normalized] || `${normalized}.png`}`;
+  }
+
+  function appendTeamLogo(parent, code) {
+    const normalized = text(code).trim().toUpperCase();
+    const wrap = el(parent, 'span', { className: 'trade-archive-team-logo', attrs: { 'aria-hidden': 'true' } });
+    const fallback = el(wrap, 'span', { text: normalized || '-' });
+    const path = teamLogoPath(normalized);
+    if (!path) return wrap;
+    const img = el(wrap, 'img', { attrs: { alt: '' } });
+    fallback.hidden = true;
+    img.addEventListener('error', () => {
+      img.hidden = true;
+      fallback.hidden = false;
+    });
+    if (dom().setSafeImageSource) {
+      dom().setSafeImageSource(img, path);
+    } else {
+      img.src = path;
+    }
+    return wrap;
   }
 
   function addMovementList(parent, title, movement) {
@@ -136,10 +164,19 @@
       el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · ${trade.total_assets_moved || 0} activo(s) movidos` });
       (trade.team_movements || []).forEach((movement) => {
         const card = el(body, 'article', { className: 'trade-archive-team-card' });
-        el(card, 'h3', { text: teamDisplayName(movement) });
+        const head = el(card, 'div', { className: 'trade-archive-team-card-head' });
+        appendTeamLogo(head, movement.team_code);
+        const titleWrap = el(head, 'div');
+        el(titleWrap, 'h3', { text: teamDisplayName(movement) });
+        if (movement.team_code && teamDisplayName(movement) !== text(movement.team_code)) {
+          el(titleWrap, 'p', { className: 'trade-archive-team-code-line', text: movement.team_code });
+        }
         if (gmDisplayName(movement)) el(card, 'p', { className: 'trade-archive-gm-line', text: `GM: ${gmDisplayName(movement)}` });
-        el(card, 'p', { text: `Envió: ${movementSummary(movement.sent)}.` });
-        el(card, 'p', { text: `Recibió: ${movementSummary(movement.received)}.` });
+        const movementGrid = el(card, 'div', { className: 'trade-archive-aggregate-movements' });
+        const sent = el(movementGrid, 'div');
+        addMovementList(sent, 'Envió', movement.sent || {});
+        const received = el(movementGrid, 'div');
+        addMovementList(received, 'Recibió', movement.received || {});
       });
     });
   }
@@ -173,9 +210,16 @@
       (trade.team_movements || []).forEach((movement) => {
         const btn = el(teamsCell, 'button', {
           className: 'tracker-team-btn trade-archive-team-btn',
-          attrs: { type: 'button', 'data-trade-id': trade.id, 'data-team-code': movement.team_code },
+          attrs: {
+            type: 'button',
+            title: teamDisplayName(movement),
+            'data-trade-id': trade.id,
+            'data-team-code': movement.team_code,
+          },
         });
-        el(btn, 'span', { className: 'trade-archive-team-name', text: teamDisplayName(movement) });
+        const main = el(btn, 'span', { className: 'trade-archive-team-main' });
+        appendTeamLogo(main, movement.team_code);
+        el(main, 'span', { className: 'trade-archive-team-name', text: movement.team_code || '-' });
         if (gmDisplayName(movement)) {
           el(btn, 'span', { className: 'trade-archive-gm-line', text: `GM: ${gmDisplayName(movement)}` });
         }
@@ -198,6 +242,49 @@
     });
   }
 
+  function selectedSeason(seasons) {
+    const rows = Array.isArray(seasons) ? seasons : [];
+    if (!rows.length) return null;
+    const selected = Number(state.selectedSeasonYear);
+    const existing = rows.find((season) => Number(season.season_year) === selected);
+    if (existing) return existing;
+    const latest = [...rows].sort((a, b) => Number(b.season_year || 0) - Number(a.season_year || 0))[0];
+    state.selectedSeasonYear = Number(latest?.season_year || rows[0].season_year);
+    return latest || rows[0];
+  }
+
+  function renderSeasonSelector(seasons, activeSeason) {
+    const board = document.getElementById('tradeArchiveBoard');
+    const parent = board?.parentElement;
+    if (!parent || !board) return;
+    let controls = document.getElementById('tradeArchiveSeasonControls');
+    if (!controls) {
+      controls = el(null, 'div', { className: 'trade-archive-season-controls', attrs: { id: 'tradeArchiveSeasonControls' } });
+      parent.insertBefore(controls, board);
+    }
+    clear(controls);
+    if (!Array.isArray(seasons) || seasons.length <= 1) {
+      controls.classList.add('section-hidden');
+      return;
+    }
+    controls.classList.remove('section-hidden');
+    const label = el(controls, 'label', { className: 'season-view-control', attrs: { for: 'tradeArchiveSeasonSelect' } });
+    el(label, 'span', { text: 'Temporada' });
+    const select = el(label, 'select', { attrs: { id: 'tradeArchiveSeasonSelect' } });
+    [...seasons]
+      .sort((a, b) => Number(b.season_year || 0) - Number(a.season_year || 0))
+      .forEach((season) => {
+        el(select, 'option', {
+          attrs: { value: season.season_year, selected: Number(season.season_year) === Number(activeSeason?.season_year) },
+          text: String(season.season_year || '-'),
+        });
+      });
+    select.addEventListener('change', () => {
+      state.selectedSeasonYear = Number(select.value);
+      render({ trades: state.trades, seasons });
+    });
+  }
+
   function render(data = {}) {
     state.trades = Array.isArray(data.trades) ? data.trades : [];
     const board = document.getElementById('tradeArchiveBoard');
@@ -207,10 +294,13 @@
     if (!board) return;
     const seasons = Array.isArray(data.seasons) ? data.seasons : [];
     if (!seasons.length) {
+      renderSeasonSelector([], null);
       el(board, 'div', { className: 'draft-order-empty', text: 'No hay traspasos registrados.' });
       return;
     }
-    seasons.forEach((season) => renderRowsForSeason(board, season));
+    const activeSeason = selectedSeason(seasons);
+    renderSeasonSelector(seasons, activeSeason);
+    renderRowsForSeason(board, activeSeason);
   }
 
   async function load(options = {}) {
