@@ -103,6 +103,7 @@ def public_settings_payload(settings: Dict[str, str]) -> Dict[str, Any]:
         "salary_cap_2025": salary_cap,
         "salary_floor_2025": parse_float(settings.get("salary_floor_2025")) or salary_cap * 0.9,
         "current_year": current_year,
+        "current_year_version": parse_int(settings.get("current_year_version")) or 1,
         "first_apron": first_apron,
         "second_apron": second_apron,
         "cash_limit_total": parse_float(settings.get("cash_limit_total")) or 0.0,

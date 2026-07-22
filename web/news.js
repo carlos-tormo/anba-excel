@@ -2,65 +2,35 @@ const articleEl = document.getElementById('newsArticle');
 const feedEl = document.getElementById('newsFeedList');
 
 async function fetchJson(url) {
-  const response = await fetch(url, { credentials: 'same-origin' });
-  if (!response.ok) {
-    let detail = '';
-    try {
-      detail = JSON.stringify(await response.json());
-    } catch {
-      detail = await response.text();
-    }
-    throw new Error(`API ${response.status}: ${detail}`);
-  }
-  return response.json();
-}
-
-function formatDate(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString('es-ES', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function setText(parent, selector, value) {
-  const node = parent.querySelector(selector);
-  if (node) node.textContent = value || '';
+  return window.AnbaApi.request(url, { credentials: 'same-origin' });
 }
 
 function renderArticle(article) {
   if (!articleEl) return;
   if (!article) {
-    articleEl.innerHTML = '<div class="news-empty">No se encontró el artículo.</div>';
+    window.AnbaDom.clear(articleEl);
+    articleEl.appendChild(window.AnbaDom.emptyMessage('No se encontró el artículo.'));
     return;
   }
-  articleEl.innerHTML = '';
+  window.AnbaDom.clear(articleEl);
 
   if (article.image_url) {
     const image = document.createElement('img');
     image.className = 'news-hero-image';
-    image.src = article.image_url;
     image.alt = '';
-    articleEl.appendChild(image);
+    if (window.AnbaDom.setSafeImageSource(image, article.image_url)) {
+      articleEl.appendChild(image);
+    }
   }
 
   const body = document.createElement('div');
   body.className = 'news-article-body';
 
-  const date = document.createElement('div');
-  date.className = 'news-date';
-  date.textContent = formatDate(article.created_at);
+  const date = window.AnbaDom.text('div', window.AnbaFormatting.dateTimeEs(article.created_at), 'news-date');
 
-  const title = document.createElement('h2');
-  title.textContent = article.title || 'ANBA News';
+  const title = window.AnbaDom.text('h2', article.title || 'ANBA News');
 
-  const text = document.createElement('div');
-  text.className = 'news-full-text';
-  text.textContent = article.body || '';
+  const text = window.AnbaDom.text('div', article.body || '', 'news-full-text');
 
   body.append(date, title, text);
   articleEl.appendChild(body);
@@ -69,20 +39,18 @@ function renderArticle(article) {
 function renderFeed(articles, selectedId) {
   if (!feedEl) return;
   if (!articles.length) {
-    feedEl.innerHTML = '<div class="news-empty">Todavía no hay artículos.</div>';
+    window.AnbaDom.clear(feedEl);
+    feedEl.appendChild(window.AnbaDom.emptyMessage('Todavía no hay artículos.'));
     return;
   }
-  feedEl.innerHTML = '';
+  window.AnbaDom.clear(feedEl);
   articles.forEach((article) => {
     const link = document.createElement('a');
-    link.href = `/news?article=${encodeURIComponent(article.id)}`;
+    link.href = window.AnbaDom.safeUrl(`/news?article=${encodeURIComponent(article.id)}`) || '/news';
     link.className = `news-feed-item${Number(article.id) === Number(selectedId) ? ' is-active' : ''}`;
-    const title = document.createElement('strong');
-    title.textContent = article.title || 'ANBA News';
-    const meta = document.createElement('span');
-    meta.textContent = formatDate(article.created_at);
-    const excerpt = document.createElement('p');
-    excerpt.textContent = article.excerpt || '';
+    const title = window.AnbaDom.text('strong', article.title || 'ANBA News');
+    const meta = window.AnbaDom.text('span', window.AnbaFormatting.dateTimeEs(article.created_at));
+    const excerpt = window.AnbaDom.text('p', article.excerpt || '');
     link.append(title, meta, excerpt);
     feedEl.appendChild(link);
   });
@@ -105,7 +73,8 @@ async function initNews() {
 
 initNews().catch((err) => {
   if (articleEl) {
-    articleEl.innerHTML = '<div class="news-empty">No se pudo cargar la noticia.</div>';
+    window.AnbaDom.clear(articleEl);
+    articleEl.appendChild(window.AnbaDom.emptyMessage('No se pudo cargar la noticia.'));
   }
   console.error(err);
 });

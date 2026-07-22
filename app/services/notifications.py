@@ -10,12 +10,12 @@ try:
     from ..domain._values import parse_amount_like, parse_bool, parse_float, parse_int, season_label
     from ..domain.cap import CAP_FORECAST_MAX_YEAR, CAP_FORECAST_MIN_YEAR
     from ..domain.trade_rules import format_trade_money, normalize_trade_bucket
-    from ..integrations.discord import truncate_text
+    from ..integrations.discord import neutralize_discord_mentions, truncate_text
 except ImportError:  # pragma: no cover - supports direct app imports.
     from domain._values import parse_amount_like, parse_bool, parse_float, parse_int, season_label
     from domain.cap import CAP_FORECAST_MAX_YEAR, CAP_FORECAST_MIN_YEAR
     from domain.trade_rules import format_trade_money, normalize_trade_bucket
-    from integrations.discord import truncate_text
+    from integrations.discord import neutralize_discord_mentions, truncate_text
 
 
 @dataclass(frozen=True)
@@ -115,16 +115,16 @@ class NotificationCompositionService:
     ) -> Dict[str, Any]:
         normalized_fields: List[Dict[str, Any]] = []
         for field in fields or []:
-            name = truncate_text(field.get("name"), 256)
-            value = truncate_text(field.get("value"), 1024)
+            name = truncate_text(neutralize_discord_mentions(field.get("name")), 256)
+            value = truncate_text(neutralize_discord_mentions(field.get("value")), 1024)
             if name and value:
                 normalized_fields.append(
                     {"name": name, "value": value, "inline": bool(field.get("inline"))}
                 )
 
         embed: Dict[str, Any] = {
-            "title": truncate_text(title, 256),
-            "description": truncate_text(description, 4096),
+            "title": truncate_text(neutralize_discord_mentions(title), 256),
+            "description": truncate_text(neutralize_discord_mentions(description), 4096),
             "color": color,
         }
         if normalized_fields:
@@ -148,7 +148,7 @@ class NotificationCompositionService:
         full_article_url = str(article_url or "").strip()
         if not full_article_url:
             raise ValueError("article_url_required")
-        teaser = re.sub(r"\s+", " ", article_text).strip()
+        teaser = neutralize_discord_mentions(re.sub(r"\s+", " ", article_text).strip())
         if len(teaser) > 1000:
             teaser = f"{teaser[:997].rstrip()}..."
         return {
@@ -176,16 +176,16 @@ class NotificationCompositionService:
     ) -> Dict[str, Any]:
         fields = [
             {"name": "Equipo", "value": team_code, "inline": True},
-            {"name": "Jugador", "value": truncate_text(player_name, 1024), "inline": True},
-            {"name": "Agente", "value": truncate_text(agent_name, 1024), "inline": True},
-            {"name": "Oferta económica", "value": truncate_text(economic_offer, 1024), "inline": False},
-            {"name": "Rol ofrecido", "value": truncate_text(role_offer, 1024), "inline": False},
-            {"name": "Comentario del GM", "value": truncate_text(comments, 1024), "inline": False},
+            {"name": "Jugador", "value": truncate_text(neutralize_discord_mentions(player_name), 1024), "inline": True},
+            {"name": "Agente", "value": truncate_text(neutralize_discord_mentions(agent_name), 1024), "inline": True},
+            {"name": "Oferta económica", "value": truncate_text(neutralize_discord_mentions(economic_offer), 1024), "inline": False},
+            {"name": "Rol ofrecido", "value": truncate_text(neutralize_discord_mentions(role_offer), 1024), "inline": False},
+            {"name": "Comentario del GM", "value": truncate_text(neutralize_discord_mentions(comments), 1024), "inline": False},
         ]
         return {
             "embeds": [
                 {
-                    "title": truncate_text(f"{team_code} inicia negociación por {player_name}", 256),
+                    "title": truncate_text(neutralize_discord_mentions(f"{team_code} inicia negociación por {player_name}"), 256),
                     "description": "Solicitud de negociación enviada desde agentes libres.",
                     "fields": fields,
                     "color": 0x2563EB,

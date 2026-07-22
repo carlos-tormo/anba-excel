@@ -27,8 +27,8 @@ class FakeSeasonRollover:
     def __init__(self) -> None:
         self.years = []
 
-    def update_current_year(self, year):
-        self.years.append(year)
+    def update_current_year(self, year, **kwargs):
+        self.years.append((year, kwargs))
         return {"current_year": year}
 
 
@@ -51,7 +51,7 @@ class SettingsServiceTests(unittest.TestCase):
             "free_agent_reps": ["Agent A", "agent a", "Agent B"],
         })
         self.assertEqual(2026, result["audit"]["current_year"])
-        self.assertEqual([2026], self.rollover.years)
+        self.assertEqual(2026, self.rollover.years[0][0])
         self.assertEqual("160000000", self.repository.values["salary_cap_2025"])
         self.assertEqual("1", self.repository.values["free_agency_mode"])
         self.assertEqual(["Agent A", "Agent B"], result["audit"]["free_agent_reps"])

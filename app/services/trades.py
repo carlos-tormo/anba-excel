@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import secrets
 import sqlite3
 from typing import Any, Dict, List, Optional
@@ -29,6 +30,11 @@ class TradeService:
         self.workflows = workflows or getattr(backing_db, "_workflow_repository", None)
         self.outbox = outbox or getattr(backing_db, "_outbox_repository", None)
 
+    @staticmethod
+    def _snapshot_hash(snapshot: Dict[str, Any]) -> str:
+        payload = json.dumps(snapshot or {}, ensure_ascii=True, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def normalize_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self.repository.normalize_request(payload)
 
@@ -37,6 +43,22 @@ class TradeService:
 
     def validate_process_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self.repository.validation_from_process_payload(payload)
+
+    def adjust_team_move_remaining(
+        self,
+        team_code: str,
+        season_year: int,
+        bucket: Any,
+        target_remaining: int,
+        actor_note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        return self.repository.adjust_team_move_remaining(
+            team_code,
+            season_year,
+            bucket,
+            target_remaining,
+            actor_note,
+        )
 
     def request_team_codes(self, payload: Dict[str, Any]) -> List[str]:
         if isinstance(payload.get("selections"), (list, dict)) or isinstance(payload.get("teams"), list):
@@ -139,6 +161,15 @@ class TradeService:
                 "season": result.get("season"),
                 "trade_bucket": result.get("trade_bucket"),
                 "force_trade": bool(force_trade),
+                "command_id": command.get("workflow_run_id"),
+                "validation_result": "forced" if illegal and force_trade else "valid",
+                "outbox_event_ids": command.get("outbox_event_ids") or [],
+                "entity_versions": {
+                    "validation_hash": authoritative.get("validation_hash"),
+                    "rules_version": authoritative.get("rules_version"),
+                    "before_snapshot_hash": self._snapshot_hash(before),
+                    "after_snapshot_hash": self._snapshot_hash(after),
+                },
                 "validation_issues": authoritative.get("issues") or [],
                 "forced_validation_issues": illegal if force_trade else [],
                 "applied_hard_caps": command.get("applied_hard_caps") or [],

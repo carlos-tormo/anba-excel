@@ -104,6 +104,15 @@ def resolve_entity_ids(
     return player_id, profile_id
 
 
+def metadata_value(details: Optional[Dict[str, Any]], *keys: str) -> Any:
+    if not isinstance(details, dict):
+        return None
+    for key in keys:
+        if key in details:
+            return details.get(key)
+    return None
+
+
 @dataclass(frozen=True)
 class AuditEvent:
     action: str
@@ -122,6 +131,10 @@ class AuditEvent:
     profile_id: Optional[str] = None
     before: Optional[Dict[str, Any]] = None
     after: Optional[Dict[str, Any]] = None
+    command_id: Optional[str] = None
+    validation_result: Optional[str] = None
+    entity_versions: Optional[Dict[str, Any]] = None
+    integration_outbox_ids: Sequence[int] = field(default_factory=tuple)
     details: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -138,15 +151,21 @@ class AuditLogService:
 
     def record(self, event: AuditEvent) -> None:
         team_codes = collect_team_codes(self._normalize_team_code, event.team_code, None, event.team_codes)
+        command_id = event.command_id or metadata_value(event.details, "command_id")
+        validation_result = event.validation_result or metadata_value(event.details, "validation_result")
+        entity_versions = event.entity_versions or metadata_value(event.details, "entity_versions")
+        integration_outbox_ids = list(event.integration_outbox_ids or metadata_value(event.details, "outbox_event_ids", "integration_outbox_ids") or [])
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO admin_logs (
                     created_at, actor_email, actor_name, actor_role, actor_user_id,
                     request_id, method, path, action, entity, entity_id, team_code,
-                    team_codes_json, player_id, profile_id, before_json, after_json, details_json
+                    team_codes_json, player_id, profile_id, before_json, after_json,
+                    command_id, validation_result, entity_versions_json,
+                    integration_outbox_ids_json, details_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._clock(),
@@ -166,6 +185,10 @@ class AuditLogService:
                     str(event.profile_id) if event.profile_id is not None else None,
                     self._json(event.before) if event.before is not None else None,
                     self._json(event.after) if event.after is not None else None,
+                    str(command_id).strip()[:160] if command_id else None,
+                    str(validation_result).strip()[:80] if validation_result else None,
+                    self._json(entity_versions) if entity_versions is not None else None,
+                    self._json(integration_outbox_ids) if integration_outbox_ids else None,
                     self._json(event.details or {}),
                 ),
             )
@@ -176,7 +199,9 @@ class AuditLogService:
             SELECT
                 id, created_at, actor_email, actor_name, actor_role, actor_user_id,
                 request_id, method, path, action, entity, entity_id, team_code,
-                team_codes_json, player_id, profile_id, before_json, after_json, details_json
+                team_codes_json, player_id, profile_id, before_json, after_json,
+                command_id, validation_result, entity_versions_json,
+                integration_outbox_ids_json, details_json
             FROM admin_logs
         """
         clauses: List[str] = []
@@ -199,6 +224,8 @@ class AuditLogService:
             row["team_codes"] = self._parse_json(row.get("team_codes_json"), [])
             row["before"] = self._parse_json(row.get("before_json"), None)
             row["after"] = self._parse_json(row.get("after_json"), None)
+            row["entity_versions"] = self._parse_json(row.get("entity_versions_json"), None)
+            row["integration_outbox_ids"] = self._parse_json(row.get("integration_outbox_ids_json"), [])
         return rows
 
     @staticmethod

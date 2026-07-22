@@ -274,6 +274,7 @@ class DraftRepository(LeagueRepository):
                    d.created_at, d.updated_at, s.selection_text, s.option_value, s.custom_text,
                    COALESCE(s.skipped, 0) AS skipped, s.selected_by_email, s.selected_by_name,
                    s.selected_by_role, s.selected_at, s.updated_at AS selection_updated_at,
+                   s.version AS selection_version,
                    s.processed_type, s.processed_dead_contract_id, s.processed_asset_id, s.processed_at,
                    pr.id AS pending_request_id, pr.selection_text AS pending_selection_text,
                    pr.option_value AS pending_option_value, pr.custom_text AS pending_custom_text,
@@ -359,6 +360,7 @@ class DraftRepository(LeagueRepository):
         pending_request_count = self._pending_request_count(rows)
         return {
             "draft_year": int(draft_year), "enabled": bool(enabled), "current_pick_id": current_pick_id,
+            "state_version": parse_int(state_row.get("version")) or 1,
             "requestable_pick_ids": self._requestable_pick_ids(rows, current_pick_id) if enabled else [],
             "pending_request_count": pending_request_count,
             "max_pending_requests": operations.max_pending_requests,
@@ -496,6 +498,7 @@ class DraftRepository(LeagueRepository):
         duration_seconds = max(10, min(3600, parse_int(payload.get("duration_seconds")) or 180))
         current_pick_id = parse_int(payload.get("current_pick_id"))
         reset_timer = parse_bool(payload.get("reset_timer"))
+        expected_state_version = parse_int(payload.get("expected_state_version"))
         options_text = (
             "\n".join(str(item).strip() for item in payload.get("options") or [] if str(item).strip())
             if isinstance(payload.get("options"), list)
@@ -511,6 +514,9 @@ class DraftRepository(LeagueRepository):
                 raise ValueError("invalid_current_pick")
             state = conn.execute("SELECT * FROM draft_live_state WHERE draft_year = ?", (int(draft_year),)).fetchone()
             existing = dict(state) if state else {}
+            existing_state_version = parse_int(existing.get("version"))
+            if expected_state_version is not None and existing_state_version != expected_state_version:
+                raise ValueError("stale_entity_version")
             previous_pick_id = parse_int(existing.get("current_draft_order_id"))
             started_at = str(existing.get("started_at") or "").strip() or None
             if enabled and (reset_timer or not started_at or previous_pick_id != current_pick_id or not parse_bool(existing.get("enabled"))):
@@ -520,14 +526,15 @@ class DraftRepository(LeagueRepository):
             conn.execute(
                 """INSERT INTO draft_live_state (
                        draft_year, enabled, current_draft_order_id, duration_seconds,
-                       started_at, options_text, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       started_at, options_text, version, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
                    ON CONFLICT(draft_year) DO UPDATE SET
                        enabled = excluded.enabled,
                        current_draft_order_id = excluded.current_draft_order_id,
                        duration_seconds = excluded.duration_seconds,
                        started_at = excluded.started_at,
                        options_text = excluded.options_text,
+                       version = COALESCE(draft_live_state.version, 0) + 1,
                        updated_at = excluded.updated_at""",
                 (int(draft_year), 1 if enabled else 0, current_pick_id, duration_seconds,
                  started_at, options_text, timestamp, timestamp),
@@ -543,12 +550,16 @@ class DraftRepository(LeagueRepository):
         if action not in {"previous", "next", "restart", "skip"}:
             raise ValueError("invalid_draft_control")
         timestamp = self._read_operations().now()
+        expected_state_version = parse_int(payload.get("expected_state_version"))
         with self.db.connect() as conn:
             rows = self._live_order_rows(conn, int(draft_year))
             if not rows:
                 raise ValueError("draft_order_empty")
             state = conn.execute("SELECT * FROM draft_live_state WHERE draft_year = ?", (int(draft_year),)).fetchone()
             state_row = dict(state) if state else {}
+            existing_state_version = parse_int(state_row.get("version"))
+            if expected_state_version is not None and existing_state_version != expected_state_version:
+                raise ValueError("stale_entity_version")
             current_pick_id = parse_int(state_row.get("current_draft_order_id")) or self._first_open_pick_id(rows)
             if action == "restart":
                 next_pick_id = current_pick_id
@@ -558,8 +569,8 @@ class DraftRepository(LeagueRepository):
                         """INSERT INTO draft_live_selections (
                                draft_order_id, selection_text, option_value, custom_text,
                                skipped, selected_by_email, selected_by_name, selected_by_role,
-                               selected_at, updated_at
-                           ) VALUES (?, 'Saltado', 'Saltado', NULL, 1, NULL, NULL, 'admin', ?, ?)
+                               selected_at, version, updated_at
+                           ) VALUES (?, 'Saltado', 'Saltado', NULL, 1, NULL, NULL, 'admin', ?, 1, ?)
                            ON CONFLICT(draft_order_id) DO UPDATE SET
                                selection_text = excluded.selection_text,
                                option_value = excluded.option_value,
@@ -569,6 +580,7 @@ class DraftRepository(LeagueRepository):
                                selected_by_name = excluded.selected_by_name,
                                selected_by_role = excluded.selected_by_role,
                                selected_at = excluded.selected_at,
+                               version = COALESCE(draft_live_selections.version, 0) + 1,
                                updated_at = excluded.updated_at""",
                         (int(current_pick_id), timestamp, timestamp),
                     )
@@ -582,12 +594,13 @@ class DraftRepository(LeagueRepository):
             conn.execute(
                 """INSERT INTO draft_live_state (
                        draft_year, enabled, current_draft_order_id, duration_seconds,
-                       started_at, options_text, created_at, updated_at
-                   ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+                       started_at, options_text, version, created_at, updated_at
+                   ) VALUES (?, 1, ?, ?, ?, ?, 1, ?, ?)
                    ON CONFLICT(draft_year) DO UPDATE SET
                        enabled = 1,
                        current_draft_order_id = excluded.current_draft_order_id,
                        started_at = excluded.started_at,
+                       version = COALESCE(draft_live_state.version, 0) + 1,
                        updated_at = excluded.updated_at""",
                 (int(draft_year), next_pick_id, duration_seconds, timestamp, options_text, timestamp, timestamp),
             )
@@ -603,6 +616,8 @@ class DraftRepository(LeagueRepository):
         is_admin: bool = False,
     ) -> Dict[str, Any]:
         timestamp = self._read_operations().now()
+        expected_state_version = parse_int(payload.get("expected_state_version"))
+        expected_selection_version = parse_int(payload.get("expected_selection_version"))
         with self.db.connect() as conn:
             pick = conn.execute("SELECT * FROM draft_order WHERE id = ?", (int(draft_order_id),)).fetchone()
             if not pick:
@@ -610,6 +625,9 @@ class DraftRepository(LeagueRepository):
             draft_year = int(pick["draft_year"])
             state = conn.execute("SELECT * FROM draft_live_state WHERE draft_year = ?", (draft_year,)).fetchone()
             state_row = dict(state) if state else {}
+            existing_state_version = parse_int(state_row.get("version"))
+            if expected_state_version is not None and existing_state_version != expected_state_version:
+                raise ValueError("stale_entity_version")
             if not is_admin and not parse_bool(state_row.get("enabled")):
                 raise ValueError("draft_mode_inactive")
             current_pick_id = parse_int(state_row.get("current_draft_order_id"))
@@ -619,8 +637,24 @@ class DraftRepository(LeagueRepository):
                 raise ValueError("not_current_pick")
 
             if parse_bool(payload.get("clear")):
+                selection = conn.execute(
+                    "SELECT version FROM draft_live_selections WHERE draft_order_id = ?",
+                    (int(draft_order_id),),
+                ).fetchone()
+                if expected_selection_version is not None and (
+                    not selection or parse_int(selection["version"]) != expected_selection_version
+                ):
+                    raise ValueError("stale_entity_version")
                 conn.execute("DELETE FROM draft_live_selections WHERE draft_order_id = ?", (int(draft_order_id),))
             else:
+                selection = conn.execute(
+                    "SELECT version FROM draft_live_selections WHERE draft_order_id = ?",
+                    (int(draft_order_id),),
+                ).fetchone()
+                if expected_selection_version is not None and (
+                    parse_int(selection["version"]) if selection else None
+                ) != expected_selection_version:
+                    raise ValueError("stale_entity_version")
                 option_value = str(payload.get("option_value") or "").strip()
                 custom_text = str(payload.get("custom_text") or "").strip()
                 skipped = parse_bool(payload.get("skipped"))
@@ -638,8 +672,8 @@ class DraftRepository(LeagueRepository):
                     """INSERT INTO draft_live_selections (
                            draft_order_id, selection_text, option_value, custom_text,
                            skipped, selected_by_email, selected_by_name, selected_by_role,
-                           selected_at, updated_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           selected_at, version, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                        ON CONFLICT(draft_order_id) DO UPDATE SET
                            selection_text = excluded.selection_text,
                            option_value = excluded.option_value,
@@ -649,6 +683,7 @@ class DraftRepository(LeagueRepository):
                            selected_by_name = excluded.selected_by_name,
                            selected_by_role = excluded.selected_by_role,
                            selected_at = excluded.selected_at,
+                           version = COALESCE(draft_live_selections.version, 0) + 1,
                            updated_at = excluded.updated_at""",
                     (
                         int(draft_order_id), selection_text, option_value, custom_text or None,
@@ -674,13 +709,14 @@ class DraftRepository(LeagueRepository):
                 options_text = str(state_row.get("options_text") or "")
                 conn.execute(
                     """INSERT INTO draft_live_state (
-                           draft_year, enabled, current_draft_order_id, duration_seconds,
-                           started_at, options_text, created_at, updated_at
-                       ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+                       draft_year, enabled, current_draft_order_id, duration_seconds,
+                           started_at, options_text, version, created_at, updated_at
+                       ) VALUES (?, 1, ?, ?, ?, ?, 1, ?, ?)
                        ON CONFLICT(draft_year) DO UPDATE SET
                            enabled = 1,
                            current_draft_order_id = excluded.current_draft_order_id,
                            started_at = excluded.started_at,
+                           version = COALESCE(draft_live_state.version, 0) + 1,
                            updated_at = excluded.updated_at""",
                     (draft_year, next_pick_id, duration_seconds, timestamp, options_text, timestamp, timestamp),
                 )
@@ -730,6 +766,10 @@ class DraftRepository(LeagueRepository):
             state_row = dict(state) if state else {}
             if not parse_bool(state_row.get("enabled")):
                 raise ValueError("draft_mode_inactive")
+            expected_state_version = parse_int(payload.get("expected_state_version"))
+            existing_state_version = parse_int(state_row.get("version"))
+            if expected_state_version is not None and expected_state_version != existing_state_version:
+                raise ValueError("stale_entity_version")
             rows = self._live_order_rows(conn, int(pick["draft_year"]))
             current_pick_id = parse_int(state_row.get("current_draft_order_id"))
             if current_pick_id not in {parse_int(row.get("id")) for row in rows}:
@@ -824,7 +864,13 @@ class DraftRepository(LeagueRepository):
         return [self._pick_request_from_row(row) for row in rows]
 
     def mark_pick_request_decided(
-        self, request_id: int, status: str, admin: Dict[str, Any], note: Optional[str] = None
+        self,
+        request_id: int,
+        status: str,
+        admin: Dict[str, Any],
+        note: Optional[str] = None,
+        *,
+        expected_version: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         operations = self._read_operations()
         normalized_status = str(status or "").strip().lower()
@@ -844,10 +890,13 @@ class DraftRepository(LeagueRepository):
                         "admin_decision_note": note, "updated_at": timestamp, "decided_at": timestamp,
                     },
                     timestamp=timestamp,
+                    expected_version=expected_version,
                 )
             except WorkflowTransitionError as exc:
                 if exc.code in {"workflow_not_found", "invalid_transition", "transition_conflict"}:
                     return None
+                if exc.code == "version_conflict":
+                    raise ValueError("stale_entity_version") from exc
                 raise
         return self.pick_request(request_id)
 

@@ -129,6 +129,42 @@ class ApplicationConfig:
 
 
 class ApplicationContainer:
+    REQUIRED_LEGACY_DEPENDENCIES = (
+        "_admin_export_service",
+        "_asset_repository",
+        "_cartera_service",
+        "_coadmin_vote_repository",
+        "_depth_chart_repository",
+        "_draft_repository",
+        "_free_agency_repository",
+        "_free_agent_agent_import_service",
+        "_free_agent_appeal_service",
+        "_gm_minimum_target_service",
+        "_gm_office_service",
+        "_gm_request_repository",
+        "_gm_request_service",
+        "_notification_repository",
+        "_offer_promise_service",
+        "_offseason_exception_service",
+        "_outbox_repository",
+        "_owner_admin_import_service_instance",
+        "_owner_office_repository",
+        "_player_catalog_service",
+        "_player_identity_repository",
+        "_player_repository",
+        "_press_article_repository",
+        "_season_rollover_repository",
+        "_settings_repository",
+        "_team_detail_service",
+        "_team_repository",
+        "_tracker_service",
+        "_trade_repository",
+        "_user_repository",
+        "_waiver_repository",
+        "_workflow_repository",
+        "_audit_log_service",
+    )
+
     def __init__(
         self,
         db: Any,
@@ -144,102 +180,121 @@ class ApplicationContainer:
         self._now = now
         self._log_error = log_error
 
+    def unresolved_legacy_dependencies(self) -> list[str]:
+        return [
+            attr
+            for attr in self.REQUIRED_LEGACY_DEPENDENCIES
+            if getattr(self.db, attr, None) is None
+        ]
+
+    def validate_dependencies(self) -> None:
+        missing = self.unresolved_legacy_dependencies()
+        if missing:
+            joined = ",".join(missing)
+            raise RuntimeError(f"application_dependencies_missing:{joined}")
+
+    def _dependency(self, attr: str) -> Any:
+        value = getattr(self.db, attr, None)
+        if value is None:
+            raise RuntimeError(f"application_dependency_missing:{attr}")
+        return value
+
     @property
     def teams(self) -> Any:
-        return getattr(self.db, "_team_repository", None) or self.db
+        return self._dependency("_team_repository")
 
     @property
     def players(self) -> Any:
-        return getattr(self.db, "_player_repository", None) or self.db
+        return self._dependency("_player_repository")
 
     @property
     def assets(self) -> Any:
-        return getattr(self.db, "_asset_repository", None) or self.db
+        return self._dependency("_asset_repository")
 
     @property
     def settings_repository(self) -> Any:
-        return getattr(self.db, "_settings_repository", None) or self.db
+        return self._dependency("_settings_repository")
 
     @property
     def users(self) -> Any:
-        return getattr(self.db, "_user_repository", None) or self.db
+        return self._dependency("_user_repository")
 
     @property
     def press_articles(self) -> Any:
-        return getattr(self.db, "_press_article_repository", None) or self.db
+        return self._dependency("_press_article_repository")
 
     @property
     def user_notifications(self) -> Any:
-        return getattr(self.db, "_notification_repository", None) or self.db
+        return self._dependency("_notification_repository")
 
     @property
     def coadmin_votes(self) -> Any:
-        return getattr(self.db, "_coadmin_vote_repository", None) or self.db
+        return self._dependency("_coadmin_vote_repository")
 
     @property
     def gm_office(self) -> Any:
-        return getattr(self.db, "_gm_office_service", None) or self.db
+        return self._dependency("_gm_office_service")
 
     @property
     def gm_minimum_targets(self) -> Any:
-        return getattr(self.db, "_gm_minimum_target_service", None) or self.db
+        return self._dependency("_gm_minimum_target_service")
 
     @property
     def depth_charts(self) -> Any:
-        return getattr(self.db, "_depth_chart_repository", None) or self.db
+        return self._dependency("_depth_chart_repository")
 
     @property
     def cartera(self) -> Any:
-        return getattr(self.db, "_cartera_service", None) or self.db
+        return self._dependency("_cartera_service")
 
     @property
     def offseason_exceptions(self) -> Any:
-        return getattr(self.db, "_offseason_exception_service", None) or self.db
+        return self._dependency("_offseason_exception_service")
 
     @property
     def free_agent_appeal(self) -> Any:
-        return getattr(self.db, "_free_agent_appeal_service", None) or self.db
+        return self._dependency("_free_agent_appeal_service")
 
     @property
     def free_agent_agent_import(self) -> Any:
-        return getattr(self.db, "_free_agent_agent_import_service", None) or self.db
+        return self._dependency("_free_agent_agent_import_service")
 
     @property
     def tracker(self) -> Any:
-        return getattr(self.db, "_tracker_service", None) or self.db
+        return self._dependency("_tracker_service")
 
     @property
     def player_catalog(self) -> Any:
-        return getattr(self.db, "_player_catalog_service", None) or self.db
+        return self._dependency("_player_catalog_service")
 
     @property
     def team_detail(self) -> Any:
-        return getattr(self.db, "_team_detail_service", None) or self.db
+        return self._dependency("_team_detail_service")
 
     @property
     def league_exports(self) -> Any:
-        return getattr(self.db, "_admin_export_service", None) or self.db
+        return self._dependency("_admin_export_service")
 
     @property
     def owner_imports(self) -> Any:
-        return getattr(self.db, "_owner_admin_import_service_instance", None) or self.db
+        return self._dependency("_owner_admin_import_service_instance")
 
     @property
     def trade_repository(self) -> Any:
-        return getattr(self.db, "_trade_repository", None) or self.db
+        return self._dependency("_trade_repository")
 
     @cached_property
     def gm_request_queries(self) -> GMRequestQueryService:
         return GMRequestQueryService(
-            getattr(self.db, "_gm_request_repository", None) or self.db,
-            getattr(self.db, "_draft_repository", None) or self.db,
-            getattr(self.db, "_waiver_repository", None) or self.db,
+            self._dependency("_gm_request_repository"),
+            self._dependency("_draft_repository"),
+            self._dependency("_waiver_repository"),
         )
 
     @cached_property
     def audit_logs(self) -> Any:
-        factory = getattr(self.db, "_audit_log_service", None)
-        return factory() if factory else self.db
+        factory = self._dependency("_audit_log_service")
+        return factory()
 
     @cached_property
     def maintenance(self) -> DatabaseMaintenanceService:
@@ -248,34 +303,34 @@ class ApplicationContainer:
     @cached_property
     def free_agency(self) -> FreeAgencyService:
         return FreeAgencyService(
-            getattr(self.db, "_free_agency_repository", None) or self.db,
+            self._dependency("_free_agency_repository"),
             contract_seasons=self.config.contract_seasons,
             cap_hold_source=self.config.cap_hold_source,
-            gm_requests=getattr(self.db, "_gm_request_service", None),
-            offer_promises=getattr(self.db, "_offer_promise_service", None),
-            players=getattr(self.db, "_player_repository", None),
+            gm_requests=self._dependency("_gm_request_service"),
+            offer_promises=self._dependency("_offer_promise_service"),
+            players=self._dependency("_player_repository"),
         )
 
     @cached_property
     def trades(self) -> TradeService:
         return TradeService(
-            getattr(self.db, "_trade_repository", None) or self.db,
-            workflows=getattr(self.db, "_workflow_repository", None),
-            outbox=getattr(self.db, "_outbox_repository", None),
+            self._dependency("_trade_repository"),
+            workflows=self._dependency("_workflow_repository"),
+            outbox=self._dependency("_outbox_repository"),
         )
 
     @cached_property
     def waivers(self) -> WaiverService:
-        return WaiverService(self.db)
+        return WaiverService(self._dependency("_waiver_repository"))
 
     @cached_property
     def draft(self) -> DraftService:
-        return DraftService(self.db)
+        return DraftService(self._dependency("_draft_repository"))
 
     @cached_property
     def season_rollover(self) -> SeasonRolloverService:
         return SeasonRolloverService(
-            self.db,
+            self._dependency("_season_rollover_repository"),
             contract_min_year=self.config.contract_min_year,
             contract_max_start_year=self.config.contract_max_start_year,
         )
@@ -283,7 +338,7 @@ class ApplicationContainer:
     @cached_property
     def settings(self) -> SettingsService:
         return SettingsService(
-            getattr(self.db, "_settings_repository", None) or self.db,
+            self._dependency("_settings_repository"),
             season_rollover=self.season_rollover,
             contract_seasons=self.config.contract_seasons,
             max_start_year=self.config.contract_max_start_year,
@@ -292,10 +347,10 @@ class ApplicationContainer:
     @cached_property
     def player_admin(self) -> PlayerAdminService:
         return PlayerAdminService(
-            players=getattr(self.db, "_player_repository", None) or self.db,
-            requests=getattr(self.db, "_gm_request_repository", None) or self.db,
-            free_agency=getattr(self.db, "_free_agency_repository", None) or self.db,
-            settings=getattr(self.db, "_settings_repository", None) or self.db,
+            players=self._dependency("_player_repository"),
+            requests=self._dependency("_gm_request_repository"),
+            free_agency=self._dependency("_free_agency_repository"),
+            settings=self._dependency("_settings_repository"),
             contract_seasons=self.config.contract_seasons,
             unrestricted_type=self.config.unrestricted_free_agent_type,
         )
@@ -303,27 +358,27 @@ class ApplicationContainer:
     @cached_property
     def team_admin(self) -> TeamAdminService:
         return TeamAdminService(
-            getattr(self.db, "_team_repository", None) or self.db,
-            getattr(self.db, "_settings_repository", None) or self.db,
+            self._dependency("_team_repository"),
+            self._dependency("_settings_repository"),
             min_year=self.config.cap_forecast_min_year,
             max_year=self.config.cap_forecast_max_year,
         )
 
     @cached_property
     def asset_admin(self) -> AssetAdminService:
-        return AssetAdminService(getattr(self.db, "_asset_repository", None) or self.db)
+        return AssetAdminService(self._dependency("_asset_repository"))
 
     @cached_property
     def player_roster(self) -> PlayerRosterService:
         return PlayerRosterService(
-            getattr(self.db, "_player_repository", None) or self.db,
-            getattr(self.db, "_waiver_repository", None) or self.db,
+            self._dependency("_player_repository"),
+            self._dependency("_waiver_repository"),
         )
 
     @cached_property
     def player_identity(self) -> PlayerIdentityService:
         return PlayerIdentityService(
-            self.db,
+            self._dependency("_player_identity_repository"),
             contract_seasons=self.config.contract_seasons,
         )
 
@@ -346,7 +401,7 @@ class ApplicationContainer:
     def google_oauth(self) -> GoogleOAuthService:
         return GoogleOAuthService(
             self.google_client,
-            getattr(self.db, "_user_repository", None) or self.db,
+            self._dependency("_user_repository"),
             admin_emails=set(self.config.admin_emails),
             gm_accounts=self.config.gm_accounts,
             now=self._now,
@@ -417,7 +472,7 @@ class ApplicationContainer:
     def free_agent_offer_notifications(self) -> FreeAgentOfferNotificationService:
         return FreeAgentOfferNotificationService(
             self.discord,
-            getattr(self.db, "_free_agency_repository", None) or self.db,
+            self._dependency("_free_agency_repository"),
             self.settings_repository,
             self.free_agency,
             FreeAgentOfferDiscordConfig(
@@ -448,12 +503,15 @@ class ApplicationContainer:
 
     @cached_property
     def owner_interviews(self) -> OwnerInterviewCompositionService:
-        return OwnerInterviewCompositionService(self.openai.text_response)
+        return OwnerInterviewCompositionService(
+            self.openai.text_response,
+            model=self.config.openai_text_model,
+        )
 
     @cached_property
     def owner_office(self) -> OwnerOfficeService:
         return OwnerOfficeService(
-            getattr(self.db, "_owner_office_repository", None) or self.db,
+            self._dependency("_owner_office_repository"),
             now=self._now,
             min_year=self.config.cap_forecast_min_year,
             max_year=self.config.cap_forecast_max_year,
@@ -465,7 +523,7 @@ class ApplicationContainer:
     @cached_property
     def outbox_delivery(self) -> OutboxDeliveryService:
         return OutboxDeliveryService(
-            getattr(self.db, "_outbox_repository", None) or self.db,
-            getattr(self.db, "_player_repository", None) or self.db,
+            self._dependency("_outbox_repository"),
+            self._dependency("_player_repository"),
             deliver_notification=self.notifications.deliver_event,
         )

@@ -159,6 +159,51 @@ class WorkflowStateMachineTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(1, count)
 
+    def test_workflow_transition_checks_and_increments_entity_version(self) -> None:
+        request = self.create_offer_request()
+        request_id = int(request["id"])
+        timestamp = now_iso()
+
+        with self.db.transaction("IMMEDIATE") as conn:
+            first = self.db._transition_workflow_conn(
+                conn,
+                "gm_free_agent_offer_request",
+                request_id,
+                "approved",
+                command_id="versioned-approval",
+                updates={"updated_at": timestamp, "decided_at": timestamp},
+                expected_version=int(request["version"]),
+            )
+
+        self.assertEqual(int(request["version"]), first["previous_version"])
+        self.assertEqual(int(request["version"]) + 1, first["new_version"])
+        stored = self.db.get_gm_free_agent_offer_request(request_id)
+        self.assertEqual(int(request["version"]) + 1, int(stored["version"]))
+
+    def test_workflow_transition_rejects_stale_entity_version(self) -> None:
+        request = self.create_offer_request()
+        request_id = int(request["id"])
+        timestamp = now_iso()
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE gm_free_agent_offer_requests SET version = version + 1 WHERE id = ?",
+                (request_id,),
+            )
+
+        with self.assertRaises(WorkflowTransitionError) as context:
+            with self.db.transaction("IMMEDIATE") as conn:
+                self.db._transition_workflow_conn(
+                    conn,
+                    "gm_free_agent_offer_request",
+                    request_id,
+                    "approved",
+                    command_id="stale-approval",
+                    updates={"updated_at": timestamp, "decided_at": timestamp},
+                    expected_version=int(request["version"]),
+                )
+
+        self.assertEqual("version_conflict", context.exception.code)
+
     def test_reused_command_cannot_target_a_different_state(self) -> None:
         request = self.create_offer_request()
         request_id = int(request["id"])

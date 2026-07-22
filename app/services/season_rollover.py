@@ -36,7 +36,12 @@ class SeasonRolloverService:
         if self.contract_max_start_year < self.contract_min_year:
             raise ValueError("invalid_contract_window")
 
-    def progress_to_next_year(self) -> Dict[str, Any]:
+    def progress_to_next_year(
+        self,
+        *,
+        expected_current_year: Any = None,
+        expected_current_year_version: Any = None,
+    ) -> Dict[str, Any]:
         with self.repository.transaction("IMMEDIATE") as conn:
             settings = self._settings(conn)
             current_year = self._current_year(settings)
@@ -48,9 +53,17 @@ class SeasonRolloverService:
                 previous_year=current_year,
                 next_year=current_year + 1,
                 create_snapshot=True,
+                expected_current_year=parse_int(expected_current_year),
+                expected_current_year_version=parse_int(expected_current_year_version),
             )
 
-    def update_current_year(self, next_year: int) -> Dict[str, Any]:
+    def update_current_year(
+        self,
+        next_year: int,
+        *,
+        expected_current_year: Any = None,
+        expected_current_year_version: Any = None,
+    ) -> Dict[str, Any]:
         target_year = int(next_year)
         with self.repository.transaction("IMMEDIATE") as conn:
             settings = self._settings(conn)
@@ -60,6 +73,8 @@ class SeasonRolloverService:
                 previous_year=self._current_year(settings),
                 next_year=target_year,
                 create_snapshot=False,
+                expected_current_year=parse_int(expected_current_year),
+                expected_current_year_version=parse_int(expected_current_year_version),
             )
 
     def _settings(self, conn: Any) -> Dict[str, str]:
@@ -79,8 +94,12 @@ class SeasonRolloverService:
         previous_year: int,
         next_year: int,
         create_snapshot: bool,
+        expected_current_year: int | None = None,
+        expected_current_year_version: int | None = None,
     ) -> Dict[str, Any]:
         timestamp = self.repository.now()
+        current_year_row = self.repository.current_year_row(conn)
+        current_year_version_before = parse_int(current_year_row.get("version")) or 1
         if create_snapshot:
             snapshot = self.repository.snapshot_payload(conn, previous_year, settings)
             self.repository.insert_snapshot(
@@ -95,7 +114,13 @@ class SeasonRolloverService:
             if delta > 0
             else 0
         )
-        self.repository.update_current_year(conn, next_year, timestamp)
+        current_year_version_after = self.repository.update_current_year(
+            conn,
+            next_year,
+            timestamp,
+            expected_year=expected_current_year,
+            expected_version=expected_current_year_version,
+        )
         updated_bird_years = self.repository.increment_bird_years(
             conn, delta, timestamp
         )
@@ -118,6 +143,15 @@ class SeasonRolloverService:
         return {
             "previous_year": int(previous_year),
             "current_year": int(next_year),
+            "command_id": f"season-rollover:{int(previous_year)}:{int(next_year)}",
+            "validation_result": "valid",
+            "entity_versions": {
+                "previous_year": int(previous_year),
+                "current_year": int(next_year),
+                "current_year_version_before": current_year_version_before,
+                "current_year_version_after": current_year_version_after,
+                "snapshot_created": bool(create_snapshot),
+            },
             "salary_history_rows_stored": stored_salary_history,
             "bird_year_steps": delta,
             "bird_year_players_updated": updated_bird_years,

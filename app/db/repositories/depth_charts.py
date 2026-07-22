@@ -45,6 +45,11 @@ class DepthChartRepository(LeagueRepository):
         return [self.player_payload(player) for player in self._players.select_team(conn, team_id)]
 
     def payload(self, conn: Any, team_id: int) -> Dict[str, Any]:
+        version_row = conn.execute(
+            "SELECT version FROM team_depth_chart_versions WHERE team_id = ?",
+            (team_id,),
+        ).fetchone()
+        version = parse_int(version_row["version"]) if version_row else 1
         cursor = conn.execute(
             f"""SELECT dc.position AS depth_position, dc.depth_order,
                        {self._players.select_columns()}
@@ -66,11 +71,12 @@ class DepthChartRepository(LeagueRepository):
         return {
             "positions": list(self._positions),
             "max_depth": self._max_depth,
+            "version": version,
             "configured": bool(entries),
             "entries": entries,
         }
 
-    def set(self, team_code: Any, entries: Any) -> Dict[str, Any]:
+    def set(self, team_code: Any, entries: Any, *, expected_version: Any = None) -> Dict[str, Any]:
         normalized_team = self._normalize_team_code(team_code)
         if not normalized_team:
             raise ValueError("team_code_required")
@@ -106,6 +112,14 @@ class DepthChartRepository(LeagueRepository):
             if not team:
                 raise ValueError("team_not_found")
             team_id = int(team["id"])
+            version_row = conn.execute(
+                "SELECT version FROM team_depth_chart_versions WHERE team_id = ?",
+                (team_id,),
+            ).fetchone()
+            current_version = parse_int(version_row["version"]) if version_row else 1
+            parsed_expected_version = parse_int(expected_version)
+            if parsed_expected_version is not None and parsed_expected_version != current_version:
+                raise ValueError("stale_entity_version")
             if seen_players:
                 placeholders = ",".join("?" for _ in seen_players)
                 owned_ids = {int(row["id"]) for row in conn.execute(
@@ -123,5 +137,22 @@ class DepthChartRepository(LeagueRepository):
                     for entry in cleaned
                 ],
             )
+            if version_row:
+                cur = conn.execute(
+                    """UPDATE team_depth_chart_versions
+                       SET version = COALESCE(version, 0) + 1, updated_at = ?
+                       WHERE team_id = ? AND version = ?""",
+                    (timestamp, team_id, current_version),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError("stale_entity_version")
+            else:
+                if parsed_expected_version is not None and parsed_expected_version != 1:
+                    raise ValueError("stale_entity_version")
+                conn.execute(
+                    """INSERT INTO team_depth_chart_versions (team_id, version, updated_at)
+                       VALUES (?, 2, ?)""",
+                    (team_id, timestamp),
+                )
             conn.commit()
             return self.payload(conn, team_id)

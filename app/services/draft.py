@@ -53,7 +53,17 @@ class DraftService:
         return self.repository.control_live(payload)
 
     def process_results(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
-        return self.repository.process_results(draft_year)
+        result = self.repository.process_results(draft_year)
+        year = result.get("draft_year")
+        result["command_id"] = f"draft-results:{year}:process"
+        result["validation_result"] = "completed_with_errors" if result.get("errors") else "valid"
+        result["entity_versions"] = {
+            "created_cap_holds": len(result.get("created_cap_holds") or []),
+            "created_player_rights": len(result.get("created_player_rights") or []),
+            "skipped": len(result.get("skipped") or []),
+            "errors": len(result.get("errors") or []),
+        }
+        return result
 
     def submit_pick(
         self,
@@ -117,7 +127,11 @@ class DraftService:
         normalized_note = str(note or "").strip() or None
         if normalized_decision == "rejected":
             updated = self.repository.mark_pick_request_decided(
-                int(request_id), "rejected", actor or {}, normalized_note
+                int(request_id),
+                "rejected",
+                actor or {},
+                normalized_note,
+                expected_version=self._optional_int(request_before.get("version")),
             )
             if not updated:
                 raise ValueError("request_already_decided")
@@ -148,7 +162,11 @@ class DraftService:
             is_admin=True,
         )
         updated = self.repository.mark_pick_request_decided(
-            int(request_id), "approved", actor or {}, normalized_note
+            int(request_id),
+            "approved",
+            actor or {},
+            normalized_note,
+            expected_version=self._optional_int(request_before.get("version")),
         )
         if not updated:
             raise ValueError("request_already_decided")

@@ -1,8 +1,10 @@
 import base64
 import json
 import unittest
+from urllib.error import URLError
+from unittest.mock import patch
 
-from app.integrations.discord import DiscordConfig, DiscordIntegration
+from app.integrations.discord import DiscordConfig, DiscordIntegration, redact_secrets
 from app.integrations.google_oauth import GoogleOAuthConfig, GoogleOAuthIntegration
 from app.integrations.openai import OpenAIConfig, OpenAIIntegration
 
@@ -11,6 +13,7 @@ class FakeResponse:
     def __init__(self, body=b"", headers=None):
         self.body = body
         self.headers = headers or {}
+        self.read_limits = []
 
     def __enter__(self):
         return self
@@ -19,6 +22,7 @@ class FakeResponse:
         return False
 
     def read(self, _limit=None):
+        self.read_limits.append(_limit)
         return self.body
 
 
@@ -29,7 +33,10 @@ class QueueOpener:
 
     def __call__(self, request, **kwargs):
         self.calls.append((request, kwargs))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 class DiscordIntegrationTests(unittest.TestCase):
@@ -52,6 +59,7 @@ class DiscordIntegrationTests(unittest.TestCase):
         self.assertEqual(7, options["timeout"])
         payload = json.loads(request.data.decode("utf-8"))
         self.assertEqual("offer", payload["content"])
+        self.assertEqual({"parse": []}, payload["allowed_mentions"])
         self.assertEqual(100, len(payload["thread_name"]))
         self.assertTrue(payload["thread_name"].endswith("..."))
 
@@ -76,6 +84,32 @@ class DiscordIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "DISCORD_BOT_TOKEN"):
             integration.post_bot_json("/channels/1/messages", {})
 
+    def test_redaction_removes_tokens_and_webhook_urls(self):
+        text = redact_secrets(
+            "Bearer sk-secret Bot discord-token "
+            "https://discord.com/api/webhooks/123/abc access_token=oauth-secret",
+            extra_secrets=["oauth-secret"],
+        )
+
+        self.assertNotIn("sk-secret", text)
+        self.assertNotIn("discord-token", text)
+        self.assertNotIn("/123/abc", text)
+        self.assertNotIn("oauth-secret", text)
+
+    def test_webhook_request_records_external_duration(self):
+        opener = QueueOpener(FakeResponse(b"{}"))
+        integration = DiscordIntegration(
+            DiscordConfig(webhook_url="https://discord.example/hooks/1"),
+            opener=opener,
+        )
+
+        with patch("app.integrations.discord.time.perf_counter", side_effect=[10.0, 12.25]), patch(
+            "app.integrations.discord.record_external_call"
+        ) as record:
+            integration.post_webhook_json({"content": "offer"})
+
+        record.assert_called_once_with("discord", "webhook_json", 2.25, ok=True)
+
 
 class OpenAIIntegrationTests(unittest.TestCase):
     def test_text_response_uses_responses_api_and_direct_output(self):
@@ -95,6 +129,35 @@ class OpenAIIntegrationTests(unittest.TestCase):
         payload = json.loads(request.data.decode("utf-8"))
         self.assertEqual("text-model", payload["model"])
         self.assertEqual(450, payload["max_output_tokens"])
+
+    def test_openai_post_records_external_duration(self):
+        opener = QueueOpener(FakeResponse(b'{"output_text":"Owner response"}'))
+        integration = OpenAIIntegration(OpenAIConfig(api_key="secret"), opener=opener)
+
+        with patch("app.integrations.openai.time.perf_counter", side_effect=[20.0, 22.5]), patch(
+            "app.integrations.openai.record_external_call"
+        ) as record:
+            self.assertEqual("Owner response", integration.text_response("system", "user"))
+
+        record.assert_called_once_with("openai", "post_json", 2.5, ok=True)
+
+    def test_text_response_bounds_prompt_and_output_text(self):
+        opener = QueueOpener(FakeResponse(b'{"output_text":"abcdefghij"}'))
+        integration = OpenAIIntegration(
+            OpenAIConfig(
+                api_key="secret",
+                max_text_prompt_chars=10,
+                max_text_output_chars=5,
+            ),
+            opener=opener,
+        )
+
+        result = integration.text_response("S" * 50, "U" * 50, max_output_tokens=450)
+
+        self.assertEqual("ab...", result)
+        payload = json.loads(opener.calls[0][0].data.decode("utf-8"))
+        self.assertEqual("S" * 7 + "...", payload["input"][0]["content"][0]["text"])
+        self.assertEqual("U" * 7 + "...", payload["input"][1]["content"][0]["text"])
 
     def test_prompt_image_decodes_base64_attachment(self):
         encoded = base64.b64encode(b"image-content").decode("ascii")
@@ -122,6 +185,45 @@ class OpenAIIntegrationTests(unittest.TestCase):
 
         self.assertIsNone(integration.generate_image("transaction graphic"))
         self.assertEqual([], opener.calls)
+
+    def test_generated_image_over_size_limit_is_ignored(self):
+        encoded = base64.b64encode(b"too-large").decode("ascii")
+        opener = QueueOpener(FakeResponse(json.dumps({"data": [{"b64_json": encoded}]}).encode("utf-8")))
+        errors = []
+        integration = OpenAIIntegration(
+            OpenAIConfig(
+                api_key="secret",
+                image_generation_enabled=True,
+                generated_image_max_bytes=3,
+            ),
+            opener=opener,
+            log_error=lambda message, *args: errors.append(message % args if args else message),
+        )
+
+        self.assertIsNone(integration.generate_image("transaction graphic"))
+        self.assertEqual(["OpenAI generated image ignored: file exceeds configured max size"], errors)
+
+    def test_reference_image_get_retries_transient_failure(self):
+        sleeps = []
+        opener = QueueOpener(
+            URLError("temporary failure"),
+            FakeResponse(b"image-content", headers={"Content-Type": "image/png"}),
+        )
+        integration = OpenAIIntegration(
+            OpenAIConfig(
+                api_key="secret",
+                reference_image_max_retries=1,
+                reference_image_retry_base_seconds=0.1,
+            ),
+            opener=opener,
+            sleeper=sleeps.append,
+        )
+
+        result = integration.fetch_reference_image("https://cdn.example/image.png")
+
+        self.assertEqual((b"image-content", "reference.png", "image/png"), result)
+        self.assertEqual(2, len(opener.calls))
+        self.assertEqual([0.1], sleeps)
 
 
 class GoogleOAuthIntegrationTests(unittest.TestCase):

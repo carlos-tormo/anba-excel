@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import secrets
 import sqlite3
 from datetime import UTC, datetime
 from typing import Any, Dict, List
 
 try:
-    from ..auth.policies import normalize_team_code
+    from ..auth.policies import normalize_team_code, normalize_team_codes
     from ..domain_rules import (
         ROSTER_STANDARD_MAX_DEFAULT,
         ROSTER_STANDARD_MIN_DEFAULT,
@@ -18,10 +19,12 @@ try:
         ROSTER_TWO_WAY_MAX_DEFAULT,
         ROSTER_TWO_WAY_MIN_DEFAULT,
         parse_amount_like,
+        parse_bool,
+        parse_float,
         parse_int,
     )
 except ImportError:  # pragma: no cover
-    from auth.policies import normalize_team_code
+    from auth.policies import normalize_team_code, normalize_team_codes
     from domain_rules import (
         ROSTER_STANDARD_MAX_DEFAULT,
         ROSTER_STANDARD_MIN_DEFAULT,
@@ -29,12 +32,14 @@ except ImportError:  # pragma: no cover
         ROSTER_TWO_WAY_MAX_DEFAULT,
         ROSTER_TWO_WAY_MIN_DEFAULT,
         parse_amount_like,
+        parse_bool,
+        parse_float,
         parse_int,
     )
 
 
 logger = logging.getLogger("anba.migrations")
-CURRENT_SCHEMA_VERSION = 2026062101
+CURRENT_SCHEMA_VERSION = 2026072201
 CURRENT_SCHEMA_MIGRATION_KEY = f"{CURRENT_SCHEMA_VERSION}_runtime_schema_contract"
 MIGRATION_CONTRACT_SEASONS = (2025, 2026, 2027, 2028, 2029, 2030, 2031)
 MIGRATION_PLAYER_ROW_STATE_ACTIVE = "active_contract"
@@ -98,6 +103,296 @@ DEFAULT_TEAM_ECONOMY_2025 = {
 
 
 class DatabaseMigrationsMixin:
+    @staticmethod
+    def _migration_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone() is not None
+
+    @staticmethod
+    def _migration_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+        return {
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+
+    @classmethod
+    def _migration_ensure_column(
+        cls,
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        column_ddl: str,
+    ) -> None:
+        if not cls._migration_table_exists(conn, table_name):
+            return
+        if column_name in cls._migration_table_columns(conn, table_name):
+            return
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_ddl}")
+
+    @staticmethod
+    def _migration_current_year(conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'current_year'"
+        ).fetchone()
+        return parse_int(row["value"] if row else None) or MIGRATION_CONTRACT_SEASONS[0]
+
+    @staticmethod
+    def _migration_players_have_row_state(conn: sqlite3.Connection) -> bool:
+        return any(
+            row["name"] == "row_state"
+            for row in conn.execute("PRAGMA table_info(players)").fetchall()
+        )
+
+    def _migration_infer_player_row_state(
+        self,
+        conn: sqlite3.Connection,
+        player: sqlite3.Row,
+        current_year: int,
+    ) -> str:
+        if self._player_row_is_retained_rights_only(player, current_year, conn):
+            return "retained_rights"
+        return MIGRATION_PLAYER_ROW_STATE_ACTIVE
+
+    @classmethod
+    def _migration_duplicate_active_profile_ids(cls, conn: sqlite3.Connection) -> List[int]:
+        if not cls._migration_players_have_row_state(conn):
+            return []
+        rows = conn.execute(
+            """SELECT profile_id FROM players
+               WHERE profile_id IS NOT NULL AND row_state = ?
+               GROUP BY profile_id HAVING COUNT(*) > 1""",
+            (MIGRATION_PLAYER_ROW_STATE_ACTIVE,),
+        ).fetchall()
+        return [
+            int(row["profile_id"])
+            for row in rows
+            if parse_int(row["profile_id"]) is not None
+        ]
+
+    @staticmethod
+    def _migration_player_profile_exists(conn: sqlite3.Connection, profile_id: Any) -> bool:
+        parsed = parse_int(profile_id)
+        return parsed is not None and conn.execute(
+            "SELECT 1 FROM player_profiles WHERE id = ? LIMIT 1", (parsed,)
+        ).fetchone() is not None
+
+    @staticmethod
+    def _migration_create_player_profile(
+        conn: sqlite3.Connection,
+        name: Any,
+        experience_years: Any = None,
+        reference_image_url: Any = None,
+        profile_notes: Any = None,
+        timestamp: str | None = None,
+    ) -> int:
+        created_at = timestamp or now_iso()
+        cur = conn.execute(
+            """INSERT INTO player_profiles (
+                   name, experience_years, reference_image_url, profile_notes,
+                   created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                str(name or "").strip() or "New Player",
+                parse_int(experience_years),
+                str(reference_image_url or "").strip() or None,
+                str(profile_notes or "").strip() or None,
+                created_at,
+                created_at,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    @staticmethod
+    def _migration_clean_salary_value(salary_text: Any, salary_num: Any) -> Dict[str, Any]:
+        text = str(salary_text or "").strip() or None
+        numeric = parse_float(salary_num)
+        if numeric is None and text:
+            numeric = parse_amount_like(text)
+        if numeric is not None and not math.isfinite(float(numeric)):
+            numeric = None
+        return {"text": text, "num": float(numeric) if numeric is not None else None}
+
+    @classmethod
+    def _migration_upsert_player_salary_history_row(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        profile_id: Any,
+        player_id: Any,
+        team_code: Any,
+        season_year: Any,
+        salary_text: Any,
+        salary_num: Any,
+        source: str,
+        salary_type: Any = None,
+        timestamp: str | None = None,
+    ) -> bool:
+        profile = parse_int(profile_id)
+        season = parse_int(season_year)
+        if profile is None or season is None or not cls._migration_player_profile_exists(conn, profile):
+            return False
+        cleaned = cls._migration_clean_salary_value(salary_text, salary_num)
+        if cleaned["text"] is None and cleaned["num"] is None:
+            return False
+        created_at = timestamp or now_iso()
+        conn.execute(
+            """INSERT INTO player_salary_history (
+                   profile_id, player_id, team_code, season_year, salary_text,
+                   salary_num, salary_type, source, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(profile_id, season_year) DO UPDATE SET
+                   player_id = COALESCE(excluded.player_id, player_salary_history.player_id),
+                   team_code = COALESCE(excluded.team_code, player_salary_history.team_code),
+                   salary_text = COALESCE(excluded.salary_text, player_salary_history.salary_text),
+                   salary_num = COALESCE(excluded.salary_num, player_salary_history.salary_num),
+                   salary_type = COALESCE(excluded.salary_type, player_salary_history.salary_type),
+                   source = excluded.source, updated_at = excluded.updated_at""",
+            (
+                profile,
+                parse_int(player_id),
+                normalize_team_code(team_code),
+                season,
+                cleaned["text"],
+                cleaned["num"],
+                str(salary_type or "").strip() or None,
+                str(source or "unknown").strip() or "unknown",
+                created_at,
+                created_at,
+            ),
+        )
+        return True
+
+    @staticmethod
+    def _migration_unique_profile_name_map(conn: sqlite3.Connection) -> Dict[str, int]:
+        rows = conn.execute(
+            """SELECT lower(trim(name)) AS name_key, MIN(id) AS id, COUNT(*) AS count
+               FROM player_profiles WHERE COALESCE(trim(name), '') != ''
+               GROUP BY lower(trim(name)) HAVING COUNT(*) = 1"""
+        ).fetchall()
+        return {str(row["name_key"]): int(row["id"]) for row in rows if row["name_key"]}
+
+    @staticmethod
+    def _migration_normalize_pick_round(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"2", "2nd", "second", "segunda", "segunda ronda"}:
+            return "2nd"
+        return "1st"
+
+    @staticmethod
+    def _migration_normalize_pick_type(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"sold", "vendida", "vendido"}:
+            return "sold"
+        if text in {"conditional", "condicional"}:
+            return "conditional"
+        if text in {"acquired", "adquirida", "adquirido"}:
+            return "acquired"
+        return "own"
+
+    def _migration_upsert_draft_pick_identity(
+        self,
+        conn: sqlite3.Connection,
+        draft_year: Any,
+        draft_round: Any,
+        original_team: Any,
+        timestamp: str | None = None,
+    ) -> int | None:
+        year = parse_int(draft_year)
+        round_value = self._migration_normalize_pick_round(draft_round)
+        team_code = normalize_team_code(original_team)
+        if year is None or round_value not in {"1st", "2nd"} or not team_code:
+            return None
+        created_at = timestamp or now_iso()
+        conn.execute(
+            """INSERT INTO draft_picks (
+                   draft_year, draft_round, original_team, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(draft_year, draft_round, original_team) DO UPDATE SET
+                   updated_at = excluded.updated_at""",
+            (year, round_value, team_code, created_at, created_at),
+        )
+        row = conn.execute(
+            """SELECT id FROM draft_picks
+               WHERE draft_year = ? AND draft_round = ? AND original_team = ?""",
+            (year, round_value, team_code),
+        ).fetchone()
+        return int(row["id"]) if row else None
+
+    def _migration_sync_draft_pick_asset_identity(
+        self,
+        conn: sqlite3.Connection,
+        asset_id: Any,
+        timestamp: str | None = None,
+    ) -> None:
+        parsed_asset_id = parse_int(asset_id)
+        if parsed_asset_id is None:
+            return
+        if not self._migration_table_exists(conn, "draft_picks"):
+            return
+        if not self._migration_table_exists(conn, "draft_pick_holdings"):
+            return
+        created_at = timestamp or now_iso()
+        conn.execute("DELETE FROM draft_pick_holdings WHERE asset_id = ?", (parsed_asset_id,))
+        row = conn.execute(
+            """SELECT a.*, t.code AS holder_team FROM assets a
+               JOIN teams t ON t.id = a.team_id
+               WHERE a.id = ? AND a.asset_type = 'draft_pick'""",
+            (parsed_asset_id,),
+        ).fetchone()
+        if not row:
+            return
+        draft_year = parse_int(row["year"])
+        draft_round = self._migration_normalize_pick_round(row["draft_round"])
+        holder_team = normalize_team_code(row["holder_team"])
+        if draft_year is None or draft_round not in {"1st", "2nd"} or not holder_team:
+            return
+        pick_type = self._migration_normalize_pick_type(row["draft_pick_type"])
+        original_owner = normalize_team_code(row["original_owner"])
+        if pick_type == "sold":
+            original_teams = [original_owner or holder_team]
+            holder_teams = normalize_team_codes(row["draft_pick_sold_to"]) or [holder_team]
+        elif pick_type == "conditional":
+            original_teams = normalize_team_codes(row["draft_pick_conditional_teams"]) or [original_owner or holder_team]
+            holder_teams = [holder_team]
+        elif pick_type == "acquired":
+            original_teams = [original_owner or holder_team]
+            holder_teams = [holder_team]
+        else:
+            original_teams = [holder_team]
+            holder_teams = [holder_team]
+        conditions = str(row["detail"] or "").strip() or None
+        frozen_status = "frozen" if parse_bool(row["draft_pick_frozen"]) else None
+        for original_team in sorted({team for team in original_teams if team}):
+            draft_pick_id = self._migration_upsert_draft_pick_identity(
+                conn, draft_year, draft_round, original_team, created_at
+            )
+            if draft_pick_id is None:
+                continue
+            for holding_team in sorted({team for team in holder_teams if team}):
+                conn.execute(
+                    """INSERT INTO draft_pick_holdings (
+                           draft_pick_id, holder_team, asset_id, acquired_transaction_id,
+                           conditions, frozen_status, holding_type, created_at, updated_at
+                       ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                       ON CONFLICT(draft_pick_id, holder_team, asset_id) DO UPDATE SET
+                           conditions = excluded.conditions,
+                           frozen_status = excluded.frozen_status,
+                           holding_type = excluded.holding_type,
+                           updated_at = excluded.updated_at""",
+                    (
+                        draft_pick_id,
+                        holding_team,
+                        parsed_asset_id,
+                        conditions,
+                        frozen_status,
+                        pick_type,
+                        created_at,
+                        created_at,
+                    ),
+                )
+
     def _enable_wal_mode(self) -> None:
         with self.connect() as conn:
             try:
@@ -121,6 +416,7 @@ class DatabaseMigrationsMixin:
             conn.execute("PRAGMA foreign_keys = OFF")
             try:
                 conn.execute(f"ALTER TABLE gm_free_agent_offer_requests RENAME TO {backup_table}")
+                version_select = "COALESCE(version, 1)" if "version" in self._migration_table_columns(conn, backup_table) else "1"
                 conn.execute(
                     """
                     CREATE TABLE gm_free_agent_offer_requests (
@@ -133,6 +429,7 @@ class DatabaseMigrationsMixin:
                         offer_payload_json TEXT NOT NULL DEFAULT '{}',
                         offer_type TEXT NOT NULL DEFAULT 'free_agent_offer',
                         status TEXT NOT NULL DEFAULT 'pending',
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         admin_email TEXT,
                         admin_name TEXT,
                         admin_decision_note TEXT,
@@ -154,6 +451,7 @@ class DatabaseMigrationsMixin:
                         offer_payload_json,
                         offer_type,
                         status,
+                        version,
                         admin_email,
                         admin_name,
                         admin_decision_note,
@@ -171,6 +469,7 @@ class DatabaseMigrationsMixin:
                         offer_payload_json,
                         offer_type,
                         status,
+                        {version_select},
                         admin_email,
                         admin_name,
                         admin_decision_note,
@@ -186,7 +485,7 @@ class DatabaseMigrationsMixin:
                 conn.execute("PRAGMA foreign_keys = ON")
 
     def _ensure_free_agent_offer_promises_support_manual_rows(self, conn: sqlite3.Connection) -> None:
-            if not self._table_exists_conn(conn, "free_agent_offer_promises"):
+            if not self._migration_table_exists(conn, "free_agent_offer_promises"):
                 return
             columns = conn.execute("PRAGMA table_info(free_agent_offer_promises)").fetchall()
             request_col = next(
@@ -321,6 +620,7 @@ class DatabaseMigrationsMixin:
                         option_value TEXT NOT NULL,
                         action TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'pending',
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         admin_email TEXT,
                         admin_name TEXT,
                         admin_decision_note TEXT,
@@ -356,6 +656,7 @@ class DatabaseMigrationsMixin:
                         custom_text TEXT,
                         selection_text TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'pending',
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         admin_email TEXT,
                         admin_name TEXT,
                         admin_decision_note TEXT,
@@ -390,6 +691,7 @@ class DatabaseMigrationsMixin:
                         offer_payload_json TEXT NOT NULL DEFAULT '{}',
                         offer_type TEXT NOT NULL DEFAULT 'free_agent_offer',
                         status TEXT NOT NULL DEFAULT 'pending',
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         admin_email TEXT,
                         admin_name TEXT,
                         admin_decision_note TEXT,
@@ -463,6 +765,11 @@ class DatabaseMigrationsMixin:
                         payload_json TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'pending',
                         attempts INTEGER NOT NULL DEFAULT 0,
+                        next_attempt_at TEXT,
+                        available_at TEXT,
+                        locked_at TEXT,
+                        locked_by TEXT,
+                        last_error_code TEXT,
                         last_error TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
@@ -478,10 +785,17 @@ class DatabaseMigrationsMixin:
                 )
                 conn.execute(
                     """
+                    CREATE INDEX IF NOT EXISTS idx_outbox_events_delivery_available
+                    ON outbox_events (status, available_at, created_at)
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS workflow_runs (
                         id TEXT PRIMARY KEY,
                         workflow_type TEXT NOT NULL,
                         state TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                         actor_email TEXT,
                         actor_name TEXT,
@@ -707,6 +1021,15 @@ class DatabaseMigrationsMixin:
                 )
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS team_depth_chart_versions (
+                        team_id INTEGER PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS free_agent_team_ruleouts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         free_agent_id INTEGER NOT NULL REFERENCES free_agents(id) ON DELETE CASCADE,
@@ -765,6 +1088,7 @@ class DatabaseMigrationsMixin:
                     CREATE TABLE IF NOT EXISTS app_settings (
                         key TEXT PRIMARY KEY,
                         value TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         updated_at TEXT NOT NULL
                     )
                     """
@@ -945,6 +1269,7 @@ class DatabaseMigrationsMixin:
                         contract_json TEXT NOT NULL,
                         waiver_expires_at TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'active',
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         claimed_team_code TEXT,
                         free_agent_id INTEGER REFERENCES free_agents(id) ON DELETE SET NULL,
                         dead_contract_id INTEGER REFERENCES dead_contracts(id) ON DELETE SET NULL,
@@ -965,6 +1290,7 @@ class DatabaseMigrationsMixin:
                         requester_name TEXT,
                         contingent_cut_player_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
                         status TEXT NOT NULL DEFAULT 'pending',
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         admin_email TEXT,
                         admin_name TEXT,
                         admin_decision_note TEXT,
@@ -987,6 +1313,20 @@ class DatabaseMigrationsMixin:
                     ON waiver_claims (status, created_at)
                     """
                 )
+                for workflow_table in (
+                    "gm_option_requests",
+                    "gm_draft_pick_requests",
+                    "gm_free_agent_offer_requests",
+                    "workflow_runs",
+                    "waiver_players",
+                    "waiver_claims",
+                ):
+                    self._migration_ensure_column(
+                        conn,
+                        workflow_table,
+                        "version",
+                        "INTEGER NOT NULL DEFAULT 1",
+                    )
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS discord_free_agent_offer_threads (
@@ -1059,6 +1399,10 @@ class DatabaseMigrationsMixin:
                         profile_id TEXT,
                         before_json TEXT,
                         after_json TEXT,
+                        command_id TEXT,
+                        validation_result TEXT,
+                        entity_versions_json TEXT,
+                        integration_outbox_ids_json TEXT,
                         details_json TEXT
                     )
                     """
@@ -1152,6 +1496,7 @@ class DatabaseMigrationsMixin:
                         duration_seconds INTEGER NOT NULL DEFAULT 180,
                         started_at TEXT,
                         options_text TEXT,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         FOREIGN KEY(current_draft_order_id) REFERENCES draft_order(id) ON DELETE SET NULL
@@ -1170,6 +1515,7 @@ class DatabaseMigrationsMixin:
                         selected_by_name TEXT,
                         selected_by_role TEXT,
                         selected_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         updated_at TEXT NOT NULL,
                         FOREIGN KEY(draft_order_id) REFERENCES draft_order(id) ON DELETE CASCADE
                     )
@@ -1258,6 +1604,7 @@ class DatabaseMigrationsMixin:
                         transaction_notes TEXT,
                         happiness REAL NOT NULL DEFAULT 0,
                         profile_status TEXT NOT NULL DEFAULT 'active',
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     )
@@ -1315,6 +1662,14 @@ class DatabaseMigrationsMixin:
                         owner_final_message TEXT,
                         owner_conclusion_message TEXT,
                         trust_delta INTEGER,
+                        previous_trust TEXT,
+                        proposed_trust_delta INTEGER,
+                        bounded_trust_delta INTEGER,
+                        trust_model TEXT,
+                        prompt_template_version TEXT,
+                        administrator_override INTEGER NOT NULL DEFAULT 0,
+                        conversation_id TEXT,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         completed_at TEXT,
@@ -1402,6 +1757,10 @@ class DatabaseMigrationsMixin:
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(owner_exit_interviews)").fetchall()
                 }
+                outbox_cols = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(outbox_events)").fetchall()
+                }
                 owner_profile_cols = {
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(team_owner_profiles)").fetchall()
@@ -1418,6 +1777,51 @@ class DatabaseMigrationsMixin:
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(gm_minimum_targets)").fetchall()
                 }
+                outbox_add_columns = {
+                    "next_attempt_at": "TEXT",
+                    "available_at": "TEXT",
+                    "locked_at": "TEXT",
+                    "locked_by": "TEXT",
+                    "last_error_code": "TEXT",
+                }
+                for col, ddl in outbox_add_columns.items():
+                    if col not in outbox_cols:
+                        conn.execute(f"ALTER TABLE outbox_events ADD COLUMN {col} {ddl}")
+                conn.execute(
+                    """
+                    UPDATE outbox_events
+                    SET available_at = COALESCE(available_at, next_attempt_at, created_at)
+                    WHERE available_at IS NULL
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_outbox_events_delivery_available
+                    ON outbox_events (status, available_at, created_at)
+                    """
+                )
+                for table_name in (
+                    "app_settings",
+                    "draft_live_state",
+                    "draft_live_selections",
+                    "player_profiles",
+                    "owner_exit_interviews",
+                ):
+                    self._migration_ensure_column(
+                        conn,
+                        table_name,
+                        "version",
+                        "INTEGER NOT NULL DEFAULT 1",
+                    )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS team_depth_chart_versions (
+                        team_id INTEGER PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
                 if "is_co_admin" not in user_cols:
                     conn.execute("ALTER TABLE users ADD COLUMN is_co_admin INTEGER NOT NULL DEFAULT 0")
                 if "agent_name" not in user_cols:
@@ -1435,6 +1839,10 @@ class DatabaseMigrationsMixin:
                     "profile_id": "TEXT",
                     "before_json": "TEXT",
                     "after_json": "TEXT",
+                    "command_id": "TEXT",
+                    "validation_result": "TEXT",
+                    "entity_versions_json": "TEXT",
+                    "integration_outbox_ids_json": "TEXT",
                 }
                 for col, ddl in admin_log_add_columns.items():
                     if col not in admin_log_cols:
@@ -1442,6 +1850,7 @@ class DatabaseMigrationsMixin:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_request_id ON admin_logs(request_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_profile_id ON admin_logs(profile_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_player_id ON admin_logs(player_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_command_id ON admin_logs(command_id)")
                 if "performance_json" not in owner_office_cols:
                     conn.execute("ALTER TABLE team_owner_office ADD COLUMN performance_json TEXT NOT NULL DEFAULT '[]'")
                 if "new_gm_after_dismissal" not in owner_office_cols:
@@ -1454,6 +1863,18 @@ class DatabaseMigrationsMixin:
                     conn.execute("ALTER TABLE team_owner_office ADD COLUMN season_goal_achieved TEXT")
                 if "owner_conclusion_message" not in owner_exit_cols:
                     conn.execute("ALTER TABLE owner_exit_interviews ADD COLUMN owner_conclusion_message TEXT")
+                owner_exit_add_columns = {
+                    "previous_trust": "TEXT",
+                    "proposed_trust_delta": "INTEGER",
+                    "bounded_trust_delta": "INTEGER",
+                    "trust_model": "TEXT",
+                    "prompt_template_version": "TEXT",
+                    "administrator_override": "INTEGER NOT NULL DEFAULT 0",
+                    "conversation_id": "TEXT",
+                }
+                for col, ddl in owner_exit_add_columns.items():
+                    if col not in owner_exit_cols:
+                        conn.execute(f"ALTER TABLE owner_exit_interviews ADD COLUMN {col} {ddl}")
                 if "owner_office_background_url" not in owner_profile_cols:
                     conn.execute("ALTER TABLE team_owner_profiles ADD COLUMN owner_office_background_url TEXT")
                 if "owner_office_background_blob" not in owner_profile_cols:
@@ -1759,14 +2180,15 @@ class DatabaseMigrationsMixin:
 
     def _drop_player_identity_guards(self, conn: sqlite3.Connection) -> None:
             conn.execute("DROP INDEX IF EXISTS idx_players_unique_active_profile")
+            conn.execute("DROP INDEX IF EXISTS idx_draft_pick_holdings_one_current_holder")
             for table in ["players", "free_agents", "dead_contracts"]:
                 conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_profile_required_insert")
                 conn.execute(f"DROP TRIGGER IF EXISTS trg_{table}_profile_required_update")
 
     def _backfill_player_row_states(self, conn: sqlite3.Connection) -> int:
-            if not self._players_have_row_state_conn(conn):
+            if not self._migration_players_have_row_state(conn):
                 return 0
-            current_year = self._current_year_conn(conn)
+            current_year = self._migration_current_year(conn)
             rows = conn.execute(
                 """
                 SELECT p.*, t.code AS team_code
@@ -1777,23 +2199,23 @@ class DatabaseMigrationsMixin:
             ).fetchall()
             changed = 0
             for row in rows:
-                state = self._infer_player_row_state_conn(conn, row, current_year)
+                state = self._migration_infer_player_row_state(conn, row, current_year)
                 if str(row["row_state"] or "") != state:
                     conn.execute("UPDATE players SET row_state = ? WHERE id = ?", (state, int(row["id"])))
                     changed += 1
             return changed
 
     def _backfill_draft_pick_identity(self, conn: sqlite3.Connection) -> None:
-            if not self._table_exists_conn(conn, "assets"):
+            if not self._migration_table_exists(conn, "assets"):
                 return
-            if not self._table_exists_conn(conn, "draft_picks") or not self._table_exists_conn(conn, "draft_pick_holdings"):
+            if not self._migration_table_exists(conn, "draft_picks") or not self._migration_table_exists(conn, "draft_pick_holdings"):
                 return
             rows = conn.execute(
                 "SELECT id FROM assets WHERE asset_type = 'draft_pick' ORDER BY id"
             ).fetchall()
             now = now_iso()
             for row in rows:
-                self._sync_draft_pick_asset_identity_conn(conn, row["id"], now)
+                self._migration_sync_draft_pick_asset_identity(conn, row["id"], now)
 
     def _migrate_legacy_dead_cap_assets(self, conn: sqlite3.Connection) -> None:
             asset_cols = {row["name"] for row in conn.execute("PRAGMA table_info(assets)").fetchall()}
@@ -1828,7 +2250,7 @@ class DatabaseMigrationsMixin:
                 timestamp = row["created_at"] or row["updated_at"] or now_iso()
                 profile_id = (
                     self._find_profile_id(conn, name=label)
-                    or self._create_player_profile(conn, label, timestamp=timestamp)
+                    or self._migration_create_player_profile(conn, label, timestamp=timestamp)
                 )
                 if has_profile_id:
                     conn.execute(
@@ -1894,9 +2316,19 @@ class DatabaseMigrationsMixin:
                     END
                     """
                 )
+                conn.execute(
+                    f"""
+                    CREATE TRIGGER IF NOT EXISTS trg_{table}_profile_required_update
+                    BEFORE UPDATE OF profile_id ON {table}
+                    WHEN NEW.profile_id IS NULL
+                    BEGIN
+                        SELECT RAISE(ABORT, '{message}');
+                    END
+                    """
+                )
     
-            if self._players_have_row_state_conn(conn):
-                duplicate_profile_ids = self._duplicate_active_profile_ids_conn(conn)
+            if self._migration_players_have_row_state(conn):
+                duplicate_profile_ids = self._migration_duplicate_active_profile_ids(conn)
                 if duplicate_profile_ids:
                     sample = ", ".join(str(profile_id) for profile_id in duplicate_profile_ids[:10])
                     suffix = "..." if len(duplicate_profile_ids) > 10 else ""
@@ -1914,16 +2346,6 @@ class DatabaseMigrationsMixin:
                           AND row_state = 'active_contract'
                         """
                     )
-                conn.execute(
-                    f"""
-                    CREATE TRIGGER IF NOT EXISTS trg_{table}_profile_required_update
-                    BEFORE UPDATE OF profile_id ON {table}
-                    WHEN NEW.profile_id IS NULL
-                    BEGIN
-                        SELECT RAISE(ABORT, '{message}');
-                    END
-                    """
-                )
 
     def _backfill_player_profiles(self, conn: sqlite3.Connection) -> None:
             timestamp = now_iso()
@@ -1936,7 +2358,7 @@ class DatabaseMigrationsMixin:
                 """
             ).fetchall()
             for row in player_rows:
-                profile_id = self._create_player_profile(
+                profile_id = self._migration_create_player_profile(
                     conn,
                     row["name"],
                     row["experience_years"],
@@ -1955,7 +2377,7 @@ class DatabaseMigrationsMixin:
                 """
             ).fetchall()
             for row in free_agent_rows:
-                profile_id = self._create_player_profile(
+                profile_id = self._migration_create_player_profile(
                     conn,
                     row["name"],
                     None,
@@ -2015,7 +2437,7 @@ class DatabaseMigrationsMixin:
                     """
                 ).fetchall()
             }
-            profile_by_name = self._unique_profile_name_map_conn(conn)
+            profile_by_name = self._migration_unique_profile_name_map(conn)
             rows = conn.execute("SELECT season_year, payload_json, created_at FROM season_snapshots ORDER BY id").fetchall()
             count = 0
             for row in rows:
@@ -2042,14 +2464,14 @@ class DatabaseMigrationsMixin:
                             continue
                         profile_id = parse_int(player.get("profile_id"))
                         player_id = parse_int(player.get("id"))
-                        if profile_id is not None and not self._player_profile_exists_conn(conn, profile_id):
+                        if profile_id is not None and not self._migration_player_profile_exists(conn, profile_id):
                             profile_id = None
                         if profile_id is None and player_id is not None:
                             profile_id = active_profile_by_player_id.get(player_id)
                         if profile_id is None:
                             name_key = str(player.get("name") or "").strip().lower()
                             profile_id = profile_by_name.get(name_key)
-                        if self._upsert_player_salary_history_row_conn(
+                        if self._migration_upsert_player_salary_history_row(
                             conn,
                             profile_id=profile_id,
                             player_id=player_id,
@@ -2080,7 +2502,7 @@ class DatabaseMigrationsMixin:
                 label = str(row["label"] or "").strip() or f"Dead Contract {int(row['id'])}"
                 profile_id = self._find_profile_id(conn, name=label)
                 if profile_id is None:
-                    profile_id = self._create_player_profile(
+                    profile_id = self._migration_create_player_profile(
                         conn,
                         label,
                         timestamp=row["created_at"] or row["updated_at"] or now_iso(),

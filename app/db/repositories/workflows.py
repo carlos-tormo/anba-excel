@@ -30,6 +30,13 @@ class WorkflowRepository(LeagueRepository):
             str(actor.get("name") or actor.get("username") or "").strip() or "system",
         )
 
+    @staticmethod
+    def _table_has_column(conn: Any, table: str, column: str) -> bool:
+        return any(
+            str(row["name"]) == column
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        )
+
     def record_creation_conn(
         self,
         conn: Any,
@@ -81,6 +88,7 @@ class WorkflowRepository(LeagueRepository):
         updates: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         timestamp: Optional[str] = None,
+        expected_version: Optional[int] = None,
     ) -> Dict[str, Any]:
         definition = workflow_definition(workflow_type)
         normalized_state = str(new_state or "").strip().lower()
@@ -96,13 +104,29 @@ class WorkflowRepository(LeagueRepository):
                 raise WorkflowTransitionError("command_reused", "The workflow command ID was already used for a different transition.")
             return {"previous_state": str(existing["previous_state"]), "new_state": str(existing["new_state"]), "command_id": normalized_command_id, "idempotent": True}
 
+        has_version = self._table_has_column(conn, definition.table, "version")
+        if expected_version is not None and not has_version:
+            raise WorkflowTransitionError(
+                "version_not_supported",
+                f"Workflow {workflow_type} does not expose an entity version.",
+            )
+        select_columns = [f"{definition.state_column} AS workflow_state"]
+        if has_version:
+            select_columns.append("version AS workflow_version")
         row = conn.execute(
-            f"SELECT {definition.state_column} AS workflow_state FROM {definition.table} WHERE {definition.key_column} = ?",
+            f"SELECT {', '.join(select_columns)} FROM {definition.table} WHERE {definition.key_column} = ?",
             (resource_id,),
         ).fetchone()
         if not row:
             raise WorkflowTransitionError("workflow_not_found", "Workflow resource was not found.")
         previous_state = str(row["workflow_state"] or "").strip().lower()
+        previous_version = parse_int(row["workflow_version"]) if has_version else None
+        normalized_expected_version = parse_int(expected_version)
+        if normalized_expected_version is not None and previous_version != normalized_expected_version:
+            raise WorkflowTransitionError(
+                "version_conflict",
+                "Workflow entity version changed before this command could be applied.",
+            )
         if normalized_state not in definition.transitions.get(previous_state, frozenset()):
             raise WorkflowTransitionError("invalid_transition", f"Transition {previous_state} -> {normalized_state} is not permitted for {workflow_type}.")
 
@@ -115,9 +139,18 @@ class WorkflowRepository(LeagueRepository):
         for column, value in update_values.items():
             assignments.append(f"{column} = ?")
             values.append(value)
+        if has_version:
+            assignments.append("version = COALESCE(version, 0) + 1")
         values.extend([resource_id, previous_state])
+        where_clauses = [
+            f"{definition.key_column} = ?",
+            f"{definition.state_column} = ?",
+        ]
+        if normalized_expected_version is not None:
+            where_clauses.append("version = ?")
+            values.append(normalized_expected_version)
         cur = conn.execute(
-            f"UPDATE {definition.table} SET {', '.join(assignments)} WHERE {definition.key_column} = ? AND {definition.state_column} = ?",
+            f"UPDATE {definition.table} SET {', '.join(assignments)} WHERE {' AND '.join(where_clauses)}",
             tuple(values),
         )
         if cur.rowcount != 1:
@@ -141,4 +174,11 @@ class WorkflowRepository(LeagueRepository):
                 changed_at,
             ),
         )
-        return {"previous_state": previous_state, "new_state": normalized_state, "command_id": normalized_command_id, "idempotent": False}
+        return {
+            "previous_state": previous_state,
+            "new_state": normalized_state,
+            "command_id": normalized_command_id,
+            "idempotent": False,
+            "previous_version": previous_version,
+            "new_version": previous_version + 1 if previous_version is not None else None,
+        }

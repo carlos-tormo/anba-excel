@@ -49,6 +49,7 @@ class GMRequestService:
         admin: Dict[str, Any],
         note: Optional[str] = None,
         promise_context: Optional[Dict[str, Any]] = None,
+        expected_version: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         normalized_status = str(status or "").strip().lower()
         if normalized_status not in {"approved", "rejected"}:
@@ -65,9 +66,10 @@ class GMRequestService:
                     reason=note or f"admin_{normalized_status}",
                     updates=self._decision_updates(admin, note, timestamp),
                     timestamp=timestamp,
+                    expected_version=expected_version,
                 )
             except WorkflowTransitionError as exc:
-                if exc.code in {"workflow_not_found", "invalid_transition", "transition_conflict"}:
+                if exc.code in {"workflow_not_found", "invalid_transition", "transition_conflict", "version_conflict"}:
                     return None
                 raise
             if normalized_status == "approved":
@@ -103,6 +105,7 @@ class GMRequestService:
         custom_image: Optional[Dict[str, Any]] = None,
         promise_context: Optional[Dict[str, Any]] = None,
         bypass_role_limits: bool = False,
+        expected_version: Optional[int] = None,
     ) -> Dict[str, Any]:
         normalized_status = str(status or "").strip().lower()
         if normalized_status not in {"approved", "rejected"}:
@@ -119,7 +122,7 @@ class GMRequestService:
                 raise ValueError("request_already_decided")
 
             if normalized_status == "rejected":
-                self._transition_offer(conn, parsed_request_id, "rejected", admin, note, timestamp)
+                self._transition_offer(conn, parsed_request_id, "rejected", admin, note, timestamp, expected_version=expected_version)
                 player_name = str(request.get("player_name") or "el agente libre").strip()
                 team_code = self.normalize_team_code(request.get("team_code")) or str(request.get("team_code") or "").upper()
                 offer_label = "oferta de renovación" if str(request.get("offer_type") or "").strip().lower() == "renewal" else "oferta"
@@ -149,7 +152,7 @@ class GMRequestService:
                 player_id = self.free_agency._sign_free_agent_conn(conn, free_agent_id, team_code, sign_payload or {})
                 if not player_id:
                     raise ValueError("free_agent_or_team_not_found")
-                self._transition_offer(conn, parsed_request_id, "approved", admin, note, timestamp)
+                self._transition_offer(conn, parsed_request_id, "approved", admin, note, timestamp, expected_version=expected_version)
                 self.offer_promises._upsert_free_agent_offer_promise_for_request_conn(
                     conn,
                     parsed_request_id,
@@ -175,12 +178,24 @@ class GMRequestService:
             "player_id": player_id,
             "player": self.players.record(player_id) if player_id is not None else None,
             "outbox_event_ids": outbox_event_ids,
+            "command_id": f"gm-free-agent-offer:{parsed_request_id}:{normalized_status}",
+            "validation_result": "valid",
         }
 
     def decide_gm_free_agent_offer_request_command(self, request_id: int, status: str, admin: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
         return self.decide_free_agent_offer(request_id, status, admin, **kwargs)
 
-    def _transition_offer(self, conn: Any, request_id: int, status: str, admin: Dict[str, Any], note: Optional[str], timestamp: str) -> None:
+    def _transition_offer(
+        self,
+        conn: Any,
+        request_id: int,
+        status: str,
+        admin: Dict[str, Any],
+        note: Optional[str],
+        timestamp: str,
+        *,
+        expected_version: Optional[int] = None,
+    ) -> None:
         try:
             self.workflows.transition_conn(
                 conn,
@@ -192,6 +207,9 @@ class GMRequestService:
                 updates=self._decision_updates(admin, note, timestamp),
                 command_id=f"gm-free-agent-offer:{request_id}:{status}",
                 timestamp=timestamp,
+                expected_version=expected_version,
             )
         except WorkflowTransitionError as exc:
+            if exc.code == "version_conflict":
+                raise ValueError("stale_entity_version") from exc
             raise ValueError("request_already_decided") from exc

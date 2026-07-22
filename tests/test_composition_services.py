@@ -22,6 +22,21 @@ class NotificationCompositionServiceTests(unittest.TestCase):
         self.assertEqual(payload["content"], "<@&12345>")
         self.assertEqual(payload["allowed_mentions"]["roles"], ["12345"])
 
+    def test_notification_payload_neutralizes_user_provided_mentions(self) -> None:
+        payload = NotificationCompositionService.notification_payload(
+            "@everyone <@123> update",
+            "DM <@&456> and @here",
+            fields=[{"name": "@everyone", "value": "<@789>"}],
+        )
+
+        embed = payload["embeds"][0]
+        self.assertNotIn("@everyone", embed["title"])
+        self.assertNotIn("@here", embed["description"])
+        self.assertNotIn("<@123>", embed["title"])
+        self.assertNotIn("<@&456>", embed["description"])
+        self.assertNotIn("<@789>", embed["fields"][0]["value"])
+        self.assertEqual({"parse": []}, payload["allowed_mentions"])
+
     def test_press_article_payload_validates_and_truncates_teaser(self) -> None:
         with self.assertRaisesRegex(ValueError, "article_text_required"):
             NotificationCompositionService.press_article_payload("", "https://example.test/news", "news.png")

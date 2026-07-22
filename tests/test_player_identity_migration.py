@@ -277,6 +277,47 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual("active_contract_conflict", result["error"])
 
+    def test_merge_player_profiles_rejects_stale_target_version(self) -> None:
+        first_player_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Merge Source",
+                "position": "SG",
+                "salary_2026_text": "",
+            },
+        )
+        second_player_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Merge Target",
+                "position": "SF",
+                "salary_2026_text": "6.000.000",
+            },
+        )
+        self.assertIsNotNone(first_player_id)
+        self.assertIsNotNone(second_player_id)
+        source_profile_id = self._profile_id_for_player(int(first_player_id))
+        target_profile_id = self._profile_id_for_player(int(second_player_id))
+        with self.db.connect() as conn:
+            target = conn.execute(
+                "SELECT version FROM player_profiles WHERE id = ?",
+                (target_profile_id,),
+            ).fetchone()
+            conn.execute(
+                "UPDATE player_profiles SET version = version + 1 WHERE id = ?",
+                (target_profile_id,),
+            )
+            conn.commit()
+
+        result = self.db.merge_player_profiles(
+            source_profile_id,
+            target_profile_id,
+            expected_target_version=int(target["version"]),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("stale_entity_version", result["error"])
+
     def test_create_player_rejects_duplicate_active_profile(self) -> None:
         profile_id = self._profile_id_for_player(self.legacy_atl_player_id)
         with self.assertRaises(ValueError):

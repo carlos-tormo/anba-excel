@@ -104,10 +104,22 @@ class PlayerIdentityRepository(LeagueRepository):
             raise RuntimeError("player_identity_repository_not_configured")
         return self._profile_repository.delete_profile(profile_id)
 
-    def merge_profiles(self, source_profile_id: int, target_profile_id: int) -> Any:
+    def merge_profiles(
+        self,
+        source_profile_id: int,
+        target_profile_id: int,
+        *,
+        expected_source_version: Any = None,
+        expected_target_version: Any = None,
+    ) -> Any:
         if not self.configured:
             raise RuntimeError("player_identity_repository_not_configured")
-        return self._merge_profiles(source_profile_id, target_profile_id)
+        return self._merge_profiles(
+            source_profile_id,
+            target_profile_id,
+            expected_source_version=expected_source_version,
+            expected_target_version=expected_target_version,
+        )
 
     def integrity_report(self) -> Any:
         if not self.configured:
@@ -144,6 +156,10 @@ class PlayerIdentityRepository(LeagueRepository):
             ("draft_pick_assets_missing_identity", """SELECT a.id FROM assets a
                 LEFT JOIN draft_pick_holdings h ON h.asset_id = a.id WHERE a.asset_type = 'draft_pick'
                 AND a.year IS NOT NULL AND COALESCE(a.draft_round, '') != '' AND h.id IS NULL ORDER BY a.id"""),
+            ("draft_pick_multiple_current_holders", """SELECT draft_pick_id FROM draft_pick_holdings
+                WHERE asset_id IS NOT NULL
+                  AND holding_type IN ('own', 'sold', 'conditional', 'acquired', 'held')
+                GROUP BY draft_pick_id HAVING COUNT(*) > 1 ORDER BY draft_pick_id"""),
         )
         errors: List[Dict[str, Any]] = []
         with self.db.connect() as conn:
@@ -180,7 +196,14 @@ class PlayerIdentityRepository(LeagueRepository):
         if not report["ok"]:
             raise AssertionError(json.dumps(report["errors"], ensure_ascii=True, sort_keys=True))
 
-    def _merge_profiles(self, source_profile_id: int, target_profile_id: int) -> Dict[str, Any]:
+    def _merge_profiles(
+        self,
+        source_profile_id: int,
+        target_profile_id: int,
+        *,
+        expected_source_version: Any = None,
+        expected_target_version: Any = None,
+    ) -> Dict[str, Any]:
         source_id = parse_int(source_profile_id)
         target_id = parse_int(target_profile_id)
         if source_id is None or target_id is None or source_id == target_id:
@@ -188,10 +211,18 @@ class PlayerIdentityRepository(LeagueRepository):
 
         timestamp = self._now()
         with self.db.connect() as conn:
-            source = conn.execute("SELECT id, name FROM player_profiles WHERE id = ?", (source_id,)).fetchone()
-            target = conn.execute("SELECT id, name FROM player_profiles WHERE id = ?", (target_id,)).fetchone()
+            source = conn.execute("SELECT id, name, version FROM player_profiles WHERE id = ?", (source_id,)).fetchone()
+            target = conn.execute("SELECT id, name, version FROM player_profiles WHERE id = ?", (target_id,)).fetchone()
             if not source or not target:
                 return {"ok": False, "error": "not_found"}
+            source_version = parse_int(source["version"]) or 1
+            target_version = parse_int(target["version"]) or 1
+            parsed_source_expected = parse_int(expected_source_version)
+            parsed_target_expected = parse_int(expected_target_version)
+            if parsed_source_expected is not None and parsed_source_expected != source_version:
+                return {"ok": False, "error": "stale_entity_version"}
+            if parsed_target_expected is not None and parsed_target_expected != target_version:
+                return {"ok": False, "error": "stale_entity_version"}
             settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings")}
             current_year = parse_int(settings.get("current_year")) or self._contract_seasons[0]
 
@@ -313,12 +344,28 @@ class PlayerIdentityRepository(LeagueRepository):
                 conn, target_id, "merge_profile", f"Perfil fusionado: {source['name']} -> {target['name']}",
                 details=details,
             )
+            cur = conn.execute(
+                """UPDATE player_profiles
+                   SET version = COALESCE(version, 0) + 1, updated_at = ?
+                   WHERE id = ? AND version = ?""",
+                (timestamp, target_id, target_version),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return {"ok": False, "error": "stale_entity_version"}
             conn.execute("DELETE FROM player_profiles WHERE id = ?", (source_id,))
             conn.commit()
             return {
                 "ok": True,
                 "source_profile_id": source_id,
                 "target_profile_id": target_id,
+                "entity_versions": {
+                    "source_profile_id": source_id,
+                    "target_profile_id": target_id,
+                    "source_profile_version": source_version,
+                    "target_profile_version_before": target_version,
+                    "target_profile_version_after": target_version + 1,
+                },
                 "moved": {
                     "player_rows": moved_player_rows,
                     "dead_contracts": moved_dead_contracts,

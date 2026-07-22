@@ -3,6 +3,7 @@ from unittest import mock
 
 from app import server
 from app.routes import validation as route_validation
+from app.routes.validation import json_write_content_type_supported, parse_json_request_body
 from app.server import (
     ASSET_UPDATE_FIELDS,
     PLAYER_UPDATE_ALLOWED_FIELDS,
@@ -24,6 +25,28 @@ from app.server import (
 
 
 class RequestValidationTests(unittest.TestCase):
+    def test_json_request_parser_is_framework_neutral(self) -> None:
+        body = b'{"team_code":"ATL","ids":[1,2]}'
+        headers = {"Content-Length": str(len(body)), "Content-Type": "application/json; charset=utf-8"}
+
+        payload = parse_json_request_body(headers, lambda length: body[:length])
+
+        self.assertEqual({"team_code": "ATL", "ids": [1, 2]}, payload)
+        self.assertTrue(json_write_content_type_supported(headers))
+
+    def test_json_request_parser_rejects_bad_body_shape_and_size(self) -> None:
+        body = b'["not", "an", "object"]'
+        headers = {"Content-Length": str(len(body)), "Content-Type": "application/json"}
+        with self.assertRaisesRegex(ValueError, "invalid_json"):
+            parse_json_request_body(headers, lambda length: body[:length])
+
+        too_large = {"Content-Length": str(route_validation.JSON_REQUEST_MAX_BYTES + 1)}
+        with self.assertRaisesRegex(ValueError, "request_too_large"):
+            parse_json_request_body(too_large, lambda _length: b"")
+
+        unsupported = {"Content-Length": "2", "Content-Type": "text/plain"}
+        self.assertFalse(json_write_content_type_supported(unsupported))
+
     def test_json_structure_accepts_normal_nested_payload(self) -> None:
         validate_json_structure(
             {

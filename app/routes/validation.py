@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Dict, Optional
+import json
+from typing import Any, Callable, Dict, Optional
 
 try:
     from ..auth.policies import normalize_team_code
@@ -36,6 +37,7 @@ JSON_MAX_CONTAINER_ITEMS = 10_000
 JSON_MAX_OBJECT_FIELDS = 2_048
 JSON_MAX_TOTAL_NODES = 100_000
 JSON_MAX_KEY_LENGTH = 128
+JSON_REQUEST_MAX_BYTES = 16 * 1024 * 1024
 PLAYER_CONTRACT_SEASONS = tuple(range(2025, 2032))
 FREE_AGENT_ROLE_VALUES = {
     "Titular", "Sexto hombre", "Minutos de rotación (10-20)",
@@ -63,6 +65,38 @@ def validate_json_structure(payload: Any) -> None:
         max_total_nodes=JSON_MAX_TOTAL_NODES,
         max_key_length=JSON_MAX_KEY_LENGTH,
     )
+
+
+def json_write_content_type_supported(headers: Any) -> bool:
+    length = parse_int(headers.get("Content-Length")) or 0
+    if length <= 0:
+        return True
+    content_type = str(headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    return content_type == "application/json"
+
+
+def parse_json_request_body(headers: Any, read_body: Callable[[int], bytes]) -> Dict[str, Any]:
+    try:
+        length = int(headers.get("Content-Length", "0"))
+    except (TypeError, ValueError) as err:
+        raise ValueError("invalid_content_length") from err
+    if length < 0:
+        raise ValueError("invalid_content_length")
+    if length > JSON_REQUEST_MAX_BYTES:
+        raise ValueError("request_too_large")
+    raw = read_body(length) if length > 0 else b"{}"
+    if not raw:
+        return {}
+    if len(raw) != length:
+        raise ValueError("invalid_json")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise ValueError("invalid_json") from err
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_json")
+    validate_json_structure(payload)
+    return payload
 
 
 def validate_season_value_map(
@@ -186,4 +220,3 @@ def validate_admin_decision_payload(payload: Dict[str, Any]) -> None:
     custom_image = payload.get("discord_custom_image")
     if custom_image is not None and not isinstance(custom_image, dict):
         raise RequestValidationError("invalid_field", field="discord_custom_image")
-

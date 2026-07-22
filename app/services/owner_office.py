@@ -407,6 +407,13 @@ class OwnerOfficeService:
             "owner_final_message": str(row["owner_final_message"] or ""),
             "owner_conclusion_message": str(row["owner_conclusion_message"] or ""),
             "trust_delta": parse_int(row["trust_delta"]),
+            "previous_trust": str(row.get("previous_trust") or ""),
+            "proposed_trust_delta": parse_int(row.get("proposed_trust_delta")),
+            "bounded_trust_delta": parse_int(row.get("bounded_trust_delta")),
+            "trust_model": str(row.get("trust_model") or ""),
+            "prompt_template_version": str(row.get("prompt_template_version") or ""),
+            "administrator_override": bool(parse_int(row.get("administrator_override"))),
+            "conversation_id": str(row.get("conversation_id") or ""),
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
             "completed_at": str(row["completed_at"] or ""),
@@ -641,15 +648,40 @@ class OwnerOfficeService:
             gm_response,
             session=session,
         )
-        interview = self._repository.complete_owner_exit_interview(
-            code,
-            season_year,
-            session,
-            gm_response,
-            final_message,
-            conclusion_message,
-            trust_delta,
-        )
+        entry = {}
+        entries = owner_office.get("entries") if isinstance(owner_office.get("entries"), dict) else {}
+        if isinstance(entries, dict):
+            entry = entries.get(str(season_year), {}) if isinstance(entries.get(str(season_year)), dict) else {}
+        metadata = {}
+        audit_metadata = getattr(self._interview_composer, "audit_metadata", None)
+        if callable(audit_metadata):
+            raw_metadata = audit_metadata()
+            metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        bounded_delta = max(-1, min(1, int(trust_delta)))
+        conversation_id = str(existing.get("conversation_id") or "").strip()
+        if not conversation_id:
+            conversation_id = f"owner_exit_interview:{code.upper()}:{season_year}:{existing.get('id') or ''}"
+        try:
+            interview = self._repository.complete_owner_exit_interview(
+                code,
+                season_year,
+                session,
+                gm_response,
+                final_message,
+                conclusion_message,
+                bounded_delta,
+                previous_trust=entry.get("confidence_current"),
+                proposed_trust_delta=trust_delta,
+                trust_model=metadata.get("model"),
+                prompt_template_version=metadata.get("prompt_template_version"),
+                administrator_override=False,
+                conversation_id=conversation_id,
+                expected_version=payload.get("expected_interview_version"),
+            )
+        except ValueError as err:
+            if str(err) == "stale_entity_version":
+                raise OwnerExitInterviewError("stale_entity_version") from err
+            raise
         if not interview:
             raise OwnerExitInterviewError("interview_not_found")
         return {

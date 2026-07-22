@@ -163,8 +163,16 @@ try:
         resolve_entity_ids,
     )
     from .observability.logging import configure_logging, get_logger, request_context
+    from .observability.operations import (
+        current_request_metrics,
+        finish_request_metrics,
+        normalize_route as normalize_observed_route,
+        record_response_metrics,
+        start_request_metrics,
+    )
     from .routing import (
         RequestValidationError,
+        RouteResponse,
         dispatch_routes,
         validate_boolean_field,
         validate_integer_range,
@@ -185,12 +193,14 @@ try:
         validate_admin_decision_payload, validate_coadmin_vote_submit_payload,
         validate_free_agent_negotiation_payload, validate_free_agent_offer_payload,
         validate_gm_bird_renounce_payload, validate_gm_option_request_payload,
+        json_write_content_type_supported, parse_json_request_body,
         validate_json_structure, validate_season_value_map,
-        validate_waiver_claim_payload, JSON_MAX_CONTAINER_ITEMS,
+        validate_waiver_claim_payload, JSON_REQUEST_MAX_BYTES, JSON_MAX_CONTAINER_ITEMS,
         JSON_MAX_DEPTH, JSON_MAX_KEY_LENGTH, JSON_MAX_OBJECT_FIELDS,
         JSON_MAX_TOTAL_NODES,
     )
     from .runtime import load_env_file, static_asset_version as runtime_static_asset_version
+    from .security_headers import send_cache_header, send_security_headers
     from .services.cartera import CarteraOperations, CarteraService
     from .services.admin_exports import LeagueWorkbookExportService
     from .services.admin_imports import OwnerAdminImportService
@@ -353,8 +363,16 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         resolve_entity_ids,
     )
     from observability.logging import configure_logging, get_logger, request_context
+    from observability.operations import (
+        current_request_metrics,
+        finish_request_metrics,
+        normalize_route as normalize_observed_route,
+        record_response_metrics,
+        start_request_metrics,
+    )
     from routing import (
         RequestValidationError,
+        RouteResponse,
         dispatch_routes,
         validate_boolean_field,
         validate_integer_range,
@@ -375,12 +393,14 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         validate_admin_decision_payload, validate_coadmin_vote_submit_payload,
         validate_free_agent_negotiation_payload, validate_free_agent_offer_payload,
         validate_gm_bird_renounce_payload, validate_gm_option_request_payload,
+        json_write_content_type_supported, parse_json_request_body,
         validate_json_structure, validate_season_value_map,
-        validate_waiver_claim_payload, JSON_MAX_CONTAINER_ITEMS,
+        validate_waiver_claim_payload, JSON_REQUEST_MAX_BYTES, JSON_MAX_CONTAINER_ITEMS,
         JSON_MAX_DEPTH, JSON_MAX_KEY_LENGTH, JSON_MAX_OBJECT_FIELDS,
         JSON_MAX_TOTAL_NODES,
     )
     from runtime import load_env_file, static_asset_version as runtime_static_asset_version
+    from security_headers import send_cache_header, send_security_headers
     from services.cartera import CarteraOperations, CarteraService
     from services.admin_exports import LeagueWorkbookExportService
     from services.admin_imports import OwnerAdminImportService
@@ -408,7 +428,6 @@ TRADE_VALIDATION_RULES_VERSION = "2026-07-16.1"
 OWNER_BACKGROUND_MAX_BYTES = 12_000_000
 CUSTOM_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 CUSTOM_IMAGE_MAX_BASE64_CHARS = ((CUSTOM_IMAGE_MAX_BYTES + 2) // 3) * 4 + 16
-JSON_REQUEST_MAX_BYTES = 16 * 1024 * 1024
 IMAGE_MAX_DIMENSION = 8192
 IMAGE_MAX_PIXELS = 40_000_000
 OWNER_BACKGROUND_ALLOWED_MIME_TYPES = {
@@ -420,6 +439,11 @@ STATIC_ASSET_FILES = (
     "styles.css",
     "guest.js",
     "admin.js",
+    "api.js",
+    "dom.js",
+    "draft_live.js",
+    "formatting.js",
+    "notifications.js",
     "login.js",
     "news.js",
 )
@@ -870,7 +894,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             sync_generated=lambda conn, settings: self._player_identity_service().synchronize_generated_free_agents(
                 conn, settings
             ),
-            table_exists=self._table_exists_conn,
+            table_exists=self._player_lifecycle_repository.table_exists,
             min_contract_year=PLAYER_CONTRACT_MIN_YEAR,
             max_contract_start_year=PLAYER_CONTRACT_MAX_START_YEAR,
         )
@@ -976,6 +1000,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
         updates: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         timestamp: Optional[str] = None,
+        expected_version: Optional[int] = None,
     ) -> Dict[str, Any]:
         return self._workflow_repository.transition_conn(
             conn,
@@ -988,6 +1013,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             updates=updates,
             metadata=metadata,
             timestamp=timestamp,
+            expected_version=expected_version,
         )
 
     def warm_tracker_cache(self) -> None:
@@ -996,85 +1022,6 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
         current_year = max(CAP_FORECAST_MIN_YEAR, min(CAP_FORECAST_MAX_YEAR, current_year))
         self.list_tracker(current_year, busy_timeout_ms=15000)
 
-
-
-
-    def _create_player_profile(
-        self,
-        conn: sqlite3.Connection,
-        name: Any,
-        experience_years: Any = None,
-        reference_image_url: Any = None,
-        profile_notes: Any = None,
-        timestamp: Optional[str] = None,
-    ) -> int:
-        return self._player_lifecycle_repository.create_profile(
-            conn, name, experience_years, reference_image_url, profile_notes, timestamp
-        )
-
-
-    def _current_year_conn(self, conn: sqlite3.Connection) -> int:
-        return self._player_lifecycle_repository.current_year(conn)
-
-    def _players_have_row_state_conn(self, conn: sqlite3.Connection) -> bool:
-        return self._player_lifecycle_repository.players_have_row_state(conn)
-
-    def _infer_player_row_state_conn(
-        self,
-        conn: sqlite3.Connection,
-        player: sqlite3.Row,
-        current_year: Optional[int] = None,
-    ) -> str:
-        return self._player_lifecycle_repository.infer_row_state(conn, player, current_year)
-
-    def _duplicate_active_profile_ids_conn(self, conn: sqlite3.Connection) -> List[int]:
-        return self._player_lifecycle_repository.duplicate_active_profile_ids(conn)
-
-    def _sync_draft_pick_asset_identity_conn(
-        self,
-        conn: sqlite3.Connection,
-        asset_id: Any,
-        timestamp: Optional[str] = None,
-    ) -> None:
-        self._asset_repository.sync_draft_pick_identity(conn, asset_id, timestamp)
-
-
-    def _player_profile_exists_conn(self, conn: sqlite3.Connection, profile_id: Any) -> bool:
-        return self._player_lifecycle_repository.profile_exists(conn, profile_id)
-
-    def _table_exists_conn(self, conn: sqlite3.Connection, table_name: str) -> bool:
-        return self._player_lifecycle_repository.table_exists(conn, table_name)
-
-    def _upsert_player_salary_history_row_conn(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        profile_id: Any,
-        player_id: Any,
-        team_code: Any,
-        season_year: Any,
-        salary_text: Any,
-        salary_num: Any,
-        source: str,
-        salary_type: Any = None,
-        timestamp: Optional[str] = None,
-    ) -> bool:
-        return self._player_lifecycle_repository.upsert_salary_history(
-            conn,
-            profile_id=profile_id,
-            player_id=player_id,
-            team_code=team_code,
-            season_year=season_year,
-            salary_text=salary_text,
-            salary_num=salary_num,
-            source=source,
-            salary_type=salary_type,
-            timestamp=timestamp,
-        )
-
-
-    def _unique_profile_name_map_conn(self, conn: sqlite3.Connection) -> Dict[str, int]:
-        return self._player_lifecycle_repository.unique_profile_name_map(conn)
 
 
 
@@ -1199,7 +1146,8 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             pp.yos_source AS profile_yos_source,
             pp.reference_image_url AS profile_reference_image_url,
             pp.profile_notes AS profile_profile_notes,
-            pp.transaction_notes AS profile_transaction_notes
+            pp.transaction_notes AS profile_transaction_notes,
+            pp.version AS profile_version
         """
 
     def _merge_player_profile(self, player: Dict[str, Any]) -> Dict[str, Any]:
@@ -1308,48 +1256,6 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
     def submit_coadmin_vote(self, vote_id: Any, scores: Any, session: Dict[str, Any]) -> Dict[str, Any]:
         return self._coadmin_vote_repository.submit_coadmin_vote(vote_id, scores, session)
 
-
-    def _gm_option_request_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
-        item = row_to_dict(cursor, row)
-        item["request_type"] = "option"
-        raw_field = str(item.get("option_field") or "")
-        salary_text_match = re.fullmatch(r"salary_(20\d{2})_text", raw_field)
-        if salary_text_match and str(item.get("action") or "").strip().lower() == "renounced":
-            item["request_type"] = "bird_rights_renounce"
-            season_year = parse_int(salary_text_match.group(1))
-            item["season_year"] = season_year
-            item["season_label"] = f"{season_year}-{(season_year + 1) % 100:02d}" if season_year else ""
-            return item
-        match = re.fullmatch(r"option_(20\d{2})", raw_field)
-        season_year = parse_int(match.group(1)) if match else None
-        item["season_year"] = season_year
-        item["season_label"] = f"{season_year}-{(season_year + 1) % 100:02d}" if season_year else ""
-        return item
-
-    def _gm_free_agent_offer_request_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
-        item = row_to_dict(cursor, row)
-        item["request_type"] = "free_agent_offer"
-        item["action"] = "offered"
-        item["option_field"] = "free_agent_offer"
-        offer_type = str(item.get("offer_type") or "free_agent_offer").strip().lower()
-        item["option_value"] = "Renovación" if offer_type == "renewal" else "Oferta FA"
-        raw_payload = str(item.get("offer_payload_json") or "{}")
-        try:
-            offer_payload = json.loads(raw_payload)
-        except json.JSONDecodeError:
-            offer_payload = {}
-        if not isinstance(offer_payload, dict):
-            offer_payload = {}
-        item["offer_payload"] = offer_payload
-        if not str(item.get("player_name") or "").strip():
-            item["player_name"] = str(offer_payload.get("player_name") or offer_payload.get("name") or "Agente libre")
-        contract_type = str(offer_payload.get("contract_type") or "").strip() or "Sin tipo"
-        years = parse_int(offer_payload.get("years"))
-        years_text = f"{years} año(s)" if years is not None and years > 0 else "Sin duración"
-        item["season_label"] = f"{contract_type} · {years_text}"
-        item["offer_contract_type"] = contract_type
-        item["offer_years"] = years
-        return item
 
     def get_gm_option_request(self, request_id: int) -> Optional[Dict[str, Any]]:
         return self._gm_request_repository.get_gm_option_request(request_id)
@@ -1496,24 +1402,6 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
         return self._gm_request_repository.mark_gm_option_request_decided(request_id, status, admin, note)
 
 
-    def create_user_notification(self, **notification: Any) -> Optional[int]:
-        return self._notification_repository.create(**notification)
-
-    def list_user_notifications_for_session(
-        self,
-        session: Dict[str, Any],
-        *,
-        unread_only: bool = True,
-        limit: int = 20,
-    ) -> List[Dict[str, Any]]:
-        return self._notification_repository.list_for_session(
-            session,
-            unread_only=unread_only,
-            limit=limit,
-        )
-
-    def mark_user_notification_read(self, notification_id: int, session: Dict[str, Any]) -> bool:
-        return self._notification_repository.mark_read(notification_id, session)
     def create_session(self, token: str, payload: Dict[str, Any], created_at: str, expires_at: int) -> bool:
         return session_repository.create_session(self.connect, token, payload, created_at, expires_at)
 
@@ -1667,10 +1555,12 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
         owner_final_message: str,
         owner_conclusion_message: str,
         trust_delta: int,
+        *,
+        expected_version: Any = None,
     ) -> Optional[Dict[str, Any]]:
         return self._owner_office_repository.complete_owner_exit_interview(
             code, season_year, session, gm_response, owner_final_message,
-            owner_conclusion_message, trust_delta,
+            owner_conclusion_message, trust_delta, expected_version=expected_version,
         )
 
     def reset_owner_exit_interview(self, code: str, season_year: int) -> bool:
@@ -2024,8 +1914,8 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
     def _team_depth_chart_payload(self, conn: sqlite3.Connection, team_id: int) -> Dict[str, Any]:
         return self._depth_chart_repository.payload(conn, team_id)
 
-    def set_team_depth_chart(self, team_code: Any, entries: Any) -> Dict[str, Any]:
-        return self._depth_chart_repository.set(team_code, entries)
+    def set_team_depth_chart(self, team_code: Any, entries: Any, *, expected_version: Any = None) -> Dict[str, Any]:
+        return self._depth_chart_repository.set(team_code, entries, expected_version=expected_version)
 
     def list_gm_office(self, team_code: Any) -> Dict[str, Any]:
         return self._gm_office_service.get(team_code)
@@ -2108,8 +1998,20 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
 
 
 
-    def merge_player_profiles(self, source_profile_id: int, target_profile_id: int) -> Dict[str, Any]:
-        return self._player_identity_service().merge_profiles(source_profile_id, target_profile_id)
+    def merge_player_profiles(
+        self,
+        source_profile_id: int,
+        target_profile_id: int,
+        *,
+        expected_source_version: Any = None,
+        expected_target_version: Any = None,
+    ) -> Dict[str, Any]:
+        return self._player_identity_service().merge_profiles(
+            source_profile_id,
+            target_profile_id,
+            expected_source_version=expected_source_version,
+            expected_target_version=expected_target_version,
+        )
 
     def create_player_transaction(self, profile_id: int, payload: Dict[str, Any]) -> Optional[int]:
         return self._player_repository.create_transaction(profile_id, payload)
@@ -2597,6 +2499,10 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
         profile_id: Optional[str] = None,
         before: Optional[Dict[str, Any]] = None,
         after: Optional[Dict[str, Any]] = None,
+        command_id: Optional[str] = None,
+        validation_result: Optional[str] = None,
+        entity_versions: Optional[Dict[str, Any]] = None,
+        integration_outbox_ids: Optional[List[int]] = None,
     ) -> None:
         self._audit_log_service().record(
             AuditEvent(
@@ -2616,17 +2522,50 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
                 profile_id=profile_id,
                 before=before,
                 after=after,
+                command_id=command_id,
+                validation_result=validation_result,
+                entity_versions=entity_versions,
+                integration_outbox_ids=integration_outbox_ids or (),
                 details=details or {},
             )
         )
 
-    def list_admin_logs(
-        self,
-        action: Optional[str] = None,
-        entity: Optional[str] = None,
-        limit: int = 200,
-    ) -> List[Dict[str, Any]]:
-        return self._audit_log_service().list(action=action, entity=entity, limit=limit)
+def _begin_observed_request(handler: Any) -> Any:
+    path = urlparse(getattr(handler, "path", "")).path
+    route = normalize_observed_route(path)
+    handler._current_route_name = route
+    return start_request_metrics(handler._request_id(), getattr(handler, "command", None), route, path)
+
+
+def _observed_team_scope(handler: Any) -> List[str]:
+    scope: List[str] = []
+    sess = getattr(handler, "_observed_session", None)
+    if isinstance(sess, dict):
+        raw_codes = sess.get("team_codes")
+        if isinstance(raw_codes, list):
+            scope.extend(str(code).strip().upper() for code in raw_codes if str(code or "").strip())
+        elif sess.get("team_code"):
+            scope.append(str(sess.get("team_code")).strip().upper())
+    for part in urlparse(getattr(handler, "path", "")).path.strip("/").split("/"):
+        normalized = normalize_team_code(part)
+        if normalized:
+            scope.append(normalized)
+    return sorted(dict.fromkeys(scope))
+
+
+def _finish_observed_request(handler: Any, token: Any) -> None:
+    metrics = current_request_metrics()
+    if metrics:
+        metrics.route = str(getattr(handler, "_current_route_name", None) or metrics.route)
+    sess = getattr(handler, "_observed_session", None)
+    session = sess if isinstance(sess, dict) else {}
+    finish_request_metrics(
+        token,
+        user_id=session.get("user_id"),
+        role=session.get("role"),
+        team_scope=_observed_team_scope(handler),
+        logger=get_logger("http"),
+    )
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -2788,6 +2727,28 @@ class Handler(SimpleHTTPRequestHandler):
     def log_error(self, format: str, *args: Any) -> None:
         logger.error(format, *args, extra=self._request_log_context())
 
+    def send_response(self, code: int, message: Optional[str] = None) -> None:
+        self._sent_response_header_names = set()
+        metrics = current_request_metrics()
+        if metrics and not metrics.status_code:
+            record_response_metrics(code, metrics.response_size)
+        return super().send_response(code, message)
+
+    def send_header(self, keyword: str, value: Any) -> None:
+        normalized_keyword = str(keyword or "").lower()
+        if normalized_keyword:
+            sent = getattr(self, "_sent_response_header_names", None)
+            if isinstance(sent, set):
+                sent.add(normalized_keyword)
+        if normalized_keyword == "content-length":
+            metrics = current_request_metrics()
+            if metrics and not metrics.response_size:
+                try:
+                    metrics.response_size = max(0, int(value))
+                except (TypeError, ValueError):
+                    pass
+        return super().send_header(keyword, value)
+
     def _request_id(self) -> str:
         existing = getattr(self, "_audit_request_id", None)
         try:
@@ -2810,6 +2771,10 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _json(self, status: int, payload: Any, headers: Optional[Dict[str, str]] = None) -> None:
         data = json.dumps(payload).encode("utf-8")
+        error_classification = ""
+        if isinstance(payload, dict) and payload.get("error"):
+            error_classification = str(payload.get("error") or "")
+        record_response_metrics(status, len(data), error_classification)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
@@ -2824,7 +2789,17 @@ class Handler(SimpleHTTPRequestHandler):
         except BrokenPipeError:
             return
 
+    def _send_route_response(self, response: RouteResponse) -> None:
+        if response.body is not None:
+            self._bytes_response(response.status, response.body, response.content_type, response.headers)
+            return
+        if response.headers:
+            self._json(response.status, response.payload, response.headers)
+            return
+        self._json(response.status, response.payload)
+
     def _bytes_response(self, status: int, data: bytes, content_type: str, headers: Optional[Dict[str, str]] = None) -> None:
+        record_response_metrics(status, len(data))
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
@@ -2840,40 +2815,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
     def end_headers(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path.lower()
-        query = parsed.query
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
-        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; "
-            "script-src 'self'; "
-            "style-src 'self'; "
-            "font-src 'self' data:; "
-            "img-src 'self' data: https:; "
-            "connect-src 'self'; "
-            "media-src 'self'; "
-            "manifest-src 'self'; "
-            "worker-src 'none'; "
-            "frame-src 'none'; "
-            "object-src 'none'; "
-            "base-uri 'none'; "
-            "frame-ancestors 'none'; "
-            "form-action 'self'",
-        )
-        if self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower() == "https":
-            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-        if path.endswith(".html") or path in {"/", "/login", "/admin", "/news"}:
-            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        elif path.endswith((".css", ".js", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico")):
-            if query:
-                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-            else:
-                self.send_header("Cache-Control", "public, max-age=3600")
+        send_security_headers(self, self.headers)
+        send_cache_header(self, self.path)
         super().end_headers()
 
     def _redirect(self, location: str, headers: Optional[Dict[str, str]] = None) -> None:
@@ -2883,27 +2826,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def _read_json(self) -> Dict[str, Any]:
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except (TypeError, ValueError) as err:
-            raise ValueError("invalid_content_length") from err
-        if length < 0:
-            raise ValueError("invalid_content_length")
-        if length > JSON_REQUEST_MAX_BYTES:
-            raise ValueError("request_too_large")
-        raw = self.rfile.read(length) if length > 0 else b"{}"
-        if not raw:
-            return {}
-        if len(raw) != length:
-            raise ValueError("invalid_json")
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as err:
-            raise ValueError("invalid_json") from err
-        if not isinstance(payload, dict):
-            raise ValueError("invalid_json")
-        validate_json_structure(payload)
-        return payload
+        return parse_json_request_body(self.headers, self.rfile.read)
 
     def _read_json_or_error(self) -> Optional[Dict[str, Any]]:
         try:
@@ -2978,11 +2901,7 @@ class Handler(SimpleHTTPRequestHandler):
         )
 
     def _require_json_write_content_type(self) -> bool:
-        length = parse_int(self.headers.get("Content-Length")) or 0
-        if length <= 0:
-            return True
-        content_type = str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        if content_type == "application/json":
+        if json_write_content_type_supported(self.headers):
             return True
         self._json(415, {"error": "unsupported_media_type"})
         return False
@@ -3118,6 +3037,8 @@ class Handler(SimpleHTTPRequestHandler):
             sess["team_codes"] = team_codes
             sess["team_code"] = team_codes[0] if team_codes else None
             sess["agent_name"] = str(access.get("agent_name") or "").strip()
+        if sess:
+            self._observed_session = dict(sess)
         return sess
 
     def _is_authenticated(self) -> bool:
@@ -3419,6 +3340,10 @@ class Handler(SimpleHTTPRequestHandler):
         before: Optional[Dict[str, Any]] = None,
         after: Optional[Dict[str, Any]] = None,
         team_codes: Optional[List[Any]] = None,
+        command_id: Optional[str] = None,
+        validation_result: Optional[str] = None,
+        entity_versions: Optional[Dict[str, Any]] = None,
+        integration_outbox_ids: Optional[List[int]] = None,
     ) -> None:
         sess = self._current_session() or {}
         if sess.get("role") != "admin":
@@ -3442,6 +3367,10 @@ class Handler(SimpleHTTPRequestHandler):
             profile_id=profile_id,
             before=before,
             after=after,
+            command_id=command_id,
+            validation_result=validation_result,
+            entity_versions=entity_versions,
+            integration_outbox_ids=integration_outbox_ids,
             details=details or {},
         )
 
@@ -3470,52 +3399,80 @@ class Handler(SimpleHTTPRequestHandler):
 
 
     def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        if dispatch_routes(self, parsed, GET_ROUTES):
-            return
+        token = _begin_observed_request(self)
+        try:
+            parsed = urlparse(self.path)
+            if dispatch_routes(self, parsed, GET_ROUTES):
+                return
 
-        return super().do_GET()
+            return super().do_GET()
+        except Exception as exc:
+            record_response_metrics(500, 0, exc.__class__.__name__)
+            raise
+        finally:
+            _finish_observed_request(self, token)
 
     def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        if dispatch_routes(self, parsed, EARLY_POST_ROUTES):
-            return
-        if dispatch_routes(self, parsed, OWNER_OFFICE_MULTIPART_POST_ROUTES):
-            return
-        if not self._require_json_write_content_type():
-            return
-        payload = self._read_json_or_error()
-        if payload is None:
-            return
-        if not dispatch_routes(self, parsed, POST_ROUTES, payload):
-            self._json(404, {"error": "not_found"})
+        token = _begin_observed_request(self)
+        try:
+            parsed = urlparse(self.path)
+            if dispatch_routes(self, parsed, EARLY_POST_ROUTES):
+                return
+            if dispatch_routes(self, parsed, OWNER_OFFICE_MULTIPART_POST_ROUTES):
+                return
+            if not self._require_json_write_content_type():
+                return
+            payload = self._read_json_or_error()
+            if payload is None:
+                return
+            if not dispatch_routes(self, parsed, POST_ROUTES, payload):
+                self._json(404, {"error": "not_found"})
+        except Exception as exc:
+            record_response_metrics(500, 0, exc.__class__.__name__)
+            raise
+        finally:
+            _finish_observed_request(self, token)
 
     def do_PATCH(self) -> None:
-        if not self._require_csrf():
-            return
-        if not self._require_sensitive_rate_limit("admin_patch"):
-            return
-        if not self._require_json_write_content_type():
-            return
-        parsed = urlparse(self.path)
-        payload = self._read_json_or_error()
-        if payload is None:
-            return
-        if dispatch_routes(self, parsed, PATCH_ROUTES, payload):
-            return
+        token = _begin_observed_request(self)
+        try:
+            if not self._require_csrf():
+                return
+            if not self._require_sensitive_rate_limit("admin_patch"):
+                return
+            if not self._require_json_write_content_type():
+                return
+            parsed = urlparse(self.path)
+            payload = self._read_json_or_error()
+            if payload is None:
+                return
+            if dispatch_routes(self, parsed, PATCH_ROUTES, payload):
+                return
 
-        self._json(404, {"error": "not_found"})
+            self._json(404, {"error": "not_found"})
+        except Exception as exc:
+            record_response_metrics(500, 0, exc.__class__.__name__)
+            raise
+        finally:
+            _finish_observed_request(self, token)
 
     def do_DELETE(self) -> None:
-        if not self._require_csrf():
-            return
-        if not self._require_sensitive_rate_limit("admin_delete"):
-            return
-        if not self._require_json_write_content_type():
-            return
-        parsed = urlparse(self.path)
-        if not dispatch_routes(self, parsed, DELETE_ROUTES):
-            self._json(404, {"error": "not_found"})
+        token = _begin_observed_request(self)
+        try:
+            if not self._require_csrf():
+                return
+            if not self._require_sensitive_rate_limit("admin_delete"):
+                return
+            if not self._require_json_write_content_type():
+                return
+            parsed = urlparse(self.path)
+            if not dispatch_routes(self, parsed, DELETE_ROUTES):
+                self._json(404, {"error": "not_found"})
+        except Exception as exc:
+            record_response_metrics(500, 0, exc.__class__.__name__)
+            raise
+        finally:
+            _finish_observed_request(self, token)
 
 
 def run_server(db_path: str, host: str, port: int) -> None:
@@ -3525,6 +3482,53 @@ def run_server(db_path: str, host: str, port: int) -> None:
     configure_logging()
     Handler.db = LeagueDB(db_path)
     Handler.db.ensure_auth_schema()
+    bootstrap_app = ApplicationContainer(
+        Handler.db,
+        ApplicationConfig(
+            contract_seasons=tuple(PLAYER_CONTRACT_SEASONS),
+            contract_min_year=PLAYER_CONTRACT_MIN_YEAR,
+            contract_max_start_year=PLAYER_CONTRACT_MAX_START_YEAR,
+            cap_forecast_min_year=CAP_FORECAST_MIN_YEAR,
+            cap_forecast_max_year=CAP_FORECAST_MAX_YEAR,
+            unrestricted_free_agent_type=FREE_AGENT_TYPE_UNRESTRICTED,
+            cap_hold_source=FREE_AGENT_SOURCE_CAP_HOLD,
+            google_client_id=Handler.google_client_id,
+            google_client_secret=Handler.google_client_secret,
+            google_redirect_uri=Handler.google_redirect_uri,
+            admin_emails=frozenset(Handler.admin_emails),
+            gm_accounts=Handler.gm_accounts,
+            discord_webhook_url=Handler.discord_webhook_url,
+            discord_bot_token=Handler.discord_bot_token,
+            discord_api_base_url=Handler.discord_api_base_url,
+            discord_timeout_seconds=Handler.discord_timeout_seconds,
+            discord_press_channel_id=Handler.discord_press_channel_id,
+            discord_free_agent_offers_webhook_url=Handler.discord_free_agent_offers_webhook_url,
+            discord_free_agent_offers_forum_tag_ids=tuple(Handler.discord_free_agent_offers_forum_tag_ids),
+            discord_free_agent_offers_role_id=Handler.discord_free_agent_offers_role_id,
+            discord_role_id=Handler.discord_role_id,
+            discord_notifications_enabled=Handler.discord_notifications_enabled,
+            discord_image_notifications_enabled=Handler.discord_image_notifications_enabled,
+            discord_allowed_image_mime_types=tuple(DISCORD_CUSTOM_IMAGE_ALLOWED_MIME_TYPES),
+            discord_max_image_base64_chars=CUSTOM_IMAGE_MAX_BASE64_CHARS,
+            discord_max_image_bytes=CUSTOM_IMAGE_MAX_BYTES,
+            openai_api_key=Handler.openai_api_key,
+            openai_text_model=Handler.openai_text_model,
+            openai_text_timeout_seconds=Handler.openai_text_timeout_seconds,
+            openai_image_model=Handler.openai_image_model,
+            openai_image_size=Handler.openai_image_size,
+            openai_image_quality=Handler.openai_image_quality,
+            openai_image_format=Handler.openai_image_format,
+            openai_image_timeout_seconds=Handler.openai_image_timeout_seconds,
+            openai_reference_image_timeout_seconds=Handler.openai_reference_image_timeout_seconds,
+            openai_reference_image_max_bytes=Handler.openai_reference_image_max_bytes,
+            owner_forecast_window=CAP_FORECAST_WINDOW,
+            owner_objective_options=tuple(OWNER_SEASON_OBJECTIVES),
+        ),
+        opener=urlopen,
+        now=now_iso,
+        log_error=logger.error,
+    )
+    bootstrap_app.validate_dependencies()
 
     server = ThreadingHTTPServer((host, port), Handler)
     logger.info("Serving on http://%s:%s", host, port)

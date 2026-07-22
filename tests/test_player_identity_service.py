@@ -71,6 +71,24 @@ class PlayerIdentityServiceTests(unittest.TestCase):
         player = self.db.get_player_record(player_id)
         self.assertEqual("Canonical Player Updated", player["name"])
         self.assertEqual("Canonical Player Updated", player["profile_name"])
+        self.assertGreaterEqual(int(player["profile_version"]), 2)
+
+    def test_profile_update_rejects_stale_version(self) -> None:
+        player_id, profile_id = self.create_player()
+        player = self.db.get_player_record(player_id)
+        self.service.update_profile(profile_id, {"name": "First Update"})
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            self.service.update_profile(
+                profile_id,
+                {
+                    "name": "Stale Update",
+                    "expected_version": player["profile_version"],
+                },
+            )
+
+        updated = self.db.get_player_record(player_id)
+        self.assertEqual("First Update", updated["name"])
 
     def test_synchronize_projects_uncontracted_profile_to_free_agents(self) -> None:
         player_id, profile_id = self.create_player("Uncontracted Player")

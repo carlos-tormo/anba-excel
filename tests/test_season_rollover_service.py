@@ -57,6 +57,15 @@ class SeasonRolloverServiceTests(unittest.TestCase):
         result = self.service.progress_to_next_year()
 
         self.assertEqual(2026, result["current_year"])
+        self.assertEqual("season-rollover:2025:2026", result["command_id"])
+        self.assertEqual("valid", result["validation_result"])
+        self.assertEqual(2025, result["entity_versions"]["previous_year"])
+        self.assertEqual(2026, result["entity_versions"]["current_year"])
+        self.assertTrue(result["entity_versions"]["snapshot_created"])
+        self.assertEqual(
+            result["entity_versions"]["current_year_version_before"] + 1,
+            result["entity_versions"]["current_year_version_after"],
+        )
         self.assertEqual("2026", self.db.get_settings()["current_year"])
         self.assertEqual(1, self.snapshot_count())
 
@@ -68,6 +77,22 @@ class SeasonRolloverServiceTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "forced_rollover_failure"):
                 self.service.progress_to_next_year()
+
+        self.assertEqual("2025", self.db.get_settings()["current_year"])
+        self.assertEqual(0, self.snapshot_count())
+
+    def test_progress_rejects_stale_current_year_version(self) -> None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT version FROM app_settings WHERE key = 'current_year'"
+            ).fetchone()
+        self.db.update_setting("current_year", "2025")
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            self.service.progress_to_next_year(
+                expected_current_year=2025,
+                expected_current_year_version=int(row["version"]),
+            )
 
         self.assertEqual("2025", self.db.get_settings()["current_year"])
         self.assertEqual(0, self.snapshot_count())

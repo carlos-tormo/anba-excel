@@ -11,9 +11,11 @@ from typing import Any, Dict, List, Optional
 try:
     from ..auth.policies import normalize_team_code
     from ..db.repositories.waivers import WaiverRepository
+    from ..domain._values import parse_int
 except ImportError:  # pragma: no cover - supports direct script execution.
     from auth.policies import normalize_team_code
     from db.repositories.waivers import WaiverRepository
+    from domain._values import parse_int
 
 
 class WaiverService:
@@ -44,12 +46,14 @@ class WaiverService:
         normalized_team = normalize_team_code(team_code)
         if not normalized_team:
             raise ValueError("team_code_required")
-        claim = self.repository.create_claim(
-            int(waiver_player_id),
-            normalized_team,
-            payload,
-            actor or {},
-        )
+        with self.repository.db.transaction("IMMEDIATE") as conn:
+            claim = self.repository.create_claim_conn(
+                conn,
+                int(waiver_player_id),
+                normalized_team,
+                payload,
+                actor or {},
+            )
         return {
             "claim": claim,
             "team_code": normalized_team,
@@ -87,12 +91,15 @@ class WaiverService:
             raise ValueError("request_not_found")
         if str(request_before.get("status") or "").strip().lower() != "pending":
             raise ValueError("request_already_decided")
-        result = self.repository.decide_claim_request(
-            int(request_id),
-            normalized_decision,
-            actor or {},
-            str(note or "").strip() or None,
-        )
+        with self.repository.db.transaction("IMMEDIATE") as conn:
+            result = self.repository.decide_claim_request_conn(
+                conn,
+                int(request_id),
+                normalized_decision,
+                actor or {},
+                str(note or "").strip() or None,
+                expected_version=parse_int(request_before.get("version")),
+            )
         if not result:
             raise ValueError("request_not_found")
         return {
@@ -103,4 +110,13 @@ class WaiverService:
             "waiver_player_id": request_before.get("waiver_player_id"),
             "player_name": request_before.get("player_name"),
             "from_team_code": request_before.get("from_team_code"),
+            "command_id": result.get("command_id") or f"waiver-claim:{int(request_id)}:{normalized_decision}",
+            "validation_result": "valid",
+            "entity_versions": {
+                "request_before_status": request_before.get("status"),
+                "request_after_status": result.get("status") or normalized_decision,
+                "request_before_version": parse_int(request_before.get("version")),
+                "request_after_version": parse_int(result.get("version")),
+                "player_id": result.get("player_id"),
+            },
         }

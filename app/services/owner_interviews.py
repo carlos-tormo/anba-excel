@@ -13,13 +13,21 @@ except ImportError:  # pragma: no cover - supports direct app imports.
 
 
 TextResponse = Callable[[str, str, int], Optional[str]]
+OWNER_INTERVIEW_PROMPT_TEMPLATE_VERSION = "owner_exit_interview.v1"
 
 
 class OwnerInterviewCompositionService:
     """Build owner interview prompts and deterministic fallback replies."""
 
-    def __init__(self, text_response: TextResponse):
+    def __init__(self, text_response: TextResponse, *, model: str = ""):
         self._text_response = text_response
+        self._model = str(model or "").strip()
+
+    def audit_metadata(self) -> Dict[str, str]:
+        return {
+            "model": self._model,
+            "prompt_template_version": OWNER_INTERVIEW_PROMPT_TEMPLATE_VERSION,
+        }
 
     @staticmethod
     def _entry(owner_office: Dict[str, Any], season_year: int) -> Dict[str, Any]:

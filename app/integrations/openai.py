@@ -5,18 +5,25 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from .discord import http_error_excerpt, truncate_text
+from .discord import http_error_excerpt, redact_secrets, truncate_text
+
+try:
+    from ..observability.operations import record_external_call
+except ImportError:  # pragma: no cover
+    from observability.operations import record_external_call
 
 
 UrlOpener = Callable[..., Any]
 Logger = Callable[..., None]
 ImageAttachment = tuple[bytes, str, str]
+Sleeper = Callable[[float], None]
 
 
 @dataclass(frozen=True)
@@ -31,6 +38,11 @@ class OpenAIConfig:
     image_timeout_seconds: int = 120
     reference_image_timeout_seconds: int = 20
     reference_image_max_bytes: int = 6_000_000
+    reference_image_max_retries: int = 2
+    reference_image_retry_base_seconds: float = 0.25
+    generated_image_max_bytes: int = 10_000_000
+    max_text_prompt_chars: int = 12_000
+    max_text_output_chars: int = 4_000
     image_generation_enabled: bool = False
 
 
@@ -41,10 +53,12 @@ class OpenAIIntegration:
         *,
         opener: UrlOpener = urlopen,
         log_error: Optional[Logger] = None,
+        sleeper: Sleeper = time.sleep,
     ):
         self.config = config
         self._open = opener
         self._log_error = log_error or (lambda *_args: None)
+        self._sleep = sleeper
 
     def generate_image(
         self,
@@ -71,6 +85,8 @@ class OpenAIIntegration:
     ) -> Optional[str]:
         if not self.config.api_key:
             return None
+        system_prompt = truncate_text(system_prompt, self.config.max_text_prompt_chars)
+        user_prompt = truncate_text(user_prompt, self.config.max_text_prompt_chars)
         payload: Dict[str, Any] = {
             "model": self.config.text_model,
             "input": [
@@ -83,7 +99,7 @@ class OpenAIIntegration:
             response = self._post_json("https://api.openai.com/v1/responses", payload, self.config.text_timeout_seconds)
             direct = str(response.get("output_text") or "").strip()
             if direct:
-                return direct
+                return truncate_text(direct, self.config.max_text_output_chars)
             for item in response.get("output", []):
                 if not isinstance(item, dict):
                     continue
@@ -91,11 +107,14 @@ class OpenAIIntegration:
                     if isinstance(content, dict):
                         text = str(content.get("text") or "").strip()
                         if text:
-                            return text
+                            return truncate_text(text, self.config.max_text_output_chars)
         except HTTPError as err:
             self._log_error("OpenAI owner interview text generation failed: %s", http_error_excerpt(err))
         except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as err:
-            self._log_error("OpenAI owner interview text generation failed: %s", err)
+            self._log_error(
+                "OpenAI owner interview text generation failed: %s",
+                redact_secrets(err, extra_secrets=[self.config.api_key]),
+            )
         return None
 
     def fetch_reference_image(self, image_url: str) -> Optional[ImageAttachment]:
@@ -107,20 +126,49 @@ class OpenAIIntegration:
             self._log_error("OpenAI reference image skipped: unsupported URL scheme")
             return None
         request = Request(image_url, headers={"User-Agent": "anba-excel/1.0"}, method="GET")
+        max_attempts = max(1, int(self.config.reference_image_max_retries) + 1)
+        last_error: Optional[str] = None
         try:
-            with self._open(request, timeout=self.config.reference_image_timeout_seconds) as response:
-                content_type = str(response.headers.get("Content-Type") or "")
-                image_bytes = response.read(self.config.reference_image_max_bytes + 1)
-            if len(image_bytes) > self.config.reference_image_max_bytes:
-                self._log_error("OpenAI reference image skipped: file exceeds configured max size")
-                return None
-            image_ext, mime_type = self._reference_image_mime_type(content_type, parsed.path)
-            return image_bytes, f"reference.{image_ext}", mime_type
+            for attempt in range(max_attempts):
+                try:
+                    started = time.perf_counter()
+                    ok = False
+                    with self._open(request, timeout=self.config.reference_image_timeout_seconds) as response:
+                        content_type = str(response.headers.get("Content-Type") or "")
+                        image_bytes = response.read(self.config.reference_image_max_bytes + 1)
+                    ok = True
+                    record_external_call("openai", "reference_image_get", time.perf_counter() - started, ok=ok)
+                    if len(image_bytes) > self.config.reference_image_max_bytes:
+                        self._log_error("OpenAI reference image skipped: file exceeds configured max size")
+                        return None
+                    image_ext, mime_type = self._reference_image_mime_type(content_type, parsed.path)
+                    return image_bytes, f"reference.{image_ext}", mime_type
+                except HTTPError as err:
+                    record_external_call("openai", "reference_image_get", time.perf_counter() - started, ok=False, status_code=getattr(err, "code", ""))
+                    last_error = http_error_excerpt(err)
+                    if not self._retryable_http_error(err) or attempt >= max_attempts - 1:
+                        break
+                    self._sleep(self._retry_delay_seconds(attempt))
+                except (URLError, TimeoutError, OSError, ValueError) as err:
+                    record_external_call("openai", "reference_image_get", time.perf_counter() - started, ok=False, error_classification=err.__class__.__name__)
+                    last_error = redact_secrets(err, extra_secrets=[self.config.api_key])
+                    if attempt >= max_attempts - 1:
+                        break
+                    self._sleep(self._retry_delay_seconds(attempt))
         except HTTPError as err:
-            self._log_error("OpenAI reference image fetch failed: %s", http_error_excerpt(err))
+            last_error = http_error_excerpt(err)
         except (URLError, TimeoutError, OSError, ValueError) as err:
-            self._log_error("OpenAI reference image fetch failed: %s", err)
+            last_error = redact_secrets(err, extra_secrets=[self.config.api_key])
+        if last_error:
+            self._log_error("OpenAI reference image fetch failed: %s", last_error)
         return None
+
+    @staticmethod
+    def _retryable_http_error(err: HTTPError) -> bool:
+        return int(getattr(err, "code", 0) or 0) in {408, 429} or int(getattr(err, "code", 0) or 0) >= 500
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        return min(2.0, max(0.0, float(self.config.reference_image_retry_base_seconds)) * (2 ** max(0, int(attempt))))
 
     def _generate_image_from_reference(
         self,
@@ -149,12 +197,18 @@ class OpenAIIntegration:
             method="POST",
         )
         try:
+            started = time.perf_counter()
+            ok = False
             with self._open(request, timeout=self.config.image_timeout_seconds) as response:
-                return self._image_from_response(json.loads(response.read().decode("utf-8")))
+                payload = json.loads(response.read().decode("utf-8"))
+            ok = True
+            return self._image_from_response(payload)
         except HTTPError as err:
             self._log_error("OpenAI reference image generation failed: %s", http_error_excerpt(err))
         except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as err:
-            self._log_error("OpenAI reference image generation failed: %s", err)
+            self._log_error("OpenAI reference image generation failed: %s", redact_secrets(err, extra_secrets=[self.config.api_key]))
+        finally:
+            record_external_call("openai", "image_edit", time.perf_counter() - started, ok=ok)
         return None
 
     def _generate_image_from_prompt(self, prompt: str) -> Optional[ImageAttachment]:
@@ -180,7 +234,7 @@ class OpenAIIntegration:
         except HTTPError as err:
             self._log_error("OpenAI image generation failed: %s", http_error_excerpt(err))
         except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as err:
-            self._log_error("OpenAI image generation failed: %s", err)
+            self._log_error("OpenAI image generation failed: %s", redact_secrets(err, extra_secrets=[self.config.api_key]))
         return None
 
     def _post_json(self, url: str, payload: Dict[str, Any], timeout: int) -> Dict[str, Any]:
@@ -190,8 +244,14 @@ class OpenAIIntegration:
             headers=self._headers("application/json"),
             method="POST",
         )
-        with self._open(request, timeout=timeout) as response:
-            parsed = json.loads(response.read().decode("utf-8"))
+        started = time.perf_counter()
+        ok = False
+        try:
+            with self._open(request, timeout=timeout) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+            ok = True
+        finally:
+            record_external_call("openai", "post_json", time.perf_counter() - started, ok=ok)
         return parsed if isinstance(parsed, dict) else {}
 
     def _image_from_response(self, response: Dict[str, Any]) -> Optional[ImageAttachment]:
@@ -201,9 +261,18 @@ class OpenAIIntegration:
         if first.get("b64_json"):
             image_bytes = base64.b64decode(str(first["b64_json"]))
         elif first.get("url"):
-            with self._open(str(first["url"]), timeout=self.config.image_timeout_seconds) as response:
-                image_bytes = response.read()
+            started = time.perf_counter()
+            ok = False
+            try:
+                with self._open(str(first["url"]), timeout=self.config.image_timeout_seconds) as response:
+                    image_bytes = response.read(self.config.generated_image_max_bytes + 1)
+                ok = True
+            finally:
+                record_external_call("openai", "generated_image_get", time.perf_counter() - started, ok=ok)
         else:
+            return None
+        if len(image_bytes) > self.config.generated_image_max_bytes:
+            self._log_error("OpenAI generated image ignored: file exceeds configured max size")
             return None
         return image_bytes, f"anba-news.{image_ext}", mime_type
 

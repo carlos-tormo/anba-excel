@@ -194,9 +194,28 @@ class SettingsService:
         if salary_cap_2025 is not None:
             self.repository.update("salary_cap_2025", salary_cap_2025)
         if current_year is not None:
-            audit["current_year_update"] = self.season_rollover.update_current_year(current_year)
+            audit["current_year_update"] = self.season_rollover.update_current_year(
+                current_year,
+                expected_current_year=payload.get("expected_current_year"),
+                expected_current_year_version=payload.get("expected_current_year_version"),
+            )
         for key, value in updates.items():
             self.repository.update(key, value)
         audit["season_cap_updates"] = season_cap_updates
         audit["rookie_scale_updates"] = rookie_scale_updates
         return {"settings": public_settings_payload(self.repository.get_all()), "audit": audit}
+
+    def get_all(self) -> Dict[str, str]:
+        return self.repository.get_all()
+
+    def public(self) -> Dict[str, Any]:
+        return public_settings_payload(self.repository.get_all())
+
+    def free_agency_mode_enabled(self) -> bool:
+        return parse_bool(self.repository.get_all().get("free_agency_mode"))
+
+    def list_team_economy(self, season_year: Optional[int] = None) -> Dict[str, Any]:
+        return self.repository.list_team_economy(season_year)
+
+    def upsert_team_economy(self, season_year: int, rows: list[Dict[str, Any]]) -> Dict[str, Any]:
+        return self.repository.upsert_team_economy(season_year, rows)

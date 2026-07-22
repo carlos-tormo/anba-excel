@@ -396,6 +396,7 @@ class PlayerRepository(LeagueRepository):
     def update_profile(self, profile_id: int, payload: Dict[str, Any]) -> bool:
         fields: Dict[str, Any] = {}
         update_rights_team = "rights_team_code" in payload
+        expected_version = parse_int(payload.get("expected_version"))
         if "name" in payload:
             name = str(payload.get("name") or "").strip()
             if not name:
@@ -418,13 +419,24 @@ class PlayerRepository(LeagueRepository):
 
         timestamp = self._now()
         with self.db.connect() as conn:
+            profile_version_row = conn.execute(
+                "SELECT version FROM player_profiles WHERE id = ?",
+                (profile_id,),
+            ).fetchone()
+            if not profile_version_row:
+                return False
+            current_version = parse_int(profile_version_row["version"]) or 1
+            if expected_version is not None and expected_version != current_version:
+                raise ValueError("stale_entity_version")
             changed = False
             if fields:
                 cur = conn.execute(
                     f"UPDATE player_profiles SET {', '.join(f'{field} = ?' for field in fields)}, "
-                    "updated_at = ? WHERE id = ?",
-                    [*fields.values(), timestamp, profile_id],
+                    "version = COALESCE(version, 0) + 1, updated_at = ? WHERE id = ? AND version = ?",
+                    [*fields.values(), timestamp, profile_id, current_version],
                 )
+                if cur.rowcount != 1:
+                    raise ValueError("stale_entity_version")
                 changed = bool(cur.rowcount)
                 if cur.rowcount:
                     if "name" in fields:
@@ -439,8 +451,6 @@ class PlayerRepository(LeagueRepository):
                         conn.execute("UPDATE players SET profile_notes = ?, updated_at = ? WHERE profile_id = ?", (fields["profile_notes"], timestamp, profile_id))
                     if "profile_status" in fields and self._is_unavailable_profile_status(fields["profile_status"]):
                         self._make_profile_unavailable(conn, int(profile_id), fields["profile_status"], timestamp)
-            elif not conn.execute("SELECT id FROM player_profiles WHERE id = ?", (profile_id,)).fetchone():
-                return False
 
             if update_rights_team:
                 status_row = conn.execute("SELECT profile_status FROM player_profiles WHERE id = ?", (profile_id,)).fetchone()
@@ -475,6 +485,15 @@ class PlayerRepository(LeagueRepository):
                          team_code, "Agente libre sin contrato activo.", timestamp, timestamp),
                     )
                     changed = True
+                if changed and not fields:
+                    cur = conn.execute(
+                        """UPDATE player_profiles
+                           SET version = COALESCE(version, 0) + 1, updated_at = ?
+                           WHERE id = ? AND version = ?""",
+                        (timestamp, profile_id, current_version),
+                    )
+                    if cur.rowcount != 1:
+                        raise ValueError("stale_entity_version")
             conn.commit()
             return changed
 

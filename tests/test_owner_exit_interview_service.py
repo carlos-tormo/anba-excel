@@ -11,6 +11,8 @@ class FakeOwnerOfficeRepository:
         self.existing = None
         self.started = {"id": 1, "status": "awaiting_gm"}
         self.completed = {"id": 1, "status": "completed", "trust_delta": 1}
+        self.complete_args = None
+        self.complete_kwargs = None
         self.reset_result = True
 
     @contextmanager
@@ -26,7 +28,9 @@ class FakeOwnerOfficeRepository:
     def start_owner_exit_interview(self, _code, _season_year, _session, _owner_message):
         return self.started
 
-    def complete_owner_exit_interview(self, *_args):
+    def complete_owner_exit_interview(self, *args, **kwargs):
+        self.complete_args = args
+        self.complete_kwargs = kwargs
         return self.completed
 
     def reset_owner_exit_interview(self, _code, _season_year):
@@ -38,7 +42,13 @@ class FakeInterviewComposer:
         return f"Welcome {session['name']}"
 
     def final_reply(self, _office, _season_year, _owner_message, _gm_response, *, session):
-        return f"Reply to {session['name']}", "Next season", 1
+        return f"Reply to {session['name']}", "Next season", 8
+
+    def audit_metadata(self):
+        return {
+            "model": "test-model",
+            "prompt_template_version": "test-template.v1",
+        }
 
 
 class OwnerExitInterviewServiceTests(unittest.TestCase):
@@ -53,7 +63,11 @@ class OwnerExitInterviewServiceTests(unittest.TestCase):
             objective_options=[],
             interview_composer=FakeInterviewComposer(),
         )
-        self.office = {"team_code": "ATL", "entries": {}, "owner_profile": {}}
+        self.office = {
+            "team_code": "ATL",
+            "entries": {"2025": {"confidence_current": "6"}},
+            "owner_profile": {},
+        }
         self.refreshed = {**self.office, "refreshed": True}
         self.session = {"name": "GM", "email": "gm@example.com"}
 
@@ -85,6 +99,16 @@ class OwnerExitInterviewServiceTests(unittest.TestCase):
 
         self.assertEqual(result["response"]["interview"], self.repository.completed)
         self.assertEqual(result["response"]["owner_office"], self.refreshed)
+        self.assertEqual(self.repository.complete_args[6], 1)
+        self.assertEqual(self.repository.complete_kwargs["previous_trust"], "6")
+        self.assertEqual(self.repository.complete_kwargs["proposed_trust_delta"], 8)
+        self.assertEqual(self.repository.complete_kwargs["trust_model"], "test-model")
+        self.assertEqual(self.repository.complete_kwargs["prompt_template_version"], "test-template.v1")
+        self.assertFalse(self.repository.complete_kwargs["administrator_override"])
+        self.assertEqual(
+            self.repository.complete_kwargs["conversation_id"],
+            "owner_exit_interview:ATL:2025:1",
+        )
 
     def test_reset_returns_audit_command(self) -> None:
         self.service.get = Mock(return_value=self.refreshed)

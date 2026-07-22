@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import ParseResult
 
@@ -24,7 +24,58 @@ class RequestValidationError(ValueError):
         return {"error": self.error, **self.details}
 
 
-RouteHandler = Callable[[Any, ParseResult, Optional[Dict[str, Any]]], None]
+@dataclass(frozen=True)
+class RouteResponse:
+    status: int
+    payload: Any = None
+    headers: Dict[str, Any] = field(default_factory=dict)
+    content_type: str = "application/json; charset=utf-8"
+    body: Optional[bytes] = None
+
+
+def json_response(status: int, payload: Any, headers: Optional[Dict[str, Any]] = None) -> RouteResponse:
+    return RouteResponse(status=status, payload=payload, headers=dict(headers or {}))
+
+
+def bytes_response(
+    status: int,
+    body: bytes,
+    content_type: str,
+    headers: Optional[Dict[str, Any]] = None,
+) -> RouteResponse:
+    return RouteResponse(status=status, body=body, content_type=content_type, headers=dict(headers or {}))
+
+
+def redirect_response(
+    location: str,
+    *,
+    status: int = 302,
+    headers: Optional[Dict[str, Any]] = None,
+) -> RouteResponse:
+    response_headers: Dict[str, Any] = {"Location": str(location)}
+    response_headers.update(dict(headers or {}))
+    return RouteResponse(
+        status=status,
+        body=b"",
+        content_type="text/plain; charset=utf-8",
+        headers=response_headers,
+    )
+
+
+def error_response(status: int, error: str, **details: Any) -> RouteResponse:
+    return json_response(status, {"error": error, **details})
+
+
+def response_from_exception(exc: Exception) -> RouteResponse:
+    if isinstance(exc, RequestValidationError):
+        return json_response(400, exc.response_payload())
+    if isinstance(exc, ValueError):
+        error = str(exc) or "invalid_request"
+        return error_response(413 if error == "request_too_large" else 400, error)
+    return error_response(500, "internal_error")
+
+
+RouteHandler = Callable[[Any, ParseResult, Optional[Dict[str, Any]]], Optional[RouteResponse]]
 PathMatcher = Callable[[str], bool]
 
 
@@ -33,19 +84,84 @@ class Route:
     name: str
     matches: PathMatcher
     handler: RouteHandler
+    method: Optional[str] = None
+    path: Optional[str] = None
+    permission: Optional[str] = None
+    csrf: bool = False
+    mutates_league_state: bool = False
+    auth_exempt_reason: Optional[str] = None
 
 
-def exact_route(path: str, handler: RouteHandler, *, name: Optional[str] = None) -> Route:
-    return Route(name or f"exact:{path}", lambda candidate: candidate == path, handler)
+def route_with_method(route: Route, method: str) -> Route:
+    return replace(route, method=str(method or "").upper())
 
 
-def prefix_route(prefix: str, handler: RouteHandler, *, name: Optional[str] = None) -> Route:
-    return Route(name or f"prefix:{prefix}", lambda candidate: candidate.startswith(prefix), handler)
+def exact_route(
+    path: str,
+    handler: RouteHandler,
+    *,
+    name: Optional[str] = None,
+    permission: Optional[str] = None,
+    csrf: bool = False,
+    mutates_league_state: bool = False,
+    auth_exempt_reason: Optional[str] = None,
+) -> Route:
+    return Route(
+        name or f"exact:{path}",
+        lambda candidate: candidate == path,
+        handler,
+        path=path,
+        permission=permission,
+        csrf=csrf,
+        mutates_league_state=mutates_league_state,
+        auth_exempt_reason=auth_exempt_reason,
+    )
 
 
-def predicate_route(name: str, matches: PathMatcher, handler: RouteHandler) -> Route:
+def prefix_route(
+    prefix: str,
+    handler: RouteHandler,
+    *,
+    name: Optional[str] = None,
+    permission: Optional[str] = None,
+    csrf: bool = False,
+    mutates_league_state: bool = False,
+    auth_exempt_reason: Optional[str] = None,
+) -> Route:
+    return Route(
+        name or f"prefix:{prefix}",
+        lambda candidate: candidate.startswith(prefix),
+        handler,
+        path=prefix,
+        permission=permission,
+        csrf=csrf,
+        mutates_league_state=mutates_league_state,
+        auth_exempt_reason=auth_exempt_reason,
+    )
+
+
+def predicate_route(
+    name: str,
+    matches: PathMatcher,
+    handler: RouteHandler,
+    *,
+    path: Optional[str] = None,
+    permission: Optional[str] = None,
+    csrf: bool = False,
+    mutates_league_state: bool = False,
+    auth_exempt_reason: Optional[str] = None,
+) -> Route:
     """Register a route whose path shape is more specific than a plain prefix."""
-    return Route(name, matches, handler)
+    return Route(
+        name,
+        matches,
+        handler,
+        path=path or name,
+        permission=permission,
+        csrf=csrf,
+        mutates_league_state=mutates_league_state,
+        auth_exempt_reason=auth_exempt_reason,
+    )
 
 
 def dispatch_routes(
@@ -56,7 +172,26 @@ def dispatch_routes(
 ) -> bool:
     for route in routes:
         if route.matches(parsed.path):
-            route.handler(request_handler, parsed, payload)
+            try:
+                setattr(request_handler, "_current_route_name", route.name)
+            except Exception:
+                pass
+            result = route.handler(request_handler, parsed, payload)
+            if isinstance(result, RouteResponse):
+                responder = getattr(request_handler, "_send_route_response", None)
+                if callable(responder):
+                    responder(result)
+                else:
+                    if result.body is not None:
+                        byte_responder = getattr(request_handler, "_bytes_response", None)
+                        if callable(byte_responder):
+                            byte_responder(result.status, result.body, result.content_type, result.headers)
+                        else:
+                            request_handler._json(result.status, result.payload, result.headers)
+                    elif result.headers:
+                        request_handler._json(result.status, result.payload, result.headers)
+                    else:
+                        request_handler._json(result.status, result.payload)
             return True
     return False
 

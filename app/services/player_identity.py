@@ -33,10 +33,18 @@ class PlayerIdentityService:
         return self.repository.delete_profile(int(profile_id))
 
     def merge_profiles(
-        self, source_profile_id: int, target_profile_id: int
+        self,
+        source_profile_id: int,
+        target_profile_id: int,
+        *,
+        expected_source_version: Any = None,
+        expected_target_version: Any = None,
     ) -> Dict[str, Any]:
         return self.repository.merge_profiles(
-            int(source_profile_id), int(target_profile_id)
+            int(source_profile_id),
+            int(target_profile_id),
+            expected_source_version=expected_source_version,
+            expected_target_version=expected_target_version,
         )
 
     def integrity_report(self) -> Dict[str, Any]:

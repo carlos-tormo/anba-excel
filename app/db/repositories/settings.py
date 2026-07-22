@@ -24,13 +24,22 @@ class SettingsRepository(LeagueRepository):
 
     def get_all(self) -> Dict[str, str]:
         with self.db.connect() as conn:
-            return {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM app_settings").fetchall()}
+            settings: Dict[str, str] = {}
+            for row in conn.execute("SELECT key, value, version FROM app_settings").fetchall():
+                key = str(row["key"])
+                settings[key] = str(row["value"])
+                if key == "current_year":
+                    settings["current_year_version"] = str(parse_int(row["version"]) or 1)
+            return settings
 
     def update(self, key: str, value: str) -> None:
         with self.db.connect() as conn:
             conn.execute(
                 """INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
-                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                   ON CONFLICT(key) DO UPDATE SET
+                       value = excluded.value,
+                       version = COALESCE(app_settings.version, 0) + 1,
+                       updated_at = excluded.updated_at""",
                 (key, value, self._now()),
             )
             conn.commit()

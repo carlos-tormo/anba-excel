@@ -1,12 +1,34 @@
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from app import server
 from app.application import ApplicationConfig, ApplicationContainer
 
 
 class ServerUtilityBoundaryTests(unittest.TestCase):
+    @staticmethod
+    def _container_config() -> ApplicationConfig:
+        return ApplicationConfig(
+            contract_seasons=(2025, 2026), contract_min_year=2025,
+            contract_max_start_year=2026, cap_forecast_min_year=2025,
+            cap_forecast_max_year=2030, unrestricted_free_agent_type="No restringido",
+            cap_hold_source="cap_hold", google_client_id="", google_client_secret="",
+            google_redirect_uri="", admin_emails=frozenset(), gm_accounts={},
+        )
+
+    @staticmethod
+    def _complete_dependency_db(**overrides):
+        attrs = {
+            attr: object()
+            for attr in ApplicationContainer.REQUIRED_LEGACY_DEPENDENCIES
+        }
+        attrs["_audit_log_service"] = lambda: object()
+        attrs.update(overrides)
+        return SimpleNamespace(**attrs)
+
     def test_server_has_no_top_level_utilities_before_league_db(self) -> None:
         source_path = Path(server.__file__)
         tree = ast.parse(source_path.read_text(encoding="utf-8"))
@@ -59,19 +81,59 @@ class ServerUtilityBoundaryTests(unittest.TestCase):
         self.assertNotIn("handler.db", route_source)
 
     def test_application_container_caches_service_instances(self) -> None:
-        config = ApplicationConfig(
-            contract_seasons=(2025, 2026), contract_min_year=2025,
-            contract_max_start_year=2026, cap_forecast_min_year=2025,
-            cap_forecast_max_year=2030, unrestricted_free_agent_type="No restringido",
-            cap_hold_source="cap_hold", google_client_id="", google_client_secret="",
-            google_redirect_uri="", admin_emails=frozenset(), gm_accounts={},
-        )
         container = ApplicationContainer(
-            object(), config, opener=lambda *_args, **_kwargs: None,
+            self._complete_dependency_db(), self._container_config(), opener=lambda *_args, **_kwargs: None,
             now=lambda: "now", log_error=lambda *_args, **_kwargs: None,
         )
         self.assertIs(container.free_agency, container.free_agency)
         self.assertIs(container.draft, container.draft)
+
+    def test_application_container_missing_dependency_fails_loudly(self) -> None:
+        container = ApplicationContainer(
+            object(), self._container_config(), opener=lambda *_args, **_kwargs: None,
+            now=lambda: "now", log_error=lambda *_args, **_kwargs: None,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "application_dependency_missing:_team_repository"):
+            _ = container.teams
+
+    def test_application_container_reports_unresolved_legacy_dependencies(self) -> None:
+        db = self._complete_dependency_db(_trade_repository=None)
+        container = ApplicationContainer(
+            db, self._container_config(), opener=lambda *_args, **_kwargs: None,
+            now=lambda: "now", log_error=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertEqual(["_trade_repository"], container.unresolved_legacy_dependencies())
+        with self.assertRaisesRegex(RuntimeError, "application_dependencies_missing:_trade_repository"):
+            container.validate_dependencies()
+
+    def test_application_container_complete_dependency_set_has_no_unresolved_dependencies(self) -> None:
+        container = ApplicationContainer(
+            self._complete_dependency_db(), self._container_config(), opener=lambda *_args, **_kwargs: None,
+            now=lambda: "now", log_error=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertEqual([], container.unresolved_legacy_dependencies())
+        container.validate_dependencies()
+
+    def test_server_startup_validates_application_dependencies(self) -> None:
+        db = self._complete_dependency_db()
+        db.ensure_auth_schema = lambda: None
+        db.warm_tracker_cache = lambda: None
+
+        class FakeServer:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def serve_forever(self):
+                raise RuntimeError("stop_after_validation")
+
+        with patch.object(server, "LeagueDB", return_value=db), \
+            patch.object(server, "ThreadingHTTPServer", FakeServer), \
+            patch.object(server.os.path, "exists", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "stop_after_validation"):
+                server.run_server("/tmp/fake.db", "127.0.0.1", 0)
 
     def test_league_db_has_no_unreferenced_compatibility_methods(self) -> None:
         source_path = Path(server.__file__)

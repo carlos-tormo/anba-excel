@@ -2,7 +2,19 @@ import ast
 import inspect
 import unittest
 
-from app.routes import get_remaining, owner_office, patch_remaining, players, post_remaining
+from app.routes import (
+    admin_data,
+    delete,
+    free_agency,
+    get_remaining,
+    gm_office,
+    owner_office,
+    patch,
+    patch_remaining,
+    players,
+    post,
+    post_remaining,
+)
 from app.services.assets import AssetAdminService
 from app.services.authentication import GoogleOAuthService
 from app.services.free_agency import FreeAgencyService
@@ -59,6 +71,54 @@ class ThinRouteBoundaryTests(unittest.TestCase):
         )
         for service, method in ownership:
             self.assertTrue(callable(getattr(service, method, None)), f"{service.__name__}.{method}")
+
+    def test_converted_post_routes_do_not_write_responses_directly(self) -> None:
+        for module in (
+            admin_data,
+            delete,
+            free_agency,
+            get_remaining,
+            gm_office,
+            owner_office,
+            patch,
+            patch_remaining,
+            players,
+            post,
+            post_remaining,
+        ):
+            source = inspect.getsource(module)
+            self.assertNotIn("handler._json", source, module.__name__)
+            self.assertNotIn("handler._bytes_response", source, module.__name__)
+
+    def test_converted_post_remaining_routes_do_not_write_responses_directly(self) -> None:
+        for route in (
+            post_remaining.logout,
+            post_remaining.login,
+            post_remaining.validate_trade_process,
+            post_remaining.request_gm_option,
+            post_remaining.submit_coadmin_vote,
+            post_remaining.create_coadmin_vote,
+            post_remaining.create_offer_promise,
+            post_remaining.generate_offseason_exceptions,
+            post_remaining.bulk_create_free_agents,
+            post_remaining.create_free_agent,
+            post_remaining.create_draft_order,
+            post_remaining.update_cartera_ruleout,
+            post_remaining.sign_free_agent,
+            post_remaining.merge_player_profiles,
+            post_remaining.create_salary_history,
+            post_remaining.create_player_transaction,
+            post_remaining.process_trade,
+            post_remaining.create_move_adjustment,
+            post_remaining.create_asset,
+            post_remaining.create_frozen_draft_pick,
+            post_remaining.create_dead_contract,
+            post_remaining.create_gm_history,
+            post_remaining.progress_settings_year,
+        ):
+            source = inspect.getsource(route)
+            self.assertNotIn("handler._json", source, route.__name__)
+            self.assertNotIn("handler._bytes_response", source, route.__name__)
 
 
 if __name__ == "__main__":

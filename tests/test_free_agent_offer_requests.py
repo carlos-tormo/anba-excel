@@ -8,6 +8,7 @@ from tests.db_helpers import connect_test_db
 
 from app.server import Handler, LeagueDB
 from app.domain_rules import minimum_salary_for_season
+from app.services.notification_delivery import LeagueNotificationDeliveryService
 from app.services.free_agency import FreeAgencyService, OfferDecisionOptions
 from app.xlsx_import import create_schema, now_iso
 
@@ -136,6 +137,38 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("rejected", result["request"]["status"])
         self.assertIsNotNone(self.db.get_free_agent(self.free_agent_id))
 
+    def test_free_agency_service_rejects_stale_offer_decision_version(self) -> None:
+        service = FreeAgencyService(self.db, contract_seasons=range(2025, 2032))
+        submission = service.submit_offer(
+            self.free_agent_id,
+            "ATL",
+            {
+                "contract_type": "Reg",
+                "years": 1,
+                "annual_raise_percent": 0,
+                "salary_by_season": {"2025": "10.000.000"},
+                "option_by_season": {},
+            },
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+        request = submission["request"]
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE gm_free_agent_offer_requests SET version = version + 1 WHERE id = ?",
+                (int(request["id"]),),
+            )
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            service.decide_offer(
+                int(request["id"]),
+                "rejected",
+                {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+                request=request,
+            )
+
+        stored = self.db.get_gm_free_agent_offer_request(int(request["id"]))
+        self.assertEqual("pending", stored["status"])
+
     def test_free_agency_service_manages_negotiation_favorite_and_cancellation(self) -> None:
         service = FreeAgencyService(self.db, contract_seasons=range(2025, 2032))
         actor = {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"}
@@ -262,6 +295,69 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("approved", updated["status"])
         self.assertEqual("admin@example.com", updated["admin_email"])
 
+    def test_free_agent_offer_decision_command_returns_observability_metadata(self) -> None:
+        request = self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {"contract_type": "Min", "years": 1},
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+
+        result = self.db.decide_gm_free_agent_offer_request_command(
+            int(request["id"]),
+            "rejected",
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+        )
+
+        self.assertEqual(f"gm-free-agent-offer:{int(request['id'])}:rejected", result["command_id"])
+        self.assertEqual("valid", result["validation_result"])
+        self.assertEqual([], result["outbox_event_ids"])
+        self.assertEqual("rejected", result["request"]["status"])
+
+    def test_free_agent_offer_approval_rolls_back_mutation_when_outbox_enqueue_fails(self) -> None:
+        request = self.db.create_gm_free_agent_offer_request(
+            self.free_agent_id,
+            "ATL",
+            {"contract_type": "Min", "years": 1},
+            {"email": "atl-gm@example.com", "name": "ATL GM", "role": "gm"},
+        )
+        original_enqueue = self.db._outbox_repository.enqueue_conn
+
+        def failing_enqueue(*_args, **_kwargs):
+            raise RuntimeError("outbox enqueue failed")
+
+        self.db._outbox_repository.enqueue_conn = failing_enqueue
+        try:
+            with self.assertRaisesRegex(RuntimeError, "outbox enqueue failed"):
+                self.db.decide_gm_free_agent_offer_request_command(
+                    int(request["id"]),
+                    "approved",
+                    {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+                    sign_payload={
+                        "name": "Test Free Agent",
+                        "bird_rights": "Reg",
+                        "salary_2026_text": "1.000.000",
+                    },
+                    offer_payload={"contract_type": "Min", "years": 1},
+                    notify_discord=True,
+                )
+        finally:
+            self.db._outbox_repository.enqueue_conn = original_enqueue
+
+        stored_request = self.db.get_gm_free_agent_offer_request(int(request["id"]))
+        self.assertEqual("pending", stored_request["status"])
+        self.assertIsNotNone(self.db.get_free_agent(self.free_agent_id))
+        conn = sqlite3.connect(self.db_path)
+        try:
+            player_count = conn.execute(
+                "SELECT COUNT(*) FROM players WHERE name = 'Test Free Agent'"
+            ).fetchone()[0]
+            outbox_count = conn.execute("SELECT COUNT(*) FROM outbox_events").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(0, player_count)
+        self.assertEqual(0, outbox_count)
+
     def test_free_agent_offer_request_decision_is_single_use(self) -> None:
         request = self.db.create_gm_free_agent_offer_request(
             self.free_agent_id,
@@ -341,18 +437,134 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         event = self.db.get_outbox_event(event_id)
         self.assertEqual("pending", event["status"])
         self.assertEqual(7, event["payload"]["request_id"])
+        self.assertIsNotNone(event["available_at"])
 
-        self.assertTrue(self.db.mark_outbox_event_failed(event_id, "temporary delivery error"))
+        self.assertTrue(
+            self.db._outbox_repository.claim(event_id, worker_id="worker-a", lease_seconds=300)
+        )
+        claimed = self.db.get_outbox_event(event_id)
+        self.assertEqual("processing", claimed["status"])
+        self.assertEqual("worker-a", claimed["locked_by"])
+        self.assertIsNotNone(claimed["locked_at"])
+        self.assertFalse(
+            self.db._outbox_repository.claim(event_id, worker_id="worker-b", lease_seconds=300)
+        )
+
+        self.assertTrue(
+            self.db._outbox_repository.mark_failed(
+                event_id,
+                "temporary delivery error",
+                error_code="discord_timeout",
+            )
+        )
         failed = self.db.get_outbox_event(event_id)
         self.assertEqual("failed", failed["status"])
         self.assertEqual(1, failed["attempts"])
         self.assertEqual("temporary delivery error", failed["last_error"])
+        self.assertEqual("discord_timeout", failed["last_error_code"])
+        self.assertIsNone(failed["next_attempt_at"])
+        self.assertIsNone(failed["available_at"])
+        self.assertIsNone(failed["locked_at"])
+        self.assertIsNone(failed["locked_by"])
+
+        retry_event_id = self.db.enqueue_outbox_event(
+            "discord.free_agent_offer",
+            {"request_id": 8, "player": "Test Free Agent"},
+            idempotency_key="gm-free-agent-offer:8:approved",
+        )
+        self.assertTrue(
+            self.db._outbox_repository.mark_retryable_failure(
+                retry_event_id,
+                "temporary Bot abc.def.ghi",
+                delay_seconds=30,
+                error_code="discord_timeout",
+            )
+        )
+        retryable = self.db.get_outbox_event(retry_event_id)
+        self.assertEqual("pending", retryable["status"])
+        self.assertEqual(1, retryable["attempts"])
+        self.assertEqual("temporary Bot [REDACTED]", retryable["last_error"])
+        self.assertEqual("discord_timeout", retryable["last_error_code"])
+        self.assertIsNotNone(retryable["next_attempt_at"])
+        self.assertEqual(retryable["next_attempt_at"], retryable["available_at"])
+
+        self.assertTrue(
+            self.db._outbox_repository.mark_retryable_failure(
+                retry_event_id,
+                "still down",
+                delay_seconds=30,
+                error_code="discord_timeout",
+                max_attempts=2,
+            )
+        )
+        dead_letter = self.db.get_outbox_event(retry_event_id)
+        self.assertEqual("dead_letter", dead_letter["status"])
+        self.assertEqual(2, dead_letter["attempts"])
+        self.assertEqual("discord_timeout", dead_letter["last_error_code"])
+        self.assertIsNone(dead_letter["next_attempt_at"])
+        self.assertIsNone(dead_letter["available_at"])
 
         self.assertTrue(self.db.mark_outbox_event_succeeded(event_id))
         delivered = self.db.get_outbox_event(event_id)
         self.assertEqual("delivered", delivered["status"])
         self.assertIsNotNone(delivered["delivered_at"])
         self.assertIsNone(delivered["last_error"])
+        self.assertIsNone(delivered["last_error_code"])
+
+    def test_expired_outbox_claim_can_be_reclaimed_by_another_worker(self) -> None:
+        event_id = self.db.enqueue_outbox_event(
+            "discord.free_agent_offer",
+            {"request_id": 9, "player": "Test Free Agent"},
+            idempotency_key="gm-free-agent-offer:9:approved",
+        )
+        self.assertTrue(
+            self.db._outbox_repository.claim(event_id, worker_id="worker-a", lease_seconds=300)
+        )
+        with connect_test_db(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE outbox_events
+                SET locked_at = '2000-01-01T00:00:00+00:00'
+                WHERE id = ?
+                """,
+                (event_id,),
+            )
+            conn.commit()
+
+        self.assertTrue(
+            self.db._outbox_repository.claim(event_id, worker_id="worker-b", lease_seconds=1)
+        )
+        reclaimed = self.db.get_outbox_event(event_id)
+        self.assertEqual("processing", reclaimed["status"])
+        self.assertEqual("worker-b", reclaimed["locked_by"])
+
+    def test_claim_available_skips_future_retry_until_available(self) -> None:
+        future_event_id = self.db.enqueue_outbox_event(
+            "discord.free_agent_offer",
+            {"request_id": 10, "player": "Test Free Agent"},
+            idempotency_key="gm-free-agent-offer:10:approved",
+        )
+        ready_event_id = self.db.enqueue_outbox_event(
+            "discord.free_agent_offer",
+            {"request_id": 11, "player": "Test Free Agent"},
+            idempotency_key="gm-free-agent-offer:11:approved",
+        )
+        self.assertTrue(
+            self.db._outbox_repository.mark_retryable_failure(
+                future_event_id,
+                "wait before retry",
+                delay_seconds=600,
+                error_code="rate_limited",
+            )
+        )
+
+        claimed = self.db._outbox_repository.claim_available(limit=10, worker_id="worker-a")
+
+        self.assertIn(ready_event_id, claimed)
+        self.assertNotIn(future_event_id, claimed)
+        ready = self.db.get_outbox_event(ready_event_id)
+        self.assertEqual("processing", ready["status"])
+        self.assertEqual("worker-a", ready["locked_by"])
 
     def test_approved_offer_with_role_creates_agent_promise(self) -> None:
         with connect_test_db(self.db_path) as conn:
@@ -565,7 +777,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertIsNotNone(request)
 
-        notification_id = self.db.create_user_notification(
+        notification_id = self.db._notification_repository.create(
             user_id=request.get("requester_user_id"),
             email=request.get("requester_email"),
             title="Oferta rechazada: Test Free Agent",
@@ -576,7 +788,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertIsNotNone(notification_id)
 
-        notifications = self.db.list_user_notifications_for_session(
+        notifications = self.db._notification_repository.list_for_session(
             {"user_id": user["id"], "email": "atl-gm@example.com", "role": "gm"},
         )
         self.assertEqual(1, len(notifications))
@@ -584,14 +796,14 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("free_agent_offer_rejected", notifications[0]["kind"])
 
         self.assertTrue(
-            self.db.mark_user_notification_read(
+            self.db._notification_repository.mark_read(
                 int(notification_id),
                 {"user_id": user["id"], "email": "atl-gm@example.com", "role": "gm"},
             )
         )
         self.assertEqual(
             [],
-            self.db.list_user_notifications_for_session(
+            self.db._notification_repository.list_for_session(
                 {"user_id": user["id"], "email": "atl-gm@example.com", "role": "gm"},
             ),
         )
@@ -764,9 +976,16 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual(1, len(players))
 
     def test_player_payload_from_free_agent_offer_adds_post_contract_bird_markers(self) -> None:
-        handler = object.__new__(Handler)
+        service = FreeAgencyService(
+            self.db._free_agency_repository,
+            contract_seasons=tuple(range(2025, 2032)),
+            cap_hold_source="cap_hold",
+            gm_requests=self.db._gm_request_service,
+            offer_promises=self.db._offer_promise_service,
+            players=self.db._player_repository,
+        )
 
-        one_year = handler.app.free_agency.player_payload_from_offer(
+        one_year = service.player_payload_from_offer(
             {"name": "One Year FA"},
             {
                 "contract_type": "Reg",
@@ -776,7 +995,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertEqual("NB", one_year["salary_2027_text"])
 
-        two_year = handler.app.free_agency.player_payload_from_offer(
+        two_year = service.player_payload_from_offer(
             {"name": "Two Year FA"},
             {
                 "contract_type": "Reg",
@@ -789,7 +1008,7 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         )
         self.assertEqual("EB", two_year["salary_2028_text"])
 
-        long_contract = handler.app.free_agency.player_payload_from_offer(
+        long_contract = service.player_payload_from_offer(
             {"name": "Long FA"},
             {
                 "contract_type": "Reg",
@@ -804,9 +1023,16 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("FB", long_contract["salary_2029_text"])
 
     def test_player_payload_from_two_way_offer_adds_qo_two_way_marker(self) -> None:
-        handler = object.__new__(Handler)
+        service = FreeAgencyService(
+            self.db._free_agency_repository,
+            contract_seasons=tuple(range(2025, 2032)),
+            cap_hold_source="cap_hold",
+            gm_requests=self.db._gm_request_service,
+            offer_promises=self.db._offer_promise_service,
+            players=self.db._player_repository,
+        )
 
-        payload = handler.app.free_agency.player_payload_from_offer(
+        payload = service.player_payload_from_offer(
             {"name": "Two Way FA"},
             {
                 "contract_type": "Two-way",
@@ -819,9 +1045,16 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("QO", payload["option_2027"])
 
     def test_player_payload_from_free_agent_offer_skips_post_contract_marker_when_final_year_has_option(self) -> None:
-        handler = object.__new__(Handler)
+        service = FreeAgencyService(
+            self.db._free_agency_repository,
+            contract_seasons=tuple(range(2025, 2032)),
+            cap_hold_source="cap_hold",
+            gm_requests=self.db._gm_request_service,
+            offer_promises=self.db._offer_promise_service,
+            players=self.db._player_repository,
+        )
 
-        payload = handler.app.free_agency.player_payload_from_offer(
+        payload = service.player_payload_from_offer(
             {"name": "Option FA"},
             {
                 "contract_type": "Reg",
@@ -847,8 +1080,16 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
                 captured["fields"] = event.fields
                 return True
 
-        handler.app.__dict__["discord_notifications"] = FakeDelivery()
-        handler.app.__dict__.pop("notifications", None)
+        handler._application_container = type(
+            "FakeApp",
+            (),
+            {
+                "notifications": LeagueNotificationDeliveryService(
+                    FakeDelivery(),
+                    type("FakeDraft", (), {"current_year": lambda self: 2026})(),
+                )
+            },
+        )()
 
         sent = handler.app.notifications.free_agent_signed(
             {

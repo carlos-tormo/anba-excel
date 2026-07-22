@@ -4,11 +4,38 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+import time
 from typing import Callable, ContextManager, Iterator
+
+try:
+    from ..observability.operations import record_db_query
+except ImportError:  # pragma: no cover
+    from observability.operations import record_db_query
 
 
 class ClosingSQLiteConnection(sqlite3.Connection):
     """Connection whose context manager always closes after commit/rollback."""
+
+    def execute(self, sql, parameters=(), /):  # type: ignore[override]
+        started = time.perf_counter()
+        try:
+            return super().execute(sql, parameters)
+        finally:
+            record_db_query(sql, time.perf_counter() - started)
+
+    def executemany(self, sql, parameters, /):  # type: ignore[override]
+        started = time.perf_counter()
+        try:
+            return super().executemany(sql, parameters)
+        finally:
+            record_db_query(sql, time.perf_counter() - started)
+
+    def executescript(self, sql_script, /):  # type: ignore[override]
+        started = time.perf_counter()
+        try:
+            return super().executescript(sql_script)
+        finally:
+            record_db_query("SCRIPT", time.perf_counter() - started)
 
     def __exit__(self, exc_type, exc_value, traceback):
         try:
@@ -20,9 +47,14 @@ class ClosingSQLiteConnection(sqlite3.Connection):
 def connect_sqlite(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=15.0, factory=ClosingSQLiteConnection)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 15000")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    # Connection setup is infrastructure, not application workflow querying.
+    # Bypass the instrumented execute override so per-route query budgets do
+    # not count PRAGMAs required for safe SQLite operation.
+    sqlite3.Connection.execute(conn, "PRAGMA foreign_keys = ON")
+    sqlite3.Connection.execute(conn, "PRAGMA busy_timeout = 15000")
+    sqlite3.Connection.execute(conn, "PRAGMA synchronous = NORMAL")
+    if str(db_path or "") != ":memory:":
+        sqlite3.Connection.execute(conn, "PRAGMA journal_mode = WAL")
     return conn
 
 

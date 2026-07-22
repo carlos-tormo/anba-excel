@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
+import re
 import sys
-from typing import Optional, TextIO
+from typing import Any, Mapping, Optional, TextIO
 
 
 LOGGER_NAMESPACE = "anba"
@@ -45,3 +47,40 @@ def request_context(request_id: Any = None, method: Any = None, path: Any = None
         "method": str(method or "-"),
         "path": str(path or "-"),
     }
+
+
+def _safe_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _safe_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_safe_json_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return redact_secrets(str(value))
+
+
+def redact_secrets(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"\b(Bot|Bearer)\s+[A-Za-z0-9._~+/=-]+", r"\1 [REDACTED]", text)
+    text = re.sub(
+        r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/[^\s\"'<>]+",
+        "https://discord.com/api/webhooks/[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(access_token|refresh_token|client_secret|bot_token|webhook_url|password)\b([\"'\s:=]+)([^&\s\"',}]+)",
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        text,
+    )
+    return text
+
+
+def structured_event_message(event: str, fields: Mapping[str, Any]) -> str:
+    payload = {"event": str(event or "event"), **_safe_json_value(dict(fields or {}))}
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def log_structured(logger: logging.Logger, level: int, event: str, fields: Mapping[str, Any]) -> None:
+    logger.log(level, structured_event_message(event, fields))

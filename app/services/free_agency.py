@@ -169,6 +169,58 @@ class FreeAgencyService:
         self.repository.delete_favorite(int(free_agent_id), normalized_team)
         return {"favorite": None, "is_favorite": False, "team_code": normalized_team}
 
+    def list_free_agents(self, actor_team_codes: Iterable[str] = ()) -> Dict[str, Any]:
+        free_agents = self.repository.list_free_agents()
+        team_codes = [normalize_team_code(code) for code in actor_team_codes or ()]
+        team_codes = [code for code in team_codes if code]
+        if len(team_codes) == 1:
+            favorite_ids = self.repository.favorite_ids_for_team(team_codes[0])
+            for item in free_agents:
+                item["is_favorite"] = int(item.get("id") or 0) in favorite_ids
+                item["favorite_team_code"] = team_codes[0]
+        else:
+            for item in free_agents:
+                item["is_favorite"] = False
+        return {"free_agents": free_agents}
+
+    def update_free_agent(self, free_agent_id: int, payload: Dict[str, Any]) -> bool:
+        return self.repository.update_free_agent(int(free_agent_id), payload or {})
+
+    def create_free_agent(self, payload: Dict[str, Any]) -> Optional[int]:
+        return self.repository.create_free_agent(payload or {})
+
+    def bulk_create_free_agents(self, raw_names: Any) -> Dict[str, Any]:
+        return self.repository.bulk_create_free_agents(raw_names)
+
+    def delete_free_agent(self, free_agent_id: int, record_transaction: bool = True) -> bool:
+        return self.repository.delete_free_agent(int(free_agent_id), record_transaction=record_transaction)
+
+    def set_ruleout(
+        self,
+        free_agent_id: int,
+        team_code: str,
+        actor: Dict[str, Any],
+        *,
+        ruled_out: bool,
+    ) -> list[Dict[str, Any]]:
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        if ruled_out:
+            return self.repository.set_ruleout(int(free_agent_id), normalized_team, actor or {})
+        return self.repository.delete_ruleout(int(free_agent_id), normalized_team, actor or {})
+
+    def set_spending_limit(
+        self,
+        team_code: str,
+        amount_millions: Any,
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        normalized_team = normalize_team_code(team_code)
+        if not normalized_team:
+            raise ValueError("team_code_required")
+        return self.repository.set_spending_limit(normalized_team, amount_millions, actor or {})
+
     def cancel_offer(
         self,
         request_id: int,
@@ -287,6 +339,7 @@ class FreeAgencyService:
                 "rejected",
                 actor or {},
                 note=command_options.note,
+                expected_version=parse_int(request_before.get("version")),
             )
             return {
                 **result,
@@ -296,6 +349,12 @@ class FreeAgencyService:
                 "team_code": normalize_team_code(request_before.get("team_code")),
                 "offer_type": request_before.get("offer_type"),
                 "offer_payload": {},
+                "entity_versions": {
+                    "request_before_status": request_before.get("status"),
+                    "request_after_status": (result.get("request") or {}).get("status"),
+                    "request_before_version": parse_int(request_before.get("version")),
+                    "request_after_version": parse_int((result.get("request") or {}).get("version")),
+                },
             }
 
         free_agent_id = parse_int(request_before.get("free_agent_id"))
@@ -327,6 +386,7 @@ class FreeAgencyService:
             custom_image=command_options.custom_image,
             promise_context={"free_agent": free_agent},
             bypass_role_limits=command_options.bypass_role_limits,
+            expected_version=parse_int(request_before.get("version")),
         )
         player_id = result.get("player_id")
         if not player_id:
@@ -346,6 +406,13 @@ class FreeAgencyService:
             "team_code": team_code,
             "offer_type": request_before.get("offer_type"),
             "offer_payload": offer_payload,
+            "entity_versions": {
+                "request_before_status": request_before.get("status"),
+                "request_after_status": (result.get("request") or {}).get("status"),
+                "request_before_version": parse_int(request_before.get("version")),
+                "request_after_version": parse_int((result.get("request") or {}).get("version")),
+                "signed_player_id": result.get("player_id"),
+            },
         }
 
     @staticmethod
@@ -367,6 +434,10 @@ class FreeAgencyService:
                         "free_agent_id": result.get("free_agent_id"),
                         "player_name": request_before.get("player_name"),
                         "offer_type": result.get("offer_type"),
+                        "command_id": result.get("command_id"),
+                        "validation_result": result.get("validation_result"),
+                        "entity_versions": result.get("entity_versions"),
+                        "outbox_event_ids": result.get("outbox_event_ids") or [],
                     },
                     "before": {"request": request_before},
                     "after": {"request": request},
@@ -390,6 +461,10 @@ class FreeAgencyService:
                     "contract_type": offer_payload.get("contract_type"),
                     "years": offer_payload.get("years"),
                     "sent_to_discord": bool(discord_sent),
+                    "command_id": result.get("command_id"),
+                    "validation_result": result.get("validation_result"),
+                    "entity_versions": result.get("entity_versions"),
+                    "outbox_event_ids": result.get("outbox_event_ids") or [],
                 },
                 "before": {"request": request_before},
                 "after": {"request": request, "player": result.get("player")},

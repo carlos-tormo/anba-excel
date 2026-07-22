@@ -60,10 +60,14 @@ class AdminObservabilityTests(unittest.TestCase):
             profile_id="44",
             before={"players": [{"id": 15, "team_code": "ATL"}]},
             after={"players": [{"id": 15, "team_code": "BOS"}]},
+            command_id="trade-command-1",
+            validation_result="valid",
+            entity_versions={"validation_hash": "abc", "rules_version": "rules-1"},
+            integration_outbox_ids=[5, 8],
             details={"trade_bucket": "pre30"},
         )
 
-        rows = self.db.list_admin_logs()
+        rows = self.db._audit_log_service().list()
         self.assertEqual(1, len(rows))
         log = rows[0]
         self.assertEqual("req-trade-1", log["request_id"])
@@ -76,6 +80,10 @@ class AdminObservabilityTests(unittest.TestCase):
         self.assertEqual("44", log["profile_id"])
         self.assertEqual("ATL", log["before"]["players"][0]["team_code"])
         self.assertEqual("BOS", log["after"]["players"][0]["team_code"])
+        self.assertEqual("trade-command-1", log["command_id"])
+        self.assertEqual("valid", log["validation_result"])
+        self.assertEqual({"validation_hash": "abc", "rules_version": "rules-1"}, log["entity_versions"])
+        self.assertEqual([5, 8], log["integration_outbox_ids"])
         self.assertEqual("pre30", log["details"]["trade_bucket"])
 
     def test_existing_admin_logs_table_is_migrated(self) -> None:
@@ -113,6 +121,10 @@ class AdminObservabilityTests(unittest.TestCase):
             "profile_id",
             "before_json",
             "after_json",
+            "command_id",
+            "validation_result",
+            "entity_versions_json",
+            "integration_outbox_ids_json",
         ]:
             self.assertIn(col, cols)
 

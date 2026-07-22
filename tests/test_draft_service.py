@@ -115,6 +115,28 @@ class DraftServiceTests(unittest.TestCase):
         first = next(row for row in live["draft_order"] if row["id"] == self.first_pick)
         self.assertIsNone(first["selection_text"])
 
+    def test_rejects_stale_pick_request_decision_version(self) -> None:
+        submission = self.submit_gm_pick()
+        request = submission["request"]
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE gm_draft_pick_requests SET version = version + 1 WHERE id = ?",
+                (int(request["id"]),),
+            )
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            self.service.decide_pick_request(
+                int(request["id"]),
+                "rejected",
+                self.admin,
+                request=request,
+            )
+
+        stored = self.service.pick_request(int(request["id"]))
+        self.assertEqual("pending", stored["status"])
+        live = self.service.list_live(2026)
+        self.assertEqual(self.first_pick, live["current_pick_id"])
+
     def test_read_model_does_not_delegate_back_to_league_db_facades(self) -> None:
         def unexpected_delegate(*_args, **_kwargs):
             raise AssertionError("draft read repository delegated back to LeagueDB")
@@ -171,6 +193,9 @@ class DraftServiceTests(unittest.TestCase):
         processed = self.service.process_results(2026)
         self.assertTrue(processed["ok"])
         self.assertEqual(1, len(processed["created_cap_holds"]))
+        self.assertEqual("draft-results:2026:process", processed["command_id"])
+        self.assertEqual("valid", processed["validation_result"])
+        self.assertEqual(1, processed["entity_versions"]["created_cap_holds"])
 
 
 if __name__ == "__main__":

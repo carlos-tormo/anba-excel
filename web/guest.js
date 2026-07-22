@@ -688,64 +688,16 @@ function canViewGmNotifications() {
 }
 
 function renderGmNotifications() {
-  const panel = document.getElementById('gmNotificationsPanel');
-  if (!panel) return;
   const notifications = Array.isArray(state.gmNotifications) ? state.gmNotifications : [];
-  panel.classList.toggle('section-hidden', !notifications.length);
-  if (!notifications.length) {
-    panel.replaceChildren();
-    return;
-  }
-  panel.replaceChildren();
-
-  const head = document.createElement('div');
-  head.className = 'gm-notifications-head';
-  const title = document.createElement('strong');
-  title.textContent = 'Notificaciones';
-  const count = document.createElement('span');
-  count.textContent = `${notifications.length} pendiente${notifications.length === 1 ? '' : 's'}`;
-  head.append(title, count);
-
-  const list = document.createElement('div');
-  list.className = 'gm-notifications-list';
-  notifications.forEach((notification) => {
-    const card = document.createElement('article');
-    card.className = `gm-notification-card gm-notification-card--${safeCssToken(notification?.kind || 'info', 'info')}`;
-
-    const copy = document.createElement('div');
-    copy.className = 'gm-notification-copy';
-    const notificationTitle = document.createElement('strong');
-    notificationTitle.textContent = String(notification?.title || 'Notificación');
-    copy.appendChild(notificationTitle);
-    const body = String(notification?.body || '').trim();
-    if (body) {
-      const bodyEl = document.createElement('p');
-      bodyEl.textContent = body;
-      copy.appendChild(bodyEl);
-    }
-
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.dataset.gmNotificationRead = String(notification?.id ?? '');
-    button.textContent = 'Cerrar';
-    card.append(copy, button);
-    list.appendChild(card);
-  });
-  panel.append(head, list);
-  panel.querySelectorAll('[data-gm-notification-read]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const id = Number(button.dataset.gmNotificationRead);
-      if (!Number.isFinite(id)) return;
-      button.disabled = true;
-      try {
-        await api(`/api/me/notifications/${id}/read`, { method: 'POST', body: '{}' });
-        state.gmNotifications = notifications.filter((notification) => Number(notification.id) !== id);
-        renderGmNotifications();
-      } catch (err) {
-        console.error(err);
-        button.disabled = false;
-      }
-    });
+  window.AnbaNotifications.renderGmNotifications({
+    panel: document.getElementById('gmNotificationsPanel'),
+    notifications,
+    safeCssToken,
+    markRead: async (id) => {
+      await api(`/api/me/notifications/${id}/read`, { method: 'POST', body: '{}' });
+      state.gmNotifications = notifications.filter((notification) => Number(notification.id) !== id);
+      renderGmNotifications();
+    },
   });
 }
 
@@ -761,15 +713,11 @@ async function loadGmNotifications() {
 }
 
 function startGmNotificationsPolling() {
-  if (gmNotificationsPollTimer) {
-    clearInterval(gmNotificationsPollTimer);
-    gmNotificationsPollTimer = null;
-  }
-  if (!canViewGmNotifications()) return;
-  gmNotificationsPollTimer = setInterval(() => {
-    if (document.hidden) return;
-    loadGmNotifications().catch((err) => console.warn('Could not refresh GM notifications', err));
-  }, 45000);
+  gmNotificationsPollTimer = window.AnbaNotifications.restartPolling(gmNotificationsPollTimer, {
+    canView: canViewGmNotifications,
+    load: loadGmNotifications,
+    onError: (err) => console.warn('Could not refresh GM notifications', err),
+  });
 }
 
 function isCoAdminRole(role) {
@@ -3903,31 +3851,13 @@ function setupTradeMachineControls() {
 
 async function api(path, opts = {}) {
   const method = String(opts.method || 'GET').toUpperCase();
-  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-  if (['POST', 'PATCH', 'DELETE'].includes(method) && state.csrfToken) {
-    headers['X-CSRF-Token'] = state.csrfToken;
-  }
-  const res = await fetch(path, {
-    headers,
-    ...opts,
+  return window.AnbaApi.request(path, opts, {
+    dedupe: method !== 'GET',
+    getCsrfToken: () => state.csrfToken,
+    setCsrfToken: (token) => { state.csrfToken = token; },
+    conflictMessage: 'This data changed. Refresh and try again.',
+    validationMessage: 'Some submitted values are invalid.',
   });
-  if (!res.ok) {
-    if (res.status === 429) {
-      const data = await res.json().catch(() => ({}));
-      const retry = Number(data.retry_after_seconds || 0);
-      if (retry > 0) {
-        throw new Error(`Too many attempts. Try again in ${retry}s.`);
-      }
-      throw new Error('Too many attempts. Try again later.');
-    }
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
-  }
-  const data = await res.json();
-  if (data && typeof data === 'object' && data.csrf_token) {
-    state.csrfToken = data.csrf_token;
-  }
-  return data;
 }
 
 function sortValue(row, key) {
@@ -6819,14 +6749,23 @@ async function saveGmOfficeDepthChart() {
   try {
     const data = await api('/api/gm-office/depth-chart', {
       method: 'POST',
-      body: JSON.stringify({ team_code: teamCode, entries: gmOfficeDepthChartEntriesFromDraft() }),
+      body: JSON.stringify({
+        team_code: teamCode,
+        entries: gmOfficeDepthChartEntriesFromDraft(),
+        expected_version: state.gmOffice.depthChart?.version || undefined,
+      }),
     });
     state.gmOffice.depthChart = data.depth_chart || null;
     state.gmOffice.depthChartDraft = normalizeDepthChartDraft(state.gmOffice.depthChart);
     state.gmOffice.depthChartDraftTeam = teamCode;
     setGmOfficeDepthChartStatus('Depth chart guardado correctamente.', 'success');
   } catch (err) {
-    setGmOfficeDepthChartStatus(`No se pudo guardar: ${err.message}`, 'error');
+    setGmOfficeDepthChartStatus(
+      err.message === 'stale_entity_version'
+        ? 'El depth chart cambió en otra pestaña. Recarga la oficina GM antes de guardar.'
+        : `No se pudo guardar: ${err.message}`,
+      'error',
+    );
   } finally {
     state.gmOffice.depthChartSaving = false;
     renderGmOfficeDepthChartEditor();
@@ -7239,83 +7178,12 @@ function setDraftLiveState(data) {
   }
 }
 
-function draftLiveCurrentPick() {
-  const currentId = Number(state.draftLive?.current_pick_id || 0);
-  if (!currentId) return null;
-  return (state.draftLive?.draft_order || state.draftOrder?.draft_order || [])
-    .find((row) => Number(row.id || 0) === currentId) || null;
-}
-
-function draftLiveOrderedRows() {
-  return (state.draftOrder?.draft_order || state.draftLive?.draft_order || [])
-    .slice()
-    .sort((a, b) => {
-      const roundA = String(a.draft_round || '') === '1st' ? 1 : String(a.draft_round || '') === '2nd' ? 2 : 3;
-      const roundB = String(b.draft_round || '') === '1st' ? 1 : String(b.draft_round || '') === '2nd' ? 2 : 3;
-      return roundA - roundB || Number(a.pick_number || 0) - Number(b.pick_number || 0) || Number(a.id || 0) - Number(b.id || 0);
-    });
-}
-
-function draftLiveUpcomingRows() {
-  const rows = draftLiveOrderedRows();
-  if (!rows.length) return [];
-  const currentId = Number(state.draftLive?.current_pick_id || 0);
-  let index = currentId ? rows.findIndex((row) => Number(row.id || 0) === currentId) : -1;
-  if (index < 0) {
-    index = rows.findIndex((row) => !String(row.selection_text || '').trim() && Number(row.skipped || 0) === 0);
-  }
-  return rows.slice(index >= 0 ? index : 0);
-}
-
-function draftLiveUpcomingHtml() {
-  const rows = draftLiveUpcomingRows();
-  if (!rows.length) return '';
-  const currentId = Number(state.draftLive?.current_pick_id || 0);
-  return `
-    <div class="draft-live-upcoming">
-      <div class="draft-live-upcoming-head">
-        <span>Orden desde el pick actual</span>
-        <strong>${escapeHtml(rows.length)} picks</strong>
-      </div>
-      <ol class="draft-live-upcoming-list">
-        ${rows.map((row) => {
-          const isCurrent = currentId && Number(row.id || 0) === currentId;
-          const selection = String(row.selection_text || '').trim();
-          return `
-            <li class="${isCurrent ? 'is-current-draft-pick' : ''}">
-              <span class="draft-live-upcoming-number">#${escapeHtml(row.pick_number || '')}</span>
-              <span class="draft-live-upcoming-main">
-                <strong>${escapeHtml(row.owner_team_code || '')}</strong>
-                <small>${escapeHtml(row.draft_round || '')}${selection ? ` · ${selection}` : ''}</small>
-              </span>
-            </li>
-          `;
-        }).join('')}
-      </ol>
-    </div>
-  `;
-}
-
 function draftLiveRemainingSeconds() {
-  const live = state.draftLive || {};
-  const duration = Number(live.duration_seconds || 180);
-  if (!live.enabled || !live.started_at) return duration;
-  const started = Date.parse(live.started_at);
-  const serverNow = Date.parse(live.server_now || '');
-  if (!Number.isFinite(started) || !Number.isFinite(serverNow)) {
-    return Math.max(0, Number(live.remaining_seconds || duration));
-  }
-  const loadedAt = Number(live.loaded_at_ms || Date.now());
-  const elapsedSinceLoad = Math.max(0, Date.now() - loadedAt);
-  const estimatedNow = serverNow + elapsedSinceLoad;
-  return Math.max(0, Math.ceil((started + duration * 1000 - estimatedNow) / 1000));
+  return window.AnbaDraftLive.remainingSeconds(state.draftLive);
 }
 
 function formatDraftLiveClock(seconds) {
-  const total = Math.max(0, Number(seconds || 0));
-  const mins = Math.floor(total / 60);
-  const secs = total % 60;
-  return `${mins}:${String(secs).padStart(2, '0')}`;
+  return window.AnbaDraftLive.formatClock(seconds);
 }
 
 function updateDraftLiveClock() {
@@ -7373,59 +7241,31 @@ function canSelectDraftLivePick(row) {
 }
 
 function draftLiveSelectionHtml(row) {
-  const selection = String(row?.selection_text || '').trim();
-  const skipped = Number(row?.skipped || 0) !== 0;
-  const pendingSelection = String(row?.pending_selection_text || '').trim();
-  if (!selection && canSelectDraftLivePick(row)) {
-    if (pendingSelection) {
-      return `<span class="draft-live-pending draft-live-pending--request">Solicitud enviada</span>`;
-    }
-    return `<button type="button" class="draft-live-pick-btn draft-live-pick-btn--now" data-draft-live-pick="${escapeHtml(row.id)}">ELIGE AHORA</button>`;
-  }
-  if (!selection && pendingSelection) return '<span class="draft-live-pending draft-live-pending--request">Solicitud enviada</span>';
-  if (!selection) return '<span class="draft-live-pending">Pendiente</span>';
-  const cls = skipped ? 'draft-live-selection draft-live-selection--skipped' : 'draft-live-selection';
-  return `<span class="${cls}">${escapeHtml(selection)}</span>`;
+  return window.AnbaDraftLive.selectionHtml(row, {
+    escapeHtml,
+    canSelect: canSelectDraftLivePick,
+    pendingRequestLabel: 'Solicitud enviada',
+    selectButtonLabel: 'ELIGE AHORA',
+  });
 }
 
 function renderDraftLivePanel() {
   const panel = document.getElementById('draftLivePanel');
   if (!panel) return;
-  const live = state.draftLive || {};
-  const upcoming = draftLiveUpcomingRows();
-  if (!live.enabled && !upcoming.length) {
+  const html = window.AnbaDraftLive.guestPanelHtml(state.draftLive || {}, state.draftOrder, escapeHtml);
+  if (!html) {
     panel.classList.add('section-hidden');
     panel.innerHTML = '';
     startDraftLiveTimer();
     return;
   }
-  const current = draftLiveCurrentPick() || upcoming[0] || null;
-  const currentLabel = current
-    ? `Pick #${current.pick_number} · ${current.draft_round} · ${current.owner_team_code}`
-    : 'Sin picks configurados';
   panel.classList.remove('section-hidden');
-  panel.innerHTML = `
-    <div class="draft-live-card">
-      <div>
-        <span class="draft-live-kicker">${live.enabled ? 'Modo draft activo' : 'Modo draft inactivo'}</span>
-        <strong>${escapeHtml(currentLabel)}</strong>
-        ${current ? `<span>Siguiente elección: ${escapeHtml(current.owner_team_name || current.owner_team_code || '')}</span>` : '<span>No quedan picks pendientes.</span>'}
-      </div>
-      ${live.enabled ? `<div class="draft-live-clock" data-draft-live-countdown>${formatDraftLiveClock(draftLiveRemainingSeconds())}</div>` : '<div class="draft-live-clock draft-live-clock--idle">--</div>'}
-    </div>
-    ${draftLiveUpcomingHtml()}
-  `;
+  panel.innerHTML = html;
   startDraftLiveTimer();
 }
 
 function draftLiveChoiceOptionsHtml(selected = '') {
-  const normalized = String(selected || '').trim();
-  const options = Array.isArray(state.draftLive?.options) ? state.draftLive.options : [];
-  return [
-    '<option value="">Selecciona jugador</option>',
-    ...options.map((option) => `<option value="${escapeHtml(option)}"${option === normalized ? ' selected' : ''}>${escapeHtml(option)}</option>`),
-    `<option value="__other__"${normalized === '__other__' ? ' selected' : ''}>Otro</option>`,
-  ].join('');
+  return window.AnbaDraftLive.choiceOptionsHtml(state.draftLive, selected, escapeHtml);
 }
 
 function openDraftLivePickModal(row) {
@@ -7483,6 +7323,7 @@ function openDraftLivePickModal(row) {
           option_value: optionValue,
           custom_text: customText,
           advance: true,
+          expected_state_version: state.draftLive?.state_version || undefined,
         }),
       });
       setDraftLiveState(result);
@@ -7490,7 +7331,9 @@ function openDraftLivePickModal(row) {
       renderDraftOrder();
       alert('Tu elección ha sido enviada a la administración. Será procesada pronto.');
     } catch (err) {
-      alert(`No se pudo registrar la elección: ${err.message}`);
+      alert(err.message === 'stale_entity_version'
+        ? 'El draft cambió mientras elegías. Actualiza la pantalla e inténtalo de nuevo.'
+        : `No se pudo registrar la elección: ${err.message}`);
     }
   });
   document.body.appendChild(backdrop);
@@ -7928,6 +7771,7 @@ async function submitOwnerExitResponse() {
       body: JSON.stringify({
         season_year: season,
         gm_response: response,
+        expected_interview_version: current?.version || undefined,
       }),
     });
     if (result.owner_office) state.teamData.owner_office = result.owner_office;
@@ -7936,7 +7780,9 @@ async function submitOwnerExitResponse() {
     renderOwnerExitModal(result.interview);
   } catch (err) {
     renderOwnerExitModal(current || { status: 'awaiting_gm', season_year: season });
-    alert(`No se pudo enviar la respuesta: ${err.message || err}`);
+    alert(err.message === 'stale_entity_version'
+      ? 'La entrevista cambió mientras respondías. Recarga la oficina del propietario e inténtalo de nuevo.'
+      : `No se pudo enviar la respuesta: ${err.message || err}`);
   }
 }
 

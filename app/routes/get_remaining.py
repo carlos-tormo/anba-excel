@@ -10,12 +10,12 @@ from urllib.parse import ParseResult, parse_qs
 try:
     from ..auth.policies import normalize_team_codes
     from ..domain_rules import parse_bool, parse_int
-    from ..routing import exact_route, predicate_route, prefix_route
+    from ..routing import error_response, exact_route, json_response, predicate_route, prefix_route, redirect_response
     from ..services.authentication import GoogleOAuthCompletionError
 except ImportError:  # pragma: no cover
     from auth.policies import normalize_team_codes
     from domain_rules import parse_bool, parse_int
-    from routing import exact_route, predicate_route, prefix_route
+    from routing import error_response, exact_route, json_response, predicate_route, prefix_route, redirect_response
     from services.authentication import GoogleOAuthCompletionError
 
 
@@ -40,65 +40,58 @@ def get_admin_page(handler: Any, parsed: ParseResult, payload: Optional[Dict[str
         handler._route_html("admin.html")
         return
     if handler._is_authenticated():
-        handler._redirect("/")
-        return
+        return redirect_response("/")
     handler._route_html("login.html")
     return
 
 def start_google_oauth(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
     payload = payload or {}
     if not handler.app.google_enabled:
-        handler._redirect("/login?error=google_not_configured")
-        return
+        return redirect_response("/login?error=google_not_configured")
     if not handler._require_oauth_start_rate_limit():
         return
     state = secrets.token_urlsafe(24)
     handler._store_oauth_state(state)
-    handler._redirect(
+    return redirect_response(
         handler.app.google_client.authorization_url(state),
         headers={"Set-Cookie": handler._oauth_state_cookie(state)},
     )
-    return
 
 def complete_google_oauth(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
     payload = payload or {}
     qs = parse_qs(parsed.query)
     if "error" in qs:
-        handler._redirect(
+        return redirect_response(
             "/login?error=google_auth_denied",
             headers={"Set-Cookie": handler._clear_oauth_state_cookie()},
         )
-        return
     code = (qs.get("code") or [""])[0]
     state = (qs.get("state") or [""])[0]
     if not code or not handler._oauth_state_ok(state):
-        handler._redirect(
+        return redirect_response(
             "/login?error=google_state_invalid",
             headers={"Set-Cookie": handler._clear_oauth_state_cookie()},
         )
-        return
 
     try:
         result = handler.app.google_oauth.complete(code)
     except GoogleOAuthCompletionError as err:
-        handler._redirect(
+        return redirect_response(
             f"/login?error={str(err)}",
             headers={"Set-Cookie": handler._clear_oauth_state_cookie()},
         )
-        return
     token, _ = handler._start_session(result["session"])
     cookie = handler._session_cookie(token)
-    handler._redirect(
+    return redirect_response(
         handler._landing_path_for_session(result["role"], result["team_codes"]),
         headers={"Set-Cookie": [cookie, handler._clear_oauth_state_cookie()]},
     )
-    return
 
-def get_auth_status(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_auth_status(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     sess = handler._current_session()
     if not sess:
-        handler._json(
+        return json_response(
             200,
             {
                 "authenticated": False,
@@ -110,8 +103,7 @@ def get_auth_status(handler: Any, parsed: ParseResult, payload: Optional[Dict[st
                 "team_codes": [],
             },
         )
-        return
-    handler._json(
+    return json_response(
         200,
         {
             "authenticated": True,
@@ -129,27 +121,23 @@ def get_auth_status(handler: Any, parsed: ParseResult, payload: Optional[Dict[st
             "csrf_token": sess.get("csrf_token"),
         },
     )
-    return
 
-def get_profile_salary_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_profile_salary_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.player_profile.view"):
-        return
+        return None
     parts = parsed.path.strip("/").split("/")
     if len(parts) != 4:
-        handler._json(404, {"error": "not_found"})
-        return
+        return error_response(404, "not_found")
     profile_id = parse_int(parts[2])
     if profile_id is None:
-        handler._json(400, {"error": "invalid_profile_id"})
-        return
-    handler._json(200, {"salary_history": handler.app.players.list_salary_history(int(profile_id))})
-    return
+        return error_response(400, "invalid_profile_id")
+    return json_response(200, {"salary_history": handler.app.players.list_salary_history(int(profile_id))})
 
-def get_admin_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_admin_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.player_catalog.view"):
-        return
+        return None
     try:
         started = time.perf_counter()
         players = handler.app.player_catalog.list_players(
@@ -167,7 +155,7 @@ def get_admin_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         )
         if total_ms >= 500:
             handler.log_message("Player catalog slow load %.2fms %s", total_ms, timings_text)
-        handler._json(
+        return json_response(
             200,
             {"players": players, "meta": {"timings": timings}},
             headers={
@@ -176,10 +164,9 @@ def get_admin_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         )
     except Exception as err:
         handler.log_message("Player catalog load failed: %s", err)
-        handler._json(500, {"error": "players_unavailable"})
-    return
+        return error_response(500, "players_unavailable")
 
-def get_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     try:
         started = time.perf_counter()
@@ -197,7 +184,7 @@ def get_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, A
         )
         if total_ms >= 500:
             handler.log_message("Public player catalog slow load %.2fms %s", total_ms, timings_text)
-        handler._json(
+        return json_response(
             200,
             {"players": players, "meta": {"timings": timings}},
             headers={
@@ -206,10 +193,9 @@ def get_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, A
         )
     except Exception as err:
         handler.log_message("Public player catalog load failed: %s", err)
-        handler._json(500, {"error": "players_unavailable"})
-    return
+        return error_response(500, "players_unavailable")
 
-def get_tracker(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_tracker(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     try:
         started = time.perf_counter()
@@ -217,8 +203,7 @@ def get_tracker(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, A
         raw_season = (qs.get("season") or [""])[0].strip()
         season_year = parse_int(raw_season) if raw_season else None
         if raw_season and season_year is None:
-            handler._json(400, {"error": "invalid_season_year"})
-            return
+            return error_response(400, "invalid_season_year")
         tracker = handler.app.tracker.list(season_year)
         timings = tracker.get("timings") if isinstance(tracker.get("timings"), dict) else {}
         total_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -231,7 +216,7 @@ def get_tracker(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, A
             handler.log_message("Tracker slow load %.2fms %s", total_ms, timings_text)
         if tracker.get("stale"):
             handler.log_message("Tracker served stale cache season=%s", tracker.get("season_year"))
-        handler._json(
+        return json_response(
             200,
             {
                 "tracker": tracker.get("rows") or [],
@@ -243,81 +228,70 @@ def get_tracker(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, A
         )
     except Exception as err:
         handler.log_message("Tracker load failed: %s", err)
-        handler._json(500, {"error": "tracker_unavailable"})
-    return
+        return error_response(500, "tracker_unavailable")
 
-def get_tracker_economy(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_tracker_economy(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     qs = parse_qs(parsed.query)
     raw_season = (qs.get("season") or [""])[0].strip()
     season_year = parse_int(raw_season) if raw_season else None
     if raw_season and season_year is None:
-        handler._json(400, {"error": "invalid_season_year"})
-        return
-    handler._json(200, handler.app.settings_repository.list_team_economy(season_year))
-    return
+        return error_response(400, "invalid_season_year")
+    return json_response(200, handler.app.settings.list_team_economy(season_year))
 
-def get_cartera(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_cartera(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("coadmin.cartera.view"):
-        return
+        return None
     qs = parse_qs(parsed.query)
     raw_amount = (qs.get("amount") or [""])[0].strip()
     raw_season = (qs.get("season") or [""])[0].strip()
     season_year = parse_int(raw_season) if raw_season else None
     if raw_season and season_year is None:
-        handler._json(400, {"error": "invalid_season_year"})
-        return
+        return error_response(400, "invalid_season_year")
     try:
-        handler._json(200, handler.app.cartera.list_capacity(raw_amount, season_year))
+        return json_response(200, handler.app.cartera.list_capacity(raw_amount, season_year))
     except ValueError as exc:
-        handler._json(400, {"error": str(exc)})
-    return
+        return error_response(400, str(exc))
 
-def get_cartera_clients(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_cartera_clients(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("coadmin.cartera.view"):
-        return
-    handler._json(200, handler.app.cartera.list_clients(handler._current_session() or {}))
-    return
+        return None
+    return json_response(200, handler.app.cartera.list_clients(handler._current_session() or {}))
 
-def get_cartera_appeal(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_cartera_appeal(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("coadmin.cartera.view"):
-        return
-    handler._json(200, handler.app.free_agent_appeal.list())
-    return
+        return None
+    return json_response(200, handler.app.free_agent_appeal.list())
 
-def get_offseason_exception_preview(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_offseason_exception_preview(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.offseason_exceptions.view"):
-        return
+        return None
     qs = parse_qs(parsed.query)
     raw_season = (qs.get("season") or [""])[0].strip()
     season_year = parse_int(raw_season) if raw_season else None
     if raw_season and season_year is None:
-        handler._json(400, {"error": "invalid_season_year"})
-        return
-    handler._json(200, handler.app.offseason_exceptions.preview(season_year))
-    return
+        return error_response(400, "invalid_season_year")
+    return json_response(200, handler.app.offseason_exceptions.preview(season_year))
 
-def get_gm_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_gm_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.gm_history.view"):
-        return
+        return None
     qs = parse_qs(parsed.query)
     team_code = str((qs.get("team") or [""])[0] or "").strip().upper() or None
     rows = handler.app.teams.list_gm_history(team_code)
     if rows is None:
-        handler._json(404, {"error": "team_not_found"})
-        return
-    handler._json(200, {"gm_history": rows})
-    return
+        return error_response(404, "team_not_found")
+    return json_response(200, {"gm_history": rows})
 
-def get_admin_users(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_admin_users(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.users.view"):
-        return
+        return None
     users = handler.app.users.list()
     for user in users:
         email = str(user.get("email") or "").strip().lower()
@@ -331,48 +305,41 @@ def get_admin_users(handler: Any, parsed: ParseResult, payload: Optional[Dict[st
         )
         user["team_code"] = team_codes[0] if team_codes else None
         user["team_codes"] = team_codes
-    handler._json(200, {"users": users})
-    return
+    return json_response(200, {"users": users})
 
-def get_admin_option_requests(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_admin_option_requests(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.gm_option_request.view"):
-        return
+        return None
     qs = parse_qs(parsed.query)
     status = (qs.get("status") or ["pending"])[0].strip().lower() or "pending"
-    handler._json(200, {"requests": handler.app.gm_request_queries.list(status=status)})
-    return
+    return json_response(200, {"requests": handler.app.gm_request_queries.list(status=status)})
 
-def get_admin_coadmin_votes(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_admin_coadmin_votes(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.coadmin_vote.view"):
-        return
-    handler._json(200, {"votes": handler.app.coadmin_votes.list_admin_coadmin_votes()})
-    return
+        return None
+    return json_response(200, {"votes": handler.app.coadmin_votes.list_admin_coadmin_votes()})
 
-def get_coadmin_votes(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_coadmin_votes(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("coadmin.vote.list"):
-        return
+        return None
     session = handler._current_session() or {}
-    handler._json(200, handler.app.coadmin_votes.list_coadmin_votes_for_session(session))
-    return
+    return json_response(200, handler.app.coadmin_votes.list_coadmin_votes_for_session(session))
 
-def get_team(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def get_team(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     code = parsed.path.split("/")[-1]
     qs = parse_qs(parsed.query)
     raw_season = (qs.get("season") or [""])[0].strip()
     move_season_year = parse_int(raw_season) if raw_season else None
     if raw_season and move_season_year is None:
-        handler._json(400, {"error": "invalid_season_year"})
-        return
+        return error_response(400, "invalid_season_year")
     data = handler.app.team_detail.get(code, move_season_year=move_season_year)
     if not data:
-        handler._json(404, {"error": "team_not_found"})
-        return
-    handler._json(200, data)
-    return
+        return error_response(404, "team_not_found")
+    return json_response(200, data)
 
 
 def _profile_salary_history_path(path: str) -> bool:

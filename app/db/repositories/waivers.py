@@ -215,70 +215,80 @@ class WaiverRepository(LeagueRepository):
         payload: Dict[str, Any],
         requester: Dict[str, Any],
     ) -> Dict[str, Any]:
+        with self.db.transaction("IMMEDIATE") as conn:
+            return self.create_claim_conn(conn, waiver_player_id, team_code, payload, requester)
+
+    def create_claim_conn(
+        self,
+        conn: Any,
+        waiver_player_id: int,
+        team_code: str,
+        payload: Dict[str, Any],
+        requester: Dict[str, Any],
+    ) -> Dict[str, Any]:
         operations = self._operations()
         timestamp = operations.now()
         normalized_team = normalize_team_code(team_code)
         if not normalized_team:
             raise ValueError("team_code_required")
         contingent_cut_player_id = parse_int(payload.get("contingent_cut_player_id"))
-        with self.db.connect() as conn:
-            waiver = conn.execute(
-                "SELECT * FROM waiver_players WHERE id = ? AND status IN ('active', 'pending_claims')",
-                (int(waiver_player_id),),
-            ).fetchone()
-            if not waiver:
-                raise ValueError("waiver_not_found")
-            team = conn.execute("SELECT id, code, name FROM teams WHERE code = ?", (normalized_team,)).fetchone()
-            if not team:
-                raise ValueError("team_not_found")
-            eligibility = operations.claim_eligibility(
-                normalized_team,
-                dict(waiver),
-                contingent_cut_player_id=contingent_cut_player_id,
+        waiver = conn.execute(
+            "SELECT * FROM waiver_players WHERE id = ? AND status IN ('active', 'pending_claims')",
+            (int(waiver_player_id),),
+        ).fetchone()
+        if not waiver:
+            raise ValueError("waiver_not_found")
+        team = conn.execute("SELECT id, code, name FROM teams WHERE code = ?", (normalized_team,)).fetchone()
+        if not team:
+            raise ValueError("team_not_found")
+        eligibility = operations.claim_eligibility(
+            normalized_team,
+            dict(waiver),
+            contingent_cut_player_id=contingent_cut_player_id,
+        )
+        if not eligibility.get("eligible"):
+            raise ValueError(str(eligibility.get("reason") or "not_eligible"))
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO waiver_claims (
+                    waiver_player_id, team_id, team_code, requester_user_id,
+                    requester_email, requester_name, contingent_cut_player_id,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    int(waiver_player_id),
+                    int(team["id"]),
+                    normalized_team,
+                    parse_int(requester.get("user_id") or requester.get("id")),
+                    str(requester.get("email") or "").strip() or None,
+                    str(requester.get("name") or "").strip() or None,
+                    contingent_cut_player_id,
+                    timestamp,
+                    timestamp,
+                ),
             )
-            if not eligibility.get("eligible"):
-                raise ValueError(str(eligibility.get("reason") or "not_eligible"))
-            try:
-                cur = conn.execute(
-                    """
-                    INSERT INTO waiver_claims (
-                        waiver_player_id, team_id, team_code, requester_user_id,
-                        requester_email, requester_name, contingent_cut_player_id,
-                        status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-                    """,
-                    (
-                        int(waiver_player_id),
-                        int(team["id"]),
-                        normalized_team,
-                        parse_int(requester.get("user_id") or requester.get("id")),
-                        str(requester.get("email") or "").strip() or None,
-                        str(requester.get("name") or "").strip() or None,
-                        contingent_cut_player_id,
-                        timestamp,
-                        timestamp,
-                    ),
-                )
-            except sqlite3.IntegrityError as err:
-                raise ValueError("claim_already_submitted") from err
-            claim_id = int(cur.lastrowid)
-            self.workflows.record_creation_conn(
-                conn,
-                "waiver_claim",
-                claim_id,
-                "pending",
-                actor=requester,
-                reason="waiver_claim_submitted",
-                command_id=f"waiver-claim:{claim_id}:created",
-                metadata={"waiver_player_id": int(waiver_player_id), "team_code": normalized_team},
-            )
-            return {
-                "id": claim_id,
-                "waiver_player_id": int(waiver_player_id),
-                "team_code": normalized_team,
-                "status": "pending",
-                "eligibility": eligibility,
-            }
+        except sqlite3.IntegrityError as err:
+            raise ValueError("claim_already_submitted") from err
+        claim_id = int(cur.lastrowid)
+        self.workflows.record_creation_conn(
+            conn,
+            "waiver_claim",
+            claim_id,
+            "pending",
+            actor=requester,
+            reason="waiver_claim_submitted",
+            command_id=f"waiver-claim:{claim_id}:created",
+            metadata={"waiver_player_id": int(waiver_player_id), "team_code": normalized_team},
+        )
+        return {
+            "id": claim_id,
+            "waiver_player_id": int(waiver_player_id),
+            "team_code": normalized_team,
+            "status": "pending",
+            "eligibility": eligibility,
+        }
 
     def list_claim_requests(self, *, status: Optional[str] = None) -> List[Dict[str, Any]]:
         normalized_status = str(status or "").strip().lower()
@@ -319,44 +329,68 @@ class WaiverRepository(LeagueRepository):
         decision: str,
         admin: Optional[Dict[str, Any]] = None,
         note: Optional[str] = None,
+        expected_version: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self.db.transaction("IMMEDIATE") as conn:
+            return self.decide_claim_request_conn(conn, request_id, decision, admin, note, expected_version=expected_version)
+
+    def decide_claim_request_conn(
+        self,
+        conn: Any,
+        request_id: int,
+        decision: str,
+        admin: Optional[Dict[str, Any]] = None,
+        note: Optional[str] = None,
+        expected_version: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         operations = self._operations()
         timestamp = operations.now()
         normalized = str(decision or "").strip().lower()
         if normalized not in {"approved", "rejected"}:
             raise ValueError("invalid_decision")
-        with self.db.transaction("IMMEDIATE") as conn:
-            claim_row = conn.execute("SELECT * FROM waiver_claims WHERE id = ?", (int(request_id),)).fetchone()
-            if not claim_row:
-                return None
-            claim = dict(claim_row)
-            if str(claim.get("status") or "") != "pending":
-                raise ValueError("request_already_decided")
-            if normalized == "approved":
-                result = self.approve_claim_conn(conn, claim, admin=admin, timestamp=timestamp)
-                if not result:
-                    raise ValueError("waiver_not_available")
-                return result
-            try:
-                self.workflows.transition_conn(
-                    conn,
-                    "waiver_claim",
-                    int(request_id),
-                    "rejected",
-                    actor=admin,
-                    reason=str(note or "").strip() or "waiver_claim_rejected",
-                    updates={
-                        "admin_email": str((admin or {}).get("email") or "").strip() or None,
-                        "admin_name": str((admin or {}).get("name") or "").strip() or None,
-                        "admin_decision_note": str(note or "").strip() or None,
-                        "updated_at": timestamp,
-                        "decided_at": timestamp,
-                    },
-                    command_id=f"waiver-claim:{int(request_id)}:rejected",
-                )
-            except WorkflowTransitionError as err:
-                raise ValueError("request_already_decided") from err
-            return {"id": int(request_id), "status": "rejected"}
+        claim_row = conn.execute("SELECT * FROM waiver_claims WHERE id = ?", (int(request_id),)).fetchone()
+        if not claim_row:
+            return None
+        claim = dict(claim_row)
+        if str(claim.get("status") or "") != "pending":
+            raise ValueError("request_already_decided")
+        if normalized == "approved":
+            result = self.approve_claim_conn(conn, claim, admin=admin, timestamp=timestamp, expected_claim_version=expected_version)
+            if not result:
+                raise ValueError("waiver_not_available")
+            return result
+        try:
+            self.workflows.transition_conn(
+                conn,
+                "waiver_claim",
+                int(request_id),
+                "rejected",
+                actor=admin,
+                reason=str(note or "").strip() or "waiver_claim_rejected",
+                updates={
+                    "admin_email": str((admin or {}).get("email") or "").strip() or None,
+                    "admin_name": str((admin or {}).get("name") or "").strip() or None,
+                    "admin_decision_note": str(note or "").strip() or None,
+                    "updated_at": timestamp,
+                    "decided_at": timestamp,
+                },
+                command_id=f"waiver-claim:{int(request_id)}:rejected",
+                expected_version=expected_version,
+            )
+        except WorkflowTransitionError as err:
+            if err.code == "version_conflict":
+                raise ValueError("stale_entity_version") from err
+            raise ValueError("request_already_decided") from err
+        row = conn.execute(
+            "SELECT version FROM waiver_claims WHERE id = ?",
+            (int(request_id),),
+        ).fetchone()
+        return {
+            "id": int(request_id),
+            "status": "rejected",
+            "command_id": f"waiver-claim:{int(request_id)}:rejected",
+            "version": parse_int(row["version"]) if row else None,
+        }
 
     def expire_without_claim_conn(
         self,
@@ -403,6 +437,7 @@ class WaiverRepository(LeagueRepository):
         *,
         admin: Optional[Dict[str, Any]] = None,
         timestamp: Optional[str] = None,
+        expected_claim_version: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         operations = self._operations()
         timestamp = timestamp or operations.now()
@@ -446,6 +481,7 @@ class WaiverRepository(LeagueRepository):
                     "decided_at": timestamp,
                 },
                 command_id=f"waiver-claim:{pending_id}:{claim_state}",
+                expected_version=expected_claim_version if pending_id == int(claim["id"]) else None,
             )
         self.workflows.transition_conn(
             conn,
@@ -475,7 +511,18 @@ class WaiverRepository(LeagueRepository):
             details={"player_name": waiver_data.get("player_name"), "waiver_player_id": waiver_data.get("id")},
             created_at=timestamp,
         )
-        return {"player_id": player_id, "team_code": target_team_code, "player_name": waiver_data.get("player_name")}
+        selected_claim = conn.execute(
+            "SELECT version, status FROM waiver_claims WHERE id = ?",
+            (int(claim["id"]),),
+        ).fetchone()
+        return {
+            "player_id": player_id,
+            "team_code": target_team_code,
+            "player_name": waiver_data.get("player_name"),
+            "status": str(selected_claim["status"]) if selected_claim else "approved",
+            "version": parse_int(selected_claim["version"]) if selected_claim else None,
+            "command_id": f"waiver-claim:{int(claim['id'])}:approved",
+        }
 
     def create_waiver_player_conn(
         self,

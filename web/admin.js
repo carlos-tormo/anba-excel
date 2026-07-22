@@ -2103,38 +2103,16 @@ function parseAmount(raw) {
 
 async function api(path, opts = {}) {
   const method = String(opts.method || 'GET').toUpperCase();
-  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-  if (['POST', 'PATCH', 'DELETE'].includes(method) && state.csrfToken) {
-    headers['X-CSRF-Token'] = state.csrfToken;
-  }
-  const res = await fetch(path, {
-    headers,
-    ...opts,
+  return window.AnbaApi.request(path, opts, {
+    dedupe: method !== 'GET',
+    getCsrfToken: () => state.csrfToken,
+    setCsrfToken: (token) => { state.csrfToken = token; },
+    onUnauthorized: () => { window.location.href = '/login'; },
+    unauthorizedMessage: 'Unauthorized',
+    forbiddenMessage: 'Security check failed. Refresh and log in again.',
+    conflictMessage: 'This record changed or was already processed. Refresh and try again.',
+    validationMessage: 'Some submitted values are invalid.',
   });
-  if (!res.ok) {
-    if (res.status === 401) {
-      window.location.href = '/login';
-      throw new Error('Unauthorized');
-    }
-    if (res.status === 403) {
-      throw new Error('Security check failed. Refresh and log in again.');
-    }
-    if (res.status === 429) {
-      const data = await res.json().catch(() => ({}));
-      const retry = Number(data.retry_after_seconds || 0);
-      if (retry > 0) {
-        throw new Error(`Too many attempts. Try again in ${retry}s.`);
-      }
-      throw new Error('Too many attempts. Try again later.');
-    }
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
-  }
-  const data = await res.json();
-  if (data && typeof data === 'object' && data.csrf_token) {
-    state.csrfToken = data.csrf_token;
-  }
-  return data;
 }
 
 function filenameFromContentDisposition(headerValue, fallback) {
@@ -7612,15 +7590,22 @@ async function mergeLeaguePlayerProfile(player, profileId) {
     `¿Fusionar el perfil ${profileId} dentro del perfil ${targetId}?\n\nSe conservará el perfil destino. Si ambos tienen contrato activo real, el servidor bloqueará la operación.`
   );
   if (!confirmed) return;
+  const targetPlayer = (state.leaguePlayers || []).find((candidate) => String(candidate.profile_id || '') === String(targetId));
   try {
     await api(`/api/player-profiles/${encodeURIComponent(targetId)}/merge`, {
       method: 'POST',
-      body: JSON.stringify({ source_profile_id: profileId }),
+      body: JSON.stringify({
+        source_profile_id: profileId,
+        expected_source_version: player.profile_version || undefined,
+        expected_target_version: targetPlayer?.profile_version || undefined,
+      }),
     });
     await loadLeaguePlayers();
     if (typeof loadAdminLogs === 'function') await loadAdminLogs();
   } catch (err) {
-    alert(`No se pudo fusionar el jugador: ${err.message || err}`);
+    alert(err.message === 'stale_entity_version'
+      ? 'El perfil cambió desde que cargaste la lista. Recarga los jugadores e inténtalo de nuevo.'
+      : `No se pudo fusionar el jugador: ${err.message || err}`);
   }
 }
 
@@ -7637,12 +7622,17 @@ async function moveLeaguePlayerProfileStatus(player, profileId, status, label) {
   try {
     await api(`/api/player-profiles/${encodeURIComponent(profileId)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ profile_status: status }),
+      body: JSON.stringify({
+        profile_status: status,
+        expected_version: player.profile_version || undefined,
+      }),
     });
     await loadLeaguePlayers();
     if (typeof loadAdminLogs === 'function') await loadAdminLogs();
   } catch (err) {
-    alert(`No se pudo mover el jugador: ${err.message || err}`);
+    alert(err.message === 'stale_entity_version'
+      ? 'El perfil cambió desde que cargaste la lista. Recarga los jugadores e inténtalo de nuevo.'
+      : `No se pudo mover el jugador: ${err.message || err}`);
   }
 }
 
@@ -8105,54 +8095,12 @@ function setDraftLiveState(data) {
   }
 }
 
-function draftLiveCurrentPick() {
-  const currentId = Number(state.draftLive?.current_pick_id || 0);
-  if (!currentId) return null;
-  return (state.draftLive?.draft_order || state.draftOrder?.draft_order || [])
-    .find((row) => Number(row.id || 0) === currentId) || null;
-}
-
-function draftLiveOrderedRows() {
-  return (state.draftOrder?.draft_order || state.draftLive?.draft_order || [])
-    .slice()
-    .sort((a, b) => {
-      const roundA = String(a.draft_round || '') === '1st' ? 1 : String(a.draft_round || '') === '2nd' ? 2 : 3;
-      const roundB = String(b.draft_round || '') === '1st' ? 1 : String(b.draft_round || '') === '2nd' ? 2 : 3;
-      return roundA - roundB || Number(a.pick_number || 0) - Number(b.pick_number || 0) || Number(a.id || 0) - Number(b.id || 0);
-    });
-}
-
-function draftLiveUpcomingRows() {
-  const rows = draftLiveOrderedRows();
-  if (!rows.length) return [];
-  const currentId = Number(state.draftLive?.current_pick_id || 0);
-  let index = currentId ? rows.findIndex((row) => Number(row.id || 0) === currentId) : -1;
-  if (index < 0) {
-    index = rows.findIndex((row) => !String(row.selection_text || '').trim() && Number(row.skipped || 0) === 0);
-  }
-  return rows.slice(index >= 0 ? index : 0);
-}
-
 function draftLiveRemainingSeconds() {
-  const live = state.draftLive || {};
-  const duration = Number(live.duration_seconds || 180);
-  if (!live.enabled || !live.started_at) return duration;
-  const started = Date.parse(live.started_at);
-  const serverNow = Date.parse(live.server_now || '');
-  if (!Number.isFinite(started) || !Number.isFinite(serverNow)) {
-    return Math.max(0, Number(live.remaining_seconds || duration));
-  }
-  const loadedAt = Number(live.loaded_at_ms || Date.now());
-  const elapsedSinceLoad = Math.max(0, Date.now() - loadedAt);
-  const estimatedNow = serverNow + elapsedSinceLoad;
-  return Math.max(0, Math.ceil((started + duration * 1000 - estimatedNow) / 1000));
+  return window.AnbaDraftLive.remainingSeconds(state.draftLive);
 }
 
 function formatDraftLiveClock(seconds) {
-  const total = Math.max(0, Number(seconds || 0));
-  const mins = Math.floor(total / 60);
-  const secs = total % 60;
-  return `${mins}:${String(secs).padStart(2, '0')}`;
+  return window.AnbaDraftLive.formatClock(seconds);
 }
 
 function updateDraftLiveClock() {
@@ -8173,257 +8121,32 @@ function startDraftLiveTimer() {
   draftLiveTimer = setInterval(updateDraftLiveClock, 1000);
 }
 
-function draftLivePickLabel(row) {
-  if (!row) return 'Sin picks configurados';
-  return `#${row.pick_number} · ${row.draft_round} · ${row.owner_team_code}`;
-}
-
-function draftLiveUpcomingHtml() {
-  const rows = draftLiveUpcomingRows();
-  if (!rows.length) return '';
-  const currentId = Number(state.draftLive?.current_pick_id || 0);
-  return `
-    <div class="draft-live-upcoming">
-      <div class="draft-live-upcoming-head">
-        <span>Orden desde el pick actual</span>
-        <strong>${escapeHtml(rows.length)} picks</strong>
-      </div>
-      <ol class="draft-live-upcoming-list">
-        ${rows.map((row) => {
-          const isCurrent = currentId && Number(row.id || 0) === currentId;
-          const selection = String(row.selection_text || '').trim();
-          return `
-            <li class="${isCurrent ? 'is-current-draft-pick' : ''}">
-              <span class="draft-live-upcoming-number">#${escapeHtml(row.pick_number || '')}</span>
-              <span class="draft-live-upcoming-main">
-                <strong>${escapeHtml(row.owner_team_code || '')}</strong>
-                <small>${escapeHtml(row.draft_round || '')}${selection ? ` · ${selection}` : ''}</small>
-              </span>
-            </li>
-          `;
-        }).join('')}
-      </ol>
-    </div>
-  `;
-}
-
-function draftLiveCurrentPickOptionsHtml(selectedId = '') {
-  const selected = String(selectedId || '');
-  return (state.draftOrder?.draft_order || [])
-    .map((row) => {
-      const id = String(row.id || '');
-      return `<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(draftLivePickLabel(row))}</option>`;
-    })
-    .join('');
-}
-
-function draftLiveSelectionHtml(row) {
-  const selection = String(row?.selection_text || '').trim();
-  const skipped = Number(row?.skipped || 0) !== 0;
-  const pendingSelection = String(row?.pending_selection_text || '').trim();
-  const processedType = String(row?.processed_type || '').trim();
-  const processedTag = processedType
-    ? `<span class="draft-live-processed">Procesado: ${processedType === 'draft_cap_hold' ? 'cap hold' : 'derechos'}</span>`
-    : '';
-  if (!selection && pendingSelection) return '<span class="draft-live-pending draft-live-pending--request">Solicitud GM</span>';
-  if (!selection) return '<span class="draft-live-pending">Pendiente</span>';
-  const cls = skipped ? 'draft-live-selection draft-live-selection--skipped' : 'draft-live-selection';
-  return `<span class="${cls}">${escapeHtml(selection)}</span>${processedTag}`;
-}
-
-function draftLiveChoiceOptionsHtml(selected = '') {
-  const normalized = String(selected || '').trim();
-  const options = Array.isArray(state.draftLive?.options) ? state.draftLive.options : [];
-  return [
-    '<option value="">Selecciona jugador</option>',
-    ...options.map((option) => `<option value="${escapeHtml(option)}"${option === normalized ? ' selected' : ''}>${escapeHtml(option)}</option>`),
-    `<option value="__other__"${normalized === '__other__' ? ' selected' : ''}>Otro</option>`,
-  ].join('');
-}
-
 function renderDraftLiveAdminPanel() {
   const panel = document.getElementById('draftLiveAdminPanel');
   if (!panel) return;
-  const live = state.draftLive || {};
-  const current = draftLiveCurrentPick() || draftLiveUpcomingRows()[0] || null;
-  panel.innerHTML = `
-    <div class="draft-live-card draft-live-card--admin">
-      <div class="draft-live-status">
-        <span class="draft-live-kicker">${live.enabled ? 'Modo draft activo' : 'Modo draft inactivo'}</span>
-        <strong>${escapeHtml(draftLivePickLabel(current))}</strong>
-        <span>${live.enabled ? 'El contador está corriendo para el pick actual.' : 'Activa el modo draft para abrir elecciones de GM.'}</span>
-      </div>
-      ${live.enabled ? `<div class="draft-live-clock" data-draft-live-countdown>${formatDraftLiveClock(draftLiveRemainingSeconds())}</div>` : '<div class="draft-live-clock draft-live-clock--idle">--</div>'}
-    </div>
-    ${draftLiveUpcomingHtml()}
-    <div class="draft-live-admin-controls">
-      <label class="settings-check">
-        <input id="draftLiveEnabledInput" type="checkbox" ${live.enabled ? 'checked' : ''}>
-        <span>Modo draft</span>
-      </label>
-      <label>
-        <span>Duración</span>
-        <input id="draftLiveDurationInput" type="number" min="10" max="3600" step="5" value="${escapeHtml(live.duration_seconds || 180)}">
-      </label>
-      <label>
-        <span>Pick actual</span>
-        <select id="draftLiveCurrentPickSelect">${draftLiveCurrentPickOptionsHtml(live.current_pick_id || '')}</select>
-      </label>
-      <button id="draftLiveSaveBtn" type="button">Guardar modo draft</button>
-      <button id="draftLiveRestartBtn" type="button">Reiniciar contador</button>
-      <button id="draftLivePreviousBtn" type="button">Pick anterior</button>
-      <button id="draftLiveNextBtn" type="button">Avanzar pick</button>
-      <button id="draftLiveSkipBtn" type="button" class="danger">Saltar al siguiente</button>
-    </div>
-    <label class="draft-live-options-editor">
-      <span>Opciones de jugadores elegibles, una por línea</span>
-      <textarea id="draftLiveOptionsInput" rows="5" placeholder="Jugador 1&#10;Jugador 2">${escapeHtml(live.options_text || '')}</textarea>
-    </label>
-  `;
+  panel.innerHTML = window.AnbaDraftLive.adminPanelHtml(state.draftLive || {}, state.draftOrder, escapeHtml);
   startDraftLiveTimer();
-  const save = async (extra = {}) => {
-    const result = await api('/api/draft-live/settings', {
-      method: 'POST',
-      body: JSON.stringify({
-        draft_year: state.draftOrder?.draft_year || currentSeasonStart() + 1,
-        enabled: document.getElementById('draftLiveEnabledInput')?.checked,
-        duration_seconds: Number(document.getElementById('draftLiveDurationInput')?.value || 180),
-        current_pick_id: Number(document.getElementById('draftLiveCurrentPickSelect')?.value || 0) || null,
-        options_text: document.getElementById('draftLiveOptionsInput')?.value || '',
-        ...extra,
-      }),
-    });
-    setDraftLiveState(result);
-    renderDraftOrder();
-  };
-  const control = async (action) => {
-    const result = await api('/api/draft-live/control', {
-      method: 'POST',
-      body: JSON.stringify({
-        draft_year: state.draftOrder?.draft_year || currentSeasonStart() + 1,
-        action,
-      }),
-    });
-    setDraftLiveState(result);
-    renderDraftOrder();
-  };
-  document.getElementById('draftLiveSaveBtn')?.addEventListener('click', () => {
-    save().catch((err) => alert(`Draft live save failed: ${err.message}`));
+  window.AnbaDraftLive.bindAdminPanelControls({
+    api,
+    getDraftYear: () => state.draftOrder?.draft_year || currentSeasonStart() + 1,
+    getLive: () => state.draftLive,
+    onState: setDraftLiveState,
+    onRefresh: renderDraftOrder,
+    alert,
+    confirm,
   });
-  document.getElementById('draftLiveRestartBtn')?.addEventListener('click', () => {
-    save({ reset_timer: true }).catch((err) => alert(`Draft timer restart failed: ${err.message}`));
-  });
-  document.getElementById('draftLivePreviousBtn')?.addEventListener('click', () => {
-    control('previous').catch((err) => alert(`Draft previous failed: ${err.message}`));
-  });
-  document.getElementById('draftLiveNextBtn')?.addEventListener('click', () => {
-    control('next').catch((err) => alert(`Draft next failed: ${err.message}`));
-  });
-  document.getElementById('draftLiveSkipBtn')?.addEventListener('click', () => {
-    if (!confirm('¿Saltar el pick actual y pasar al siguiente?')) return;
-    control('skip').catch((err) => alert(`Draft skip failed: ${err.message}`));
-  });
-}
-
-function openDraftLivePickModal(row) {
-  const existing = document.querySelector('.draft-live-modal-backdrop');
-  if (existing) existing.remove();
-  const isCurrent = Number(row?.id || 0) === Number(state.draftLive?.current_pick_id || 0);
-  const hasSelection = Boolean(String(row?.selection_text || '').trim());
-  const existingOption = String(row?.option_value || '').trim();
-  const isOther = hasSelection && existingOption && !(state.draftLive?.options || []).includes(existingOption) && existingOption !== 'Saltado';
-  const backdrop = document.createElement('div');
-  backdrop.className = 'draft-live-modal-backdrop';
-  backdrop.innerHTML = `
-    <div class="draft-live-modal" role="dialog" aria-modal="true" aria-label="Corregir elección">
-      <div class="draft-live-modal-head">
-        <div>
-          <span>${escapeHtml(row.draft_round || '')} · Pick #${escapeHtml(row.pick_number || '')}</span>
-          <h3>${escapeHtml(row.owner_team_code || '')} elige</h3>
-        </div>
-        <button type="button" class="danger" data-draft-live-close>Cerrar</button>
-      </div>
-      <label>
-        <span>Jugador</span>
-        <select data-draft-live-choice>${draftLiveChoiceOptionsHtml(isOther ? '__other__' : existingOption)}</select>
-      </label>
-      <label class="${isOther ? '' : 'section-hidden'}" data-draft-live-custom-wrap>
-        <span>Otro</span>
-        <input data-draft-live-custom type="text" placeholder="Nombre del jugador" value="${escapeHtml(isOther ? row.selection_text || '' : '')}">
-      </label>
-      <label class="settings-check">
-        <input data-draft-live-advance type="checkbox" ${isCurrent ? 'checked' : ''}>
-        <span>Avanzar al siguiente tras guardar</span>
-      </label>
-      <div class="draft-live-modal-actions">
-        ${hasSelection ? '<button type="button" class="danger" data-draft-live-clear>Limpiar elección</button>' : ''}
-        <button type="button" data-draft-live-submit>Guardar elección</button>
-      </div>
-    </div>
-  `;
-  const close = () => backdrop.remove();
-  const choice = backdrop.querySelector('[data-draft-live-choice]');
-  const customWrap = backdrop.querySelector('[data-draft-live-custom-wrap]');
-  const customInput = backdrop.querySelector('[data-draft-live-custom]');
-  const syncCustom = () => {
-    const show = choice.value === '__other__';
-    customWrap.classList.toggle('section-hidden', !show);
-    if (show) customInput.focus();
-  };
-  choice.addEventListener('change', syncCustom);
-  backdrop.querySelector('[data-draft-live-close]')?.addEventListener('click', close);
-  backdrop.addEventListener('click', (event) => {
-    if (event.target === backdrop) close();
-  });
-  backdrop.querySelector('[data-draft-live-clear]')?.addEventListener('click', async () => {
-    if (!confirm('¿Limpiar esta elección?')) return;
-    try {
-      const result = await api(`/api/draft-live/picks/${encodeURIComponent(row.id)}`, {
-        method: 'POST',
-        body: JSON.stringify({ clear: true, advance: false }),
-      });
-      setDraftLiveState(result);
-      close();
-      renderDraftOrder();
-    } catch (err) {
-      alert(`Draft pick clear failed: ${err.message}`);
-    }
-  });
-  backdrop.querySelector('[data-draft-live-submit]')?.addEventListener('click', async () => {
-    const optionValue = String(choice.value || '').trim();
-    const customText = String(customInput.value || '').trim();
-    if (!optionValue || (optionValue === '__other__' && !customText)) {
-      alert('Elige un jugador o escribe el nombre en Otro.');
-      return;
-    }
-    try {
-      const result = await api(`/api/draft-live/picks/${encodeURIComponent(row.id)}`, {
-        method: 'POST',
-        body: JSON.stringify({
-          option_value: optionValue,
-          custom_text: customText,
-          advance: Boolean(backdrop.querySelector('[data-draft-live-advance]')?.checked),
-        }),
-      });
-      setDraftLiveState(result);
-      close();
-      renderDraftOrder();
-    } catch (err) {
-      alert(`Draft pick save failed: ${err.message}`);
-    }
-  });
-  document.body.appendChild(backdrop);
-  choice.focus();
-  syncCustom();
 }
 
 function bindDraftLiveAdminButtons(container) {
-  container.querySelectorAll('[data-draft-live-pick]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const pickId = Number(btn.dataset.draftLivePick || 0);
-      const row = (state.draftOrder?.draft_order || []).find((item) => Number(item.id || 0) === pickId);
-      if (row) openDraftLivePickModal(row);
-    });
+  window.AnbaDraftLive.bindAdminPickButtons(container, {
+    draftOrder: state.draftOrder,
+    live: state.draftLive,
+    api,
+    onState: setDraftLiveState,
+    onRefresh: renderDraftOrder,
+    escapeHtml,
+    alert,
+    confirm,
   });
 }
 
@@ -8459,7 +8182,11 @@ function renderDraftOrderTable(round, tableId) {
       <td><select data-draft-order-field="original_team_code">${draftOrderTeamOptions(entry.original_team_code || '')}</select></td>
       <td>
         <div class="draft-live-admin-selection-cell">
-          ${draftLiveSelectionHtml(entry)}
+          ${window.AnbaDraftLive.selectionHtml(entry, {
+            escapeHtml,
+            pendingRequestLabel: 'Solicitud GM',
+            includeProcessedTag: true,
+          })}
           <button type="button" data-draft-live-pick="${escapeHtml(entry.id)}">Elegir/corregir</button>
         </div>
       </td>
@@ -9398,11 +9125,21 @@ function setOwnerBackgroundUploadState(root, url, message = '') {
   const hidden = root.querySelector('[data-owner-profile-field="owner_office_background_url"]');
   const preview = root.querySelector('[data-owner-background-preview]');
   const status = root.querySelector('[data-owner-background-status]');
-  if (hidden) hidden.value = url || '';
+  const safeUrl = window.AnbaDom?.safeUrl(url, { allowRelative: true }) || '';
+  if (hidden) hidden.value = safeUrl;
   if (preview) {
-    preview.innerHTML = url
-      ? `<img src="${escapeHtml(url)}" alt="Fondo actual del despacho">`
-      : '<span>Sin fondo subido</span>';
+    preview.replaceChildren();
+    if (safeUrl) {
+      const image = document.createElement('img');
+      image.alt = 'Fondo actual del despacho';
+      if (window.AnbaDom?.setSafeImageSource(image, safeUrl)) {
+        preview.appendChild(image);
+      }
+    } else {
+      const fallback = document.createElement('span');
+      fallback.textContent = 'Sin fondo subido';
+      preview.appendChild(fallback);
+    }
   }
   if (status) status.textContent = message;
 }
@@ -9411,18 +9148,19 @@ async function uploadOwnerOfficeBackground(file, root) {
   if (!state.teamCode || !file) return;
   const formData = new FormData();
   formData.append('background', file);
-  const headers = {};
-  if (state.csrfToken) headers['X-CSRF-Token'] = state.csrfToken;
-  const res = await fetch(`/api/teams/${encodeURIComponent(state.teamCode)}/owner-office/background`, {
-    method: 'POST',
-    headers,
-    body: formData,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
-  }
-  const result = await res.json();
+  const result = await window.AnbaApi.upload(
+    `/api/teams/${encodeURIComponent(state.teamCode)}/owner-office/background`,
+    formData,
+    { method: 'POST' },
+    {
+      dedupe: true,
+      getCsrfToken: () => state.csrfToken,
+      onUnauthorized: () => { window.location.href = '/login'; },
+      unauthorizedMessage: 'Unauthorized',
+      forbiddenMessage: 'Security check failed. Refresh and log in again.',
+      validationMessage: 'Archivo no válido.',
+    },
+  );
   if (result.owner_office) {
     state.teamData.owner_office = result.owner_office;
   }
@@ -14084,27 +13822,37 @@ async function init() {
       );
       return;
     }
-    const result = await api('/api/settings', {
-      method: 'PATCH',
-      body: JSON.stringify({
-        ...capForecastPayload,
-        ...rookieScalePayload,
-        current_year: selectedYear,
-        cash_limit_total: parsedCashLimitTotal,
-        trade_move_limit_pre30: parsedTradeMoveLimitPre30,
-        trade_move_limit_post30: parsedTradeMoveLimitPost30,
-        trade_move_phase: selectedTradeMovePhase,
-        free_agency_mode: Boolean(freeAgencyModeInput?.checked),
-        discord_free_agent_offer_role_ping_enabled: Boolean(freeAgentOfferRolePingInput?.checked),
-        free_agent_reps: parsedFreeAgentReps,
-        free_agent_rep_discord_ids: parsedRepDiscordIds.mapping,
-        roster_standard_min: parsedRosterStandardMin,
-        roster_standard_max: parsedRosterStandardMax,
-        roster_standard_offseason_max: parsedRosterStandardOffseasonMax,
-        roster_two_way_min: parsedRosterTwoWayMin,
-        roster_two_way_max: parsedRosterTwoWayMax,
-      }),
-    });
+    let result;
+    try {
+      result = await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...capForecastPayload,
+          ...rookieScalePayload,
+          current_year: selectedYear,
+          expected_current_year: previousYear,
+          expected_current_year_version: state.settings.current_year_version || undefined,
+          cash_limit_total: parsedCashLimitTotal,
+          trade_move_limit_pre30: parsedTradeMoveLimitPre30,
+          trade_move_limit_post30: parsedTradeMoveLimitPost30,
+          trade_move_phase: selectedTradeMovePhase,
+          free_agency_mode: Boolean(freeAgencyModeInput?.checked),
+          discord_free_agent_offer_role_ping_enabled: Boolean(freeAgentOfferRolePingInput?.checked),
+          free_agent_reps: parsedFreeAgentReps,
+          free_agent_rep_discord_ids: parsedRepDiscordIds.mapping,
+          roster_standard_min: parsedRosterStandardMin,
+          roster_standard_max: parsedRosterStandardMax,
+          roster_standard_offseason_max: parsedRosterStandardOffseasonMax,
+          roster_two_way_min: parsedRosterTwoWayMin,
+          roster_two_way_max: parsedRosterTwoWayMax,
+        }),
+      });
+    } catch (err) {
+      alert(err.message === 'stale_entity_version'
+        ? 'La temporada actual cambió desde que cargaste ajustes. Recarga ajustes antes de guardar.'
+        : `No se pudieron guardar los ajustes: ${err.message || err}`);
+      return;
+    }
     state.settings = {
       ...state.settings,
       ...(result.settings || {}),
@@ -14168,10 +13916,21 @@ async function init() {
     );
     if (!confirmed) return;
 
-    const result = await api('/api/settings/progress-year', {
-      method: 'POST',
-      body: JSON.stringify({}),
-    });
+    let result;
+    try {
+      result = await api('/api/settings/progress-year', {
+        method: 'POST',
+        body: JSON.stringify({
+          expected_current_year: previousYear,
+          expected_current_year_version: state.settings.current_year_version || undefined,
+        }),
+      });
+    } catch (err) {
+      alert(err.message === 'stale_entity_version'
+        ? 'La temporada actual cambió desde que cargaste ajustes. Recarga ajustes antes de progresar el año.'
+        : `Could not progress season: ${err.message || err}`);
+      return;
+    }
     state.settings = { ...state.settings, ...(result.settings || {}) };
     state.ui.seasonViewStart = normalizeSeasonViewStart(null);
     renderSeasonCapSettingsGrid(Number(state.settings.current_year || previousYear + 1));

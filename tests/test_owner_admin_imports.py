@@ -141,6 +141,14 @@ class OwnerAdminImportTests(unittest.TestCase):
         )
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(completed["trust_delta"], 1)
+        self.assertEqual(completed["previous_trust"], "7")
+        self.assertEqual(completed["proposed_trust_delta"], 1)
+        self.assertEqual(completed["bounded_trust_delta"], 1)
+        self.assertFalse(completed["administrator_override"])
+        self.assertEqual(
+            completed["conversation_id"],
+            "owner_exit_interview:1:2025",
+        )
         self.assertEqual(
             self.db.get_team_owner_office("ATL", include_private=True)["entries"]["2025"]["confidence_current"],
             "8",
@@ -148,6 +156,42 @@ class OwnerAdminImportTests(unittest.TestCase):
 
         self.assertTrue(self.db.reset_owner_exit_interview("ATL", 2025))
         self.assertIsNone(self.db.get_owner_exit_interview("ATL", 2025))
+        self.assertEqual(
+            self.db.get_team_owner_office("ATL", include_private=True)["entries"]["2025"]["confidence_current"],
+            "7",
+        )
+
+    def test_exit_interview_completion_rejects_stale_version(self) -> None:
+        self.db.update_team_owner_office(
+            "ATL",
+            {"season_year": 2025, "confidence_current": "7"},
+        )
+        session = {"email": "gm@example.com", "name": "GM"}
+        started = self.db.start_owner_exit_interview(
+            "ATL", 2025, session, "Balance de temporada"
+        )
+        with self.db.connect() as conn:
+            conn.execute(
+                """UPDATE owner_exit_interviews
+                   SET owner_message = owner_message || ' actualizado',
+                       version = version + 1
+                   WHERE id = ?""",
+                (int(started["id"]),),
+            )
+            conn.commit()
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            self.db.complete_owner_exit_interview(
+                "ATL",
+                2025,
+                session,
+                "Respuesta",
+                "Mensaje final",
+                "Conclusión",
+                1,
+                expected_version=started["version"],
+            )
+
         self.assertEqual(
             self.db.get_team_owner_office("ATL", include_private=True)["entries"]["2025"]["confidence_current"],
             "7",

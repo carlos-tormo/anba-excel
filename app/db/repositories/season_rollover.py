@@ -68,14 +68,49 @@ class SeasonRolloverRepository(LeagueRepository):
         )
 
     @staticmethod
-    def update_current_year(conn: sqlite3.Connection, next_year: int, timestamp: str) -> None:
-        conn.execute(
-            """INSERT INTO app_settings (key, value, updated_at)
-               VALUES ('current_year', ?, ?)
-               ON CONFLICT(key)
-               DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
-            (str(next_year), timestamp),
+    def current_year_row(conn: sqlite3.Connection) -> Dict[str, Any]:
+        row = conn.execute(
+            "SELECT value, version FROM app_settings WHERE key = 'current_year'"
+        ).fetchone()
+        if not row:
+            return {"value": None, "version": None}
+        return {"value": row["value"], "version": parse_int(row["version"])}
+
+    @staticmethod
+    def update_current_year(
+        conn: sqlite3.Connection,
+        next_year: int,
+        timestamp: str,
+        *,
+        expected_year: Optional[int] = None,
+        expected_version: Optional[int] = None,
+    ) -> int:
+        existing = conn.execute(
+            "SELECT value, version FROM app_settings WHERE key = 'current_year'"
+        ).fetchone()
+        if existing is None:
+            if expected_year is not None or expected_version is not None:
+                raise ValueError("stale_entity_version")
+            conn.execute(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES ('current_year', ?, ?)",
+                (str(next_year), timestamp),
+            )
+            return 1
+        current_year = parse_int(existing["value"])
+        current_version = parse_int(existing["version"]) or 1
+        if expected_year is not None and current_year != int(expected_year):
+            raise ValueError("stale_entity_version")
+        if expected_version is not None and current_version != int(expected_version):
+            raise ValueError("stale_entity_version")
+        cur = conn.execute(
+            """UPDATE app_settings
+               SET value = ?, version = COALESCE(version, 0) + 1, updated_at = ?
+               WHERE key = 'current_year' AND value = ? AND version = ?""",
+            (str(next_year), timestamp, str(current_year), current_version),
         )
+        if cur.rowcount != 1:
+            raise ValueError("stale_entity_version")
+        return current_version + 1
 
     def snapshot_payload(self, conn: sqlite3.Connection, season_year: int, settings: Dict[str, str]) -> Dict[str, Any]:
         team_cur = conn.execute("SELECT * FROM teams ORDER BY code")

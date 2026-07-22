@@ -79,6 +79,10 @@ class WaiverServiceTests(unittest.TestCase):
 
         self.assertEqual("approved", decision["decision"])
         self.assertEqual("BOS", decision["team_code"])
+        self.assertEqual(f"waiver-claim:{int(claim['id'])}:approved", decision["command_id"])
+        self.assertEqual("valid", decision["validation_result"])
+        self.assertEqual("pending", decision["entity_versions"]["request_before_status"])
+        self.assertEqual("approved", decision["entity_versions"]["request_after_status"])
         self.assertIsNotNone(decision["result"]["player_id"])
         player = self.db.get_player_record(int(decision["result"]["player_id"]))
         self.assertEqual("BOS", player["team_code"])
@@ -97,8 +101,30 @@ class WaiverServiceTests(unittest.TestCase):
 
         self.assertEqual("rejected", decision["decision"])
         self.assertEqual("rejected", decision["result"]["status"])
+        self.assertEqual(f"waiver-claim:{int(claim['id'])}:rejected", decision["command_id"])
+        self.assertEqual("valid", decision["validation_result"])
         waivers = self.service.list_waivers(self.gm)
         self.assertEqual([self.waiver_id], [int(item["id"]) for item in waivers["waivers"]])
+
+    def test_service_rejects_stale_claim_decision_version(self) -> None:
+        claim = self.submit_claim()
+        request = self.service.claim_request(int(claim["id"]))
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE waiver_claims SET version = version + 1 WHERE id = ?",
+                (int(claim["id"]),),
+            )
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            self.service.decide_claim(
+                int(claim["id"]),
+                "rejected",
+                self.admin,
+                request=request,
+            )
+
+        stored = self.service.claim_request(int(claim["id"]))
+        self.assertEqual("pending", stored["status"])
 
     def test_service_does_not_delegate_back_to_league_db_waiver_facades(self) -> None:
         def unexpected_delegate(*_args, **_kwargs):

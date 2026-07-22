@@ -32,6 +32,15 @@ class OwnerOfficeRepository(LeagueRepository):
         self._background_max_bytes = background_max_bytes
 
     @staticmethod
+    def _row_value(row: Any, key: str, default: Any = None) -> Any:
+        try:
+            if hasattr(row, "keys") and key not in row.keys():
+                return default
+            return row[key]
+        except (KeyError, IndexError, TypeError):
+            return default
+
+    @staticmethod
     def _exit_from_row(row: Any) -> Optional[Dict[str, Any]]:
         if not row:
             return None
@@ -45,8 +54,16 @@ class OwnerOfficeRepository(LeagueRepository):
             "owner_message": str(row["owner_message"] or ""),
             "gm_response": str(row["gm_response"] or ""),
             "owner_final_message": str(row["owner_final_message"] or ""),
-            "owner_conclusion_message": str(row["owner_conclusion_message"] or ""),
-            "trust_delta": parse_int(row["trust_delta"]),
+            "owner_conclusion_message": str(OwnerOfficeRepository._row_value(row, "owner_conclusion_message") or ""),
+            "trust_delta": parse_int(OwnerOfficeRepository._row_value(row, "trust_delta")),
+            "previous_trust": str(OwnerOfficeRepository._row_value(row, "previous_trust") or ""),
+            "proposed_trust_delta": parse_int(OwnerOfficeRepository._row_value(row, "proposed_trust_delta")),
+            "bounded_trust_delta": parse_int(OwnerOfficeRepository._row_value(row, "bounded_trust_delta")),
+            "trust_model": str(OwnerOfficeRepository._row_value(row, "trust_model") or ""),
+            "prompt_template_version": str(OwnerOfficeRepository._row_value(row, "prompt_template_version") or ""),
+            "administrator_override": bool(parse_int(OwnerOfficeRepository._row_value(row, "administrator_override"))),
+            "conversation_id": str(OwnerOfficeRepository._row_value(row, "conversation_id") or ""),
+            "version": parse_int(OwnerOfficeRepository._row_value(row, "version")) or 1,
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
             "completed_at": str(row["completed_at"] or ""),
@@ -278,7 +295,7 @@ class OwnerOfficeRepository(LeagueRepository):
                 if existing:
                     return self._exit_from_row(existing)
                 gm_user_id = parse_int(session.get("user_id"))
-                conn.execute(
+                update_cur = conn.execute(
                     """
                     INSERT INTO owner_exit_interviews (
                         team_id,
@@ -324,6 +341,14 @@ class OwnerOfficeRepository(LeagueRepository):
             owner_final_message: str,
             owner_conclusion_message: str,
             trust_delta: int,
+            *,
+            previous_trust: Any = None,
+            proposed_trust_delta: Any = None,
+            trust_model: str = "",
+            prompt_template_version: str = "",
+            administrator_override: bool = False,
+            conversation_id: str = "",
+            expected_version: Any = None,
         ) -> Optional[Dict[str, Any]]:
             timestamp = self._now()
             with self.db.connect() as conn:
@@ -343,9 +368,28 @@ class OwnerOfficeRepository(LeagueRepository):
                     return None
                 if str(row["status"] or "").lower() == "completed":
                     return self._exit_from_row(row)
+                current_version = parse_int(self._row_value(row, "version")) or 1
+                parsed_expected_version = parse_int(expected_version)
+                if parsed_expected_version is not None and parsed_expected_version != current_version:
+                    raise ValueError("stale_entity_version")
                 gm_user_id = parse_int(session.get("user_id"))
+                proposed_delta = parse_int(proposed_trust_delta)
+                if proposed_delta is None:
+                    proposed_delta = int(trust_delta)
                 normalized_delta = max(-1, min(1, int(trust_delta)))
-                conn.execute(
+                previous_trust_text = str(previous_trust or "").strip()
+                if not previous_trust_text:
+                    office_row_for_previous = conn.execute(
+                        """
+                        SELECT confidence_current
+                        FROM team_owner_office
+                        WHERE team_id = ? AND season_year = ?
+                        """,
+                        (team_id, int(season_year)),
+                    ).fetchone()
+                    previous_trust_text = str(office_row_for_previous["confidence_current"] or "").strip() if office_row_for_previous else ""
+                conversation_id_text = str(conversation_id or "").strip()[:120] or f"owner_exit_interview:{team_id}:{int(season_year)}"
+                update_cur = conn.execute(
                     """
                     UPDATE owner_exit_interviews
                     SET
@@ -357,9 +401,17 @@ class OwnerOfficeRepository(LeagueRepository):
                         owner_final_message = ?,
                         owner_conclusion_message = ?,
                         trust_delta = ?,
+                        previous_trust = ?,
+                        proposed_trust_delta = ?,
+                        bounded_trust_delta = ?,
+                        trust_model = ?,
+                        prompt_template_version = ?,
+                        administrator_override = ?,
+                        conversation_id = ?,
+                        version = COALESCE(version, 0) + 1,
                         updated_at = ?,
                         completed_at = ?
-                    WHERE team_id = ? AND season_year = ?
+                    WHERE team_id = ? AND season_year = ? AND version = ?
                     """,
                     (
                         gm_user_id,
@@ -369,12 +421,22 @@ class OwnerOfficeRepository(LeagueRepository):
                         str(owner_final_message or "").strip()[:4000],
                         str(owner_conclusion_message or "").strip()[:4000],
                         normalized_delta,
+                        previous_trust_text[:64],
+                        proposed_delta,
+                        normalized_delta,
+                        str(trust_model or "").strip()[:120],
+                        str(prompt_template_version or "").strip()[:120],
+                        1 if administrator_override else 0,
+                        conversation_id_text,
                         timestamp,
                         timestamp,
                         team_id,
                         int(season_year),
+                        current_version,
                     ),
                 )
+                if update_cur.rowcount != 1:
+                    raise ValueError("stale_entity_version")
                 office_row = conn.execute(
                     """
                     SELECT confidence_current
@@ -416,7 +478,7 @@ class OwnerOfficeRepository(LeagueRepository):
                 team_id = int(team["id"])
                 row = conn.execute(
                     """
-                    SELECT status, trust_delta
+                    SELECT status, trust_delta, bounded_trust_delta
                     FROM owner_exit_interviews
                     WHERE team_id = ? AND season_year = ?
                     """,
@@ -424,7 +486,9 @@ class OwnerOfficeRepository(LeagueRepository):
                 ).fetchone()
                 if row:
                     status = str(row["status"] or "").lower()
-                    trust_delta = parse_int(row["trust_delta"])
+                    trust_delta = parse_int(self._row_value(row, "bounded_trust_delta"))
+                    if trust_delta is None:
+                        trust_delta = parse_int(row["trust_delta"])
                     if status == "completed" and trust_delta:
                         office_row = conn.execute(
                             """

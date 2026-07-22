@@ -11,7 +11,7 @@ try:
     from ..auth.sessions import verify_admin_password
     from ..domain.trade_rules import normalize_trade_bucket
     from ..domain_rules import parse_bool, parse_int, public_settings_payload
-    from ..routing import exact_route, predicate_route
+    from ..routing import RouteResponse, error_response, exact_route, json_response, predicate_route
     from .validation import validate_coadmin_vote_submit_payload, validate_gm_option_request_payload
     from ..services.notifications import discord_image_requested, discord_notify_requested
 except ImportError:  # pragma: no cover
@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover
     from auth.sessions import verify_admin_password
     from domain.trade_rules import normalize_trade_bucket
     from domain_rules import parse_bool, parse_int, public_settings_payload
-    from routing import exact_route, predicate_route
+    from routing import RouteResponse, error_response, exact_route, json_response, predicate_route
     from routes.validation import validate_coadmin_vote_submit_payload, validate_gm_option_request_payload
     from services.notifications import discord_image_requested, discord_notify_requested
 
@@ -33,15 +33,14 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def logout(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def logout(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if handler._is_authenticated() and not handler._require_csrf():
         return
     handler._clear_session()
-    handler._json(200, {"ok": True}, headers={"Set-Cookie": handler._clear_session_cookie()})
-    return
+    return json_response(200, {"ok": True}, headers={"Set-Cookie": handler._clear_session_cookie()})
 
-def update_cartera_ruleout(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def update_cartera_ruleout(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._authorize("coadmin.cartera.ruleout"):
         return
@@ -49,39 +48,28 @@ def update_cartera_ruleout(handler: Any, parsed: ParseResult, payload: Optional[
         return
     parts = parsed.path.strip("/").split("/")
     if len(parts) != 5:
-        handler._json(404, {"error": "not_found"})
-        return
+        return error_response(404, "not_found")
     free_agent_id = parse_int(parts[3])
     if free_agent_id is None:
-        handler._json(400, {"error": "invalid_free_agent_id"})
-        return
+        return error_response(400, "invalid_free_agent_id")
     team_code = normalize_team_code(payload.get("team_code"))
     ruled_out = parse_bool(payload.get("ruled_out"))
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     try:
-        if ruled_out:
-            rows = handler.app.free_agency.repository.set_ruleout(
-                free_agent_id,
-                team_code,
-                handler._current_session() or {},
-            )
-        else:
-            rows = handler.app.free_agency.repository.delete_ruleout(
-                free_agent_id,
-                team_code,
-                handler._current_session() or {},
-            )
+        rows = handler.app.free_agency.set_ruleout(
+            free_agent_id,
+            team_code,
+            handler._current_session() or {},
+            ruled_out=ruled_out,
+        )
     except PermissionError as err:
-        handler._json(403, {"error": str(err) or "agent_client_required"})
-        return
+        return error_response(403, str(err) or "agent_client_required")
     except ValueError as err:
         message = str(err) or "invalid_ruleout"
         status = 404 if message == "free_agent_not_found" else 400
-        handler._json(status, {"error": message})
-        return
-    handler._json(
+        return error_response(status, message)
+    return json_response(
         200,
         {
             "ok": True,
@@ -99,21 +87,18 @@ def update_cartera_ruleout(handler: Any, parsed: ParseResult, payload: Optional[
             ],
         },
     )
-    return
 
-def login(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def login(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> RouteResponse:
     payload = payload or {}
     ip = handler._client_ip()
     blocked, retry_after = handler._rate_limit_status(ip)
     if blocked:
-        handler._json(429, {"error": "too_many_attempts", "retry_after_seconds": retry_after})
-        return
+        return json_response(429, {"error": "too_many_attempts", "retry_after_seconds": retry_after})
     username = str(payload.get("username") or "")
     password = str(payload.get("password") or "")
     if username != handler.admin_user or not verify_admin_password(password, handler.admin_password, handler.admin_password_hash):
         handler._rate_limit_fail(ip)
-        handler._json(401, {"error": "invalid_credentials"})
-        return
+        return error_response(401, "invalid_credentials")
 
     token, csrf_token = handler._start_session(
         {
@@ -127,10 +112,9 @@ def login(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) 
     )
     handler._rate_limit_success(ip)
     cookie = handler._session_cookie(token)
-    handler._json(200, {"ok": True, "csrf_token": csrf_token}, headers={"Set-Cookie": cookie})
-    return
+    return json_response(200, {"ok": True, "csrf_token": csrf_token}, headers={"Set-Cookie": cookie})
 
-def validate_trade_process(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def validate_trade_process(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -148,8 +132,7 @@ def validate_trade_process(handler: Any, parsed: ParseResult, payload: Optional[
                 "cash": normalized.get("cash") or [],
             }
         )
-        handler._json(200, {"ok": True, "validation": validation})
-        return
+        return json_response(200, {"ok": True, "validation": validation})
     team_a = normalize_team_code(payload.get("team_a")) or ""
     team_b = normalize_team_code(payload.get("team_b")) or ""
     if not handler._authorize("admin.trade.process", {"team_code": team_a}):
@@ -161,10 +144,9 @@ def validate_trade_process(handler: Any, parsed: ParseResult, payload: Optional[
         "team_a": team_a,
         "team_b": team_b,
     })
-    handler._json(200, {"ok": True, "validation": validation})
-    return
+    return json_response(200, {"ok": True, "validation": validation})
 
-def request_gm_option(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def request_gm_option(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -172,15 +154,13 @@ def request_gm_option(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         return
     player_id = parse_int(payload.get("player_id"))
     if player_id is None:
-        handler._json(400, {"error": "invalid_player_id"})
-        return
+        return error_response(400, "invalid_player_id")
     option_field = str(payload.get("option_field") or "").strip()
     option_value = str(payload.get("option_value") or "").strip().upper()
     option_action = str(payload.get("action") or "").strip().lower()
     player = handler.app.players.record(player_id)
     if not player:
-        handler._json(404, {"error": "player_not_found"})
-        return
+        return error_response(404, "player_not_found")
     if not handler._authorize("gm.option_request.create", {"team_code": player.get("team_code")}):
         return
     try:
@@ -194,25 +174,19 @@ def request_gm_option(handler: Any, parsed: ParseResult, payload: Optional[Dict[
     except ValueError as err:
         message = str(err)
         if message == "invalid_option_field":
-            handler._json(400, {"error": "invalid_option_field"})
-            return
+            return error_response(400, "invalid_option_field")
         if message == "invalid_option_value":
-            handler._json(400, {"error": "invalid_option_value"})
-            return
+            return error_response(400, "invalid_option_value")
         if message == "invalid_option_action":
-            handler._json(400, {"error": "invalid_option_action"})
-            return
+            return error_response(400, "invalid_option_action")
         if message == "option_mismatch":
-            handler._json(409, {"error": "option_changed"})
-            return
+            return error_response(409, "option_changed")
         raise
     if not request:
-        handler._json(404, {"error": "player_not_found"})
-        return
-    handler._json(201, {"ok": True, "request": request})
-    return
+        return error_response(404, "player_not_found")
+    return json_response(201, {"ok": True, "request": request})
 
-def submit_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def submit_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._authorize("coadmin.vote.submit"):
         return
@@ -223,23 +197,19 @@ def submit_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dic
     session = handler._current_session() or {}
     parts = parsed.path.strip("/").split("/")
     if len(parts) != 4:
-        handler._json(404, {"error": "not_found"})
-        return
+        return error_response(404, "not_found")
     vote_id = parse_int(parts[2])
     if vote_id is None:
-        handler._json(400, {"error": "invalid_vote_id"})
-        return
+        return error_response(400, "invalid_vote_id")
     try:
         vote = handler.app.coadmin_votes.submit_coadmin_vote(vote_id, payload.get("scores"), session)
     except ValueError as err:
         message = str(err) or "invalid_vote"
         status = 409 if message in {"vote_closed", "vote_not_found"} or message.startswith("missing_scores:") else 400
-        handler._json(status, {"error": message})
-        return
-    handler._json(200, {"ok": True, "vote": vote})
-    return
+        return error_response(status, message)
+    return json_response(200, {"ok": True, "vote": vote})
 
-def create_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -250,19 +220,25 @@ def create_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dic
     try:
         vote = handler.app.coadmin_votes.create_coadmin_vote(payload.get("title"), handler._current_session() or {})
     except ValueError as err:
-        handler._json(400, {"error": str(err) or "invalid_vote"})
-        return
+        return error_response(400, str(err) or "invalid_vote")
     handler._log_admin_action(
         "create",
         "coadmin_vote",
         str(vote.get("id")),
         None,
         {"title": vote.get("title")},
+        command_id=f"coadmin-vote:{vote.get('id')}:create",
+        validation_result="valid",
+        entity_versions={
+            "vote_id": vote.get("id"),
+            "title": vote.get("title"),
+            "status": vote.get("status"),
+            "created_at": vote.get("created_at"),
+        },
     )
-    handler._json(201, {"ok": True, "vote": vote})
-    return
+    return json_response(201, {"ok": True, "vote": vote})
 
-def create_offer_promise(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_offer_promise(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -277,7 +253,7 @@ def create_offer_promise(handler: Any, parsed: ParseResult, payload: Optional[Di
         message = str(err) or "invalid_promise"
         if message.startswith("promise_role_limit_exceeded:"):
             _prefix, role, limit = message.split(":", 2)
-            handler._json(
+            return json_response(
                 409,
                 {
                     "error": "promise_role_limit_exceeded",
@@ -286,10 +262,8 @@ def create_offer_promise(handler: Any, parsed: ParseResult, payload: Optional[Di
                     "message": f"Este equipo ya ha alcanzado el máximo de promesas firmadas para {role}.",
                 },
             )
-            return
         status = 404 if message in {"team_not_found", "profile_not_found"} else 400
-        handler._json(status, {"error": message})
-        return
+        return error_response(status, message)
     handler._log_admin_action(
         "create",
         "free_agent_offer_promise",
@@ -304,10 +278,9 @@ def create_offer_promise(handler: Any, parsed: ParseResult, payload: Optional[Di
         },
         after={"promise": promise},
     )
-    handler._json(201, {"ok": True, "promise": promise})
-    return
+    return json_response(201, {"ok": True, "promise": promise})
 
-def generate_offseason_exceptions(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def generate_offseason_exceptions(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -317,8 +290,7 @@ def generate_offseason_exceptions(handler: Any, parsed: ParseResult, payload: Op
         return
     season_year = parse_int(payload.get("season_year"))
     if season_year is None:
-        handler._json(400, {"error": "invalid_season_year"})
-        return
+        return error_response(400, "invalid_season_year")
     try:
         result = handler.app.offseason_exceptions.generate(
             season_year,
@@ -326,8 +298,7 @@ def generate_offseason_exceptions(handler: Any, parsed: ParseResult, payload: Op
             choices=payload.get("choices") if isinstance(payload.get("choices"), dict) else None,
         )
     except ValueError as err:
-        handler._json(400, {"error": str(err) or "invalid_request"})
-        return
+        return error_response(400, str(err) or "invalid_request")
     handler._log_admin_action(
         "generate",
         "offseason_exceptions",
@@ -339,10 +310,9 @@ def generate_offseason_exceptions(handler: Any, parsed: ParseResult, payload: Op
             "skipped": result.get("skipped") or [],
         },
     )
-    handler._json(200, result)
-    return
+    return json_response(200, result)
 
-def bulk_create_free_agents(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def bulk_create_free_agents(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -351,11 +321,10 @@ def bulk_create_free_agents(handler: Any, parsed: ParseResult, payload: Optional
     if not handler._authorize("admin.free_agent.write"):
         return
     try:
-        result = handler.app.free_agency.repository.bulk_create_free_agents(payload.get("names") or payload.get("text") or "")
+        result = handler.app.free_agency.bulk_create_free_agents(payload.get("names") or payload.get("text") or "")
     except ValueError as err:
         if str(err) == "too_many_names":
-            handler._json(400, {"error": "too_many_names"})
-            return
+            return error_response(400, "too_many_names")
         raise
     handler._log_admin_action(
         "bulk_create",
@@ -368,10 +337,9 @@ def bulk_create_free_agents(handler: Any, parsed: ParseResult, payload: Optional
             "created_names": [item.get("name") for item in (result.get("created") or [])[:25]],
         },
     )
-    handler._json(201, result)
-    return
+    return json_response(201, result)
 
-def create_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -379,15 +347,13 @@ def create_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         return
     if not handler._authorize("admin.free_agent.write"):
         return
-    free_agent_id = handler.app.free_agency.repository.create_free_agent(payload)
+    free_agent_id = handler.app.free_agency.create_free_agent(payload)
     if not free_agent_id:
-        handler._json(400, {"error": "name_required"})
-        return
+        return error_response(400, "name_required")
     handler._log_admin_action("create", "free_agent", str(free_agent_id), None, {"name": payload.get("name")})
-    handler._json(201, {"free_agent_id": free_agent_id})
-    return
+    return json_response(201, {"free_agent_id": free_agent_id})
 
-def create_draft_order(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_draft_order(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -398,8 +364,7 @@ def create_draft_order(handler: Any, parsed: ParseResult, payload: Optional[Dict
     try:
         draft_order_id = handler.app.draft.create_order_entry(payload)
     except ValueError as err:
-        handler._json(400, {"error": str(err) or "invalid_draft_order"})
-        return
+        return error_response(400, str(err) or "invalid_draft_order")
     handler._log_admin_action(
         "create",
         "draft_order",
@@ -412,10 +377,9 @@ def create_draft_order(handler: Any, parsed: ParseResult, payload: Optional[Dict
             "original_team_code": payload.get("original_team_code"),
         },
     )
-    handler._json(201, {"draft_order_id": draft_order_id})
-    return
+    return json_response(201, {"draft_order_id": draft_order_id})
 
-def sign_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def sign_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -423,28 +387,23 @@ def sign_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[st
         return
     parts = parsed.path.strip("/").split("/")
     if len(parts) != 4:
-        handler._json(404, {"error": "not_found"})
-        return
+        return error_response(404, "not_found")
     try:
         free_agent_id = int(parts[2])
     except ValueError:
-        handler._json(400, {"error": "invalid_free_agent_id"})
-        return
+        return error_response(400, "invalid_free_agent_id")
     team_code = normalize_team_code(payload.get("team_code")) or ""
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("admin.free_agent.sign", {"team_code": team_code}):
         return
     try:
         result = handler.app.free_agency.sign_free_agent(free_agent_id, team_code, payload)
     except ValueError as err:
         if str(err) == "profile_has_active_contract":
-            handler._json(409, {"error": "profile_has_active_contract"})
-            return
+            return error_response(409, "profile_has_active_contract")
         if str(err) == "free_agent_or_team_not_found":
-            handler._json(404, {"error": "free_agent_or_team_not_found"})
-            return
+            return error_response(404, "free_agent_or_team_not_found")
         raise
     player_id = result["player_id"]
     player_after = result["player"]
@@ -462,10 +421,9 @@ def sign_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[st
             generate_image=discord_image_requested(payload),
             custom_image=payload.get("discord_custom_image"),
         )
-    handler._json(200, {"ok": True, "player_id": player_id})
-    return
+    return json_response(200, {"ok": True, "player_id": player_id})
 
-def merge_player_profiles(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def merge_player_profiles(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -475,20 +433,20 @@ def merge_player_profiles(handler: Any, parsed: ParseResult, payload: Optional[D
         return
     parts = parsed.path.strip("/").split("/")
     if len(parts) != 4:
-        handler._json(404, {"error": "not_found"})
-        return
+        return error_response(404, "not_found")
     try:
         target_profile_id = int(parts[2])
     except ValueError:
-        handler._json(400, {"error": "invalid_profile_id"})
-        return
+        return error_response(400, "invalid_profile_id")
     source_profile_id = parse_int(payload.get("source_profile_id"))
     if source_profile_id is None:
-        handler._json(400, {"error": "source_profile_id_required"})
-        return
+        return error_response(400, "source_profile_id_required")
     try:
         result = handler.app.player_identity.merge_profiles(
-            int(source_profile_id), int(target_profile_id)
+            int(source_profile_id),
+            int(target_profile_id),
+            expected_source_version=payload.get("expected_source_version"),
+            expected_target_version=payload.get("expected_target_version"),
         )
     except Exception as err:
         handler.log_message(
@@ -497,14 +455,14 @@ def merge_player_profiles(handler: Any, parsed: ParseResult, payload: Optional[D
             target_profile_id,
             err,
         )
-        handler._json(500, {"error": "merge_failed"})
-        return
+        return error_response(500, "merge_failed")
     if not result.get("ok"):
         status = 409 if result.get("error") == "active_contract_conflict" else 404
+        if result.get("error") == "stale_entity_version":
+            status = 409
         if result.get("error") == "invalid_profile_id":
             status = 400
-        handler._json(status, {"error": result.get("error") or "merge_failed"})
-        return
+        return error_response(status, result.get("error") or "merge_failed")
     handler._log_admin_action(
         "merge",
         "player_profile",
@@ -517,10 +475,9 @@ def merge_player_profiles(handler: Any, parsed: ParseResult, payload: Optional[D
             "deleted": result.get("deleted") or {},
         },
     )
-    handler._json(200, result)
-    return
+    return json_response(200, result)
 
-def create_salary_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_salary_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -530,21 +487,17 @@ def create_salary_history(handler: Any, parsed: ParseResult, payload: Optional[D
         return
     parts = parsed.path.strip("/").split("/")
     if len(parts) != 4:
-        handler._json(404, {"error": "not_found"})
-        return
+        return error_response(404, "not_found")
     try:
         profile_id = int(parts[2])
     except ValueError:
-        handler._json(400, {"error": "invalid_profile_id"})
-        return
+        return error_response(400, "invalid_profile_id")
     try:
         row = handler.app.players.create_salary_history(profile_id, payload)
     except ValueError as err:
-        handler._json(400, {"error": str(err) or "invalid_salary_history"})
-        return
+        return error_response(400, str(err) or "invalid_salary_history")
     if not row:
-        handler._json(404, {"error": "profile_not_found"})
-        return
+        return error_response(404, "profile_not_found")
     handler._log_admin_action(
         "create",
         "player_salary_history",
@@ -552,10 +505,9 @@ def create_salary_history(handler: Any, parsed: ParseResult, payload: Optional[D
         row.get("team_code"),
         {"profile_id": profile_id, "season_year": row.get("season_year")},
     )
-    handler._json(201, {"salary_history": row})
-    return
+    return json_response(201, {"salary_history": row})
 
-def create_player_transaction(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_player_transaction(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -565,17 +517,14 @@ def create_player_transaction(handler: Any, parsed: ParseResult, payload: Option
         return
     parts = parsed.path.strip("/").split("/")
     if len(parts) != 4:
-        handler._json(404, {"error": "not_found"})
-        return
+        return error_response(404, "not_found")
     try:
         profile_id = int(parts[2])
     except ValueError:
-        handler._json(400, {"error": "invalid_profile_id"})
-        return
+        return error_response(400, "invalid_profile_id")
     transaction_id = handler.app.players.create_transaction(profile_id, payload)
     if not transaction_id:
-        handler._json(400, {"error": "transaction_summary_required_or_profile_not_found"})
-        return
+        return error_response(400, "transaction_summary_required_or_profile_not_found")
     handler._log_admin_action(
         "create",
         "player_transaction",
@@ -583,10 +532,9 @@ def create_player_transaction(handler: Any, parsed: ParseResult, payload: Option
         payload.get("team_code"),
         {"profile_id": profile_id, "summary": payload.get("summary")},
     )
-    handler._json(201, {"transaction_id": transaction_id})
-    return
+    return json_response(201, {"transaction_id": transaction_id})
 
-def process_trade(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def process_trade(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf() or not handler._require_sensitive_rate_limit("admin_post"):
         return
@@ -599,7 +547,7 @@ def process_trade(handler: Any, parsed: ParseResult, payload: Optional[Dict[str,
         outcome = service.process_request(
             payload,
             actor=handler._current_session(),
-            command_id=str(handler.headers.get("Idempotency-Key") or "").strip() or None,
+            command_id=str(getattr(handler, "headers", {}).get("Idempotency-Key") or "").strip() or None,
             notify_discord=discord_notify_requested(payload),
             generate_image=discord_image_requested(payload),
             custom_image=(
@@ -609,22 +557,25 @@ def process_trade(handler: Any, parsed: ParseResult, payload: Optional[Dict[str,
             ),
         )
     except ValueError as err:
-        handler._json(409, {"ok": False, "error": str(err) or "trade_processing_failed"})
-        return
+        return json_response(409, {"ok": False, "error": str(err) or "trade_processing_failed"})
     audit = outcome.get("audit")
     if audit:
+        details = audit.get("details") if isinstance(audit.get("details"), dict) else {}
         handler._log_admin_action(
-            "trade", "trade", None, None, audit.get("details"),
+            "trade", "trade", None, None, details,
             before=audit.get("before"), after=audit.get("after"),
             team_codes=outcome.get("team_codes") or [],
+            command_id=details.get("command_id"),
+            validation_result=details.get("validation_result"),
+            entity_versions=details.get("entity_versions"),
+            integration_outbox_ids=outcome.get("outbox_event_ids") or [],
         )
     delivered = handler.app.outbox_delivery.dispatch(outcome.get("outbox_event_ids"))
     if delivered and isinstance(outcome.get("result"), dict):
         outcome["result"]["delivered_events"] = delivered
-    handler._json(int(outcome.get("status_code") or 200), outcome["response"])
-    return
+    return json_response(int(outcome.get("status_code") or 200), outcome["response"])
 
-def create_move_adjustment(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_move_adjustment(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -632,28 +583,24 @@ def create_move_adjustment(handler: Any, parsed: ParseResult, payload: Optional[
         return
     parts = parsed.path.split("/")
     if len(parts) < 5:
-        handler._json(404, {"error": "not_found"})
-        return
+        return error_response(404, "not_found")
     code = parts[3]
     season_year = parse_int(payload.get("season_year"))
     target_remaining = parse_int(payload.get("target_remaining"))
     bucket = payload.get("bucket")
     note = str(payload.get("note") or "").strip() or None
     if season_year is None or season_year < PLAYER_CONTRACT_MIN_YEAR or season_year > PLAYER_CONTRACT_MAX_YEAR:
-        handler._json(400, {"error": "invalid_season_year"})
-        return
+        return error_response(400, "invalid_season_year")
     if target_remaining is None or target_remaining < 0:
-        handler._json(400, {"error": "invalid_target_remaining"})
-        return
+        return error_response(400, "invalid_target_remaining")
     if not handler._authorize("admin.team_moves.write", {"team_code": code}):
         return
-    result = handler.app.trade_repository.adjust_team_move_remaining(code, season_year, bucket, target_remaining, note)
+    result = handler.app.trades.adjust_team_move_remaining(code, season_year, bucket, target_remaining, note)
     if result:
         handler._log_admin_action("update", "team_move", code.upper(), code.upper(), result)
-    handler._json(200 if result else 404, {"ok": bool(result), "result": result})
-    return
+    return json_response(200 if result else 404, {"ok": bool(result), "result": result})
 
-def create_asset(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_asset(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -661,22 +608,18 @@ def create_asset(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, 
         return
     team_code = normalize_team_code(payload.get("team_code")) or ""
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("admin.draft_asset.write", {"team_code": team_code}):
         return
     if str(payload.get("asset_type") or "").strip().lower() == "dead_cap":
-        handler._json(400, {"error": "dead_cap_moved_to_dead_contracts"})
-        return
+        return error_response(400, "dead_cap_moved_to_dead_contracts")
     asset_id = handler.app.assets.create_asset(team_code, payload)
     if not asset_id:
-        handler._json(404, {"error": "team_not_found"})
-        return
+        return error_response(404, "team_not_found")
     handler._log_admin_action("create", "asset", str(asset_id), str(team_code), {"asset_type": payload.get("asset_type")})
-    handler._json(201, {"asset_id": asset_id})
-    return
+    return json_response(201, {"asset_id": asset_id})
 
-def create_frozen_draft_pick(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_frozen_draft_pick(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -684,14 +627,12 @@ def create_frozen_draft_pick(handler: Any, parsed: ParseResult, payload: Optiona
         return
     team_code = normalize_team_code(payload.get("team_code")) or ""
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("admin.frozen_draft_pick.write", {"team_code": team_code}):
         return
     row = handler.app.assets.create_frozen_pick(team_code, payload)
     if not row:
-        handler._json(400, {"error": "invalid_frozen_pick"})
-        return
+        return error_response(400, "invalid_frozen_pick")
     handler._log_admin_action(
         "create",
         "frozen_draft_pick",
@@ -699,10 +640,9 @@ def create_frozen_draft_pick(handler: Any, parsed: ParseResult, payload: Optiona
         team_code,
         row,
     )
-    handler._json(201, {"ok": True, "frozen_pick": row})
-    return
+    return json_response(201, {"ok": True, "frozen_pick": row})
 
-def create_dead_contract(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_dead_contract(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -710,14 +650,12 @@ def create_dead_contract(handler: Any, parsed: ParseResult, payload: Optional[Di
         return
     team_code = normalize_team_code(payload.get("team_code")) or ""
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("admin.dead_contract.write", {"team_code": team_code}):
         return
     dead_contract_id = handler.app.assets.create_dead_contract(team_code, payload)
     if not dead_contract_id:
-        handler._json(404, {"error": "team_not_found"})
-        return
+        return error_response(404, "team_not_found")
     handler._log_admin_action(
         "create",
         "dead_contract",
@@ -725,10 +663,9 @@ def create_dead_contract(handler: Any, parsed: ParseResult, payload: Optional[Di
         str(team_code),
         {"dead_type": payload.get("dead_type"), "label": payload.get("label")},
     )
-    handler._json(201, {"dead_contract_id": dead_contract_id})
-    return
+    return json_response(201, {"dead_contract_id": dead_contract_id})
 
-def create_gm_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def create_gm_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -736,22 +673,18 @@ def create_gm_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         return
     team_code = str(payload.get("team_code") or "").strip().upper()
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("admin.gm_history.write", {"team_code": team_code}):
         return
     raw_entries = payload.get("entries")
     if not isinstance(raw_entries, list):
-        handler._json(400, {"error": "entries_required"})
-        return
+        return error_response(400, "entries_required")
     try:
         rows = handler.app.teams.replace_gm_history(team_code, raw_entries)
     except ValueError as err:
-        handler._json(400, {"error": str(err) or "invalid_gm_history"})
-        return
+        return error_response(400, str(err) or "invalid_gm_history")
     if rows is None:
-        handler._json(404, {"error": "team_not_found"})
-        return
+        return error_response(404, "team_not_found")
     handler._log_admin_action(
         "update",
         "gm_history",
@@ -759,10 +692,9 @@ def create_gm_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         team_code,
         {"entries_count": len(rows)},
     )
-    handler._json(200, {"ok": True, "gm_history": rows})
-    return
+    return json_response(200, {"ok": True, "gm_history": rows})
 
-def progress_settings_year(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def progress_settings_year(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
         return
@@ -771,15 +703,30 @@ def progress_settings_year(handler: Any, parsed: ParseResult, payload: Optional[
     if not handler._authorize("admin.global.write"):
         return
     try:
-        result = handler.app.season_rollover.progress_to_next_year()
+        result = handler.app.season_rollover.progress_to_next_year(
+            expected_current_year=payload.get("expected_current_year"),
+            expected_current_year_version=payload.get("expected_current_year_version"),
+        )
     except ValueError as err:
         if str(err) in {"cannot_progress_beyond_2030", "cannot_progress_beyond_contract_window"}:
-            handler._json(400, {"error": "cannot_progress_beyond_contract_window"})
-            return
+            return error_response(400, "cannot_progress_beyond_contract_window")
+        if str(err) == "stale_entity_version":
+            return error_response(409, "stale_entity_version")
         raise
-    merged = handler.app.settings_repository.get_all()
-    handler._log_admin_action("update", "settings", None, None, {"progress_year": result})
-    handler._json(
+    merged = handler.app.settings.get_all()
+    handler._log_admin_action(
+        "update",
+        "settings",
+        None,
+        None,
+        {"progress_year": result},
+        before={"current_year": result.get("previous_year")},
+        after={"current_year": result.get("current_year")},
+        command_id=result.get("command_id"),
+        validation_result=result.get("validation_result"),
+        entity_versions=result.get("entity_versions"),
+    )
+    return json_response(
         200,
         {
             "ok": True,
@@ -787,7 +734,6 @@ def progress_settings_year(handler: Any, parsed: ParseResult, payload: Optional[
             "settings": public_settings_payload(merged),
         },
     )
-    return
 
 
 def _cartera_ruleout_path(path: str) -> bool:
@@ -810,28 +756,28 @@ def _team_move_adjustment_path(path: str) -> bool:
     return path.startswith("/api/teams/") and path.endswith("/move-adjustment")
 
 
-EARLY_POST_ROUTES = (exact_route("/api/auth/logout", logout),)
+EARLY_POST_ROUTES = (exact_route("/api/auth/logout", logout, auth_exempt_reason="session_logout"),)
 POST_REMAINING_ROUTES = (
-    predicate_route("cartera-ruleout", _cartera_ruleout_path, update_cartera_ruleout),
-    exact_route("/api/auth/login", login),
-    exact_route("/api/trades/process/validate", validate_trade_process),
-    exact_route("/api/gm/option-requests", request_gm_option),
-    predicate_route("coadmin-vote-submit", _coadmin_vote_submit_path, submit_coadmin_vote),
-    exact_route("/api/admin/coadmin-votes", create_coadmin_vote),
-    exact_route("/api/admin/free-agent-offer-promises", create_offer_promise),
-    exact_route("/api/offseason-exceptions/generate", generate_offseason_exceptions),
-    exact_route("/api/free-agents/bulk", bulk_create_free_agents),
-    exact_route("/api/free-agents", create_free_agent),
-    exact_route("/api/draft-order", create_draft_order),
-    predicate_route("free-agent-sign", _free_agent_sign_path, sign_free_agent),
-    predicate_route("player-profile-merge", _profile_action_path("merge"), merge_player_profiles),
-    predicate_route("player-salary-history-create", _profile_action_path("salary-history"), create_salary_history),
-    predicate_route("player-transaction-create", _profile_action_path("transactions"), create_player_transaction),
-    exact_route("/api/trades/process", process_trade),
-    predicate_route("team-move-adjustment", _team_move_adjustment_path, create_move_adjustment),
-    exact_route("/api/assets", create_asset),
-    exact_route("/api/frozen-draft-picks", create_frozen_draft_pick),
-    exact_route("/api/dead-contracts", create_dead_contract),
-    exact_route("/api/gm-history", create_gm_history),
-    exact_route("/api/settings/progress-year", progress_settings_year),
+    predicate_route("cartera-ruleout", _cartera_ruleout_path, update_cartera_ruleout, permission="coadmin.cartera.ruleout", csrf=True, mutates_league_state=True),
+    exact_route("/api/auth/login", login, auth_exempt_reason="session_login"),
+    exact_route("/api/trades/process/validate", validate_trade_process, auth_exempt_reason="read_only_validation"),
+    exact_route("/api/gm/option-requests", request_gm_option, permission="gm.option_request.create", csrf=True, mutates_league_state=True),
+    predicate_route("coadmin-vote-submit", _coadmin_vote_submit_path, submit_coadmin_vote, permission="coadmin.vote.submit", csrf=True, mutates_league_state=True),
+    exact_route("/api/admin/coadmin-votes", create_coadmin_vote, permission="admin.coadmin_vote.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/admin/free-agent-offer-promises", create_offer_promise, permission="admin.promise.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/offseason-exceptions/generate", generate_offseason_exceptions, permission="admin.offseason_exceptions.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/free-agents/bulk", bulk_create_free_agents, permission="admin.free_agent.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/free-agents", create_free_agent, permission="admin.free_agent.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/draft-order", create_draft_order, permission="admin.draft_order.write", csrf=True, mutates_league_state=True),
+    predicate_route("free-agent-sign", _free_agent_sign_path, sign_free_agent, permission="admin.free_agent.sign", csrf=True, mutates_league_state=True),
+    predicate_route("player-profile-merge", _profile_action_path("merge"), merge_player_profiles, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),
+    predicate_route("player-salary-history-create", _profile_action_path("salary-history"), create_salary_history, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),
+    predicate_route("player-transaction-create", _profile_action_path("transactions"), create_player_transaction, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/trades/process", process_trade, permission="admin.trade.process", csrf=True, mutates_league_state=True),
+    predicate_route("team-move-adjustment", _team_move_adjustment_path, create_move_adjustment, permission="admin.team_moves.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/assets", create_asset, permission="admin.draft_asset.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/frozen-draft-picks", create_frozen_draft_pick, permission="admin.frozen_draft_pick.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/dead-contracts", create_dead_contract, permission="admin.dead_contract.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/gm-history", create_gm_history, permission="admin.gm_history.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/settings/progress-year", progress_settings_year, permission="admin.global.write", csrf=True, mutates_league_state=True),
 )

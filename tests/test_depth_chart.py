@@ -71,6 +71,7 @@ class TeamDepthChartTests(unittest.TestCase):
         )
 
         self.assertTrue(chart["configured"])
+        self.assertEqual(2, chart["version"])
         self.assertEqual(["PG", "SG", "SF", "PF", "C"], chart["positions"])
         self.assertEqual(6, chart["max_depth"])
         self.assertEqual(
@@ -88,6 +89,25 @@ class TeamDepthChartTests(unittest.TestCase):
         self.assertIsNotNone(team)
         self.assertTrue(team["depth_chart"]["configured"])
         self.assertEqual(2, len(team["depth_chart"]["entries"]))
+        self.assertEqual(chart["version"], team["depth_chart"]["version"])
+
+    def test_team_depth_chart_rejects_stale_version(self) -> None:
+        chart = self.db.set_team_depth_chart(
+            "ATL",
+            [{"position": "PG", "depth_order": 1, "player_id": self.atl_guard_id}],
+        )
+        self.db.set_team_depth_chart(
+            "ATL",
+            [{"position": "SF", "depth_order": 1, "player_id": self.atl_wing_id}],
+            expected_version=chart["version"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            self.db.set_team_depth_chart(
+                "ATL",
+                [{"position": "PG", "depth_order": 2, "player_id": self.atl_guard_id}],
+                expected_version=chart["version"],
+            )
 
     def test_team_depth_chart_rejects_duplicate_player_or_cell(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate_player"):

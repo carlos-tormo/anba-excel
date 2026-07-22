@@ -45,6 +45,7 @@ Local roster management app that replicates the team-tab workflow from `ROSTERS.
   - Emails mapped in optional `GM_ACCOUNTS` also get `gm` role scoped to their team code(s), for example `gm@example.com:ATL`.
 - Admin panel includes a global `Salary Cap 25/26` setting used across views for salary `% of cap` and cap-room calculations.
 - The server auto-loads `.env` from project root. You can override file path with `ENV_FILE=/path/to/.env`.
+- Browser security headers are enabled by default, including an enforced Content Security Policy. Use `CSP_REPORT_ONLY=true` temporarily when testing frontend changes that may introduce inline scripts/styles, then return to enforcement.
 
 ## Google OAuth setup
 1. In Google Cloud Console, create OAuth 2.0 Client ID for **Web application**.

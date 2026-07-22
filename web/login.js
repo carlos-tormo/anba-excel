@@ -1,24 +1,9 @@
 async function api(path, opts = {}) {
   const method = String(opts.method || 'GET').toUpperCase();
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
+  return window.AnbaApi.request(path, opts, {
+    dedupe: method !== 'GET',
+    unauthorizedMessage: method === 'POST' ? 'Invalid admin credentials.' : null,
   });
-  if (!res.ok) {
-    if (res.status === 429) {
-      const data = await res.json().catch(() => ({}));
-      const retry = Number(data.retry_after_seconds || 0);
-      if (retry > 0) {
-        throw new Error(`Too many attempts. Try again in ${retry}s.`);
-      }
-      throw new Error('Too many attempts. Try again later.');
-    }
-    if (res.status === 401 && method === 'POST') {
-      throw new Error('Invalid admin credentials.');
-    }
-    throw new Error(`API ${res.status}`);
-  }
-  return res.json();
 }
 
 function getErrorMessageFromQuery() {

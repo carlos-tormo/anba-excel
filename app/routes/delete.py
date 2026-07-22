@@ -6,16 +6,15 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import ParseResult
 
 try:
-    from ..routing import prefix_route
+    from ..routing import RouteResponse, error_response, json_response, prefix_route
 except ImportError:  # pragma: no cover - supports direct script execution.
-    from routing import prefix_route
+    from routing import RouteResponse, error_response, json_response, prefix_route
 
 
-def _path_id(handler: Any, parsed: ParseResult, error: str) -> Optional[int]:
+def _path_id(parsed: ParseResult) -> Optional[int]:
     try:
         return int(parsed.path.split("/")[-1])
     except ValueError:
-        handler._json(400, {"error": error})
         return None
 
 
@@ -27,31 +26,31 @@ def _delete_simple(
     invalid_id_error: str,
     entity: str,
     delete: Callable[[int], bool],
-) -> None:
+) -> Optional[RouteResponse]:
     if not handler._authorize(policy):
         return
-    entity_id = _path_id(handler, parsed, invalid_id_error)
+    entity_id = _path_id(parsed)
     if entity_id is None:
-        return
+        return error_response(400, invalid_id_error)
     ok = delete(entity_id)
     if ok:
         handler._log_admin_action("delete", entity, str(entity_id))
-    handler._json(200 if ok else 404, {"ok": ok})
+    return json_response(200 if ok else 404, {"ok": ok})
 
 
-def delete_free_agent(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    _delete_simple(
+def delete_free_agent(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    return _delete_simple(
         handler,
         parsed,
         policy="admin.free_agent.write",
         invalid_id_error="invalid_free_agent_id",
         entity="free_agent",
-        delete=handler.app.free_agency.repository.delete_free_agent,
+        delete=handler.app.free_agency.delete_free_agent,
     )
 
 
-def delete_draft_order(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    _delete_simple(
+def delete_draft_order(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    return _delete_simple(
         handler,
         parsed,
         policy="admin.draft_order.write",
@@ -61,8 +60,8 @@ def delete_draft_order(handler: Any, parsed: ParseResult, _payload: Optional[Dic
     )
 
 
-def delete_player_transaction(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    _delete_simple(
+def delete_player_transaction(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    return _delete_simple(
         handler,
         parsed,
         policy="admin.player_profile.write",
@@ -72,8 +71,8 @@ def delete_player_transaction(handler: Any, parsed: ParseResult, _payload: Optio
     )
 
 
-def delete_salary_history(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    _delete_simple(
+def delete_salary_history(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    return _delete_simple(
         handler,
         parsed,
         policy="admin.player_profile.write",
@@ -83,16 +82,15 @@ def delete_salary_history(handler: Any, parsed: ParseResult, _payload: Optional[
     )
 
 
-def delete_player_profile(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
+def delete_player_profile(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     if not handler._authorize("admin.player_profile.write"):
         return
-    profile_id = _path_id(handler, parsed, "invalid_profile_id")
+    profile_id = _path_id(parsed)
     if profile_id is None:
-        return
+        return error_response(400, "invalid_profile_id")
     result = handler.app.player_identity.delete_profile(profile_id)
     if not result.get("ok"):
-        handler._json(404, {"error": result.get("error") or "not_found"})
-        return
+        return error_response(404, result.get("error") or "not_found")
     handler._log_admin_action(
         "delete",
         "player_profile",
@@ -101,7 +99,7 @@ def delete_player_profile(handler: Any, parsed: ParseResult, _payload: Optional[
         before=result.get("profile") or {},
         after=None,
     )
-    handler._json(200, result)
+    return json_response(200, result)
 
 
 def _delete_team_resource(
@@ -114,14 +112,13 @@ def _delete_team_resource(
     entity: str,
     get_record: Callable[[int], Optional[Dict[str, Any]]],
     delete: Callable[[int], bool],
-) -> None:
-    entity_id = _path_id(handler, parsed, invalid_id_error)
+) -> Optional[RouteResponse]:
+    entity_id = _path_id(parsed)
     if entity_id is None:
-        return
+        return error_response(400, invalid_id_error)
     before = get_record(entity_id)
     if not before:
-        handler._json(404, {"error": missing_error})
-        return
+        return error_response(404, missing_error)
     if not handler._authorize(policy, {"team_code": before.get("team_code")}):
         return
     ok = delete(entity_id)
@@ -133,11 +130,11 @@ def _delete_team_resource(
             before.get("team_code"),
             before=before,
         )
-    handler._json(200 if ok else 404, {"ok": ok})
+    return json_response(200 if ok else 404, {"ok": ok})
 
 
-def delete_player(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    _delete_team_resource(
+def delete_player(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    return _delete_team_resource(
         handler,
         parsed,
         invalid_id_error="invalid_player_id",
@@ -149,8 +146,8 @@ def delete_player(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str
     )
 
 
-def delete_asset(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    _delete_team_resource(
+def delete_asset(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    return _delete_team_resource(
         handler,
         parsed,
         invalid_id_error="invalid_asset_id",
@@ -162,8 +159,8 @@ def delete_asset(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str,
     )
 
 
-def delete_dead_contract(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
-    _delete_team_resource(
+def delete_dead_contract(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    return _delete_team_resource(
         handler,
         parsed,
         invalid_id_error="invalid_dead_contract_id",
@@ -176,12 +173,12 @@ def delete_dead_contract(handler: Any, parsed: ParseResult, _payload: Optional[D
 
 
 DELETE_ROUTES = (
-    prefix_route("/api/free-agents/", delete_free_agent),
-    prefix_route("/api/draft-order/", delete_draft_order),
-    prefix_route("/api/player-transactions/", delete_player_transaction),
-    prefix_route("/api/player-salary-history/", delete_salary_history),
-    prefix_route("/api/player-profiles/", delete_player_profile),
-    prefix_route("/api/players/", delete_player),
-    prefix_route("/api/assets/", delete_asset),
-    prefix_route("/api/dead-contracts/", delete_dead_contract),
+    prefix_route("/api/free-agents/", delete_free_agent, permission="admin.free_agent.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/draft-order/", delete_draft_order, permission="admin.draft_order.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/player-transactions/", delete_player_transaction, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/player-salary-history/", delete_salary_history, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/player-profiles/", delete_player_profile, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/players/", delete_player, permission="admin.player.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/assets/", delete_asset, permission="admin.draft_asset.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/dead-contracts/", delete_dead_contract, permission="admin.dead_contract.write", csrf=True, mutates_league_state=True),
 )

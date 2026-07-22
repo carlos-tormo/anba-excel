@@ -84,6 +84,48 @@ class DraftLiveTests(unittest.TestCase):
         self.assertEqual(self.first_pick, live["current_pick_id"])
         self.assertEqual(180, live["duration_seconds"])
         self.assertEqual(["Jugador A", "Jugador B"], live["options"])
+        self.assertGreaterEqual(live["state_version"], 1)
+
+    def test_draft_live_settings_reject_stale_state_version(self) -> None:
+        live = self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True})
+        self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True, "duration_seconds": 240})
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            self.db.update_draft_live_settings(
+                {
+                    "draft_year": 2026,
+                    "enabled": True,
+                    "expected_state_version": live["state_version"],
+                }
+            )
+
+    def test_draft_live_selection_rejects_stale_selection_version(self) -> None:
+        self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True})
+        live = self.db.submit_draft_live_pick(
+            self.first_pick,
+            {"option_value": "Jugador A", "advance": False},
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            is_admin=True,
+        )
+        first = next(row for row in live["draft_order"] if row["id"] == self.first_pick)
+        self.db.submit_draft_live_pick(
+            self.first_pick,
+            {"option_value": "Jugador B", "advance": False},
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            is_admin=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "stale_entity_version"):
+            self.db.submit_draft_live_pick(
+                self.first_pick,
+                {
+                    "option_value": "Jugador C",
+                    "advance": False,
+                    "expected_selection_version": first["selection_version"],
+                },
+                {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+                is_admin=True,
+            )
 
     def test_gm_selection_creates_pending_request_without_advancing(self) -> None:
         self.db.update_draft_live_settings({"draft_year": 2026, "enabled": True})

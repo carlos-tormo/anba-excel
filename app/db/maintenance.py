@@ -34,6 +34,9 @@ class DatabaseMaintenanceService:
     def create_verified_backup(self, reason: str) -> Dict[str, Any]:
         return self._maintenance.create_verified_backup(reason)
 
+    def public_backup_metadata(self, backup: Dict[str, Any]) -> Dict[str, Any]:
+        return public_backup_metadata(backup)
+
 
 class DatabaseMaintenanceMixin(DatabaseConnectionMixin):
 

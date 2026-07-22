@@ -10,7 +10,10 @@ try:
     from ..domain_rules import parse_int
     from ..routing import (
         RequestValidationError,
+        RouteResponse,
+        error_response,
         exact_route,
+        json_response,
         validate_number_range,
         validate_payload_fields,
         validate_team_code_field,
@@ -20,7 +23,10 @@ except ImportError:  # pragma: no cover - supports direct script execution.
     from domain_rules import parse_int
     from routing import (
         RequestValidationError,
+        RouteResponse,
+        error_response,
         exact_route,
+        json_response,
         validate_number_range,
         validate_payload_fields,
         validate_team_code_field,
@@ -115,67 +121,81 @@ def validate_gm_depth_chart_payload(payload: Dict[str, Any]) -> None:
         player_ids.add(player_id)
 
 
-def get_admin_minimum_targets(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
+def get_admin_minimum_targets(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]):
     if handler._authorize("admin.gm_minimum_targets.view"):
-        handler._json(200, {"lists": handler.app.gm_minimum_targets.list_admin()})
+        return json_response(200, {"lists": handler.app.gm_minimum_targets.list_admin()})
+    return None
 
 
-def get_admin_minimum_target_order(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
+def get_admin_minimum_target_order(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]):
     if handler._authorize("admin.gm_minimum_targets.view"):
-        handler._json(200, {"scores": handler.app.gm_minimum_targets.score_order()})
+        return json_response(200, {"scores": handler.app.gm_minimum_targets.score_order()})
+    return None
 
 
-def get_admin_minimum_target_handicaps(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
+def get_admin_minimum_target_handicaps(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]):
     if handler._authorize("admin.gm_minimum_targets.view"):
-        handler._json(200, {"handicaps": handler.app.gm_minimum_targets.list_handicaps()})
+        return json_response(200, {"handicaps": handler.app.gm_minimum_targets.list_handicaps()})
+    return None
 
 
-def get_gm_office(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
+def get_gm_office(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]):
     query = parse_qs(parsed.query)
     team_code = _resolved_team_code(handler, (query.get("team_code") or [""])[0])
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("gm_office.view", {"team_code": team_code}):
-        return
+        return None
     try:
         data = handler.app.gm_office.get(team_code)
         session = handler._current_session() or {}
         if parse_int(session.get("user_id")):
             data["minimum_targets"] = handler.app.gm_minimum_targets.get(session.get("user_id"), team_code)
-        handler._json(200, data)
+        return json_response(200, data)
     except ValueError as err:
         message = str(err) or "invalid_gm_office"
-        handler._json(404 if message == "team_not_found" else 400, {"error": message})
+        return error_response(404 if message == "team_not_found" else 400, message)
 
 
-def get_gm_minimum_targets(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> None:
+def get_gm_minimum_targets(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]):
     query = parse_qs(parsed.query)
     team_code = _resolved_team_code(handler, (query.get("team_code") or [""])[0])
     if team_code and not handler._authorize("gm_office.view", {"team_code": team_code}):
-        return
+        return None
     session = handler._current_session() or {}
     try:
-        handler._json(200, handler.app.gm_minimum_targets.get(session.get("user_id"), team_code))
+        return json_response(200, handler.app.gm_minimum_targets.get(session.get("user_id"), team_code))
     except ValueError as err:
         message = str(err) or "invalid_minimum_targets"
-        handler._json(404 if message in {"team_not_found", "user_not_found"} else 400, {"error": message})
+        return error_response(404 if message in {"team_not_found", "user_not_found"} else 400, message)
 
 
-def remove_admin_minimum_target(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def remove_admin_minimum_target(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._authorize("admin.gm_minimum_targets.write") or not handler._require_csrf():
         return
     try:
         result = handler.app.gm_minimum_targets.remove(payload.get("user_id"), payload.get("rank"))
     except ValueError as err:
-        handler._json(400, {"error": str(err) or "invalid_minimum_target"})
-        return
-    handler._log_admin_action("remove", "gm_minimum_target", result.get("user_id"), None, {"rank": result.get("rank"), "removed": result.get("removed")})
-    handler._json(200, {"ok": True, **result})
+        return error_response(400, str(err) or "invalid_minimum_target")
+    handler._log_admin_action(
+        "remove",
+        "gm_minimum_target",
+        result.get("user_id"),
+        None,
+        {"rank": result.get("rank"), "removed": result.get("removed")},
+        command_id=f"gm-minimum-target:{result.get('user_id')}:{result.get('rank')}:remove",
+        validation_result="valid",
+        entity_versions={
+            "user_id": result.get("user_id"),
+            "rank": result.get("rank"),
+            "removed": result.get("removed"),
+        },
+    )
+    return json_response(200, {"ok": True, **result})
 
 
-def update_admin_minimum_target_handicap(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def update_admin_minimum_target_handicap(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._authorize("admin.gm_minimum_targets.write") or not handler._require_csrf():
         return
@@ -183,32 +203,41 @@ def update_admin_minimum_target_handicap(handler: Any, _parsed: ParseResult, pay
         result = handler.app.gm_minimum_targets.set_handicap(payload.get("team_code"), payload.get("handicap"))
     except ValueError as err:
         message = str(err) or "invalid_handicap"
-        handler._json(404 if message == "team_not_found" else 400, {"error": message})
-        return
-    handler._log_admin_action("update", "gm_minimum_target_handicap", result.get("team_code"), result.get("team_code"), {"handicap": result.get("handicap")})
-    handler._json(200, {"ok": True, "handicap": result})
+        return error_response(404 if message == "team_not_found" else 400, message)
+    handler._log_admin_action(
+        "update",
+        "gm_minimum_target_handicap",
+        result.get("team_code"),
+        result.get("team_code"),
+        {"handicap": result.get("handicap")},
+        command_id=f"gm-minimum-target-handicap:{result.get('team_code')}:update",
+        validation_result="valid",
+        entity_versions={
+            "team_code": result.get("team_code"),
+            "handicap": result.get("handicap"),
+        },
+    )
+    return json_response(200, {"ok": True, "handicap": result})
 
 
-def update_spending_limit(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def update_spending_limit(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf() or not handler._validate_specialized_payload_or_error(payload, validate_gm_spending_limit_payload):
         return
     team_code = _resolved_team_code(handler, payload.get("team_code"))
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("gm_office.free_agent_spending_limit.update", {"team_code": team_code}):
         return
     try:
-        value = handler.app.free_agency.repository.set_spending_limit(team_code, payload.get("amount_millions"), handler._current_session() or {})
+        value = handler.app.free_agency.set_spending_limit(team_code, payload.get("amount_millions"), handler._current_session() or {})
     except ValueError as err:
         message = str(err) or "invalid_spending_limit"
-        handler._json(404 if message == "team_not_found" else 400, {"error": message})
-        return
-    handler._json(200, {"ok": True, "free_agent_spending_limit": value})
+        return error_response(404 if message == "team_not_found" else 400, message)
+    return json_response(200, {"ok": True, "free_agent_spending_limit": value})
 
 
-def update_minimum_targets(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def update_minimum_targets(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     omit = parsed.path.endswith("/omit")
     if not handler._require_csrf() or not handler._validate_specialized_payload_or_error(payload, validate_gm_minimum_targets_payload, omit=omit):
@@ -216,36 +245,38 @@ def update_minimum_targets(handler: Any, parsed: ParseResult, payload: Optional[
     session = handler._current_session() or {}
     team_code = _resolved_team_code(handler, payload.get("team_code"))
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("gm_office.minimum_targets.update", {"team_code": team_code}):
         return
     try:
         value = handler.app.gm_minimum_targets.omit(session.get("user_id"), team_code) if omit else handler.app.gm_minimum_targets.set(session.get("user_id"), team_code, payload.get("targets") or [])
     except ValueError as err:
         message = str(err) or "invalid_minimum_targets"
-        handler._json(404 if message in {"team_not_found", "user_not_found", "free_agent_not_found"} else 400, {"error": message})
-        return
-    handler._json(200, {"ok": True, "minimum_targets": value})
+        return error_response(404 if message in {"team_not_found", "user_not_found", "free_agent_not_found"} else 400, message)
+    return json_response(200, {"ok": True, "minimum_targets": value})
 
 
-def update_depth_chart(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> None:
+def update_depth_chart(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf() or not handler._validate_specialized_payload_or_error(payload, validate_gm_depth_chart_payload):
         return
     team_code = _resolved_team_code(handler, payload.get("team_code"))
     if not team_code:
-        handler._json(400, {"error": "team_code_required"})
-        return
+        return error_response(400, "team_code_required")
     if not handler._authorize("gm_office.depth_chart.update", {"team_code": team_code}):
         return
     try:
-        depth_chart = handler.app.depth_charts.set(team_code, payload.get("entries") or [])
+        depth_chart = handler.app.depth_charts.set(
+            team_code,
+            payload.get("entries") or [],
+            expected_version=payload.get("expected_version"),
+        )
     except ValueError as err:
         message = str(err) or "invalid_depth_chart"
-        handler._json(404 if message == "team_not_found" else 400, {"error": message})
-        return
-    handler._json(200, {"ok": True, "depth_chart": depth_chart})
+        if message == "stale_entity_version":
+            return error_response(409, message)
+        return error_response(404 if message == "team_not_found" else 400, message)
+    return json_response(200, {"ok": True, "depth_chart": depth_chart})
 
 
 GM_OFFICE_GET_ROUTES = (
@@ -256,10 +287,10 @@ GM_OFFICE_GET_ROUTES = (
     exact_route("/api/gm-office/minimum-targets", get_gm_minimum_targets),
 )
 GM_OFFICE_POST_ROUTES = (
-    exact_route("/api/admin/gm-minimum-targets/remove", remove_admin_minimum_target),
-    exact_route("/api/admin/gm-minimum-target-handicaps", update_admin_minimum_target_handicap),
-    exact_route("/api/gm-office/free-agent-spending-limit", update_spending_limit),
-    exact_route("/api/gm-office/minimum-targets", update_minimum_targets),
-    exact_route("/api/gm-office/minimum-targets/omit", update_minimum_targets),
-    exact_route("/api/gm-office/depth-chart", update_depth_chart),
+    exact_route("/api/admin/gm-minimum-targets/remove", remove_admin_minimum_target, permission="admin.gm_minimum_targets.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/admin/gm-minimum-target-handicaps", update_admin_minimum_target_handicap, permission="admin.gm_minimum_targets.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/gm-office/free-agent-spending-limit", update_spending_limit, permission="gm_office.free_agent_spending_limit.update", csrf=True, mutates_league_state=True),
+    exact_route("/api/gm-office/minimum-targets", update_minimum_targets, permission="gm_office.minimum_targets.update", csrf=True, mutates_league_state=True),
+    exact_route("/api/gm-office/minimum-targets/omit", update_minimum_targets, permission="gm_office.minimum_targets.update", csrf=True, mutates_league_state=True),
+    exact_route("/api/gm-office/depth-chart", update_depth_chart, permission="gm_office.depth_chart.update", csrf=True, mutates_league_state=True),
 )
