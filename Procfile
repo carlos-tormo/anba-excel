@@ -1,2 +1,1 @@
-web: bash -lc 'if [ ! -f /data/league.db ]; then mkdir -p /data && cp data/league.db /data/league.db; fi; OWNER_BACKGROUND_UPLOAD_DIR=/data/uploads/owner-office python3 app/server.py --db /data/league.db --host 0.0.0.0 --port ${PORT:-8000}'
-worker: bash -lc 'if [ ! -f /data/league.db ]; then mkdir -p /data && cp data/league.db /data/league.db; fi; python3 -m app.workers.discord_waiting_list_bot --db /data/league.db'
+web: bash scripts/start_railway.sh
