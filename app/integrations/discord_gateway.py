@@ -43,6 +43,30 @@ class DiscordGatewayConfig:
     large_threshold: int = 50
 
 
+NON_RETRYABLE_GATEWAY_CLOSE_CODES = {
+    4004,  # Authentication failed.
+    4010,  # Invalid shard.
+    4011,  # Sharding required.
+    4012,  # Invalid API version.
+    4013,  # Invalid intents.
+    4014,  # Disallowed intents.
+}
+
+
+class DiscordGatewayCloseError(ConnectionError):
+    def __init__(self, code: Optional[int], reason: str = "") -> None:
+        self.code = code
+        self.reason = str(reason or "").strip()
+        detail = f":{code}" if code is not None else ""
+        if self.reason:
+            detail = f"{detail}:{self.reason}"
+        super().__init__(f"discord_gateway_close_frame{detail}")
+
+    @property
+    def retryable(self) -> bool:
+        return self.code not in NON_RETRYABLE_GATEWAY_CLOSE_CODES
+
+
 class _WebSocketConnection:
     def __init__(self, url: str, *, timeout_seconds: int = 30) -> None:
         self.url = url
@@ -143,7 +167,9 @@ class _WebSocketConnection:
             if masked:
                 payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
             if opcode == 0x8:
-                raise ConnectionError("discord_gateway_close_frame")
+                close_code = struct.unpack("!H", payload[:2])[0] if len(payload) >= 2 else None
+                close_reason = payload[2:].decode("utf-8", errors="replace") if len(payload) > 2 else ""
+                raise DiscordGatewayCloseError(close_code, close_reason)
             if opcode == 0x9:
                 self.send_pong(payload)
                 continue
@@ -185,15 +211,42 @@ class DiscordGatewayClient:
         if self._ws:
             self._ws.close()
 
-    def run_forever(self, *, reconnect_delay_seconds: int = 5) -> None:
+    def run_forever(
+        self,
+        *,
+        reconnect_delay_seconds: int = 30,
+        max_reconnect_delay_seconds: int = 900,
+    ) -> None:
+        delay = max(1, int(reconnect_delay_seconds or 30))
+        max_delay = max(delay, int(max_reconnect_delay_seconds or 900))
         while not self._stop.is_set():
             try:
                 self.run_once()
+                delay = max(1, int(reconnect_delay_seconds or 30))
+            except DiscordGatewayCloseError as err:
+                if self._stop.is_set():
+                    break
+                if not err.retryable:
+                    self.logger.error(
+                        "Discord Gateway closed with non-retryable code=%s reason=%s; worker will stop.",
+                        err.code,
+                        err.reason or "-",
+                    )
+                    break
+                self.logger.error(
+                    "Discord Gateway closed code=%s reason=%s; reconnecting in %ss",
+                    err.code,
+                    err.reason or "-",
+                    delay,
+                )
+                time.sleep(delay)
+                delay = min(max_delay, delay * 2)
             except Exception as err:  # noqa: BLE001 - worker reconnect boundary.
                 if self._stop.is_set():
                     break
-                self.logger.error("Discord Gateway connection failed: %s", err)
-                time.sleep(max(1, int(reconnect_delay_seconds or 5)))
+                self.logger.error("Discord Gateway connection failed: %s; reconnecting in %ss", err, delay)
+                time.sleep(delay)
+                delay = min(max_delay, delay * 2)
 
     def run_once(self) -> None:
         self.sequence = None

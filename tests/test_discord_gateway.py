@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 
-from app.integrations.discord_gateway import DiscordGatewayClient, DiscordGatewayConfig
+from app.integrations.discord_gateway import DiscordGatewayClient, DiscordGatewayCloseError, DiscordGatewayConfig
 
 
 class FakeWebSocket:
@@ -39,6 +39,24 @@ class DiscordGatewayClientTests(unittest.TestCase):
         self.assertEqual("token", identify["d"]["token"])
         callback.assert_called_once_with("GUILD_MEMBER_UPDATE", {"user": {"id": "1"}})
         client.stop()
+
+    def test_non_retryable_gateway_close_stops_reconnect_loop(self) -> None:
+        callback = Mock()
+        client = DiscordGatewayClient(
+            DiscordGatewayConfig(token="token"),
+            on_dispatch=callback,
+        )
+        calls = {"count": 0}
+
+        def fail_auth_once():
+            calls["count"] += 1
+            raise DiscordGatewayCloseError(4004, "Authentication failed")
+
+        client.run_once = fail_auth_once
+
+        client.run_forever(reconnect_delay_seconds=1, max_reconnect_delay_seconds=1)
+
+        self.assertEqual(1, calls["count"])
 
 
 if __name__ == "__main__":

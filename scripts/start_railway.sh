@@ -27,12 +27,30 @@ echo "Using Python: $python_bin"
 "$python_bin" app/server.py --db /data/league.db --host 0.0.0.0 --port "${PORT:-8000}" &
 web_pid=$!
 
-"$python_bin" -m app.workers.discord_waiting_list_bot --db /data/league.db &
-worker_pid=$!
+worker_pid=""
+start_waiting_list_worker() {
+  local delay="${WAITING_LIST_WORKER_RESTART_DELAY_SECONDS:-900}"
+  while true; do
+    if "$python_bin" -m app.workers.discord_waiting_list_bot --db /data/league.db; then
+      status=0
+    else
+      status=$?
+    fi
+    echo "Discord waiting-list worker exited with status ${status}; retrying in ${delay}s without stopping web." >&2
+    sleep "$delay"
+  done
+}
 
-trap 'kill "$web_pid" "$worker_pid" 2>/dev/null || true' TERM INT
+if [ "${WAITING_LIST_DISCORD_WORKER_ENABLED:-true}" != "false" ] && [ -n "${DISCORD_BOT_TOKEN:-}" ]; then
+  start_waiting_list_worker &
+  worker_pid=$!
+else
+  echo "Discord waiting-list worker disabled or DISCORD_BOT_TOKEN is not set; web will continue without worker." >&2
+fi
 
-wait -n "$web_pid" "$worker_pid"
+trap 'kill "$web_pid" ${worker_pid:-} 2>/dev/null || true' TERM INT
+
+wait "$web_pid"
 exit_code=$?
-kill "$web_pid" "$worker_pid" 2>/dev/null || true
+kill ${worker_pid:-} 2>/dev/null || true
 exit "$exit_code"
