@@ -165,6 +165,19 @@ class TradeArchiveTests(unittest.TestCase):
         self.assertEqual("Current ATL GM", listed_movements["ATL"]["timeline_gm_name"])
         self.assertIsNone(listed_movements["BOS"]["timeline_gm_name"])
 
+        updated = TradeArchiveService(self.db._trade_archive_repository).update(
+            trade["id"],
+            {
+                "trade_date": "2023-08-01",
+                "team_movements": listed["team_movements"],
+            },
+        )
+        updated_movements = {row["team_code"]: row for row in updated["team_movements"]}
+        self.assertIsNone(updated_movements["ATL"]["gm_name"])
+        self.assertEqual("Old ATL GM", updated_movements["ATL"]["timeline_gm_name"])
+        self.assertEqual("Imported BOS GM", updated_movements["BOS"]["gm_name"])
+        self.assertIsNone(updated_movements["BOS"]["timeline_gm_name"])
+
     def test_trade_archive_import_rejects_oversized_batches(self) -> None:
         service = TradeArchiveService(self.db._trade_archive_repository, max_import_trades=1)
 

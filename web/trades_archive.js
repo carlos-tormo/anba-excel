@@ -51,6 +51,13 @@
     return text(movement?.gm_name || movement?.gm || movement?.timeline_gm_name || '');
   }
 
+  function editableTeamMovements(movements) {
+    return (Array.isArray(movements) ? movements : []).map((movement) => {
+      const { timeline_gm_name: _timelineGmName, ...editable } = movement || {};
+      return editable;
+    });
+  }
+
   function tradeMatchesFilters(trade) {
     const movements = Array.isArray(trade?.team_movements) ? trade.team_movements : [];
     if (state.selectedTeamCode) {
@@ -545,7 +552,7 @@
       el(movesLabel, 'span', { text: 'Movimientos por equipo (JSON)' });
       el(movesLabel, 'textarea', {
         attrs: { name: 'team_movements', rows: '10' },
-        text: JSON.stringify(trade.team_movements || [], null, 2),
+        text: JSON.stringify(editableTeamMovements(trade.team_movements), null, 2),
       });
       const actions = el(form, 'div', { className: 'trade-archive-modal-actions' });
       const save = el(actions, 'button', { attrs: { type: 'submit' }, text: 'Guardar' });
@@ -561,7 +568,7 @@
             season_year: Number(formData.get('season_year') || 0),
             external_trade_id: formData.get('external_trade_id'),
             notes: formData.get('notes'),
-            team_movements: JSON.parse(String(formData.get('team_movements') || '[]')),
+            team_movements: editableTeamMovements(JSON.parse(String(formData.get('team_movements') || '[]'))),
           };
           await state.api(`/api/trades/archive/${encodeURIComponent(trade.id)}`, {
             method: 'PATCH',
