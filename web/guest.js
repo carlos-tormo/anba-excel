@@ -10187,10 +10187,54 @@ async function loadGms() {
   }
   applyTeamTheme('');
   setViewMode('gms');
-  setPageHeading('GMs', 'Sección de GMs pendiente de configurar');
+  setPageHeading('GMs', 'Perfiles históricos de GMs de la liga');
   renderCapStatusPills({});
   renderTeamStrip();
   renderMobileTeamGrid();
+  await renderGmsSection();
+}
+
+function safeGmProfileColor(value) {
+  const raw = String(value || '').trim();
+  return /^#[0-9A-Fa-f]{6}$/.test(raw) ? raw : '#0f766e';
+}
+
+function gmProfileHistoryHtml(history) {
+  const rows = Array.isArray(history) ? history : [];
+  if (!rows.length) return '<li><span class="muted-text">Sin historial asociado todavía.</span></li>';
+  return rows.map((row) => `
+    <li style="border-left-color: ${safeGmProfileColor(row.color)}">
+      <strong>${escapeHtml(row.team_code || '')} · ${escapeHtml(row.team_name || '')}</strong>
+      <span>${escapeHtml(row.gm_name || '')}</span>
+      <span class="muted-text">${escapeHtml(formatGmTimelineDate(row.start_date) || row.start_date || '')}</span>
+    </li>
+  `).join('');
+}
+
+async function renderGmsSection() {
+  const status = document.getElementById('gmsStatus');
+  const board = document.getElementById('gmsBoard');
+  if (!board) return;
+  if (status) status.textContent = 'Cargando GMs...';
+  try {
+    const res = await api('/api/gms');
+    const gms = res.gms || [];
+    if (!gms.length) {
+      board.innerHTML = '<div class="empty-state">Todavía no hay perfiles de GM configurados.</div>';
+    } else {
+      board.innerHTML = gms.map((gm) => `
+        <article class="gm-profile-card">
+          <h3>${escapeHtml(gm.display_name || 'GM')}</h3>
+          <div class="gm-profile-meta">${escapeHtml(gm.has_site_user ? 'Usuario registrado' : 'GM histórico offline')}</div>
+          <ul class="gm-profile-history">${gmProfileHistoryHtml(gm.history)}</ul>
+        </article>
+      `).join('');
+    }
+    if (status) status.textContent = '';
+  } catch (err) {
+    if (status) status.textContent = `No se pudieron cargar los GMs: ${err.message || err}`;
+    board.innerHTML = '';
+  }
 }
 
 async function loadWaitingList() {

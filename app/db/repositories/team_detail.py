@@ -62,10 +62,13 @@ class TeamDetailRepository(LeagueRepository):
             for row in conn.execute(
                 """
                 SELECT h.id, t.code AS team_code, t.name AS team_name,
-                       h.row_order, h.gm_name, h.start_date, h.color,
+                       h.row_order, h.gm_entity_id, h.gm_name, h.start_date, h.color,
+                       g.entity_type AS gm_entity_type, g.user_id AS gm_user_id,
+                       g.display_name AS gm_entity_name,
                        h.created_at, h.updated_at
                 FROM team_gm_history h
                 JOIN teams t ON t.id = h.team_id
+                LEFT JOIN gm_identities g ON g.id = h.gm_entity_id
                 WHERE h.team_id = ?
                 ORDER BY h.start_date, h.row_order, h.id
                 """,

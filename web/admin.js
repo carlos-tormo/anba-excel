@@ -32,6 +32,7 @@ const state = {
   offseasonExceptionPreview: null,
   offseasonExceptionChoices: {},
   adminUsers: [],
+  gmIdentities: [],
   gmOptionRequests: [],
   gmMinimumTargets: [],
   gmMinimumTargetOrder: [],
@@ -4357,6 +4358,12 @@ async function loadAdminUsers() {
   renderAdminUsers();
 }
 
+async function loadGmIdentities() {
+  const res = await api('/api/gm-identities');
+  state.gmIdentities = res.gm_identities || [];
+  return state.gmIdentities;
+}
+
 function optionRequestActionLabel(action) {
   if (action === 'offered') return 'Oferta enviada';
   if (action === 'selected') return 'Elegir jugador';
@@ -4596,6 +4603,7 @@ async function saveAdminUserAccess(userId, button) {
     } else {
       await loadAdminUsers();
     }
+    await loadGmIdentities();
   } catch (err) {
     alert(`User save failed: ${err.message || err}`);
   } finally {
@@ -11810,12 +11818,56 @@ async function loadGms() {
   state.selectedPlayerIds.clear();
   applyTeamTheme('');
   setViewMode('gms');
-  setPageHeading('GMs', 'Sección de GMs pendiente de configurar');
+  setPageHeading('GMs', 'Perfiles históricos de GMs de la liga');
   renderCapStatusPills({});
   renderTeamStrip();
   renderTeamPicker();
   renderAdminMobileTeamGrid();
+  await renderGmsSection();
   await refreshAdminLogsSafe();
+}
+
+function safeGmProfileColor(value) {
+  const raw = String(value || '').trim();
+  return /^#[0-9A-Fa-f]{6}$/.test(raw) ? raw : '#0f766e';
+}
+
+function gmProfileHistoryHtml(history) {
+  const rows = Array.isArray(history) ? history : [];
+  if (!rows.length) return '<li><span class="muted-text">Sin historial asociado todavía.</span></li>';
+  return rows.map((row) => `
+    <li style="border-left-color: ${safeGmProfileColor(row.color)}">
+      <strong>${escapeHtml(row.team_code || '')} · ${escapeHtml(row.team_name || '')}</strong>
+      <span>${escapeHtml(row.gm_name || '')}</span>
+      <span class="muted-text">${escapeHtml(formatGmTimelineDate(row.start_date) || row.start_date || '')}</span>
+    </li>
+  `).join('');
+}
+
+async function renderGmsSection() {
+  const status = document.getElementById('gmsStatus');
+  const board = document.getElementById('gmsBoard');
+  if (!board) return;
+  if (status) status.textContent = 'Cargando GMs...';
+  try {
+    const res = await api('/api/gms');
+    const gms = res.gms || [];
+    if (!gms.length) {
+      board.innerHTML = '<div class="empty-state">Todavía no hay perfiles de GM configurados.</div>';
+    } else {
+      board.innerHTML = gms.map((gm) => `
+        <article class="gm-profile-card">
+          <h3>${escapeHtml(gm.display_name || 'GM')}</h3>
+          <div class="gm-profile-meta">${escapeHtml(gm.has_site_user ? 'Usuario registrado' : 'GM histórico offline')}</div>
+          <ul class="gm-profile-history">${gmProfileHistoryHtml(gm.history)}</ul>
+        </article>
+      `).join('');
+    }
+    if (status) status.textContent = '';
+  } catch (err) {
+    if (status) status.textContent = `No se pudieron cargar los GMs: ${err.message || err}`;
+    board.innerHTML = '';
+  }
 }
 
 async function loadWaitingList() {
@@ -12093,13 +12145,42 @@ function isoGmTimelineDate(value) {
   return date.toISOString().slice(0, 10);
 }
 
+function gmIdentityById(id) {
+  const parsed = Number(id);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return (state.gmIdentities || []).find((identity) => Number(identity.id) === parsed) || null;
+}
+
+function gmIdentityDisplayName(id) {
+  const identity = gmIdentityById(id);
+  return String(identity?.display_name || '').trim();
+}
+
+function gmIdentityOptions(selectedId) {
+  const selected = Number(selectedId || 0);
+  const options = ['<option value="">Offline/manual name</option>'];
+  (state.gmIdentities || []).forEach((identity) => {
+    const id = Number(identity.id);
+    if (!Number.isInteger(id) || id <= 0) return;
+    const type = identity.entity_type === 'user' ? 'site user' : 'offline GM';
+    const label = `${identity.display_name || 'GM'} · ${type}`;
+    options.push(
+      `<option value="${id}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`
+    );
+  });
+  return options.join('');
+}
+
 function gmTimelineEntriesFromDom() {
   const rows = document.querySelectorAll('#gmTimelineRows [data-gm-row]');
   if (!rows.length) return null;
   return Array.from(rows).map((row, idx) => {
     const valueFor = (field) => String(row.querySelector(`[data-gm-field="${field}"]`)?.value || '').trim();
+    const gmEntityId = Number(valueFor('gm_entity_id'));
+    const selectedName = Number.isInteger(gmEntityId) && gmEntityId > 0 ? gmIdentityDisplayName(gmEntityId) : '';
     return {
-      gm_name: valueFor('gm_name'),
+      gm_entity_id: Number.isInteger(gmEntityId) && gmEntityId > 0 ? gmEntityId : null,
+      gm_name: valueFor('gm_name') || selectedName,
       start_date: valueFor('start_date'),
       color: valueFor('color') || gmTimelineDefaultColor(idx, state.teamCode),
     };
@@ -12109,11 +12190,12 @@ function gmTimelineEntriesFromDom() {
 function normalizeGmTimelineEntries(entries) {
   return (entries || [])
     .map((entry, idx) => ({
-      gm_name: String(entry.gm_name || '').trim(),
+      gm_entity_id: Number(entry.gm_entity_id) > 0 ? Number(entry.gm_entity_id) : null,
+      gm_name: String(entry.gm_name || gmIdentityDisplayName(entry.gm_entity_id) || '').trim(),
       start_date: isoGmTimelineDate(entry.start_date),
       color: String(entry.color || gmTimelineDefaultColor(idx, state.teamCode)).trim(),
     }))
-    .filter((entry) => entry.gm_name || entry.start_date)
+    .filter((entry) => entry.gm_name || entry.gm_entity_id || entry.start_date)
     .sort((a, b) => {
       if (a.start_date < b.start_date) return -1;
       if (a.start_date > b.start_date) return 1;
@@ -12143,7 +12225,12 @@ function renderGmTimelineRows() {
   }
   container.innerHTML = entries.map((entry, idx) => `
     <tr class="gm-timeline-row" data-gm-row="${idx}">
-      <td><input type="text" data-gm-field="gm_name" value="${escapeHtml(entry.gm_name || '')}" placeholder="GM name"></td>
+      <td>
+        <select data-gm-field="gm_entity_id" aria-label="GM entity">
+          ${gmIdentityOptions(entry.gm_entity_id)}
+        </select>
+        <input type="text" data-gm-field="gm_name" value="${escapeHtml(entry.gm_name || '')}" placeholder="Historical display name">
+      </td>
       <td><input type="date" data-gm-field="start_date" value="${escapeHtml(isoGmTimelineDate(entry.start_date))}"></td>
       <td><input type="color" data-gm-field="color" value="${escapeHtml(entry.color || gmTimelineDefaultColor(idx, state.teamCode))}"></td>
       <td><button type="button" class="danger" data-gm-remove="${idx}">Remove</button></td>
@@ -12156,7 +12243,15 @@ function renderGmTimelineRows() {
       const idx = Number(row?.dataset.gmRow);
       const field = input.dataset.gmField;
       if (!Number.isInteger(idx) || !field || !state.ui.gmTimelineEntries[idx]) return;
-      state.ui.gmTimelineEntries[idx][field] = input.value;
+      state.ui.gmTimelineEntries[idx][field] = field === 'gm_entity_id' ? Number(input.value || 0) || null : input.value;
+      if (field === 'gm_entity_id') {
+        const selectedName = gmIdentityDisplayName(input.value);
+        const nameInput = row?.querySelector('[data-gm-field="gm_name"]');
+        if (selectedName && nameInput && !String(nameInput.value || '').trim()) {
+          nameInput.value = selectedName;
+          state.ui.gmTimelineEntries[idx].gm_name = selectedName;
+        }
+      }
     };
     input.addEventListener('input', syncInputToState);
     input.addEventListener('change', syncInputToState);
@@ -12347,6 +12442,7 @@ function renderGmTimelinePreview(options = {}) {
 function syncGmTimelineFromTeamData() {
   const code = state.teamCode || '';
   state.ui.gmTimelineEntries = (state.teamData?.gm_history || []).map((row, idx) => ({
+    gm_entity_id: Number(row.gm_entity_id) > 0 ? Number(row.gm_entity_id) : null,
     gm_name: row.gm_name || '',
     start_date: row.start_date || '',
     color: row.color || gmTimelineDefaultColor(idx, code),
@@ -12378,8 +12474,10 @@ async function saveGmTimeline(successMessage = 'Timeline saved.') {
         entries,
       }),
     });
+    await loadGmIdentities();
     if (state.teamData) state.teamData.gm_history = result.gm_history || [];
     state.ui.gmTimelineEntries = (result.gm_history || []).map((row, idx) => ({
+      gm_entity_id: Number(row.gm_entity_id) > 0 ? Number(row.gm_entity_id) : null,
       gm_name: row.gm_name || '',
       start_date: row.start_date || '',
       color: row.color || gmTimelineDefaultColor(idx, state.teamCode),
@@ -12402,6 +12500,7 @@ async function saveGmTimeline(successMessage = 'Timeline saved.') {
 function addGmTimelineRow() {
   const idx = state.ui.gmTimelineEntries.length;
   state.ui.gmTimelineEntries.push({
+    gm_entity_id: null,
     gm_name: '',
     start_date: '',
     color: gmTimelineDefaultColor(idx, state.teamCode),
@@ -13535,6 +13634,7 @@ async function init() {
 
   const teamsRes = await api('/api/teams');
   state.teams = teamsRes.teams;
+  await loadGmIdentities();
   await refreshWaiverBadges();
   setupSorting();
   renderTeamStrip();

@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover
     from domain_rules import parse_int
 
 from .base import LeagueRepository
+from .gm_identities import clean_gm_name, upsert_offline_gm_identity
 from .team_assignments import assigned_gm_names_by_team
 
 
@@ -63,8 +64,12 @@ class TeamRepository(LeagueRepository):
                 params.append(normalized_code)
             rows = conn.execute(
                 f"""SELECT h.id, t.code AS team_code, t.name AS team_name, h.row_order,
-                           h.gm_name, h.start_date, h.color, h.created_at, h.updated_at
+                           h.gm_entity_id, h.gm_name, h.start_date, h.color,
+                           h.created_at, h.updated_at,
+                           g.entity_type AS gm_entity_type, g.user_id AS gm_user_id,
+                           g.display_name AS gm_entity_name
                     FROM team_gm_history h JOIN teams t ON t.id = h.team_id
+                    LEFT JOIN gm_identities g ON g.id = h.gm_entity_id
                     {where} ORDER BY t.code, h.start_date, h.row_order, h.id""",
                 params,
             ).fetchall()
@@ -73,11 +78,13 @@ class TeamRepository(LeagueRepository):
     def replace_gm_history(self, code: str, entries: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
         normalized: List[Dict[str, Any]] = []
         for raw in entries:
-            gm_name = str(raw.get("gm_name") or raw.get("name") or "").strip()
+            gm_name = clean_gm_name(raw.get("gm_name") or raw.get("name"))
+            gm_entity_id = parse_int(raw.get("gm_entity_id"))
             start_date = self._normalize_gm_start_date(raw.get("start_date"))
-            if not gm_name or not start_date:
+            if (not gm_name and gm_entity_id is None) or not start_date:
                 raise ValueError("invalid_gm_history_entry")
             normalized.append({
+                "gm_entity_id": gm_entity_id,
                 "gm_name": gm_name,
                 "start_date": start_date,
                 "color": self._normalize_hex_color(raw.get("color")),
@@ -89,14 +96,41 @@ class TeamRepository(LeagueRepository):
                 return None
             team_id = int(team["id"])
             timestamp = self._now()
+            resolved_entries: List[Dict[str, Any]] = []
+            for entry in normalized:
+                gm_entity_id = entry.get("gm_entity_id")
+                entity_name = ""
+                if gm_entity_id is not None:
+                    gm_entity = conn.execute(
+                        "SELECT id, display_name FROM gm_identities WHERE id = ?",
+                        (int(gm_entity_id),),
+                    ).fetchone()
+                    if not gm_entity:
+                        raise ValueError("invalid_gm_identity")
+                    entity_name = clean_gm_name(gm_entity["display_name"])
+                gm_name = entry["gm_name"] or entity_name
+                if not gm_name:
+                    raise ValueError("invalid_gm_history_entry")
+                if gm_entity_id is None:
+                    gm_entity_id = upsert_offline_gm_identity(conn, gm_name, now=timestamp)
+                resolved_entries.append({**entry, "gm_entity_id": gm_entity_id, "gm_name": gm_name})
             conn.execute("DELETE FROM team_gm_history WHERE team_id = ?", (team_id,))
             conn.executemany(
                 """INSERT INTO team_gm_history (
-                       team_id, row_order, gm_name, start_date, color, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       team_id, gm_entity_id, row_order, gm_name, start_date, color, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
-                    (team_id, index, entry["gm_name"], entry["start_date"], entry["color"], timestamp, timestamp)
-                    for index, entry in enumerate(normalized, start=1)
+                    (
+                        team_id,
+                        entry["gm_entity_id"],
+                        index,
+                        entry["gm_name"],
+                        entry["start_date"],
+                        entry["color"],
+                        timestamp,
+                        timestamp,
+                    )
+                    for index, entry in enumerate(resolved_entries, start=1)
                 ],
             )
             conn.commit()

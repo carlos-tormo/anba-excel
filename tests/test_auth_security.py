@@ -303,6 +303,61 @@ class AuthSecurityTests(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
+    def test_gm_history_preserves_names_and_links_to_gm_entities(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="anba-auth-gm-entities-", suffix=".db")
+        os.close(fd)
+        try:
+            with connect_test_db(path) as conn:
+                conn.row_factory = sqlite3.Row
+                create_schema(conn)
+                team_id = insert_team(conn, "ATL", "Atlanta Hawks")
+                conn.commit()
+
+            db = LeagueDB(path)
+            db.ensure_auth_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO team_gm_history (
+                        team_id, row_order, gm_name, start_date, color, created_at, updated_at
+                    ) VALUES (?, 1, 'Legacy Offline GM', '2018-07-01', '#AA0000', 'now', 'now')
+                    """,
+                    (team_id,),
+                )
+                conn.commit()
+
+            db.ensure_auth_schema()
+            history = db.list_gm_history("ATL")
+            self.assertEqual("Legacy Offline GM", history[0]["gm_name"])
+            self.assertEqual("offline", history[0]["gm_entity_type"])
+            self.assertGreater(int(history[0]["gm_entity_id"]), 0)
+
+            user = db.upsert_google_user("google-gm", "gm@example.com", "Google GM", None)
+            db.replace_user_team_assignments(user["id"], ["ATL"], username="Site GM")
+            identity = next(
+                row
+                for row in db._gm_identity_repository.list()
+                if int(row.get("user_id") or 0) == int(user["id"])
+            )
+            updated = db.replace_gm_history(
+                "ATL",
+                [
+                    {
+                        "gm_entity_id": identity["id"],
+                        "start_date": "2025-07-01",
+                        "color": "#00AA00",
+                    }
+                ],
+            )
+            self.assertEqual("Site GM", updated[0]["gm_name"])
+            self.assertEqual("user", updated[0]["gm_entity_type"])
+            self.assertEqual(int(identity["id"]), int(updated[0]["gm_entity_id"]))
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

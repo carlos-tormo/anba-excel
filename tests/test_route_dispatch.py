@@ -455,6 +455,38 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(404, response.status)
         self.assertEqual({"error": "team_not_found"}, response.payload)
 
+    def test_gm_identities_get_route_returns_dropdown_options(self):
+        gm_identities = SimpleNamespace(list=Mock(return_value=[{"id": 4, "display_name": "Offline GM"}]))
+        handler = SimpleNamespace(
+            _authorize=Mock(return_value=True),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(gm_identities=gm_identities),
+        )
+
+        matched = dispatch_routes(handler, urlparse("/api/gm-identities"), GET_ROUTES)
+
+        self.assertTrue(matched)
+        handler._authorize.assert_called_once_with("admin.gm_history.view")
+        gm_identities.list.assert_called_once_with()
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual([{"id": 4, "display_name": "Offline GM"}], response.payload["gm_identities"])
+
+    def test_gms_get_route_returns_public_profiles(self):
+        gm_identities = SimpleNamespace(list_profiles=Mock(return_value=[{"id": 4, "display_name": "Offline GM"}]))
+        handler = SimpleNamespace(
+            _send_route_response=Mock(),
+            app=SimpleNamespace(gm_identities=gm_identities),
+        )
+
+        matched = dispatch_routes(handler, urlparse("/api/gms"), GET_ROUTES)
+
+        self.assertTrue(matched)
+        gm_identities.list_profiles.assert_called_once_with()
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual([{"id": 4, "display_name": "Offline GM"}], response.payload["gms"])
+
     def test_team_detail_get_route_returns_framework_neutral_response(self):
         team_detail = SimpleNamespace(get=Mock(return_value={"team_code": "ATL", "players": []}))
         handler = SimpleNamespace(

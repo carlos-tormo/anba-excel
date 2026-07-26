@@ -8259,10 +8259,15 @@ td.salary-option--nb .salary-pct {
   letter-spacing: 0.03em;
 }
 
+.gm-timeline-table select,
 .gm-timeline-table input[type="text"],
 .gm-timeline-table input[type="date"] {
   width: 100%;
   min-width: 0;
+}
+
+.gm-timeline-table select + input[type="text"] {
+  margin-top: 0.45rem;
 }
 
 .gm-timeline-row input[type="color"] {
@@ -8310,6 +8315,49 @@ td.salary-option--nb .salary-pct {
   width: 100%;
   min-width: 820px;
   height: auto;
+}
+
+.gms-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.gm-profile-card {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
+  padding: 1rem;
+}
+
+.gm-profile-card h3 {
+  margin: 0;
+}
+
+.gm-profile-meta {
+  color: var(--muted);
+  font-size: 0.86rem;
+  margin-top: 0.25rem;
+}
+
+.gm-profile-history {
+  display: grid;
+  gap: 0.45rem;
+  list-style: none;
+  margin: 0.85rem 0 0;
+  padding: 0;
+}
+
+.gm-profile-history li {
+  border-left: 4px solid var(--team-primary);
+  padding-left: 0.65rem;
+}
+
+.gm-profile-history strong,
+.gm-profile-history span {
+  display: block;
 }
 .team-apron-cap-toggle {
   display: inline-flex;

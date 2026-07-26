@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger("anba.migrations")
-CURRENT_SCHEMA_VERSION = 2026072205
+CURRENT_SCHEMA_VERSION = 2026072601
 CURRENT_SCHEMA_MIGRATION_KEY = f"{CURRENT_SCHEMA_VERSION}_runtime_schema_contract"
 MIGRATION_CONTRACT_SEASONS = (2025, 2026, 2027, 2028, 2029, 2030, 2031)
 MIGRATION_PLAYER_ROW_STATE_ACTIVE = "active_contract"
@@ -627,6 +627,21 @@ class DatabaseMigrationsMixin:
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         PRIMARY KEY (user_id, team_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS gm_identities (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        entity_type TEXT NOT NULL DEFAULT 'offline'
+                            CHECK(entity_type IN ('user', 'offline')),
+                        user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL,
+                        display_name TEXT NOT NULL,
+                        profile_slug TEXT,
+                        notes TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
                     )
                     """
                 )
@@ -1594,6 +1609,7 @@ class DatabaseMigrationsMixin:
                     CREATE TABLE IF NOT EXISTS team_gm_history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                        gm_entity_id INTEGER REFERENCES gm_identities(id) ON DELETE SET NULL,
                         row_order INTEGER NOT NULL,
                         gm_name TEXT NOT NULL,
                         start_date TEXT NOT NULL,
@@ -1843,7 +1859,10 @@ class DatabaseMigrationsMixin:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_move_logs_team_season ON team_move_logs(team_id, season_year, bucket)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_luxury_history_team_year ON team_luxury_history(team_id, season_year)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_apron_hard_caps_team_year ON team_apron_hard_caps(team_id, season_year)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_gm_identities_user_id ON gm_identities(user_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_gm_identities_display_name ON gm_identities(lower(display_name))")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_team_start ON team_gm_history(team_id, start_date)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_entity ON team_gm_history(gm_entity_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_order_year_round ON draft_order(draft_year, draft_round, pick_number)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_live_selections_selected_at ON draft_live_selections(selected_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_economy_season ON team_economy(season_year)")
@@ -1955,6 +1974,112 @@ class DatabaseMigrationsMixin:
                 )
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_users_username ON users (lower(username))"
+                )
+                gm_history_cols = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(team_gm_history)").fetchall()
+                }
+                if "gm_entity_id" not in gm_history_cols:
+                    conn.execute("ALTER TABLE team_gm_history ADD COLUMN gm_entity_id INTEGER")
+                gm_identity_timestamp = datetime.now(UTC).isoformat()
+                conn.execute(
+                    """
+                    INSERT INTO gm_identities (
+                        entity_type, user_id, display_name, created_at, updated_at
+                    )
+                    SELECT 'user',
+                           u.id,
+                           COALESCE(
+                               NULLIF(TRIM(u.username), ''),
+                               NULLIF(TRIM(u.display_name), ''),
+                               NULLIF(TRIM(u.email), '')
+                           ),
+                           ?,
+                           ?
+                    FROM users u
+                    WHERE COALESCE(
+                              NULLIF(TRIM(u.username), ''),
+                              NULLIF(TRIM(u.display_name), ''),
+                              NULLIF(TRIM(u.email), '')
+                          ) IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM gm_identities g WHERE g.user_id = u.id
+                      )
+                    """,
+                    (gm_identity_timestamp, gm_identity_timestamp),
+                )
+                conn.execute(
+                    """
+                    UPDATE gm_identities
+                    SET display_name = (
+                            SELECT COALESCE(
+                                NULLIF(TRIM(u.username), ''),
+                                NULLIF(TRIM(u.display_name), ''),
+                                NULLIF(TRIM(u.email), '')
+                            )
+                            FROM users u
+                            WHERE u.id = gm_identities.user_id
+                        ),
+                        entity_type = 'user',
+                        updated_at = ?
+                    WHERE user_id IS NOT NULL
+                      AND COALESCE(display_name, '') <> COALESCE((
+                            SELECT COALESCE(
+                                NULLIF(TRIM(u.username), ''),
+                                NULLIF(TRIM(u.display_name), ''),
+                                NULLIF(TRIM(u.email), '')
+                            )
+                            FROM users u
+                            WHERE u.id = gm_identities.user_id
+                        ), '')
+                    """,
+                    (gm_identity_timestamp,),
+                )
+                conn.execute(
+                    """
+                    UPDATE team_gm_history
+                    SET gm_entity_id = (
+                        SELECT g.id
+                        FROM gm_identities g
+                        WHERE lower(TRIM(g.display_name)) = lower(TRIM(team_gm_history.gm_name))
+                        ORDER BY CASE WHEN g.entity_type = 'user' THEN 0 ELSE 1 END, g.id
+                        LIMIT 1
+                    )
+                    WHERE gm_entity_id IS NULL
+                      AND NULLIF(TRIM(gm_name), '') IS NOT NULL
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO gm_identities (
+                        entity_type, user_id, display_name, created_at, updated_at
+                    )
+                    SELECT 'offline', NULL, TRIM(h.gm_name), ?, ?
+                    FROM team_gm_history h
+                    WHERE h.gm_entity_id IS NULL
+                      AND NULLIF(TRIM(h.gm_name), '') IS NOT NULL
+                    GROUP BY lower(TRIM(h.gm_name))
+                    HAVING NOT EXISTS (
+                        SELECT 1
+                        FROM gm_identities g
+                        WHERE lower(TRIM(g.display_name)) = lower(TRIM(h.gm_name))
+                    )
+                    """,
+                    (gm_identity_timestamp, gm_identity_timestamp),
+                )
+                conn.execute(
+                    """
+                    UPDATE team_gm_history
+                    SET gm_entity_id = (
+                        SELECT g.id
+                        FROM gm_identities g
+                        WHERE lower(TRIM(g.display_name)) = lower(TRIM(team_gm_history.gm_name))
+                        ORDER BY CASE WHEN g.entity_type = 'user' THEN 0 ELSE 1 END, g.id
+                        LIMIT 1
+                    )
+                    WHERE gm_entity_id IS NULL
+                      AND NULLIF(TRIM(gm_name), '') IS NOT NULL
+                    """
                 )
                 if "role" not in gm_minimum_target_cols:
                     conn.execute("ALTER TABLE gm_minimum_targets ADD COLUMN role TEXT")

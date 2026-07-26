@@ -335,6 +335,16 @@ def get_gm_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str
         return error_response(404, "team_not_found")
     return json_response(200, {"gm_history": rows})
 
+def get_gm_identities(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
+    payload = payload or {}
+    if not handler._authorize("admin.gm_history.view"):
+        return None
+    return json_response(200, {"gm_identities": handler.app.gm_identities.list()})
+
+def get_gms(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
+    payload = payload or {}
+    return json_response(200, {"gms": handler.app.gm_identities.list_profiles()})
+
 def get_admin_users(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.users.view"):
@@ -411,6 +421,8 @@ GET_REMAINING_ROUTES = (
     exact_route("/api/cartera/appeal", get_cartera_appeal),
     exact_route("/api/offseason-exceptions/preview", get_offseason_exception_preview),
     exact_route("/api/gm-history", get_gm_history),
+    exact_route("/api/gm-identities", get_gm_identities),
+    exact_route("/api/gms", get_gms, auth_exempt_reason="public_read_model"),
     exact_route("/api/admin/users", get_admin_users),
     exact_route("/api/admin/gm-option-requests", get_admin_option_requests),
     exact_route("/api/admin/coadmin-votes", get_admin_coadmin_votes),

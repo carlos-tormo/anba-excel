@@ -56,6 +56,7 @@ try:
         GMRequestRepository,
     )
     from .db.repositories.gm_minimum_targets import GMMinimumTargetRepository
+    from .db.repositories.gm_identities import GMIdentityRepository
     from .db.repositories.gm_office import GMOfficeRepository
     from .db.repositories.notifications import NotificationRepository
     from .db.repositories.outbox import OutboxRepository
@@ -257,6 +258,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         GMRequestRepository,
     )
     from db.repositories.gm_minimum_targets import GMMinimumTargetRepository
+    from db.repositories.gm_identities import GMIdentityRepository
     from db.repositories.gm_office import GMOfficeRepository
     from db.repositories.notifications import NotificationRepository
     from db.repositories.outbox import OutboxRepository
@@ -629,6 +631,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             normalize_gm_start_date=normalize_gm_start_date,
             normalize_hex_color=normalize_hex_color,
         )
+        self._gm_identity_repository = GMIdentityRepository(self, now=now_iso)
         self._team_detail_repository = TeamDetailRepository(self)
         self._owner_admin_import_repository = OwnerAdminImportRepository(self)
         self._player_repository = PlayerRepository(

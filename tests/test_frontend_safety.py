@@ -199,9 +199,12 @@ class FrontendSafetyTests(unittest.TestCase):
             with self.subTest(file=name):
                 source = web_file(name)
                 self.assertIn('id="gmsSection"', source)
+                self.assertIn('id="gmsBoard"', source)
                 self.assertIn('data-nav-view="gms"', source)
                 script_source = web_file(script)
                 self.assertIn("async function loadGms()", script_source)
+                self.assertIn("async function renderGmsSection()", script_source)
+                self.assertIn("api('/api/gms')", script_source)
                 self.assertIn("setViewMode('gms')", script_source)
 
     def test_admin_users_edit_username_and_team_gm_is_assignment_driven(self) -> None:
@@ -216,6 +219,17 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("data-admin-user-username", admin_js)
         self.assertIn("username: String(usernameInput?.value || '').trim()", admin_js)
         self.assertNotIn("async function saveCurrentTeamGm", admin_js)
+
+    def test_gm_timeline_uses_identity_dropdown_and_preserved_label(self) -> None:
+        admin_html = web_file("admin.html")
+        admin_js = web_file("admin.js")
+
+        self.assertIn("GM entity / historical name", admin_html)
+        self.assertIn("async function loadGmIdentities()", admin_js)
+        self.assertIn("api('/api/gm-identities')", admin_js)
+        self.assertIn('data-gm-field="gm_entity_id"', admin_js)
+        self.assertIn('data-gm-field="gm_name"', admin_js)
+        self.assertIn("gm_entity_id: Number(entry.gm_entity_id) > 0", admin_js)
 
 
 if __name__ == "__main__":

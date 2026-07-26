@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover
     from domain_rules import parse_bool
 
 from .base import LeagueRepository
+from .gm_identities import ensure_user_gm_identity
 
 
 def _now_iso() -> str:
@@ -56,9 +57,10 @@ class UserRepository(LeagueRepository):
                 (google_sub, email, username, display_name, avatar_url, timestamp, timestamp),
             )
             row = conn.execute("SELECT * FROM users WHERE google_sub = ?", (google_sub,)).fetchone()
-            conn.commit()
             if not row:
                 raise RuntimeError("Failed to load Google user after upsert")
+            ensure_user_gm_identity(conn, int(row["id"]), now=timestamp)
+            conn.commit()
             return dict(row)
 
     def team_codes_by_email(self, email: str) -> List[str]:
@@ -158,5 +160,6 @@ class UserRepository(LeagueRepository):
                 updates.append("username = ?")
                 values.append(clean_username)
             conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", (*values, int(user_id)))
+            ensure_user_gm_identity(conn, int(user_id), now=timestamp)
             conn.commit()
         return next((user for user in self.list() if int(user.get("id") or 0) == int(user_id)), None)

@@ -144,6 +144,7 @@ class ApplicationContainer:
         "_free_agent_agent_import_service",
         "_free_agent_appeal_service",
         "_gm_minimum_target_service",
+        "_gm_identity_repository",
         "_gm_office_service",
         "_gm_request_repository",
         "_gm_request_service",
@@ -224,6 +225,10 @@ class ApplicationContainer:
     @property
     def users(self) -> Any:
         return self._dependency("_user_repository")
+
+    @property
+    def gm_identities(self) -> Any:
+        return self._dependency("_gm_identity_repository")
 
     @property
     def press_articles(self) -> Any:

@@ -8,6 +8,7 @@ from .free_agency import FreeAgencyRepository
 from .free_agent_appeal import FreeAgentAppealRepository
 from .free_agent_agents import FreeAgentAgentRepository
 from .gm_minimum_targets import GMMinimumTargetRepository
+from .gm_identities import GMIdentityRepository
 from .gm_office import GMOfficeRepository
 from .notifications import NotificationRepository
 from .outbox import OutboxRepository
@@ -37,6 +38,7 @@ __all__ = [
     "FreeAgentAppealRepository",
     "FreeAgentAgentRepository",
     "GMMinimumTargetRepository",
+    "GMIdentityRepository",
     "GMOfficeRepository",
     "NotificationRepository",
     "OutboxRepository",
