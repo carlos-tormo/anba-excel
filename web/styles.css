@@ -8236,6 +8236,7 @@ td.salary-option--nb .salary-pct {
 .gm-timeline-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .gm-timeline-row {
@@ -8262,12 +8263,35 @@ td.salary-option--nb .salary-pct {
 .gm-timeline-table select,
 .gm-timeline-table input[type="text"],
 .gm-timeline-table input[type="date"] {
+  display: block;
   width: 100%;
   min-width: 0;
+  box-sizing: border-box;
 }
 
-.gm-timeline-table select + input[type="text"] {
-  margin-top: 0.45rem;
+.gm-timeline-table th:nth-child(1),
+.gm-timeline-table td:nth-child(1) {
+  width: 56%;
+}
+
+.gm-timeline-table th:nth-child(2),
+.gm-timeline-table td:nth-child(2) {
+  width: 20%;
+}
+
+.gm-timeline-table th:nth-child(3),
+.gm-timeline-table td:nth-child(3) {
+  width: 12%;
+}
+
+.gm-timeline-table th:nth-child(4),
+.gm-timeline-table td:nth-child(4) {
+  width: 12%;
+}
+
+.gm-timeline-gm-cell {
+  display: grid;
+  gap: 0.45rem;
 }
 
 .gm-timeline-row input[type="color"] {

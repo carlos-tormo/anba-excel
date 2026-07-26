@@ -12225,7 +12225,7 @@ function renderGmTimelineRows() {
   }
   container.innerHTML = entries.map((entry, idx) => `
     <tr class="gm-timeline-row" data-gm-row="${idx}">
-      <td>
+      <td class="gm-timeline-gm-cell">
         <select data-gm-field="gm_entity_id" aria-label="GM entity">
           ${gmIdentityOptions(entry.gm_entity_id)}
         </select>
