@@ -195,16 +195,22 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('id="waitingListDiscordInput"', admin_source)
 
     def test_gms_placeholder_is_wired_in_guest_and_admin(self) -> None:
+        gms_source = web_file("gms.js")
+        self.assertIn("GMs activos", gms_source)
+        self.assertIn("GMs inactivos", gms_source)
+        self.assertIn("Conferencia Este", gms_source)
+        self.assertIn("Conferencia Oeste", gms_source)
+        self.assertIn("const PAGE_SIZE = 20", gms_source)
         for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
             with self.subTest(file=name):
                 source = web_file(name)
                 self.assertIn('id="gmsSection"', source)
                 self.assertIn('id="gmsBoard"', source)
+                self.assertIn("/gms.js", source)
                 self.assertIn('data-nav-view="gms"', source)
                 script_source = web_file(script)
                 self.assertIn("async function loadGms()", script_source)
-                self.assertIn("async function renderGmsSection()", script_source)
-                self.assertIn("api('/api/gms')", script_source)
+                self.assertIn("window.AnbaGms.load({ api })", script_source)
                 self.assertIn("setViewMode('gms')", script_source)
 
     def test_admin_users_edit_username_and_team_gm_is_assignment_driven(self) -> None:

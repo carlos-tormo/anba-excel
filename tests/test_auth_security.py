@@ -358,6 +358,54 @@ class AuthSecurityTests(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
+    def test_gm_directory_splits_active_by_conference_and_inactive_by_history(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="anba-auth-gm-directory-", suffix=".db")
+        os.close(fd)
+        try:
+            with connect_test_db(path) as conn:
+                conn.row_factory = sqlite3.Row
+                create_schema(conn)
+                insert_team(conn, "ATL", "Atlanta Hawks")
+                insert_team(conn, "LAL", "Los Angeles Lakers")
+                conn.commit()
+
+            db = LeagueDB(path)
+            db.ensure_auth_schema()
+            user = db.upsert_google_user("google-active-gm", "active@example.com", "Active GM", None)
+            db.replace_user_team_assignments(user["id"], ["ATL"], username="Active GM")
+            active_identity = next(
+                row for row in db._gm_identity_repository.list()
+                if int(row.get("user_id") or 0) == int(user["id"])
+            )
+            inactive_identity = db._gm_identity_repository.create_offline("Inactive GM")
+
+            db.replace_gm_history(
+                "ATL",
+                [{"gm_entity_id": active_identity["id"], "start_date": "2022-07-01", "color": "#AA0000"}],
+            )
+            db.replace_gm_history(
+                "LAL",
+                [{"gm_entity_id": inactive_identity["id"], "start_date": "2018-07-01", "color": "#5500AA"}],
+            )
+
+            directory = db._gm_identity_repository.directory()
+            east = directory["active_gms"]["east"]
+            west = directory["active_gms"]["west"]
+            inactive = directory["inactive_gms"]
+
+            self.assertEqual("ATL", east[0]["team_code"])
+            self.assertEqual("Active GM", east[0]["gm_name"])
+            self.assertEqual("2022", east[0]["since_year"])
+            self.assertEqual([], west)
+            inactive_row = next(row for row in inactive if row["gm_name"] == "Inactive GM")
+            self.assertEqual("2018", inactive_row["years_active"])
+            self.assertEqual(["LAL"], inactive_row["teams"])
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

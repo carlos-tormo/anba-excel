@@ -472,8 +472,13 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertEqual([{"id": 4, "display_name": "Offline GM"}], response.payload["gm_identities"])
 
-    def test_gms_get_route_returns_public_profiles(self):
-        gm_identities = SimpleNamespace(list_profiles=Mock(return_value=[{"id": 4, "display_name": "Offline GM"}]))
+    def test_gms_get_route_returns_public_directory(self):
+        directory = {
+            "gms": [{"id": 4, "display_name": "Offline GM"}],
+            "active_gms": {"east": [], "west": [], "other": []},
+            "inactive_gms": [{"gm_id": 4, "gm_name": "Offline GM"}],
+        }
+        gm_identities = SimpleNamespace(directory=Mock(return_value=directory))
         handler = SimpleNamespace(
             _send_route_response=Mock(),
             app=SimpleNamespace(gm_identities=gm_identities),
@@ -482,10 +487,10 @@ class RouteRegistryTests(unittest.TestCase):
         matched = dispatch_routes(handler, urlparse("/api/gms"), GET_ROUTES)
 
         self.assertTrue(matched)
-        gm_identities.list_profiles.assert_called_once_with()
+        gm_identities.directory.assert_called_once_with()
         response = handler._send_route_response.call_args.args[0]
         self.assertEqual(200, response.status)
-        self.assertEqual([{"id": 4, "display_name": "Offline GM"}], response.payload["gms"])
+        self.assertEqual(directory, response.payload)
 
     def test_team_detail_get_route_returns_framework_neutral_response(self):
         team_detail = SimpleNamespace(get=Mock(return_value={"team_code": "ATL", "players": []}))

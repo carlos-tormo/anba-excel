@@ -7,6 +7,15 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .base import LeagueRepository
 
+EASTERN_CONFERENCE_TEAM_CODES = {
+    "ATL", "BOS", "BKN", "CHA", "CHI", "CLE", "DET", "IND", "MIA", "MIL",
+    "NYK", "ORL", "PHI", "TOR", "WAS",
+}
+WESTERN_CONFERENCE_TEAM_CODES = {
+    "DAL", "DEN", "GSW", "HOU", "LAC", "LAL", "MEM", "MIN", "NOP", "OKC",
+    "PHX", "POR", "SAC", "SAS", "UTA",
+}
+
 
 def gm_display_name(row: Any) -> str:
     username = str(row["username"] or "").strip() if "username" in row.keys() else ""
@@ -17,6 +26,25 @@ def gm_display_name(row: Any) -> str:
 
 def clean_gm_name(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def team_conference(team_code: Any) -> str:
+    code = str(team_code or "").strip().upper()
+    if code in EASTERN_CONFERENCE_TEAM_CODES:
+        return "east"
+    if code in WESTERN_CONFERENCE_TEAM_CODES:
+        return "west"
+    return "other"
+
+
+def active_years_label(start_date: Any, end_date: Any = None) -> str:
+    start = str(start_date or "").strip()[:4]
+    end = str(end_date or "").strip()[:4]
+    if not start:
+        return end or ""
+    if not end or end == start:
+        return start
+    return f"{start}-{end}"
 
 
 def ensure_user_gm_identity(conn: Any, user_id: int, *, now: str) -> Optional[int]:
@@ -126,6 +154,10 @@ class GMIdentityRepository(LeagueRepository):
         return next(row for row in self.list() if int(row["id"]) == int(gm_id))
 
     def list_profiles(self) -> List[Dict[str, Any]]:
+        payload = self.directory()
+        return payload["gms"]
+
+    def directory(self) -> Dict[str, Any]:
         with self.db.connect() as conn:
             timestamp = self._now()
             for row in conn.execute("SELECT id FROM users ORDER BY id").fetchall():
@@ -167,4 +199,74 @@ class GMIdentityRepository(LeagueRepository):
             for identity in identities:
                 identity["has_site_user"] = bool(identity.get("has_site_user"))
                 identity["history"] = histories.get(int(identity["id"]), [])
-            return identities
+            active_rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT g.id AS gm_id, g.display_name AS gm_name, g.entity_type,
+                           u.id AS user_id, t.id AS team_id, t.code AS team_code, t.name AS team_name,
+                           (
+                               SELECT h.start_date
+                               FROM team_gm_history h
+                               WHERE h.team_id = t.id AND h.gm_entity_id = g.id
+                               ORDER BY h.start_date DESC, h.row_order DESC, h.id DESC
+                               LIMIT 1
+                           ) AS since_date
+                    FROM user_team_assignments a
+                    JOIN users u ON u.id = a.user_id
+                    JOIN gm_identities g ON g.user_id = u.id
+                    JOIN teams t ON t.id = a.team_id
+                    ORDER BY t.code, lower(g.display_name), g.id
+                    """
+                ).fetchall()
+            ]
+            active_gm_ids = {int(row["gm_id"]) for row in active_rows}
+            active_by_conference: Dict[str, List[Dict[str, Any]]] = {"east": [], "west": [], "other": []}
+            for row in active_rows:
+                entry = {
+                    "gm_id": int(row["gm_id"]),
+                    "gm_name": row["gm_name"],
+                    "entity_type": row["entity_type"],
+                    "has_site_user": True,
+                    "team_id": int(row["team_id"]),
+                    "team_code": row["team_code"],
+                    "team_name": row["team_name"],
+                    "conference": team_conference(row["team_code"]),
+                    "since_date": row["since_date"],
+                    "since_year": str(row["since_date"] or "").strip()[:4],
+                }
+                active_by_conference[entry["conference"]].append(entry)
+
+            inactive_gms: List[Dict[str, Any]] = []
+            for identity in identities:
+                gm_id = int(identity["id"])
+                history = histories.get(gm_id, [])
+                if gm_id in active_gm_ids or not history:
+                    continue
+                years = [
+                    str(row.get("start_date") or "").strip()[:4]
+                    for row in history
+                    if str(row.get("start_date") or "").strip()[:4]
+                ]
+                teams = sorted({
+                    str(row.get("team_code") or "").strip().upper()
+                    for row in history
+                    if str(row.get("team_code") or "").strip()
+                })
+                inactive_gms.append(
+                    {
+                        "gm_id": gm_id,
+                        "gm_name": identity["display_name"],
+                        "entity_type": identity["entity_type"],
+                        "has_site_user": bool(identity.get("has_site_user")),
+                        "years_active": active_years_label(min(years) if years else "", max(years) if years else ""),
+                        "teams": teams,
+                        "history": history,
+                    }
+                )
+            inactive_gms.sort(key=lambda row: (str(row.get("gm_name") or "").casefold(), int(row.get("gm_id") or 0)))
+            return {
+                "gms": identities,
+                "active_gms": active_by_conference,
+                "inactive_gms": inactive_gms,
+            }

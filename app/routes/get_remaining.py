@@ -343,7 +343,7 @@ def get_gm_identities(handler: Any, parsed: ParseResult, payload: Optional[Dict[
 
 def get_gms(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
-    return json_response(200, {"gms": handler.app.gm_identities.list_profiles()})
+    return json_response(200, handler.app.gm_identities.directory())
 
 def get_admin_users(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}

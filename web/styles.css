@@ -8343,12 +8343,12 @@ td.salary-option--nb .salary-pct {
 
 .gms-board {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 1rem;
+  gap: 1.25rem;
   margin-top: 1rem;
 }
 
-.gm-profile-card {
+.gms-section-block,
+.gms-panel {
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--panel);
@@ -8356,32 +8356,91 @@ td.salary-option--nb .salary-pct {
   padding: 1rem;
 }
 
-.gm-profile-card h3 {
-  margin: 0;
+.gms-section-block h2,
+.gms-panel h3 {
+  margin: 0 0 0.8rem;
 }
 
-.gm-profile-meta {
-  color: var(--muted);
-  font-size: 0.86rem;
-  margin-top: 0.25rem;
-}
-
-.gm-profile-history {
+.gms-conference-grid {
   display: grid;
-  gap: 0.45rem;
-  list-style: none;
-  margin: 0.85rem 0 0;
-  padding: 0;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
 }
 
-.gm-profile-history li {
-  border-left: 4px solid var(--team-primary);
-  padding-left: 0.65rem;
+.gms-panel {
+  box-shadow: none;
 }
 
-.gm-profile-history strong,
-.gm-profile-history span {
-  display: block;
+.gms-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.gms-table th,
+.gms-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 0.65rem 0.6rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.gms-table th {
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gms-team-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.gms-team-logo-wrap {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  overflow: hidden;
+}
+
+.gms-team-logo-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.gms-team-logo-wrap span {
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.gms-team-code {
+  font-weight: 900;
+}
+
+.gms-inactive-details summary {
+  cursor: pointer;
+  font-size: 1.1rem;
+  font-weight: 900;
+}
+
+.gms-inactive-table {
+  margin-top: 1rem;
+}
+
+.gms-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  color: var(--muted);
+  font-weight: 800;
 }
 .team-apron-cap-toggle {
   display: inline-flex;
