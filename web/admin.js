@@ -4782,6 +4782,7 @@ function setViewMode(mode) {
   toggleSection('draftAssetsSection', !showTeam);
   toggleSection('playerRightsSection', !showTeam);
   toggleSection('importantFiguresSection', !showTeam);
+  document.body.classList.toggle('gms-view-active', showGms);
   syncAdminTabs();
   syncTrackerTabs();
   syncTeamTabs();

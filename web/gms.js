@@ -14,10 +14,13 @@
   });
   const clear = Dom.clear || ((node) => node && node.replaceChildren());
   const PAGE_SIZE = 20;
+  const INACTIVE_STATE_KEY = 'anba:gms:inactive-open';
   const state = {
     api: null,
     inactivePage: 1,
     payload: null,
+    query: '',
+    filter: 'all',
   };
 
   function text(value) {
@@ -36,6 +39,10 @@
     const [year, month, day] = raw.split('-');
     if (!year || !month || !day) return raw;
     return `${day}/${month}/${year}`;
+  }
+
+  function normalized(value) {
+    return text(value).trim().toLowerCase();
   }
 
   function teamLogoPath(code) {
@@ -85,9 +92,105 @@
     return Array.isArray(payload?.active_gms?.[key]) ? payload.active_gms[key] : [];
   }
 
+  function matchesSearch(row) {
+    const query = normalized(state.query);
+    if (!query) return true;
+    const haystack = [
+      row.gm_name,
+      row.display_name,
+      row.team_code,
+      row.team_name,
+      row.years_active,
+      ...(Array.isArray(row.teams) ? row.teams : []),
+    ].map(normalized).join(' ');
+    return haystack.includes(query);
+  }
+
+  function activeRowsFor(key) {
+    if (state.filter === 'inactive') return [];
+    if (state.filter === 'east' && key !== 'east') return [];
+    if (state.filter === 'west' && key !== 'west') return [];
+    return activeRows(state.payload, key).filter(matchesSearch);
+  }
+
+  function inactiveRows() {
+    if (!['all', 'inactive'].includes(state.filter)) return [];
+    return (Array.isArray(state.payload?.inactive_gms) ? state.payload.inactive_gms : []).filter(matchesSearch);
+  }
+
+  function allInactiveCount() {
+    return Array.isArray(state.payload?.inactive_gms) ? state.payload.inactive_gms.length : 0;
+  }
+
+  function visibleActiveCount() {
+    return ['east', 'west', 'other'].reduce((total, key) => total + activeRowsFor(key).length, 0);
+  }
+
+  function isInactiveOpen() {
+    try {
+      return global.localStorage?.getItem(INACTIVE_STATE_KEY) === 'open';
+    } catch {
+      return false;
+    }
+  }
+
+  function rememberInactiveOpen(open) {
+    try {
+      global.localStorage?.setItem(INACTIVE_STATE_KEY, open ? 'open' : 'closed');
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  function renderToolbar(parent) {
+    const toolbar = appendElement(parent, 'div', { className: 'gms-toolbar' });
+    const searchWrap = appendElement(toolbar, 'label', { className: 'gms-search' });
+    appendElement(searchWrap, 'span', { text: 'Buscar GM' });
+    const input = appendElement(searchWrap, 'input', {
+      attrs: {
+        type: 'search',
+        placeholder: 'Buscar GM...',
+        value: state.query,
+        autocomplete: 'off',
+      },
+    });
+    input.addEventListener('input', () => {
+      state.query = input.value;
+      state.inactivePage = 1;
+      render(state.payload);
+      const next = document.querySelector('.gms-search input');
+      if (next) {
+        next.focus();
+        const position = next.value.length;
+        next.setSelectionRange(position, position);
+      }
+    });
+    const chips = appendElement(toolbar, 'div', { className: 'gms-filter-chips', attrs: { 'aria-label': 'Filtros de GMs' } });
+    [
+      ['all', 'Todos'],
+      ['active', 'Activos'],
+      ['inactive', 'Inactivos'],
+      ['east', 'Este'],
+      ['west', 'Oeste'],
+    ].forEach(([value, label]) => {
+      const button = appendElement(chips, 'button', {
+        text: label,
+        className: value === state.filter ? 'is-active' : '',
+        attrs: { type: 'button' },
+      });
+      button.addEventListener('click', () => {
+        state.filter = value;
+        state.inactivePage = 1;
+        render(state.payload);
+      });
+    });
+  }
+
   function renderActiveTable(parent, title, rows) {
     const section = appendElement(parent, 'section', { className: 'gms-panel' });
-    appendElement(section, 'h3', { text: title });
+    const panelHead = appendElement(section, 'div', { className: 'gms-panel-head' });
+    appendElement(panelHead, 'h3', { text: title });
+    appendElement(panelHead, 'span', { text: `${rows.length} GMs`, className: 'gms-count-pill' });
     const wrap = appendElement(section, 'div', { className: 'table-wrap gms-table-wrap' });
     const table = appendElement(wrap, 'table', { className: 'gms-table' });
     const thead = appendElement(table, 'thead');
@@ -100,16 +203,12 @@
       return;
     }
     rows.forEach((row) => {
-      const tr = appendElement(tbody, 'tr');
+      const tr = appendElement(tbody, 'tr', { className: 'gms-data-row' });
       const teamCell = appendElement(tr, 'td', { className: 'gms-team-cell' });
       appendTeamLogo(teamCell, row.team_code, row.team_name);
       appendElement(tr, 'td', { text: row.gm_name || '—' });
-      appendElement(tr, 'td', { text: row.since_year ? `Desde ${row.since_year}` : '—' });
+      appendElement(tr, 'td', { text: row.since_year || '—' });
     });
-  }
-
-  function inactiveRows() {
-    return Array.isArray(state.payload?.inactive_gms) ? state.payload.inactive_gms : [];
   }
 
   function renderInactiveTable(container) {
@@ -130,10 +229,24 @@
       appendElement(tr, 'td', { text: 'Sin GMs inactivos todavía.', attrs: { colspan: '3' } });
     } else {
       pageRows.forEach((row) => {
-        const tr = appendElement(tbody, 'tr');
+        const tr = appendElement(tbody, 'tr', { className: 'gms-data-row' });
         appendElement(tr, 'td', { text: row.gm_name || '—' });
         appendElement(tr, 'td', { text: row.years_active || '—' });
         appendElement(tr, 'td', { text: Array.isArray(row.teams) && row.teams.length ? row.teams.join(', ') : '—' });
+      });
+    }
+    const cards = appendElement(container, 'div', { className: 'gms-inactive-cards' });
+    if (!pageRows.length) {
+      appendElement(cards, 'div', { text: 'Sin GMs inactivos todavía.', className: 'gms-empty-card' });
+    } else {
+      pageRows.forEach((row) => {
+        const card = appendElement(cards, 'article', { className: 'gms-inactive-card' });
+        appendElement(card, 'h3', { text: row.gm_name || '—' });
+        const meta = appendElement(card, 'dl');
+        appendElement(meta, 'dt', { text: 'Años' });
+        appendElement(meta, 'dd', { text: row.years_active || '—' });
+        appendElement(meta, 'dt', { text: 'Equipos' });
+        appendElement(meta, 'dd', { text: Array.isArray(row.teams) && row.teams.length ? row.teams.join(', ') : '—' });
       });
     }
     const pager = appendElement(container, 'div', { className: 'gms-pager' });
@@ -156,18 +269,32 @@
     const board = boardNode();
     if (!board) return;
     clear(board);
-    const activeSection = appendElement(board, 'section', { className: 'gms-section-block' });
-    appendElement(activeSection, 'h2', { text: 'GMs activos' });
-    const activeGrid = appendElement(activeSection, 'div', { className: 'gms-conference-grid' });
-    renderActiveTable(activeGrid, 'Conferencia Este', activeRows(payload, 'east'));
-    renderActiveTable(activeGrid, 'Conferencia Oeste', activeRows(payload, 'west'));
-    const otherRows = activeRows(payload, 'other');
-    if (otherRows.length) renderActiveTable(activeGrid, 'Otros equipos', otherRows);
+    renderToolbar(board);
+    if (state.filter !== 'inactive') {
+      const activeSection = appendElement(board, 'section', { className: 'gms-section-block' });
+      const activeHead = appendElement(activeSection, 'div', { className: 'gms-section-title-row gms-section-title-row--active' });
+      appendElement(activeHead, 'span', { text: '●', className: 'gms-status-dot' });
+      appendElement(activeHead, 'h2', { text: 'GMs activos' });
+      appendElement(activeHead, 'span', { text: `${visibleActiveCount()} activos`, className: 'gms-section-badge' });
+      const activeGrid = appendElement(activeSection, 'div', { className: 'gms-conference-grid' });
+      renderActiveTable(activeGrid, 'Conferencia Este', activeRowsFor('east'));
+      renderActiveTable(activeGrid, 'Conferencia Oeste', activeRowsFor('west'));
+      const otherRows = activeRowsFor('other');
+      if (otherRows.length) renderActiveTable(activeGrid, 'Otros equipos', otherRows);
+    }
 
-    const inactiveDetails = appendElement(board, 'details', { className: 'gms-section-block gms-inactive-details' });
-    appendElement(inactiveDetails, 'summary', { text: `GMs inactivos (${inactiveRows().length})` });
-    const inactiveContainer = appendElement(inactiveDetails, 'div', { className: 'gms-inactive-table' });
-    renderInactiveTable(inactiveContainer);
+    if (['all', 'inactive'].includes(state.filter)) {
+      const inactiveDetails = appendElement(board, 'details', { className: 'gms-section-block gms-inactive-details' });
+      inactiveDetails.open = state.filter === 'inactive' || isInactiveOpen();
+      const summary = appendElement(inactiveDetails, 'summary');
+      const summaryInner = appendElement(summary, 'span', { className: 'gms-summary-inner' });
+      appendElement(summaryInner, 'span', { text: '○', className: 'gms-status-dot gms-status-dot--inactive' });
+      appendElement(summaryInner, 'span', { text: 'GMs inactivos', className: 'gms-summary-title' });
+      appendElement(summaryInner, 'span', { text: `${inactiveRows().length} visibles · ${allInactiveCount()} total`, className: 'gms-section-badge' });
+      inactiveDetails.addEventListener('toggle', () => rememberInactiveOpen(inactiveDetails.open));
+      const inactiveContainer = appendElement(inactiveDetails, 'div', { className: 'gms-inactive-table' });
+      renderInactiveTable(inactiveContainer);
+    }
   }
 
   async function load(options = {}) {

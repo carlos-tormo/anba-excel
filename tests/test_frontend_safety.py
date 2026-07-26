@@ -201,6 +201,10 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("Conferencia Este", gms_source)
         self.assertIn("Conferencia Oeste", gms_source)
         self.assertIn("const PAGE_SIZE = 20", gms_source)
+        self.assertIn("Buscar GM", gms_source)
+        self.assertIn("anba:gms:inactive-open", gms_source)
+        self.assertIn("gms-filter-chips", gms_source)
+        self.assertIn("gms-inactive-card", gms_source)
         for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
             with self.subTest(file=name):
                 source = web_file(name)

@@ -4882,6 +4882,7 @@ function setViewMode(mode) {
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
   if (walletSection) walletSection.classList.toggle('section-hidden', !showWallet);
   if (coadminVotesSection) coadminVotesSection.classList.toggle('section-hidden', !showCoadminVotes);
+  document.body.classList.toggle('gms-view-active', showGms);
   syncTrackerTabs();
   syncTeamTabs();
   syncMainNavState();
