@@ -132,6 +132,66 @@ class MigrationBackupDisciplineTests(unittest.TestCase):
         self.assertIn("idx_outbox_events_delivery_available", indexes)
         self.assertEqual(timestamp, row["available_at"])
 
+    def test_legacy_gm_history_table_is_upgraded_before_entity_index_creation(self) -> None:
+        timestamp = now_iso()
+        conn = connect_test_db(self.db_path)
+        try:
+            team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS team_gm_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                    row_order INTEGER NOT NULL,
+                    gm_name TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    color TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO team_gm_history (
+                    team_id, row_order, gm_name, start_date, color, created_at, updated_at
+                ) VALUES (?, 1, 'Legacy GM', '2018-07-01', '#AA0000', ?, ?)
+                """,
+                (team_id, timestamp, timestamp),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.db.ensure_auth_schema()
+
+        conn = connect_test_db(self.db_path)
+        try:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(team_gm_history)").fetchall()
+            }
+            indexes = {
+                row["name"]
+                for row in conn.execute("PRAGMA index_list(team_gm_history)").fetchall()
+            }
+            row = conn.execute(
+                """
+                SELECT h.gm_entity_id, g.entity_type, g.display_name
+                FROM team_gm_history h
+                LEFT JOIN gm_identities g ON g.id = h.gm_entity_id
+                WHERE h.gm_name = 'Legacy GM'
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIn("gm_entity_id", columns)
+        self.assertIn("idx_team_gm_history_entity", indexes)
+        self.assertIsNotNone(row["gm_entity_id"])
+        self.assertEqual("offline", row["entity_type"])
+        self.assertEqual("Legacy GM", row["display_name"])
+
     def test_legacy_trade_archive_movements_gain_optional_gm_name(self) -> None:
         conn = connect_test_db(self.db_path)
         try:
