@@ -191,8 +191,8 @@
     const panelHead = appendElement(section, 'div', { className: 'gms-panel-head' });
     appendElement(panelHead, 'h3', { text: title });
     appendElement(panelHead, 'span', { text: `${rows.length} GMs`, className: 'gms-count-pill' });
-    const wrap = appendElement(section, 'div', { className: 'table-wrap gms-table-wrap' });
-    const table = appendElement(wrap, 'table', { className: 'gms-table' });
+    const wrap = appendElement(section, 'div', { className: 'table-wrap app-table-wrap gms-table-wrap' });
+    const table = appendElement(wrap, 'table', { className: 'app-table app-table--interactive app-table--mobile-wrap gms-table' });
     const thead = appendElement(table, 'thead');
     const header = appendElement(thead, 'tr');
     ['Equipo', 'GM', 'Desde'].forEach((label) => appendElement(header, 'th', { text: label }));
@@ -218,8 +218,8 @@
     state.inactivePage = Math.max(1, Math.min(totalPages, state.inactivePage));
     const start = (state.inactivePage - 1) * PAGE_SIZE;
     const pageRows = rows.slice(start, start + PAGE_SIZE);
-    const wrap = appendElement(container, 'div', { className: 'table-wrap gms-table-wrap' });
-    const table = appendElement(wrap, 'table', { className: 'gms-table' });
+    const wrap = appendElement(container, 'div', { className: 'table-wrap app-table-wrap gms-table-wrap' });
+    const table = appendElement(wrap, 'table', { className: 'app-table app-table--interactive app-table--mobile-wrap gms-table' });
     const thead = appendElement(table, 'thead');
     const header = appendElement(thead, 'tr');
     ['GM', 'Years active', 'Teams'].forEach((label) => appendElement(header, 'th', { text: label }));

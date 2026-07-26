@@ -268,8 +268,8 @@
   function renderRowsForSeason(container, season) {
     const article = el(container, 'article', { className: 'draft-order-round trade-archive-season' });
     el(article, 'h3', { text: `Temporada ${formatSeasonLabel(season.season_year)}` });
-    const wrap = el(article, 'div', { className: 'table-wrap draft-order-table-wrap' });
-    const table = el(wrap, 'table', { className: 'draft-order-table trade-archive-table' });
+    const wrap = el(article, 'div', { className: 'table-wrap app-table-wrap draft-order-table-wrap' });
+    const table = el(wrap, 'table', { className: 'app-table app-table--interactive app-table--mobile-wrap draft-order-table trade-archive-table' });
     const thead = el(table, 'thead');
     const headRow = el(thead, 'tr');
     ['Trade ID', 'Fecha', 'Equipos', 'Activos movidos'].forEach((label) => el(headRow, 'th', { text: label }));

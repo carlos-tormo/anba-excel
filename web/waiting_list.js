@@ -99,8 +99,8 @@
       board.appendChild(emptyMessage('Todavía no hay usuarios en lista de espera.'));
       return;
     }
-    const wrap = appendElement(board, 'div', { className: 'draft-order-table-wrap waiting-list-table-wrap' });
-    const table = appendElement(wrap, 'table', { className: 'draft-order-table waiting-list-table' });
+    const wrap = appendElement(board, 'div', { className: 'app-table-wrap draft-order-table-wrap waiting-list-table-wrap' });
+    const table = appendElement(wrap, 'table', { className: 'app-table app-table--interactive app-table--mobile-wrap draft-order-table waiting-list-table' });
     const thead = appendElement(table, 'thead');
     const headRow = appendElement(thead, 'tr');
     ['Plaza', 'Nombre', 'Fecha de inscripción'].forEach((label) => appendElement(headRow, 'th', { text: label }));

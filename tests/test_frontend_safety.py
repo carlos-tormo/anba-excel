@@ -149,6 +149,44 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('#waitingListHomeBtn::before { content: "☷"; }', styles)
         self.assertIn('#gmsHomeBtn::before { content: "♟"; }', styles)
 
+    def test_global_typography_hierarchy_primitives_exist(self) -> None:
+        styles = web_file("styles.css")
+
+        self.assertIn(".page-title-wrap h1", styles)
+        self.assertIn("font-size: clamp(2rem, 3vw, 2.25rem);", styles)
+        self.assertIn(".section-head h2", styles)
+        self.assertIn("font-size: clamp(1.5rem, 2.25vw, 1.75rem);", styles)
+        self.assertIn(".section-subtitle", styles)
+        self.assertIn("font-size: 0.95rem;", styles)
+        self.assertIn(".admin-tool-card h3", styles)
+        self.assertIn("font-size: clamp(1.125rem, 1.45vw, 1.25rem);", styles)
+
+    def test_shared_app_table_primitives_are_opt_in_and_skip_roster_tables(self) -> None:
+        styles = web_file("styles.css")
+
+        self.assertIn(".app-table-wrap", styles)
+        self.assertIn(".app-table {", styles)
+        self.assertIn(".app-table thead th", styles)
+        self.assertIn(".app-table tbody tr:nth-child(even) td", styles)
+        self.assertIn(".app-table--interactive tbody tr:hover td", styles)
+        self.assertIn(".app-table--mobile-wrap th", styles)
+        self.assertIn("@media (hover: none)", styles)
+
+        for name in ("index.html", "admin.html"):
+            source = web_file(name)
+            self.assertIn('id="trackerTable" class="app-table app-table--interactive app-table--numeric app-table--mobile-wrap"', source)
+            self.assertIn('id="trackerEconomyTable" class="app-table app-table--interactive app-table--numeric app-table--mobile-wrap"', source)
+            for table_id in ("playersTable", "deadContractsTable", "exceptionsTable", "playerRightsTable"):
+                marker = f'id="{table_id}"'
+                position = source.index(marker)
+                table_tag_end = source.index(">", position)
+                self.assertNotIn("app-table", source[position:table_tag_end])
+
+        self.assertIn("app-table app-table--interactive app-table--mobile-wrap draft-order-table", web_file("guest.js"))
+        self.assertIn("app-table app-table--interactive app-table--mobile-wrap draft-order-table waiting-list-table", web_file("waiting_list.js"))
+        self.assertIn("app-table app-table--interactive app-table--mobile-wrap draft-order-table trade-archive-table", web_file("trades_archive.js"))
+        self.assertIn("app-table app-table--interactive app-table--mobile-wrap gms-table", web_file("gms.js"))
+
     def test_trade_archive_admin_importer_exposes_json_file_and_error_ui(self) -> None:
         source = web_file("admin.html")
 

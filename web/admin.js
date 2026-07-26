@@ -4879,8 +4879,8 @@ function renderCoadminVoteAverages(vote) {
   const rows = Array.isArray(vote.averages) ? vote.averages : [];
   if (!rows.length) return '<p class="muted">Todavía no hay equipos para mostrar.</p>';
   return `
-    <div class="table-wrap coadmin-vote-results-wrap">
-      <table class="coadmin-vote-results-table">
+    <div class="table-wrap app-table-wrap coadmin-vote-results-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap coadmin-vote-results-table">
         <thead>
           <tr>
             <th>Equipo</th>
@@ -6622,8 +6622,8 @@ function renderAdminFreeAgentPromises(promises = []) {
   }
   board.className = 'admin-free-agent-promises-board';
   board.innerHTML = `
-    <div class="admin-promises-table-wrap">
-      <table class="admin-promises-table">
+    <div class="app-table-wrap admin-promises-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap admin-promises-table">
         <thead>
           <tr>
             <th>Jugador</th>
@@ -6887,8 +6887,8 @@ function renderGmMinimumTargetsBoard() {
     `;
   }).join('');
   board.innerHTML = `
-    <div class="table-scroll">
-      <table class="gm-minimum-targets-table">
+    <div class="table-wrap app-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap gm-minimum-targets-table">
         <thead>
           <tr>
             <th>GM</th>
@@ -7035,8 +7035,8 @@ function renderGmMinimumTargetOrderBoard() {
       ${filterHtml}
     </div>
     ${visibleScores.length ? `
-      <div class="table-scroll">
-      <table class="gm-minimum-targets-table gm-minimum-target-order-table">
+      <div class="table-wrap app-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap gm-minimum-targets-table gm-minimum-target-order-table">
         <thead>
           <tr>
             <th>#</th>
@@ -8086,8 +8086,8 @@ function renderDraftPickLedger(showAssetIds = true) {
           Hay ${escapeHtml(issueCount)} incidencia(s) de tracking para revisar.
         </div>
       ` : ''}
-      <div class="table-wrap draft-pick-ledger-table-wrap">
-        <table class="draft-pick-ledger-table">
+      <div class="table-wrap app-table-wrap draft-pick-ledger-table-wrap">
+        <table class="app-table app-table--interactive app-table--mobile-wrap draft-pick-ledger-table">
           <thead>
             <tr>
               <th>Equipo original</th>
@@ -12857,8 +12857,8 @@ function renderEconomyImportPreview(preview) {
   const records = preview?.records || [];
   if (confirm) confirm.disabled = Boolean(errors.length) || !records.length;
   const summaryHtml = summary.length ? `
-    <div class="table-wrap economy-import-table-wrap">
-      <table class="economy-import-table">
+    <div class="table-wrap app-table-wrap economy-import-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap economy-import-table">
         <thead>
           <tr>
             <th>Temporada</th>
@@ -13025,8 +13025,8 @@ function renderOwnerOfficeImportPreview(preview) {
   const records = preview?.records || [];
   if (confirm) confirm.disabled = Boolean(errors.length) || !records.length;
   const summaryHtml = summary.length ? `
-    <div class="table-wrap economy-import-table-wrap">
-      <table class="economy-import-table">
+    <div class="table-wrap app-table-wrap economy-import-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap economy-import-table">
         <thead>
           <tr>
             <th>Temporada despacho</th>
@@ -13218,8 +13218,8 @@ function renderFreeAgentAgentImportPreview(preview) {
   const newAgents = preview?.new_agents || [];
   if (confirm) confirm.disabled = Boolean(errors.length) || !records.length;
   const rowsHtml = records.length ? `
-    <div class="table-wrap economy-import-table-wrap">
-      <table class="economy-import-table">
+    <div class="table-wrap app-table-wrap economy-import-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap economy-import-table">
         <thead>
           <tr>
             <th>Línea</th>
@@ -13396,8 +13396,8 @@ function renderFreeAgentAppealImportPreview(result) {
     }
   });
   const rowsHtml = rankings.length ? `
-    <div class="table-wrap">
-      <table class="economy-import-table">
+    <div class="table-wrap app-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap economy-import-table">
         <thead>
           <tr>
             <th rowspan="2">Rank</th>

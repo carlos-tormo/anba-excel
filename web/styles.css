@@ -136,11 +136,14 @@ h1 {
 .page-title-wrap h1 {
   text-transform: uppercase;
   letter-spacing: 0.01em;
+  font-size: clamp(2rem, 3vw, 2.25rem);
+  line-height: 1.02;
+  font-weight: 900;
 }
 .page-subtitle {
-  font-size: 0.88rem;
-  font-weight: 600;
-  opacity: 0.94;
+  font-size: 1rem;
+  font-weight: 700;
+  opacity: 0.86;
   text-align: center;
 }
 .mobile-icon-btn {
@@ -4897,6 +4900,35 @@ h1 {
   gap: 10px;
   flex-wrap: wrap;
 }
+
+.section-head h2 {
+  margin: 0;
+  color: #111827;
+  font-size: clamp(1.5rem, 2.25vw, 1.75rem);
+  line-height: 1.08;
+  font-weight: 900;
+  letter-spacing: -0.035em;
+}
+
+.section-head h3,
+.admin-tool-card h3,
+.draft-order-round h3,
+.trade-archive-team-card h3,
+.owner-office-panel h3,
+.gm-office-panel h3,
+.settings-block-head h3,
+.figures-group-head h3,
+.roster-count-head h3,
+.league-player-detail-card h3,
+.wallet-clients-head h3,
+.coadmin-vote-head h3 {
+  color: #111827;
+  font-size: clamp(1.125rem, 1.45vw, 1.25rem);
+  line-height: 1.14;
+  font-weight: 900;
+  letter-spacing: -0.025em;
+}
+
 .roster-title-wrap {
   display: flex;
   align-items: baseline;
@@ -4939,10 +4971,11 @@ h1 {
   font-weight: 800;
 }
 .section-subtitle {
-  margin-top: 4px;
-  font-size: 0.82rem;
+  margin-top: 6px;
+  font-size: 0.95rem;
   color: #52606d;
-  font-weight: 700;
+  font-weight: 650;
+  line-height: 1.45;
 }
 .roster-toolbar {
   display: flex;
@@ -5570,6 +5603,89 @@ th {
   letter-spacing: 0.02em;
   border-bottom: 2px solid rgba(var(--team-primary-rgb), 0.95);
   color: #f8fafc;
+}
+.app-table-wrap {
+  overflow: auto;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.055);
+}
+.app-table {
+  width: 100%;
+  max-width: none;
+  border-collapse: separate;
+  border-spacing: 0;
+  color: #334155;
+  table-layout: auto;
+}
+.app-table th,
+.app-table td {
+  padding: 13px 15px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  line-height: 1.28;
+  text-align: left;
+  vertical-align: middle;
+  white-space: normal;
+}
+.app-table thead th {
+  background: #f8fafc;
+  border-bottom: 1px solid rgba(203, 213, 225, 0.95);
+  color: #475569;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+.app-table tbody tr:nth-child(odd) td {
+  background: #ffffff;
+}
+.app-table tbody tr:nth-child(even) td {
+  background: #f8fafc;
+}
+.app-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.app-table--interactive tbody tr,
+.app-table--interactive tbody td {
+  transition: background-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.app-table--interactive tbody tr:hover td,
+.app-table--interactive tbody tr:focus-within td {
+  background: rgba(var(--team-secondary-rgb), 0.14);
+}
+.app-table--numeric td:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.app-table--nowrap th,
+.app-table--nowrap td {
+  white-space: nowrap;
+}
+.app-table--compact th,
+.app-table--compact td {
+  padding: 10px 12px;
+}
+@media (hover: none) {
+  .app-table--interactive tbody tr:active td {
+    background: rgba(var(--team-secondary-rgb), 0.18);
+  }
+}
+@media (max-width: 720px) {
+  .app-table-wrap {
+    border-radius: 12px;
+  }
+  .app-table th,
+  .app-table td {
+    padding: 12px;
+    line-height: 1.35;
+  }
+  .app-table--mobile-wrap th,
+  .app-table--mobile-wrap td {
+    white-space: normal;
+    word-break: normal;
+    overflow-wrap: anywhere;
+  }
 }
 .guest-roster-section #playersTable th:nth-child(1),
 .guest-roster-section #playersTable td:nth-child(1) {
@@ -8004,13 +8120,16 @@ td.salary-option--nb .salary-pct {
 }
 .settings-economy-table th,
 .settings-economy-table td {
-  padding: 8px;
-  border-bottom: 1px solid #dbe3ee;
+  padding: 12px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
 }
 .settings-economy-table th {
-  background: #eef2f7;
-  color: #334155;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.78rem;
   font-weight: 900;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
 }
 .settings-economy-table td:not(:first-child) {
   text-align: right;
@@ -8115,15 +8234,18 @@ td.salary-option--nb .salary-pct {
 }
 .economy-import-table th,
 .economy-import-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid #dbe3ee;
+  padding: 12px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
   text-align: left;
   vertical-align: middle;
 }
 .economy-import-table th {
-  background: #eef2f7;
-  color: #334155;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.78rem;
   font-weight: 900;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
 }
 .economy-import-table td:nth-child(3),
 .economy-import-table td:nth-child(4),
@@ -8245,19 +8367,19 @@ td.salary-option--nb .salary-pct {
 
 .gm-timeline-table th,
 .gm-timeline-table td {
-  border-bottom: 1px solid #dbe3ee;
-  padding: 8px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  padding: 10px 12px;
   text-align: left;
   vertical-align: middle;
 }
 
 .gm-timeline-table th {
-  background: #e2e8f0;
-  color: #334155;
+  background: #f8fafc;
+  color: #475569;
   font-size: 0.78rem;
   font-weight: 900;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.045em;
 }
 
 .gm-timeline-table select,
@@ -9330,10 +9452,10 @@ body.gms-view-active .page-shell {
 #trackerSection .table-wrap,
 #figuresSection .figures-table-wrap,
 #figuresSection .minimum-salary-table-wrap {
-  border: 1px solid #dde6f1;
-  border-radius: 0;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 14px;
   background: #ffffff;
-  box-shadow: none;
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.055);
 }
 #trackerTable,
 #trackerEconomyTable,
@@ -9354,21 +9476,21 @@ body.gms-view-active .page-shell {
 .minimum-salary-table td {
   padding: 12px 14px;
   border-right: 0;
-  border-bottom: 1px solid #dbe5f1;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
   font-size: 0.92rem;
-  line-height: 1.15;
+  line-height: 1.28;
   vertical-align: middle;
 }
 #trackerTable thead th,
 #trackerEconomyTable thead th,
 .figures-table thead th,
 .minimum-salary-table thead th {
-  background: #f4f7fb;
-  border-bottom: 3px solid #475569;
-  color: #334155;
-  font-size: 0.82rem;
+  background: #f8fafc;
+  border-bottom: 1px solid rgba(203, 213, 225, 0.95);
+  color: #475569;
+  font-size: 0.78rem;
   font-weight: 900;
-  letter-spacing: 0;
+  letter-spacing: 0.045em;
   text-align: center;
   text-transform: uppercase;
   white-space: normal;
@@ -9379,7 +9501,7 @@ body.gms-view-active .page-shell {
 .figures-table tbody tr:nth-child(even) td,
 .minimum-salary-table tbody tr:nth-child(even) th,
 .minimum-salary-table tbody tr:nth-child(even) td {
-  background: #f7f9fc;
+  background: #f8fafc;
 }
 #trackerTable tbody tr:nth-child(odd) td,
 #trackerEconomyTable tbody tr:nth-child(odd) td,
@@ -9395,7 +9517,7 @@ body.gms-view-active .page-shell {
 .figures-table tbody tr:hover td,
 .minimum-salary-table tbody tr:hover th,
 .minimum-salary-table tbody tr:hover td {
-  background: #eef4fb;
+  background: rgba(var(--team-secondary-rgb), 0.14);
 }
 #trackerTable td:not(:first-child),
 #trackerEconomyTable td:not(:first-child),

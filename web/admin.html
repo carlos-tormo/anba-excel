@@ -166,8 +166,8 @@
         </select>
         <button id="refreshLogsBtn" type="button">Refresh Logs</button>
       </div>
-      <div class="table-wrap">
-        <table id="adminLogsTable">
+      <div class="table-wrap app-table-wrap">
+        <table id="adminLogsTable" class="app-table app-table--interactive app-table--mobile-wrap">
           <thead>
             <tr>
               <th>When</th>
@@ -194,8 +194,8 @@
           <button id="refreshUsersBtn" type="button">Refresh Users</button>
         </div>
       </div>
-      <div class="table-wrap">
-        <table id="adminUsersTable">
+      <div class="table-wrap app-table-wrap">
+        <table id="adminUsersTable" class="app-table app-table--interactive app-table--mobile-wrap">
           <thead>
             <tr>
               <th>User</th>
@@ -224,8 +224,8 @@
           <button id="refreshGmOptionRequestsBtn" type="button">Refresh Requests</button>
         </div>
       </div>
-      <div class="table-wrap">
-        <table id="gmOptionRequestsTable">
+      <div class="table-wrap app-table-wrap">
+        <table id="gmOptionRequestsTable" class="app-table app-table--interactive app-table--mobile-wrap">
           <thead>
             <tr>
               <th>Team</th>
@@ -443,8 +443,8 @@
             <select id="trackerSeasonSelect"></select>
           </label>
         </div>
-        <div class="table-wrap">
-          <table id="trackerTable">
+        <div class="table-wrap app-table-wrap">
+          <table id="trackerTable" class="app-table app-table--interactive app-table--numeric app-table--mobile-wrap">
             <thead>
               <tr>
                 <th data-sort="team_code">Team</th>
@@ -473,8 +473,8 @@
             <select id="trackerEconomySeasonSelect"></select>
           </label>
         </div>
-        <div class="table-wrap">
-          <table id="trackerEconomyTable">
+        <div class="table-wrap app-table-wrap">
+          <table id="trackerEconomyTable" class="app-table app-table--interactive app-table--numeric app-table--mobile-wrap">
             <thead>
               <tr>
                 <th data-sort="team_code">Team</th>
@@ -597,8 +597,8 @@
       <div id="draftOrderBoard" class="draft-order-board draft-order-admin-board">
         <article class="draft-order-round">
           <h3>1st Round</h3>
-          <div class="table-wrap draft-order-table-wrap">
-            <table id="draftOrderFirstTable" class="draft-order-table draft-order-admin-table">
+          <div class="table-wrap app-table-wrap draft-order-table-wrap">
+            <table id="draftOrderFirstTable" class="app-table app-table--interactive app-table--mobile-wrap draft-order-table draft-order-admin-table">
               <thead>
                 <tr>
                   <th>Number</th>
@@ -614,8 +614,8 @@
         </article>
         <article class="draft-order-round">
           <h3>2nd Round</h3>
-          <div class="table-wrap draft-order-table-wrap">
-            <table id="draftOrderSecondTable" class="draft-order-table draft-order-admin-table">
+          <div class="table-wrap app-table-wrap draft-order-table-wrap">
+            <table id="draftOrderSecondTable" class="app-table app-table--interactive app-table--mobile-wrap draft-order-table draft-order-admin-table">
               <thead>
                 <tr>
                   <th>Number</th>
@@ -812,8 +812,8 @@
           <button id="openOwnerOfficeImportBtn" type="button" class="ghost">Importar despacho CSV</button>
         </div>
         <p class="settings-help-text">Economy CSV: season, team, section, key, value. Despacho CSV: season, team, confidence_current, confidence_change, history_season, wins, losses, result.</p>
-        <div class="table-wrap settings-economy-table-wrap">
-          <table id="economySettingsTable" class="settings-economy-table">
+        <div class="table-wrap app-table-wrap settings-economy-table-wrap">
+          <table id="economySettingsTable" class="app-table app-table--interactive app-table--mobile-wrap settings-economy-table">
             <thead>
               <tr>
                 <th data-sort="team_code">Team</th>
@@ -1046,8 +1046,8 @@
           <button id="downloadGmTimelineSvgBtn" type="button">Download SVG</button>
         </div>
       </div>
-      <div class="table-wrap gm-timeline-table-wrap">
-        <table class="gm-timeline-table">
+      <div class="table-wrap app-table-wrap gm-timeline-table-wrap">
+        <table class="app-table app-table--interactive app-table--mobile-wrap gm-timeline-table">
           <thead>
             <tr>
               <th>GM entity / historical name</th>

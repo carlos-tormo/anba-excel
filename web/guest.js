@@ -7130,8 +7130,8 @@ function renderDraftPickLedger(showAssetIds = false) {
           Hay ${escapeHtml(issueCount)} incidencia(s) de tracking para revisar.
         </div>
       ` : ''}
-      <div class="table-wrap draft-pick-ledger-table-wrap">
-        <table class="draft-pick-ledger-table">
+      <div class="table-wrap app-table-wrap draft-pick-ledger-table-wrap">
+        <table class="app-table app-table--interactive app-table--mobile-wrap draft-pick-ledger-table">
           <thead>
             <tr>
               <th>Equipo original</th>
@@ -7379,8 +7379,8 @@ function renderDraftOrderRound(round, label) {
   return `
     <article class="draft-order-round">
       <h3>${escapeHtml(label)}</h3>
-      <div class="table-wrap draft-order-table-wrap">
-        <table class="draft-order-table">
+      <div class="table-wrap app-table-wrap draft-order-table-wrap">
+        <table class="app-table app-table--interactive app-table--mobile-wrap draft-order-table">
           <thead>
             <tr>
               <th>#</th>
