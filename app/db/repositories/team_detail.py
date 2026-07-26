@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .base import LeagueRepository
+from .team_assignments import assigned_gm_names_by_team
 
 
 class TeamDetailRepository(LeagueRepository):
@@ -17,7 +18,14 @@ class TeamDetailRepository(LeagueRepository):
             "SELECT * FROM teams WHERE code = ?",
             (code.upper(),),
         ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        team = dict(row)
+        assigned_gm = assigned_gm_names_by_team(conn, [team.get("code")]).get(str(team.get("code") or "").upper())
+        team["legacy_gm"] = team.get("gm")
+        team["assigned_gm"] = assigned_gm or None
+        team["gm"] = assigned_gm or team.get("gm")
+        return team
 
     @staticmethod
     def assets(conn: Any, team_id: int) -> List[Dict[str, Any]]:

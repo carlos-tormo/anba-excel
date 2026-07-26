@@ -1230,12 +1230,14 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
         team_codes: Any,
         is_co_admin: Optional[bool] = None,
         agent_name: Optional[Any] = None,
+        username: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         return self._user_repository.replace_team_assignments(
             user_id,
             team_codes,
             is_co_admin=is_co_admin,
             agent_name=agent_name,
+            username=username,
         )
 
 
@@ -3043,6 +3045,9 @@ class Handler(SimpleHTTPRequestHandler):
             sess["team_codes"] = team_codes
             sess["team_code"] = team_codes[0] if team_codes else None
             sess["agent_name"] = str(access.get("agent_name") or "").strip()
+            sess["username"] = str(access.get("username") or sess.get("username") or sess.get("name") or "").strip()
+            if sess["username"]:
+                sess["name"] = sess["username"]
         if sess:
             self._observed_session = dict(sess)
         return sess

@@ -244,6 +244,43 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual("ATL", response.payload["users"][1]["team_code"])
         self.assertEqual(["ATL", "BOS"], response.payload["users"][1]["team_codes"])
 
+    def test_admin_user_update_forwards_username_and_assignments(self):
+        updated = {
+            "id": 7,
+            "email": "gm@example.com",
+            "username": "Diderotto",
+            "team_codes": ["ATL"],
+            "is_co_admin": False,
+        }
+        users = SimpleNamespace(replace_team_assignments=Mock(return_value=updated))
+        handler = SimpleNamespace(
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            admin_emails=set(),
+            app=SimpleNamespace(users=users),
+        )
+
+        matched = dispatch_routes(
+            handler,
+            urlparse("/api/admin/users/7"),
+            PATCH_ROUTES,
+            {"username": "Diderotto", "team_code": "ATL", "is_co_admin": False, "agent_name": ""},
+        )
+
+        self.assertTrue(matched)
+        users.replace_team_assignments.assert_called_once_with(
+            7,
+            ["ATL"],
+            is_co_admin=False,
+            agent_name="",
+            username="Diderotto",
+        )
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual("Diderotto", response.payload["user"]["username"])
+        self.assertEqual("gm", response.payload["user"]["role"])
+
     def test_admin_option_requests_get_route_returns_framework_neutral_response(self):
         gm_request_queries = SimpleNamespace(list=Mock(return_value=[{"id": 9, "status": "approved"}]))
         handler = SimpleNamespace(

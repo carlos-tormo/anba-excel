@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
 from .base import LeagueRepository
+from .team_assignments import assigned_gm_names_by_team
 
 
 class TrackerRepository(LeagueRepository):
@@ -24,7 +25,14 @@ class TrackerRepository(LeagueRepository):
 
     @staticmethod
     def teams(conn: Any) -> List[Dict[str, Any]]:
-        return [dict(row) for row in conn.execute("SELECT * FROM teams ORDER BY code").fetchall()]
+        rows = [dict(row) for row in conn.execute("SELECT * FROM teams ORDER BY code").fetchall()]
+        assigned_gms = assigned_gm_names_by_team(conn, [row.get("code") for row in rows])
+        for row in rows:
+            code = str(row.get("code") or "").upper()
+            row["legacy_gm"] = row.get("gm")
+            row["assigned_gm"] = assigned_gms.get(code) or None
+            row["gm"] = row["assigned_gm"] or row.get("gm")
+        return rows
 
     @staticmethod
     def assets(conn: Any, team_id: int) -> List[Dict[str, Any]]:

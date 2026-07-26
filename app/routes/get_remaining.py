@@ -157,6 +157,7 @@ def get_auth_status(handler: Any, parsed: ParseResult, payload: Optional[Dict[st
             "user": {
                 "email": sess.get("email"),
                 "name": sess.get("name"),
+                "username": sess.get("username"),
                 "provider": sess.get("provider"),
                 "agent_name": sess.get("agent_name"),
             },

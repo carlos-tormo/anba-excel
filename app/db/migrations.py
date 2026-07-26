@@ -609,6 +609,7 @@ class DatabaseMigrationsMixin:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         google_sub TEXT UNIQUE,
                         email TEXT UNIQUE,
+                        username TEXT,
                         display_name TEXT,
                         avatar_url TEXT,
                         is_co_admin INTEGER NOT NULL DEFAULT 0,
@@ -1936,6 +1937,25 @@ class DatabaseMigrationsMixin:
                     conn.execute("ALTER TABLE users ADD COLUMN is_co_admin INTEGER NOT NULL DEFAULT 0")
                 if "agent_name" not in user_cols:
                     conn.execute("ALTER TABLE users ADD COLUMN agent_name TEXT")
+                if "username" not in user_cols:
+                    conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET username = COALESCE(
+                        NULLIF(TRIM(display_name), ''),
+                        CASE
+                            WHEN instr(COALESCE(email, ''), '@') > 1
+                            THEN substr(email, 1, instr(email, '@') - 1)
+                            ELSE NULLIF(TRIM(email), '')
+                        END
+                    )
+                    WHERE username IS NULL OR TRIM(username) = ''
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_users_username ON users (lower(username))"
+                )
                 if "role" not in gm_minimum_target_cols:
                     conn.execute("ALTER TABLE gm_minimum_targets ADD COLUMN role TEXT")
                 admin_log_add_columns = {

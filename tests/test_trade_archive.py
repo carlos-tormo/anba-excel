@@ -178,6 +178,27 @@ class TradeArchiveTests(unittest.TestCase):
         self.assertEqual("Imported BOS GM", updated_movements["BOS"]["gm_name"])
         self.assertIsNone(updated_movements["BOS"]["timeline_gm_name"])
 
+    def test_trade_archive_falls_back_to_assigned_user_when_no_timeline_gm_exists(self) -> None:
+        user = self.db.upsert_google_user("google-atl-gm", "atl@example.com", "Google ATL", None)
+        self.db.replace_user_team_assignments(user["id"], ["ATL"], username="Assigned ATL GM")
+
+        trade = self.db._trade_archive_repository.create(
+            {
+                "external_trade_id": "assigned-1",
+                "trade_date": "2025-02-01",
+                "season_year": 2024,
+                "team_movements": [
+                    {"team_code": "ATL", "sent": {"players": ["A"]}, "received": {}},
+                    {"team_code": "BOS", "sent": {}, "received": {"players": ["A"]}},
+                ],
+            }
+        )
+
+        movements = {row["team_code"]: row for row in trade["team_movements"]}
+        self.assertIsNone(movements["ATL"]["gm_name"])
+        self.assertEqual("Assigned ATL GM", movements["ATL"]["timeline_gm_name"])
+        self.assertIsNone(movements["BOS"]["timeline_gm_name"])
+
     def test_trade_archive_import_rejects_oversized_batches(self) -> None:
         service = TradeArchiveService(self.db._trade_archive_repository, max_import_trades=1)
 

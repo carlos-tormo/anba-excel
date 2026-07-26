@@ -380,17 +380,21 @@ def update_admin_user(handler: Any, parsed: ParseResult, payload: Optional[Dict[
         return error_response(400, "team_codes_required")
     is_co_admin = parse_bool(payload.get("is_co_admin")) if "is_co_admin" in payload else None
     agent_name = payload.get("agent_name") if "agent_name" in payload else None
+    username = payload.get("username") if "username" in payload else None
     try:
         user = handler.app.users.replace_team_assignments(
             user_id,
             team_codes,
             is_co_admin=is_co_admin,
             agent_name=agent_name,
+            username=username,
         )
     except ValueError as err:
         message = str(err)
         if message.startswith("invalid_team_code:"):
             return json_response(400, {"error": "invalid_team_code", "team_code": message.split(":", 1)[1]})
+        if message in {"username_required", "username_too_long"}:
+            return error_response(400, message)
         raise
     if user is None:
         return error_response(404, "user_not_found")
@@ -415,6 +419,7 @@ def update_admin_user(handler: Any, parsed: ParseResult, payload: Optional[Dict[
             "team_codes": assigned_codes,
             "is_co_admin": is_co_admin_response,
             "agent_name": user.get("agent_name"),
+            "username": user.get("username"),
         },
     )
     return json_response(200, {"ok": True, "user": user})

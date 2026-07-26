@@ -270,6 +270,39 @@ class AuthSecurityTests(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
+    def test_username_and_team_assignment_drive_team_gm_display(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="anba-auth-user-gm-", suffix=".db")
+        os.close(fd)
+        try:
+            with connect_test_db(path) as conn:
+                conn.row_factory = sqlite3.Row
+                create_schema(conn)
+                insert_team(conn, "ATL", "Atlanta Hawks")
+                conn.execute("UPDATE teams SET gm = 'Legacy GM' WHERE code = 'ATL'")
+                conn.commit()
+
+            db = LeagueDB(path)
+            db.ensure_auth_schema()
+            user = db.upsert_google_user("google-atl", "atl@example.com", "Google Name", None)
+            self.assertEqual("Google Name", user["username"])
+
+            updated = db.replace_user_team_assignments(user["id"], ["ATL"], username="Diderotto")
+            self.assertEqual("Diderotto", updated["username"])
+
+            team = next(row for row in db.list_teams() if row["code"] == "ATL")
+            self.assertEqual("Diderotto", team["gm"])
+            self.assertEqual("Diderotto", team["assigned_gm"])
+            self.assertEqual("Legacy GM", team["legacy_gm"])
+
+            detail = db.get_team("ATL")
+            self.assertEqual("Diderotto", detail["team"]["gm"])
+            self.assertEqual("Diderotto", detail["team"]["assigned_gm"])
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

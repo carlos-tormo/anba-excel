@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover
     from domain._values import parse_int
 
 from .base import LeagueRepository
+from .team_assignments import assigned_gm_names_by_team
 
 
 class TradeArchiveRepository(LeagueRepository):
@@ -101,8 +102,10 @@ class TradeArchiveRepository(LeagueRepository):
         row: sqlite3.Row,
         *,
         timeline_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        assigned_gm_cache: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         gm_timeline = timeline_cache if timeline_cache is not None else self._gm_timeline_cache(conn)
+        assigned_gms = assigned_gm_cache if assigned_gm_cache is not None else assigned_gm_names_by_team(conn)
         trade_id = int(row["id"])
         movement_rows = conn.execute(
             """SELECT team_code, team_name, gm_name, sent_json, received_json
@@ -119,7 +122,10 @@ class TradeArchiveRepository(LeagueRepository):
                 "timeline_gm_name": (
                     None
                     if movement["gm_name"]
-                    else self._gm_from_timeline(gm_timeline, movement["team_code"], row["trade_date"])
+                    else (
+                        self._gm_from_timeline(gm_timeline, movement["team_code"], row["trade_date"])
+                        or assigned_gms.get(normalize_team_code(movement["team_code"]) or "")
+                    )
                 ),
                 "sent": self._decode_json(movement["sent_json"], {}),
                 "received": self._decode_json(movement["received_json"], {}),
@@ -161,7 +167,16 @@ class TradeArchiveRepository(LeagueRepository):
                 params,
             ).fetchall()
             timeline_cache = self._gm_timeline_cache(conn)
-            trades = [self._row_to_trade(conn, row, timeline_cache=timeline_cache) for row in rows]
+            assigned_gm_cache = assigned_gm_names_by_team(conn)
+            trades = [
+                self._row_to_trade(
+                    conn,
+                    row,
+                    timeline_cache=timeline_cache,
+                    assigned_gm_cache=assigned_gm_cache,
+                )
+                for row in rows
+            ]
         seasons_map: Dict[int, List[Dict[str, Any]]] = {}
         for trade in trades:
             season = parse_int(trade.get("season_year")) or 0

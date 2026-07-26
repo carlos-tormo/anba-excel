@@ -204,6 +204,19 @@ class FrontendSafetyTests(unittest.TestCase):
                 self.assertIn("async function loadGms()", script_source)
                 self.assertIn("setViewMode('gms')", script_source)
 
+    def test_admin_users_edit_username_and_team_gm_is_assignment_driven(self) -> None:
+        admin_html = web_file("admin.html")
+        admin_js = web_file("admin.js")
+
+        self.assertIn("<th>Username</th>", admin_html)
+        self.assertIn('id="teamAssignedGmInline"', admin_html)
+        self.assertIn("Admin Menu → Users → Team assignment", admin_html)
+        self.assertNotIn('id="teamGmInlineInput"', admin_html)
+        self.assertNotIn('id="saveTeamGmInlineBtn"', admin_html)
+        self.assertIn("data-admin-user-username", admin_js)
+        self.assertIn("username: String(usernameInput?.value || '').trim()", admin_js)
+        self.assertNotIn("async function saveCurrentTeamGm", admin_js)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover
     from domain_rules import parse_int
 
 from .base import LeagueRepository
+from .team_assignments import assigned_gm_names_by_team
 
 
 class TeamRepository(LeagueRepository):
@@ -30,9 +31,15 @@ class TeamRepository(LeagueRepository):
 
     def list(self) -> List[Dict[str, Any]]:
         with self.db.connect() as conn:
-            return [dict(row) for row in conn.execute(
+            rows = [dict(row) for row in conn.execute(
                 "SELECT id, code, name, gm, apron_hard_cap FROM teams ORDER BY code"
             ).fetchall()]
+            assigned_gms = assigned_gm_names_by_team(conn, [row.get("code") for row in rows])
+            for row in rows:
+                row["legacy_gm"] = row.get("gm")
+                row["assigned_gm"] = assigned_gms.get(str(row.get("code") or "").upper()) or None
+                row["gm"] = row["assigned_gm"] or row.get("gm")
+            return rows
 
     @staticmethod
     def select_frozen_draft_picks(conn: Any, team_id: int) -> List[Dict[str, Any]]:

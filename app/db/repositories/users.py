@@ -25,16 +25,35 @@ class UserRepository(LeagueRepository):
         super().__init__(db)
         self._now = now
 
+    @staticmethod
+    def _default_username(display_name: Optional[str], email: str) -> str:
+        clean_name = re.sub(r"\s+", " ", str(display_name or "").strip())
+        if clean_name:
+            return clean_name
+        clean_email = str(email or "").strip().lower()
+        return clean_email.split("@", 1)[0] if "@" in clean_email else clean_email
+
+    @staticmethod
+    def _clean_username(value: Any) -> str:
+        username = re.sub(r"\s+", " ", str(value or "").strip())
+        if not username:
+            raise ValueError("username_required")
+        if len(username) > 80:
+            raise ValueError("username_too_long")
+        return username
+
     def upsert_google_user(self, google_sub: str, email: str, display_name: Optional[str], avatar_url: Optional[str]) -> Dict[str, Any]:
         timestamp = self._now()
+        username = self._default_username(display_name, email)
         with self.db.connect() as conn:
             conn.execute(
-                """INSERT INTO users (google_sub, email, display_name, avatar_url, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO users (google_sub, email, username, display_name, avatar_url, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(google_sub) DO UPDATE SET email = excluded.email,
+                       username = COALESCE(NULLIF(TRIM(users.username), ''), excluded.username),
                        display_name = excluded.display_name, avatar_url = excluded.avatar_url,
                        updated_at = excluded.updated_at""",
-                (google_sub, email, display_name, avatar_url, timestamp, timestamp),
+                (google_sub, email, username, display_name, avatar_url, timestamp, timestamp),
             )
             row = conn.execute("SELECT * FROM users WHERE google_sub = ?", (google_sub,)).fetchone()
             conn.commit()
@@ -59,7 +78,7 @@ class UserRepository(LeagueRepository):
     def list(self) -> List[Dict[str, Any]]:
         with self.db.connect() as conn:
             rows = conn.execute(
-                """SELECT u.id, u.email, u.display_name, u.avatar_url,
+                """SELECT u.id, u.email, u.username, u.display_name, u.avatar_url,
                           COALESCE(u.is_co_admin, 0) AS is_co_admin, u.agent_name,
                           u.created_at, u.updated_at, GROUP_CONCAT(t.code, ',') AS team_codes
                    FROM users u
@@ -81,7 +100,7 @@ class UserRepository(LeagueRepository):
             return {"team_codes": [], "is_co_admin": False}
         with self.db.connect() as conn:
             user = conn.execute(
-                "SELECT id, COALESCE(is_co_admin, 0) AS is_co_admin, agent_name FROM users WHERE lower(email) = ?",
+                "SELECT id, username, COALESCE(is_co_admin, 0) AS is_co_admin, agent_name FROM users WHERE lower(email) = ?",
                 (normalized,),
             ).fetchone()
             if not user:
@@ -95,13 +114,20 @@ class UserRepository(LeagueRepository):
                 "team_codes": [str(row["code"]).upper() for row in teams],
                 "is_co_admin": bool(parse_bool(user["is_co_admin"])),
                 "agent_name": str(user["agent_name"] or "").strip(),
+                "username": str(user["username"] or "").strip(),
             }
 
     def replace_team_assignments(
-        self, user_id: int, team_codes: Any, is_co_admin: Optional[bool] = None, agent_name: Optional[Any] = None
+        self,
+        user_id: int,
+        team_codes: Any,
+        is_co_admin: Optional[bool] = None,
+        agent_name: Optional[Any] = None,
+        username: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         codes = normalize_team_codes(team_codes)
         clean_agent = re.sub(r"\s+", " ", str(agent_name or "").strip()) if agent_name is not None else None
+        clean_username = self._clean_username(username) if username is not None else None
         timestamp = self._now()
         with self.db.connect() as conn:
             if not conn.execute("SELECT id FROM users WHERE id = ?", (int(user_id),)).fetchone():
@@ -128,6 +154,9 @@ class UserRepository(LeagueRepository):
             if agent_name is not None:
                 updates.append("agent_name = ?")
                 values.append(clean_agent if is_co_admin is None or parse_bool(is_co_admin) else "")
+            if username is not None:
+                updates.append("username = ?")
+                values.append(clean_username)
             conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", (*values, int(user_id)))
             conn.commit()
         return next((user for user in self.list() if int(user.get("id") or 0) == int(user_id)), None)

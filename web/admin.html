@@ -199,6 +199,7 @@
           <thead>
             <tr>
               <th>User</th>
+              <th>Username</th>
               <th>Role</th>
               <th>Co-admin</th>
               <th>Agente</th>
@@ -761,9 +762,9 @@
     </section>
     <section id="adminTeamControlsSection" class="team-admin-controls-section">
       <div id="teamGmInlineRow" class="settings-row">
-        <label for="teamGmInlineInput">GM</label>
-        <input id="teamGmInlineInput" type="text" placeholder="GM name">
-        <button id="saveTeamGmInlineBtn">Save GM</button>
+        <span>GM asignado</span>
+        <strong id="teamAssignedGmInline">Sin GM asignado</strong>
+        <small>Se actualiza desde Admin Menu → Users → Team assignment.</small>
         <label class="team-apron-cap-toggle">
           <input id="teamFirstApronCapInput" type="checkbox">
           <span>Capped at 1st apron</span>

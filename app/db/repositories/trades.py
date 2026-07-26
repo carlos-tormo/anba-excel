@@ -43,6 +43,7 @@ except ImportError:  # pragma: no cover
         roster_contract_counts, roster_contract_slot_type,
     )
 from .base import LeagueRepository
+from .team_assignments import assigned_gm_names_by_team
 
 @dataclass(frozen=True)
 class TradeOperations:
@@ -1056,6 +1057,7 @@ class TradeRepository(LeagueRepository):
                 if not row:
                     return None
                 team_rows[code] = row
+            assigned_gms = assigned_gm_names_by_team(conn, teams)
 
             settings_cur = conn.execute("SELECT key, value FROM app_settings")
             settings = {str(row["key"]): str(row["value"]) for row in settings_cur.fetchall()}
@@ -1068,7 +1070,7 @@ class TradeRepository(LeagueRepository):
                 code: {
                     "code": code,
                     "name": team_rows[code]["name"],
-                    "gm": team_rows[code]["gm"],
+                    "gm": assigned_gms.get(code) or team_rows[code]["gm"],
                     "move_count": 0,
                     "sent": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": [], "cash": [], "cash_amount": 0.0},
                     "received": {"players": [], "pick_count": 0, "swap_count": 0, "right_count": 0, "picks": [], "swaps": [], "rights": [], "cash": [], "cash_amount": 0.0},
@@ -1517,6 +1519,7 @@ class TradeRepository(LeagueRepository):
             team_b = conn.execute("SELECT id, code, name, gm FROM teams WHERE code = ?", (team_b_code.upper(),)).fetchone()
             if not team_a or not team_b or team_a["id"] == team_b["id"]:
                 return None
+            assigned_gms = assigned_gm_names_by_team(conn, [team_a["code"], team_b["code"]])
 
             if owns_connection:
                 current_year = parse_int(self.settings().get("current_year")) or 2025
@@ -1947,13 +1950,13 @@ class TradeRepository(LeagueRepository):
                 "team_a": {
                     "code": team_a["code"],
                     "name": team_a["name"],
-                    "gm": team_a["gm"],
+                    "gm": assigned_gms.get(str(team_a["code"]).upper()) or team_a["gm"],
                     "move_count": move_count_a,
                 },
                 "team_b": {
                     "code": team_b["code"],
                     "name": team_b["name"],
-                    "gm": team_b["gm"],
+                    "gm": assigned_gms.get(str(team_b["code"]).upper()) or team_b["gm"],
                     "move_count": move_count_b,
                 },
                 "players_a": [row["name"] for row in players_a_rows],

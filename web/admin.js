@@ -4280,7 +4280,7 @@ function renderAdminUsers() {
   const users = state.adminUsers || [];
   tbody.innerHTML = '';
   if (!users.length) {
-    tbody.innerHTML = '<tr><td colspan="8">No signed-up users yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9">No signed-up users yet.</td></tr>';
     return;
   }
 
@@ -4298,6 +4298,15 @@ function renderAdminUsers() {
       <td>
         <strong>${escapeHtml(user.display_name || user.email || 'User')}</strong>
         <div class="muted">${escapeHtml(user.email || '')}</div>
+      </td>
+      <td>
+        <input
+          type="text"
+          maxlength="80"
+          data-admin-user-username="${userId}"
+          value="${escapeHtml(user.username || user.display_name || '')}"
+          aria-label="Username for ${escapeHtml(user.email || 'user')}"
+        >
       </td>
       <td><span class="user-role-pill user-role-pill--${escapeHtml(user.role || 'guest')}">${escapeHtml(formatUserRole(user.role))}</span></td>
       <td>
@@ -4557,6 +4566,7 @@ async function decideGmOptionRequest(requestId, decision, button, requestType = 
 async function saveAdminUserAccess(userId, button) {
   if (!Number.isInteger(userId) || userId <= 0) return;
   const select = document.querySelector(`[data-admin-user-team="${userId}"]`);
+  const usernameInput = document.querySelector(`[data-admin-user-username="${userId}"]`);
   const coAdminInput = document.querySelector(`[data-admin-user-co-admin="${userId}"]`);
   const agentControl = document.querySelector(`[data-admin-user-agent="${userId}"]`);
   const teamCode = String(select?.value || '').trim().toUpperCase();
@@ -4570,7 +4580,12 @@ async function saveAdminUserAccess(userId, button) {
   try {
     const result = await api(`/api/admin/users/${userId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ team_code: teamCode, is_co_admin: isCoAdmin, agent_name: agentName }),
+      body: JSON.stringify({
+        username: String(usernameInput?.value || '').trim(),
+        team_code: teamCode,
+        is_co_admin: isCoAdmin,
+        agent_name: agentName,
+      }),
     });
     const updatedUser = result.user;
     if (updatedUser) {
@@ -4768,7 +4783,6 @@ function setViewMode(mode) {
   const teamControls = [
     'reloadBtn',
     'addEntryBtn',
-    'saveTeamGmInlineBtn',
     'teamFirstApronCapInput',
     'teamSecondApronCapInput',
   ];
@@ -11573,8 +11587,8 @@ async function loadTeam(code) {
   await loadOwnerOfficeForTeam(code);
   applyTeamTheme(code);
   setViewMode('team');
-  const gmInlineInput = document.getElementById('teamGmInlineInput');
-  if (gmInlineInput) gmInlineInput.value = data.team.gm || '';
+  const assignedGmInline = document.getElementById('teamAssignedGmInline');
+  if (assignedGmInline) assignedGmInline.textContent = data.team.assigned_gm || data.team.gm || 'Sin GM asignado';
   syncTeamApronHardCapControls();
   syncTeamLuxuryRepeaterControl();
   renderSeasonViewControl();
@@ -11822,34 +11836,6 @@ async function loadWaitingList() {
     setPageHeading,
   });
   await refreshAdminLogsSafe();
-}
-
-async function saveCurrentTeamGm(inputEl, buttonEl) {
-  if (!state.teamCode) {
-    alert('No team selected.');
-    return;
-  }
-  if (!inputEl || !buttonEl) return;
-  const gm = inputEl.value.trim();
-  buttonEl.disabled = true;
-  const oldText = buttonEl.textContent;
-  buttonEl.textContent = 'Saving...';
-  try {
-    await api(`/api/teams/${state.teamCode}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ gm }),
-    });
-    await loadTeam(state.teamCode);
-    buttonEl.textContent = 'Saved';
-    setTimeout(() => {
-      buttonEl.textContent = oldText;
-    }, 900);
-  } catch (err) {
-    buttonEl.textContent = oldText;
-    alert(`GM save failed: ${err.message}`);
-  } finally {
-    buttonEl.disabled = false;
-  }
 }
 
 async function saveCurrentTeamCash(receivedInputEl, sentInputEl, buttonEl) {
@@ -14048,11 +14034,6 @@ async function init() {
     alert(`Season progressed to ${seasonLabel(state.settings.current_year || 2025)}.`);
   });
 
-  document.getElementById('saveTeamGmInlineBtn').addEventListener('click', async () => {
-    const input = document.getElementById('teamGmInlineInput');
-    const btn = document.getElementById('saveTeamGmInlineBtn');
-    await saveCurrentTeamGm(input, btn);
-  });
   setupTeamApronHardCapControls();
   setupTeamLuxuryRepeaterControl();
   document.getElementById('closeMoveLogModalBtn')?.addEventListener('click', closeMoveLogModal);
