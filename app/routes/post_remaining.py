@@ -379,6 +379,35 @@ def create_draft_order(handler: Any, parsed: ParseResult, payload: Optional[Dict
     )
     return json_response(201, {"draft_order_id": draft_order_id})
 
+def import_draft_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    if not handler._require_csrf():
+        return
+    if not handler._require_sensitive_rate_limit("admin_post"):
+        return
+    if not handler._authorize("admin.draft_history.write"):
+        return
+    try:
+        result = handler.app.draft.import_history(payload)
+    except ValueError as err:
+        return error_response(400, str(err) or "invalid_draft_history_import")
+    years = result.get("years") or []
+    handler._log_admin_action(
+        "import",
+        "draft_history",
+        ",".join(str(year) for year in years) or None,
+        None,
+        {
+            "years": years,
+            "imported_count": result.get("imported_count"),
+            "expected_per_year": result.get("expected_per_year"),
+            "command_id": result.get("command_id"),
+            "validation_result": result.get("validation_result"),
+            "entity_versions": result.get("entity_versions"),
+        },
+    )
+    return json_response(200, result)
+
 def sign_free_agent(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
@@ -769,6 +798,7 @@ POST_REMAINING_ROUTES = (
     exact_route("/api/free-agents/bulk", bulk_create_free_agents, permission="admin.free_agent.write", csrf=True, mutates_league_state=True),
     exact_route("/api/free-agents", create_free_agent, permission="admin.free_agent.write", csrf=True, mutates_league_state=True),
     exact_route("/api/draft-order", create_draft_order, permission="admin.draft_order.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/admin/draft-history/import", import_draft_history, permission="admin.draft_history.write", csrf=True, mutates_league_state=True),
     predicate_route("free-agent-sign", _free_agent_sign_path, sign_free_agent, permission="admin.free_agent.sign", csrf=True, mutates_league_state=True),
     predicate_route("player-profile-merge", _profile_action_path("merge"), merge_player_profiles, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),
     predicate_route("player-salary-history-create", _profile_action_path("salary-history"), create_salary_history, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),

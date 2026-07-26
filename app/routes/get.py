@@ -45,6 +45,16 @@ def get_draft_order(handler: Any, parsed: ParseResult, _payload: Optional[Dict[s
     return error_response(400, "invalid_draft_year")
 
 
+def get_draft_history(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]):
+    valid, draft_year = _draft_year(parsed)
+    if not valid:
+        return error_response(400, "invalid_draft_year")
+    try:
+        return json_response(200, handler.app.draft.list_history(draft_year))
+    except ValueError as err:
+        return response_from_exception(ValueError(str(err) or "invalid_draft_history"))
+
+
 def get_draft_pick_ledger(handler: Any, parsed: ParseResult, _payload: Optional[Dict[str, Any]]):
     valid, draft_year = _draft_year(parsed)
     if valid:
@@ -87,6 +97,7 @@ GET_ROUTES = (
     exact_route("/api/news/articles", get_news_articles),
     exact_route("/api/waivers", get_waivers),
     exact_route("/api/draft-order", get_draft_order),
+    exact_route("/api/draft-history", get_draft_history),
     exact_route("/api/draft-pick-ledger", get_draft_pick_ledger),
     exact_route("/api/draft-live", get_draft_live),
     exact_route("/api/settings", get_settings),

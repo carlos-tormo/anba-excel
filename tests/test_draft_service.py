@@ -73,6 +73,47 @@ class DraftServiceTests(unittest.TestCase):
             is_admin=False,
         )
 
+    def historical_rows(self, draft_year: int = 2019) -> list[dict]:
+        return [
+            {
+                "draft_year": draft_year,
+                "pick_number": pick,
+                "player_name": f"Rookie {pick}",
+                "team_code": "ATL" if pick % 2 else "BKN",
+                "original_team_code": "BKN" if pick % 2 else "ATL",
+            }
+            for pick in range(1, 61)
+        ]
+
+    def test_import_and_list_historical_draft_selections(self) -> None:
+        result = self.service.import_history({"draft_year": 2019, "selections": self.historical_rows(2019)})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(60, result["imported_count"])
+        self.assertEqual([2019], result["years"])
+        self.assertEqual("valid", result["validation_result"])
+        self.assertEqual(60, result["entity_versions"]["imported_count"])
+
+        history = self.service.list_history(2019)
+        self.assertEqual(2019, history["draft_year"])
+        self.assertEqual("history", history["mode"])
+        self.assertEqual(60, history["selection_count"])
+        self.assertEqual("1st", history["selections"][0]["draft_round"])
+        self.assertEqual(1, history["selections"][0]["round_pick_number"])
+        self.assertEqual("2nd", history["selections"][30]["draft_round"])
+        self.assertEqual(1, history["selections"][30]["round_pick_number"])
+        self.assertEqual("Rookie 1", history["selections"][0]["player_name"])
+
+    def test_historical_draft_import_requires_60_picks_from_2019_to_past_years(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid_draft_year"):
+            self.service.import_history({"draft_year": 2018, "selections": self.historical_rows(2018)})
+
+        with self.assertRaisesRegex(ValueError, "draft_history_year_must_be_past"):
+            self.service.import_history({"draft_year": 2026, "selections": self.historical_rows(2026)})
+
+        with self.assertRaisesRegex(ValueError, "draft_history_requires_60_picks"):
+            self.service.import_history({"draft_year": 2019, "selections": self.historical_rows(2019)[:59]})
+
     def test_gm_submission_is_queued_without_advancing(self) -> None:
         submission = self.submit_gm_pick()
 
@@ -144,18 +185,22 @@ class DraftServiceTests(unittest.TestCase):
         self.db.current_draft_year = unexpected_delegate
         self.db.list_draft_order = unexpected_delegate
         self.db.list_draft_pick_ledger = unexpected_delegate
+        self.db.list_draft_history = unexpected_delegate
         self.db.get_draft_order_entry = unexpected_delegate
         self.db.list_draft_live = unexpected_delegate
 
         current_year = self.service.current_year()
         order = self.service.list_order(2026)
         ledger = self.service.list_pick_ledger(2026)
+        self.service.import_history({"draft_year": 2019, "selections": self.historical_rows(2019)})
+        history = self.service.list_history(2019)
         entry = self.service.order_entry(self.first_pick)
         live = self.service.list_live(2026)
 
         self.assertEqual(2026, current_year)
         self.assertEqual([self.first_pick, self.second_pick], [row["id"] for row in order["draft_order"]])
         self.assertEqual(2026, ledger["draft_year"])
+        self.assertEqual(60, history["selection_count"])
         self.assertEqual(self.first_pick, entry["id"])
         self.assertEqual([self.first_pick, self.second_pick], [row["id"] for row in live["draft_order"]])
 
@@ -167,7 +212,7 @@ class DraftServiceTests(unittest.TestCase):
             "create_draft_order_entry", "update_draft_order_entry", "delete_draft_order_entry",
             "update_draft_live_settings", "control_draft_live", "submit_draft_live_pick",
             "create_gm_draft_pick_request", "get_gm_draft_pick_request",
-            "mark_gm_draft_pick_request_decided", "process_draft_results",
+            "mark_gm_draft_pick_request_decided", "process_draft_results", "import_draft_history",
         ):
             setattr(self.db, name, unexpected_delegate)
 
@@ -196,6 +241,9 @@ class DraftServiceTests(unittest.TestCase):
         self.assertEqual("draft-results:2026:process", processed["command_id"])
         self.assertEqual("valid", processed["validation_result"])
         self.assertEqual(1, processed["entity_versions"]["created_cap_holds"])
+
+        history_result = self.service.import_history({"draft_year": 2019, "selections": self.historical_rows(2019)})
+        self.assertEqual(60, history_result["imported_count"])
 
 
 if __name__ == "__main__":

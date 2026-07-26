@@ -187,6 +187,23 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("app-table app-table--interactive app-table--mobile-wrap draft-order-table trade-archive-table", web_file("trades_archive.js"))
         self.assertIn("app-table app-table--interactive app-table--mobile-wrap gms-table", web_file("gms.js"))
 
+    def test_draft_history_frontend_switch_and_admin_importer_are_wired(self) -> None:
+        guest = web_file("guest.js")
+        admin = web_file("admin.js")
+        admin_html = web_file("admin.html")
+
+        for source in (guest, admin):
+            self.assertIn("function isHistoricalDraftYear", source)
+            self.assertIn("for (let year = 2019;", source)
+            self.assertIn("/api/draft-history?year=", source)
+            self.assertIn("function renderDraftHistoryTable", source)
+            self.assertIn("draft-history-table", source)
+
+        self.assertIn('id="openDraftHistoryImportBtn"', admin_html)
+        self.assertIn('id="draftHistoryImportModal"', admin_html)
+        self.assertIn("/api/admin/draft-history/import", admin)
+        self.assertIn("setupDraftHistoryImportControls()", admin)
+
     def test_trade_archive_admin_importer_exposes_json_file_and_error_ui(self) -> None:
         source = web_file("admin.html")
 

@@ -591,6 +591,7 @@
           <button id="addDraftOrderFirstBtn" type="button">Add 1st-round pick</button>
           <button id="addDraftOrderSecondBtn" type="button">Add 2nd-round pick</button>
           <button id="processDraftBtn" type="button">Procesar draft</button>
+          <button id="openDraftHistoryImportBtn" type="button" class="ghost">Importar historial</button>
         </div>
       </div>
       <div id="draftLiveAdminPanel" class="draft-live-panel draft-live-admin-panel"></div>
@@ -631,6 +632,7 @@
         </article>
       </div>
       <div id="draftPickLedgerBoard" class="draft-pick-ledger-board"></div>
+      <div id="draftHistoryBoard" class="draft-order-board draft-history-board section-hidden"></div>
     </section>
 
     <section id="gmsSection" class="draft-order-section gms-section section-hidden">
@@ -1561,6 +1563,39 @@ LAL,MIN,LAL,MIN,MIN,MIN,BOS,CHA</pre>
         </div>
         <div id="freeAgentAppealImportStatus" class="economy-import-status"></div>
         <div id="freeAgentAppealImportPreview" class="economy-import-preview"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="draftHistoryImportModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="draftHistoryImportModalTitle">
+    <div class="modal-card economy-import-modal">
+      <div class="modal-header">
+        <h2 id="draftHistoryImportModalTitle">Importar historial del draft</h2>
+        <button id="draftHistoryImportCloseBtn" type="button" class="danger">Cerrar</button>
+      </div>
+      <div class="economy-import-body">
+        <div class="economy-import-instructions">
+          <p>Importa un año histórico completo. El primer año permitido es 2019 y cada año debe traer exactamente 60 selecciones, con picks 1–60.</p>
+          <p>Ejemplo de fragmento:</p>
+          <pre>{
+  "draft_year": 2019,
+  "selections": [
+    {"pick_number": 1, "player_name": "Jugador 1", "team_code": "NOP", "original_team_code": "NOP"},
+    {"pick_number": 31, "player_name": "Jugador 31", "team_code": "BKN", "original_team_code": "NYK"}
+  ]
+}</pre>
+          <p>También acepta un array de filas con <code>draft_year</code> en cada una. La importación reemplaza ese año completo.</p>
+        </div>
+        <div class="settings-row economy-import-controls">
+          <input id="draftHistoryImportFileInput" type="file" accept="application/json,.json">
+          <button id="draftHistoryImportLoadFileBtn" type="button">Cargar archivo</button>
+          <button id="draftHistoryImportConfirmBtn" type="button">Importar JSON</button>
+        </div>
+        <label class="admin-tool-field" for="draftHistoryImportJsonInput">
+          <span>JSON</span>
+          <textarea id="draftHistoryImportJsonInput" rows="12" placeholder='{"draft_year":2019,"selections":[{"pick_number":1,"player_name":"Jugador","team_code":"NOP","original_team_code":"NOP"}]}'></textarea>
+        </label>
+        <div id="draftHistoryImportStatus" class="economy-import-status"></div>
       </div>
     </div>
   </div>

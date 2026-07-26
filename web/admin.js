@@ -46,6 +46,7 @@ const state = {
     draft_year: null,
     draft_order: [],
   },
+  draftHistory: null,
   draftLedger: null,
   draftLive: null,
   teamCode: null,
@@ -8113,12 +8114,23 @@ function renderDraftPickLedger(showAssetIds = true) {
 function draftYearOptions() {
   const current = currentSeasonStart();
   const years = new Set();
+  for (let year = 2019; year <= current + 7; year += 1) {
+    years.add(year);
+  }
   for (let offset = 1; offset <= 7; offset += 1) {
     years.add(current + offset);
   }
   const active = Number(state.draftOrder?.draft_year || 0);
   if (Number.isInteger(active) && active >= 2000 && active <= 2100) years.add(active);
   return Array.from(years).sort((a, b) => a - b);
+}
+
+function currentDraftYear() {
+  return currentSeasonStart() + 1;
+}
+
+function isHistoricalDraftYear(draftYear) {
+  return Number(draftYear || 0) >= 2019 && Number(draftYear || 0) < currentDraftYear();
 }
 
 function renderDraftYearSelect(draftYear) {
@@ -8143,6 +8155,46 @@ function setDraftLiveState(data) {
     };
     state.draftLive.loaded_at_ms = Date.now();
   }
+}
+
+function renderDraftHistoryTable() {
+  const history = state.draftHistory || {};
+  const rows = Array.isArray(history.selections) ? history.selections : [];
+  if (!rows.length) {
+    return `
+      <article class="draft-order-round draft-history-section">
+        <h3>Selecciones ${escapeHtml(history.draft_year || '')}</h3>
+        <div class="draft-order-empty">No hay selecciones históricas importadas para este draft.</div>
+      </article>
+    `;
+  }
+  return `
+    <article class="draft-order-round draft-history-section">
+      <h3>Selecciones ${escapeHtml(history.draft_year || '')}</h3>
+      <div class="table-wrap app-table-wrap draft-history-table-wrap">
+        <table class="app-table app-table--interactive app-table--mobile-wrap draft-history-table">
+          <thead>
+            <tr>
+              <th>Pick</th>
+              <th>Jugador</th>
+              <th>Equipo</th>
+              <th>Pick original</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td class="draft-order-number">#${escapeHtml(row.pick_number || '')}</td>
+                <td><strong>${escapeHtml(row.player_name || '—')}</strong></td>
+                <td>${draftOrderTeamHtml(row.selecting_team_code, row.selecting_team_name)}</td>
+                <td>${draftOrderTeamHtml(row.original_team_code, row.original_team_name)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
 }
 
 function draftLiveRemainingSeconds() {
@@ -8304,8 +8356,23 @@ function renderDraftOrderTable(round, tableId) {
 function renderDraftOrder() {
   const subtitle = document.getElementById('draftOrderSubtitle');
   const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart() + 1);
-  if (subtitle) subtitle.textContent = `${draftYear} order of selection`;
+  const historical = isHistoricalDraftYear(draftYear);
+  if (subtitle) subtitle.textContent = historical
+    ? `${draftYear} draft selections`
+    : `${draftYear} order of selection`;
   renderDraftYearSelect(draftYear);
+  document.getElementById('draftLiveAdminPanel')?.classList.toggle('section-hidden', historical);
+  document.getElementById('draftOrderBoard')?.classList.toggle('section-hidden', historical);
+  document.getElementById('draftPickLedgerBoard')?.classList.toggle('section-hidden', historical);
+  document.getElementById('draftHistoryBoard')?.classList.toggle('section-hidden', !historical);
+  document.getElementById('addDraftOrderFirstBtn')?.classList.toggle('section-hidden', historical);
+  document.getElementById('addDraftOrderSecondBtn')?.classList.toggle('section-hidden', historical);
+  document.getElementById('processDraftBtn')?.classList.toggle('section-hidden', historical);
+  const historyBoard = document.getElementById('draftHistoryBoard');
+  if (historical) {
+    if (historyBoard) historyBoard.innerHTML = renderDraftHistoryTable();
+    return;
+  }
   renderDraftLiveAdminPanel();
   renderDraftOrderTable('1st', 'draftOrderFirstTable');
   renderDraftOrderTable('2nd', 'draftOrderSecondTable');
@@ -11770,6 +11837,27 @@ async function loadLeaguePlayers() {
 
 async function loadDraftOrder(draftYearInput = null) {
   const draftYear = Number(draftYearInput || document.getElementById('draftYearSelect')?.value || state.draftOrder?.draft_year || currentSeasonStart() + 1);
+  if (isHistoricalDraftYear(draftYear)) {
+    const history = await api(`/api/draft-history?year=${encodeURIComponent(draftYear)}`);
+    state.draftHistory = history;
+    state.draftOrder = { draft_year: draftYear, draft_order: [] };
+    state.draftLive = null;
+    state.draftLedger = null;
+    state.teamCode = null;
+    state.teamData = null;
+    state.selectedPlayerIds.clear();
+    applyTeamTheme('');
+    setViewMode('draft-order');
+    setPageHeading('Draft', `${draftYear} selections`);
+    renderCapStatusPills({});
+    renderTeamStrip();
+    renderTeamPicker();
+    renderAdminMobileTeamGrid();
+    renderDraftOrder();
+    await refreshAdminLogsSafe();
+    return;
+  }
+  state.draftHistory = null;
   const res = await api(`/api/draft-live?year=${encodeURIComponent(draftYear)}`);
   setDraftLiveState(res);
   const loadedDraftYear = Number(state.draftOrder?.draft_year || draftYear);
@@ -13517,6 +13605,98 @@ function setupFreeAgentAppealImportControls() {
   });
 }
 
+function setDraftHistoryImportStatus(message, tone = '') {
+  const node = document.getElementById('draftHistoryImportStatus');
+  if (!node) return;
+  node.textContent = message || '';
+  node.classList.toggle('economy-import-status--success', tone === 'success');
+  node.classList.toggle('economy-import-status--error', tone === 'error');
+}
+
+function openDraftHistoryImportModal() {
+  const modal = document.getElementById('draftHistoryImportModal');
+  const input = document.getElementById('draftHistoryImportJsonInput');
+  if (input && !String(input.value || '').trim()) {
+    const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart());
+    input.value = JSON.stringify({
+      draft_year: isHistoricalDraftYear(draftYear) ? draftYear : currentDraftYear() - 1,
+      selections: [
+        { pick_number: 1, player_name: 'Jugador 1', team_code: 'ATL', original_team_code: 'ATL' },
+      ],
+    }, null, 2);
+  }
+  setDraftHistoryImportStatus('');
+  modal?.classList.remove('section-hidden');
+}
+
+function closeDraftHistoryImportModal() {
+  document.getElementById('draftHistoryImportModal')?.classList.add('section-hidden');
+}
+
+async function loadDraftHistoryImportFile() {
+  const input = document.getElementById('draftHistoryImportFileInput');
+  const file = input?.files?.[0];
+  if (!file) {
+    alert('Selecciona un archivo JSON.');
+    return;
+  }
+  const textarea = document.getElementById('draftHistoryImportJsonInput');
+  if (!textarea) return;
+  textarea.value = await file.text();
+  setDraftHistoryImportStatus(`Archivo cargado: ${file.name}`, 'success');
+}
+
+async function confirmDraftHistoryImport() {
+  const textarea = document.getElementById('draftHistoryImportJsonInput');
+  const raw = String(textarea?.value || '').trim();
+  if (!raw) {
+    setDraftHistoryImportStatus('Pega o carga un JSON antes de importar.', 'error');
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (err) {
+    setDraftHistoryImportStatus('JSON inválido.', 'error');
+    alert(`JSON inválido: ${err.message || err}`);
+    return;
+  }
+  const button = document.getElementById('draftHistoryImportConfirmBtn');
+  if (button) button.disabled = true;
+  setDraftHistoryImportStatus('Importando historial del draft...');
+  try {
+    const result = await api('/api/admin/draft-history/import', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    const years = Array.isArray(result.years) ? result.years : [];
+    const selectedYear = years[0] || Number(state.draftOrder?.draft_year || currentDraftYear() - 1);
+    setDraftHistoryImportStatus(`Importados ${result.imported_count || 0} picks.`, 'success');
+    await refreshAdminLogsSafe();
+    closeDraftHistoryImportModal();
+    await loadDraftOrder(selectedYear);
+  } catch (err) {
+    setDraftHistoryImportStatus('Error importando historial del draft.', 'error');
+    alert(`Draft history import failed: ${err.message || err}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function setupDraftHistoryImportControls() {
+  document.getElementById('openDraftHistoryImportBtn')?.addEventListener('click', openDraftHistoryImportModal);
+  document.getElementById('draftHistoryImportCloseBtn')?.addEventListener('click', closeDraftHistoryImportModal);
+  document.getElementById('draftHistoryImportModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeDraftHistoryImportModal();
+  });
+  document.getElementById('draftHistoryImportLoadFileBtn')?.addEventListener('click', () => {
+    void loadDraftHistoryImportFile();
+  });
+  document.getElementById('draftHistoryImportConfirmBtn')?.addEventListener('click', () => {
+    void confirmDraftHistoryImport();
+  });
+}
+
 function setupEconomySettingsControls() {
   document.getElementById('loadEconomySettingsBtn')?.addEventListener('click', async () => {
     const input = document.getElementById('economySettingsSeasonInput');
@@ -13613,6 +13793,7 @@ async function init() {
   setupEconomySettingsControls();
   setupFreeAgentAgentImportControls();
   setupFreeAgentAppealImportControls();
+  setupDraftHistoryImportControls();
   setupOffseasonExceptionControls();
   updateFreeAgentAppealImportVisibility();
   await loadEconomySettingsSeason(Number(state.settings.current_year || 2025));

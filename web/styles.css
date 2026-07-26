@@ -2405,6 +2405,23 @@ h1 {
 .waiting-list-table-wrap {
   width: 100%;
 }
+.draft-history-board,
+.draft-history-section {
+  grid-column: 1 / -1;
+}
+.draft-history-table-wrap {
+  margin: 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.draft-history-table th:first-child,
+.draft-history-table td:first-child {
+  width: 86px;
+  white-space: nowrap;
+}
 .waiting-list-position-cell {
   color: #0f172a;
   font-weight: 900;

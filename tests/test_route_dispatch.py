@@ -786,6 +786,21 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual({"error": "invalid_draft_year"}, response.payload)
         draft_service.list_order.assert_not_called()
 
+    def test_get_draft_history_route_delegates_to_draft_service(self):
+        draft_service = SimpleNamespace(list_history=Mock(return_value={"draft_year": 2019, "selections": []}))
+        handler = SimpleNamespace(
+            _send_route_response=Mock(),
+            app=SimpleNamespace(draft=draft_service),
+        )
+
+        matched = dispatch_routes(handler, urlparse("/api/draft-history?year=2019"), GET_ROUTES)
+
+        self.assertTrue(matched)
+        draft_service.list_history.assert_called_once_with(2019)
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual({"draft_year": 2019, "selections": []}, response.payload)
+
     def test_delete_route_preserves_authorization_audit_and_response(self):
         delete_free_agent = Mock(return_value=True)
         handler = SimpleNamespace(
@@ -1212,6 +1227,36 @@ class RouteRegistryTests(unittest.TestCase):
         response = handler._send_route_response.call_args.args[0]
         self.assertEqual(400, response.status)
         self.assertEqual({"error": "invalid_pick_number"}, response.payload)
+
+    def test_import_draft_history_audits_and_returns_route_response(self):
+        result = {
+            "ok": True,
+            "years": [2019],
+            "imported_count": 60,
+            "expected_per_year": 60,
+            "command_id": "draft-history:2019:import",
+            "validation_result": "valid",
+            "entity_versions": {"imported_count": 60, "years": [2019]},
+        }
+        draft = SimpleNamespace(import_history=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(draft=draft),
+        )
+        payload = {"draft_year": 2019, "selections": []}
+
+        matched = dispatch_routes(handler, urlparse("/api/admin/draft-history/import"), POST_ROUTES, payload)
+
+        self.assertTrue(matched)
+        draft.import_history.assert_called_once_with(payload)
+        handler._log_admin_action.assert_called_once()
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual(result, response.payload)
 
     def test_create_salary_history_audits_and_returns_route_response(self):
         row = {"id": 44, "team_code": "ATL", "season_year": 2026}

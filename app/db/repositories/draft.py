@@ -77,6 +77,185 @@ class DraftRepository(LeagueRepository):
             ).fetchall()
         return {"draft_year": int(year), "draft_order": [dict(row) for row in rows]}
 
+    def list_history(self, draft_year: Any = None) -> Dict[str, Any]:
+        year = parse_int(draft_year)
+        if year is None:
+            year = self.current_year() - 1
+        if year < 2019 or year > 2100:
+            raise ValueError("invalid_draft_year")
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT h.id, h.draft_year, h.pick_number, h.draft_round,
+                       h.round_pick_number, h.player_name, h.selecting_team_code,
+                       COALESCE(selecting.name, h.selecting_team_code) AS selecting_team_name,
+                       h.original_team_code,
+                       COALESCE(original.name, h.original_team_code) AS original_team_name,
+                       h.notes, h.imported_at, h.created_at, h.updated_at
+                FROM draft_history_selections h
+                LEFT JOIN teams selecting ON selecting.code = h.selecting_team_code
+                LEFT JOIN teams original ON original.code = h.original_team_code
+                WHERE h.draft_year = ?
+                ORDER BY h.pick_number
+                """,
+                (int(year),),
+            ).fetchall()
+        selections = [dict(row) for row in rows]
+        return {
+            "draft_year": int(year),
+            "mode": "history",
+            "expected_count": 60,
+            "selection_count": len(selections),
+            "selections": selections,
+        }
+
+    def _history_groups_from_payload(self, payload: Any) -> Dict[int, List[Dict[str, Any]]]:
+        if not payload:
+            raise ValueError("draft_history_payload_required")
+        if isinstance(payload, dict):
+            if isinstance(payload.get("drafts"), list):
+                groups: Dict[int, List[Dict[str, Any]]] = {}
+                for draft in payload.get("drafts") or []:
+                    if not isinstance(draft, dict):
+                        raise ValueError("invalid_draft_history_payload")
+                    year = parse_int(draft.get("draft_year") or draft.get("year"))
+                    if year is None:
+                        raise ValueError("invalid_draft_year")
+                    selections = draft.get("selections") or draft.get("picks")
+                    if not isinstance(selections, list):
+                        raise ValueError("draft_history_selections_required")
+                    groups.setdefault(int(year), []).extend(
+                        [dict(row, draft_year=int(year)) for row in selections if isinstance(row, dict)]
+                    )
+                return groups
+            selections = payload.get("selections") or payload.get("picks")
+            if isinstance(selections, list):
+                year = parse_int(payload.get("draft_year") or payload.get("year"))
+                if year is None:
+                    raise ValueError("invalid_draft_year")
+                return {int(year): [dict(row, draft_year=int(year)) for row in selections if isinstance(row, dict)]}
+        if isinstance(payload, list):
+            groups = {}
+            for row in payload:
+                if not isinstance(row, dict):
+                    raise ValueError("invalid_draft_history_payload")
+                year = parse_int(row.get("draft_year") or row.get("year"))
+                if year is None:
+                    raise ValueError("invalid_draft_year")
+                groups.setdefault(int(year), []).append(row)
+            return groups
+        raise ValueError("invalid_draft_history_payload")
+
+    def _normalize_history_row(
+        self, conn: Any, draft_year: int, raw: Dict[str, Any], valid_team_codes: set[str]
+    ) -> Dict[str, Any]:
+        operations = self._read_operations()
+        pick_number = parse_int(raw.get("pick_number") or raw.get("pick") or raw.get("number"))
+        if pick_number is None or pick_number < 1 or pick_number > 60:
+            raise ValueError("invalid_pick_number")
+        expected_round = "1st" if int(pick_number) <= 30 else "2nd"
+        draft_round = operations.normalize_pick_round(raw.get("draft_round") or raw.get("round") or expected_round)
+        if draft_round != expected_round:
+            raise ValueError("draft_round_pick_number_mismatch")
+        player_name = str(
+            raw.get("player_name")
+            or raw.get("selected_player")
+            or raw.get("player")
+            or raw.get("name")
+            or ""
+        ).strip()
+        if not player_name:
+            raise ValueError("player_name_required")
+        if len(player_name) > 160:
+            raise ValueError("player_name_too_long")
+        selecting_team = operations.normalize_team_code(
+            raw.get("selecting_team_code")
+            or raw.get("team_code")
+            or raw.get("team")
+            or raw.get("owner_team_code")
+        )
+        original_team = operations.normalize_team_code(
+            raw.get("original_team_code")
+            or raw.get("original_owner_code")
+            or raw.get("original_owner")
+            or raw.get("original_team")
+        )
+        if not selecting_team or not original_team:
+            raise ValueError("team_codes_required")
+        if selecting_team not in valid_team_codes or original_team not in valid_team_codes:
+            raise ValueError("team_not_found")
+        notes = raw.get("notes")
+        notes_text = str(notes).strip() if notes is not None else None
+        round_pick = int(pick_number) if expected_round == "1st" else int(pick_number) - 30
+        return {
+            "draft_year": int(draft_year),
+            "pick_number": int(pick_number),
+            "draft_round": expected_round,
+            "round_pick_number": round_pick,
+            "player_name": player_name,
+            "selecting_team_code": selecting_team,
+            "original_team_code": original_team,
+            "notes": notes_text or None,
+        }
+
+    def import_history(self, payload: Any) -> Dict[str, Any]:
+        groups = self._history_groups_from_payload(payload)
+        if not groups:
+            raise ValueError("draft_history_selections_required")
+        current_draft_year = self.current_year()
+        timestamp = self._read_operations().now()
+        imported_years: List[int] = []
+        imported_count = 0
+        with self.db.connect() as conn:
+            valid_team_codes = {
+                str(row["code"]).strip().upper()
+                for row in conn.execute("SELECT code FROM teams").fetchall()
+            }
+            normalized_by_year: Dict[int, List[Dict[str, Any]]] = {}
+            for draft_year, rows in groups.items():
+                year = parse_int(draft_year)
+                if year is None or year < 2019:
+                    raise ValueError("invalid_draft_year")
+                if int(year) >= current_draft_year:
+                    raise ValueError("draft_history_year_must_be_past")
+                if len(rows) != 60:
+                    raise ValueError("draft_history_requires_60_picks")
+                normalized_rows = [
+                    self._normalize_history_row(conn, int(year), row, valid_team_codes)
+                    for row in rows
+                ]
+                pick_numbers = [row["pick_number"] for row in normalized_rows]
+                if len(set(pick_numbers)) != 60 or set(pick_numbers) != set(range(1, 61)):
+                    raise ValueError("draft_history_requires_picks_1_to_60")
+                normalized_by_year[int(year)] = sorted(normalized_rows, key=lambda item: item["pick_number"])
+
+            for draft_year, rows in normalized_by_year.items():
+                conn.execute("DELETE FROM draft_history_selections WHERE draft_year = ?", (int(draft_year),))
+                for row in rows:
+                    conn.execute(
+                        """
+                        INSERT INTO draft_history_selections (
+                            draft_year, pick_number, draft_round, round_pick_number,
+                            player_name, selecting_team_code, original_team_code, notes,
+                            imported_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row["draft_year"], row["pick_number"], row["draft_round"],
+                            row["round_pick_number"], row["player_name"], row["selecting_team_code"],
+                            row["original_team_code"], row["notes"], timestamp, timestamp, timestamp,
+                        ),
+                    )
+                    imported_count += 1
+                imported_years.append(int(draft_year))
+            conn.commit()
+        return {
+            "ok": True,
+            "imported_count": imported_count,
+            "years": sorted(imported_years),
+            "expected_per_year": 60,
+        }
+
     def list_pick_ledger(self, draft_year: Any = None) -> Dict[str, Any]:
         operations = self._read_operations()
         year = draft_year if draft_year is not None else self.current_year()

@@ -1636,6 +1636,25 @@ class DatabaseMigrationsMixin:
                 )
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS draft_history_selections (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        draft_year INTEGER NOT NULL CHECK(draft_year >= 2019 AND draft_year <= 2100),
+                        pick_number INTEGER NOT NULL CHECK(pick_number BETWEEN 1 AND 60),
+                        draft_round TEXT NOT NULL CHECK(draft_round IN ('1st', '2nd')),
+                        round_pick_number INTEGER NOT NULL CHECK(round_pick_number BETWEEN 1 AND 30),
+                        player_name TEXT NOT NULL CHECK(length(trim(player_name)) > 0),
+                        selecting_team_code TEXT NOT NULL REFERENCES teams(code) ON UPDATE CASCADE,
+                        original_team_code TEXT NOT NULL REFERENCES teams(code) ON UPDATE CASCADE,
+                        notes TEXT,
+                        imported_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(draft_year, pick_number)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS draft_live_state (
                         draft_year INTEGER PRIMARY KEY,
                         enabled INTEGER NOT NULL DEFAULT 0,
@@ -1870,6 +1889,7 @@ class DatabaseMigrationsMixin:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_team_start ON team_gm_history(team_id, start_date)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_entity ON team_gm_history(gm_entity_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_order_year_round ON draft_order(draft_year, draft_round, pick_number)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_history_year ON draft_history_selections(draft_year, pick_number)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_live_selections_selected_at ON draft_live_selections(selected_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_economy_season ON team_economy(season_year)")
                 conn.execute(

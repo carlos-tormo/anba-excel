@@ -137,6 +137,7 @@ AUTH_POLICIES: Dict[str, Dict[str, Any]] = {
     "admin.gm_minimum_targets.view": {"roles": {"admin"}, "team_scope": False},
     "admin.gm_minimum_targets.write": {"roles": {"admin"}, "team_scope": False},
     "admin.draft_live.write": {"roles": {"admin"}, "team_scope": False},
+    "admin.draft_history.write": {"roles": {"admin"}, "team_scope": False},
     "admin.article.write": {"roles": {"admin"}, "team_scope": False},
     "admin.coadmin_vote.view": {"roles": {"admin"}, "team_scope": False},
     "admin.coadmin_vote.write": {"roles": {"admin"}, "team_scope": False},

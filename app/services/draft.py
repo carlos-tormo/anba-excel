@@ -28,6 +28,20 @@ class DraftService:
     def list_order(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
         return self.repository.list_order(draft_year)
 
+    def list_history(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
+        return self.repository.list_history(draft_year)
+
+    def import_history(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        result = self.repository.import_history(payload)
+        years = result.get("years") or []
+        result["command_id"] = f"draft-history:{','.join(str(year) for year in years)}:import"
+        result["validation_result"] = "valid"
+        result["entity_versions"] = {
+            "imported_count": int(result.get("imported_count") or 0),
+            "years": years,
+        }
+        return result
+
     def list_pick_ledger(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
         return self.repository.list_pick_ledger(draft_year)
 
