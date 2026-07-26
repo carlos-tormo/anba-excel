@@ -4717,6 +4717,7 @@ function setViewMode(mode) {
   const showTracker = mode === 'tracker';
   const showFigures = mode === 'figures';
   const showDraftOrder = mode === 'draft-order';
+  const showGms = mode === 'gms';
   const showTradeArchive = mode === 'trade-archive';
   const showWaitingList = mode === 'waiting-list';
   const showFreeAgents = mode === 'free-agents';
@@ -4736,6 +4737,7 @@ function setViewMode(mode) {
   toggleSection('trackerSection', !showTracker);
   toggleSection('figuresSection', !showFigures);
   toggleSection('draftOrderSection', !showDraftOrder);
+  toggleSection('gmsSection', !showGms);
   toggleSection('tradeArchiveSection', !showTradeArchive);
   toggleSection('waitingListSection', !showWaitingList);
   toggleSection('freeAgentsSection', !showFreeAgents);
@@ -5406,6 +5408,7 @@ function setupAdminMobileNav() {
   const trackerBtn = document.getElementById('adminMobileTrackerBtn');
   const figuresBtn = document.getElementById('adminMobileFiguresBtn');
   const draftBtn = document.getElementById('adminMobileDraftBtn');
+  const gmsBtn = document.getElementById('adminMobileGmsBtn');
   const tradeArchiveBtn = document.getElementById('adminMobileTradeArchiveBtn');
   const waitingListBtn = document.getElementById('adminMobileWaitingListBtn');
   const leaguePlayersBtn = document.getElementById('adminMobileLeaguePlayersBtn');
@@ -5450,6 +5453,12 @@ function setupAdminMobileNav() {
     draftBtn.addEventListener('click', async () => {
       closeAdminMobileSidebar();
       await loadDraftOrder();
+    });
+  }
+  if (gmsBtn) {
+    gmsBtn.addEventListener('click', async () => {
+      closeAdminMobileSidebar();
+      await loadGms();
     });
   }
   if (tradeArchiveBtn) {
@@ -11767,7 +11776,7 @@ async function loadTradeArchive() {
   state.selectedPlayerIds.clear();
   applyTeamTheme('');
   setViewMode('trade-archive');
-  setPageHeading('Traspasos', 'Archivo histórico de movimientos de la liga');
+  setPageHeading('Trades', 'Archivo histórico de movimientos de la liga');
   renderCapStatusPills({});
   renderTeamStrip();
   renderTeamPicker();
@@ -11778,6 +11787,20 @@ async function loadTradeArchive() {
     admin: true,
     setPageHeading,
   });
+  await refreshAdminLogsSafe();
+}
+
+async function loadGms() {
+  state.teamCode = null;
+  state.teamData = null;
+  state.selectedPlayerIds.clear();
+  applyTeamTheme('');
+  setViewMode('gms');
+  setPageHeading('GMs', 'Sección de GMs pendiente de configurar');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderTeamPicker();
+  renderAdminMobileTeamGrid();
   await refreshAdminLogsSafe();
 }
 
@@ -13648,6 +13671,9 @@ async function init() {
   });
   document.getElementById('draftHomeBtn').addEventListener('click', async () => {
     await loadDraftOrder();
+  });
+  document.getElementById('gmsHomeBtn')?.addEventListener('click', async () => {
+    await loadGms();
   });
   document.getElementById('tradeArchiveHomeBtn')?.addEventListener('click', async () => {
     await loadTradeArchive();

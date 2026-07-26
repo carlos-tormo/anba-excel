@@ -118,7 +118,36 @@ class FrontendSafetyTests(unittest.TestCase):
             with self.subTest(file=name):
                 source = web_file(name)
                 self.assertIn('data-nav-view="trade-archive"', source)
+                self.assertIn('>Trades</button>', source)
                 self.assertLess(source.index("/trades_archive.js"), source.index(f"/{script}"))
+
+    def test_main_navigation_groups_and_order_are_intentional(self) -> None:
+        expected_liga_order = (
+            'data-nav-view="team">Rosters</button>',
+            'data-nav-view="league-players">Jugadores</button>',
+            'data-nav-view="tracker">Tracker</button>',
+            'data-nav-view="figures">Cifras</button>',
+            'data-nav-view="draft-order">Draft</button>',
+            'data-nav-view="gms">GMs</button>',
+            'data-nav-view="waiting-list">Lista de espera</button>',
+        )
+        for name in ("index.html", "admin.html"):
+            with self.subTest(file=name):
+                source = web_file(name)
+                self.assertIn('<div class="sidebar-section-label">Historia</div>', source)
+                self.assertIn('<div class="sidebar-section-label">Gestión</div>', source)
+                self.assertNotIn('<div class="sidebar-section-label">Mercado</div>', source)
+                previous = -1
+                for item in expected_liga_order:
+                    current = source.index(item)
+                    self.assertGreater(current, previous)
+                    previous = current
+                self.assertLess(source.index('<div class="sidebar-section-label">Historia</div>'), source.index('data-nav-view="trade-archive">Trades</button>'))
+
+        styles = web_file("styles.css")
+        self.assertIn('#tradeArchiveHomeBtn::before { content: "⇄"; }', styles)
+        self.assertIn('#waitingListHomeBtn::before { content: "☷"; }', styles)
+        self.assertIn('#gmsHomeBtn::before { content: "♟"; }', styles)
 
     def test_trade_archive_admin_importer_exposes_json_file_and_error_ui(self) -> None:
         source = web_file("admin.html")
@@ -127,6 +156,17 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('accept="application/json,.json"', source)
         self.assertIn('id="tradeArchiveImportErrors"', source)
         self.assertIn("Formato JSON soportado", source)
+
+    def test_cartera_view_is_frontend_gated_to_admin_and_coadmin(self) -> None:
+        source = web_file("guest.js")
+
+        self.assertIn("function canViewWallet()", source)
+        self.assertIn("['admin', 'co_admin'].includes(role)", source)
+        self.assertIn("state.ui.viewMode = mode === 'wallet' && !canViewWallet() ? 'tracker' : mode;", source)
+        load_wallet_start = source.index("async function loadWallet()")
+        guard_index = source.index("if (!canViewWallet())", load_wallet_start)
+        set_view_index = source.index("setViewMode('wallet')", load_wallet_start)
+        self.assertLess(guard_index, set_view_index)
 
     def test_waiting_list_frontend_uses_safe_dom_helpers_and_shared_api(self) -> None:
         source = web_file("waiting_list.js")
@@ -153,6 +193,16 @@ class FrontendSafetyTests(unittest.TestCase):
         admin_source = web_file("admin.html")
         self.assertIn('id="waitingListAdminForm"', admin_source)
         self.assertIn('id="waitingListDiscordInput"', admin_source)
+
+    def test_gms_placeholder_is_wired_in_guest_and_admin(self) -> None:
+        for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
+            with self.subTest(file=name):
+                source = web_file(name)
+                self.assertIn('id="gmsSection"', source)
+                self.assertIn('data-nav-view="gms"', source)
+                script_source = web_file(script)
+                self.assertIn("async function loadGms()", script_source)
+                self.assertIn("setViewMode('gms')", script_source)
 
 
 if __name__ == "__main__":

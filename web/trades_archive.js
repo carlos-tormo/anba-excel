@@ -453,7 +453,7 @@
     state.admin = Boolean(options.admin);
     if (typeof state.api !== 'function') throw new Error('trade_archive_api_missing');
     if (typeof options.setPageHeading === 'function') {
-      options.setPageHeading('Traspasos', 'Archivo histórico de movimientos de la liga');
+      options.setPageHeading('Trades', 'Archivo histórico de movimientos de la liga');
     }
     const data = await state.api('/api/trades/archive');
     render(data);

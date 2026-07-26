@@ -4843,29 +4843,32 @@ function syncMobileInfoButton() {
 }
 
 function setViewMode(mode) {
-  state.ui.viewMode = mode;
+  state.ui.viewMode = mode === 'wallet' && !canViewWallet() ? 'tracker' : mode;
+  const activeMode = String(state.ui.viewMode || '');
   const trackerSection = document.getElementById('trackerSection');
   const figuresSection = document.getElementById('figuresSection');
   const freeAgentsSection = document.getElementById('freeAgentsSection');
   const gmOfficeSection = document.getElementById('gmOfficeSection');
   const leaguePlayersSection = document.getElementById('leaguePlayersSection');
   const draftOrderSection = document.getElementById('draftOrderSection');
+  const gmsSection = document.getElementById('gmsSection');
   const tradeArchiveSection = document.getElementById('tradeArchiveSection');
   const waitingListSection = document.getElementById('waitingListSection');
   const tradeMachineSection = document.getElementById('tradeMachineSection');
   const walletSection = document.getElementById('walletSection');
   const coadminVotesSection = document.getElementById('coadminVotesSection');
-  const showTracker = mode === 'tracker';
-  const showFigures = mode === 'figures';
-  const showFreeAgents = mode === 'free-agents';
-  const showGmOffice = mode === 'gm-office';
-  const showLeaguePlayers = mode === 'league-players';
-  const showDraftOrder = mode === 'draft-order';
-  const showTradeArchive = mode === 'trade-archive';
-  const showWaitingList = mode === 'waiting-list';
-  const showTradeMachine = mode === 'trade-machine';
-  const showWallet = mode === 'wallet';
-  const showCoadminVotes = mode === 'coadmin-votes';
+  const showTracker = activeMode === 'tracker';
+  const showFigures = activeMode === 'figures';
+  const showFreeAgents = activeMode === 'free-agents';
+  const showGmOffice = activeMode === 'gm-office';
+  const showLeaguePlayers = activeMode === 'league-players';
+  const showDraftOrder = activeMode === 'draft-order';
+  const showGms = activeMode === 'gms';
+  const showTradeArchive = activeMode === 'trade-archive';
+  const showWaitingList = activeMode === 'waiting-list';
+  const showTradeMachine = activeMode === 'trade-machine';
+  const showWallet = state.ui.viewMode === 'wallet' && canViewWallet();
+  const showCoadminVotes = activeMode === 'coadmin-votes';
 
   trackerSection.classList.toggle('section-hidden', !showTracker);
   if (figuresSection) figuresSection.classList.toggle('section-hidden', !showFigures);
@@ -4873,6 +4876,7 @@ function setViewMode(mode) {
   if (gmOfficeSection) gmOfficeSection.classList.toggle('section-hidden', !showGmOffice);
   if (leaguePlayersSection) leaguePlayersSection.classList.toggle('section-hidden', !showLeaguePlayers);
   if (draftOrderSection) draftOrderSection.classList.toggle('section-hidden', !showDraftOrder);
+  if (gmsSection) gmsSection.classList.toggle('section-hidden', !showGms);
   if (tradeArchiveSection) tradeArchiveSection.classList.toggle('section-hidden', !showTradeArchive);
   if (waitingListSection) waitingListSection.classList.toggle('section-hidden', !showWaitingList);
   if (tradeMachineSection) tradeMachineSection.classList.toggle('section-hidden', !showTradeMachine);
@@ -10028,6 +10032,20 @@ async function fetchWalletResults() {
 }
 
 async function loadWallet() {
+  if (!canViewWallet()) {
+    state.wallet.rows = [];
+    state.wallet.error = '';
+    state.wallet.clients = [];
+    state.wallet.gmSpendingLimits = [];
+    state.wallet.clientsError = '';
+    state.wallet.promises = [];
+    state.wallet.promisesError = '';
+    state.wallet.missingAgent = false;
+    state.wallet.agentName = '';
+    syncWalletNav();
+    await loadTracker();
+    return;
+  }
   state.teamCode = null;
   state.teamData = null;
   setTeamInUrl(null);
@@ -10042,22 +10060,6 @@ async function loadWallet() {
   renderCapStatusPills({});
   renderTeamStrip();
   renderMobileTeamGrid();
-  if (!canViewWallet()) {
-    state.wallet.rows = [];
-    state.wallet.error = 'Esta herramienta solo está disponible para admins y co-admins.';
-    state.wallet.clients = [];
-    state.wallet.gmSpendingLimits = [];
-    state.wallet.clientsError = '';
-    state.wallet.promises = [];
-    state.wallet.promisesError = '';
-    state.wallet.missingAgent = false;
-    state.wallet.agentName = '';
-    renderWallet();
-    renderWalletClients();
-    renderWalletSpendingLimits();
-    renderWalletPromises();
-    return;
-  }
   if (!state.wallet.season) state.wallet.season = currentSeasonStart();
   state.wallet.error = '';
   renderWallet();
@@ -10172,6 +10174,23 @@ async function loadTradeArchive() {
     admin: false,
     setPageHeading,
   });
+}
+
+async function loadGms() {
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('gms');
+  setPageHeading('GMs', 'Sección de GMs pendiente de configurar');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
 }
 
 async function loadWaitingList() {
@@ -10531,6 +10550,7 @@ function setupMobileNav() {
   const trackerBtn = document.getElementById('mobileTrackerBtn');
   const figuresBtn = document.getElementById('mobileFiguresBtn');
   const draftBtn = document.getElementById('mobileDraftBtn');
+  const gmsBtn = document.getElementById('mobileGmsBtn');
   const tradeArchiveBtn = document.getElementById('mobileTradeArchiveBtn');
   const waitingListBtn = document.getElementById('mobileWaitingListBtn');
   const leaguePlayersBtn = document.getElementById('mobileLeaguePlayersBtn');
@@ -10575,6 +10595,12 @@ function setupMobileNav() {
     draftBtn.addEventListener('click', async () => {
       closeMobileSidebar();
       await loadDraftOrder();
+    });
+  }
+  if (gmsBtn) {
+    gmsBtn.addEventListener('click', async () => {
+      closeMobileSidebar();
+      await loadGms();
     });
   }
   if (tradeArchiveBtn) {
@@ -10676,6 +10702,9 @@ async function init() {
   });
   document.getElementById('draftHomeBtn').addEventListener('click', async () => {
     await loadDraftOrder();
+  });
+  document.getElementById('gmsHomeBtn')?.addEventListener('click', async () => {
+    await loadGms();
   });
   document.getElementById('tradeArchiveHomeBtn')?.addEventListener('click', async () => {
     await loadTradeArchive();

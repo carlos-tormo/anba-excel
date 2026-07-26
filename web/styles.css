@@ -702,6 +702,9 @@ h1 {
   #trackerHomeBtn::before { content: "▦"; }
   #figuresHomeBtn::before { content: "▤"; }
   #draftHomeBtn::before { content: "◈"; }
+  #gmsHomeBtn::before { content: "♟"; }
+  #tradeArchiveHomeBtn::before { content: "⇄"; }
+  #waitingListHomeBtn::before { content: "☷"; }
   #leaguePlayersHomeBtn::before { content: "◎"; }
   #freeAgentsHomeBtn::before { content: "○"; }
   #gmOfficeHomeBtn::before { content: "♡"; }

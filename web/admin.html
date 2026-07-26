@@ -19,16 +19,20 @@
       <div id="capStatusPills" class="top-status-wrap"></div>
       <div class="sidebar-section">
         <div class="sidebar-section-label">Liga</div>
-        <button id="teamHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="team">Equipo</button>
+        <button id="teamHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="team">Rosters</button>
+        <button id="leaguePlayersHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="league-players">Jugadores</button>
         <button id="trackerHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="tracker">Tracker</button>
         <button id="figuresHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="figures">Cifras</button>
         <button id="draftHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="draft-order">Draft</button>
-        <button id="tradeArchiveHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-archive">Traspasos</button>
+        <button id="gmsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="gms">GMs</button>
         <button id="waitingListHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="waiting-list">Lista de espera</button>
-        <button id="leaguePlayersHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="league-players">Jugadores</button>
       </div>
       <div class="sidebar-section">
-        <div class="sidebar-section-label">Mercado</div>
+        <div class="sidebar-section-label">Historia</div>
+        <button id="tradeArchiveHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="trade-archive">Trades</button>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Gestión</div>
         <button id="freeAgentsHomeBtn" class="sidebar-nav-item" type="button" data-nav-view="free-agents">Agentes libres</button>
       </div>
       <div class="sidebar-section sidebar-quick-section">
@@ -65,13 +69,14 @@
         <button id="adminMobileSidebarCloseBtn" class="mobile-icon-btn" type="button" aria-label="Close menu" title="Close">✕</button>
       </div>
       <div class="mobile-sidebar-links">
-        <button id="adminMobileTeamHomeBtn" type="button" class="mobile-nav-btn" data-icon="⌂" data-nav-view="team">Equipo</button>
+        <button id="adminMobileTeamHomeBtn" type="button" class="mobile-nav-btn" data-icon="⌂" data-nav-view="team">Rosters</button>
+        <button id="adminMobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
         <button id="adminMobileTrackerBtn" type="button" class="mobile-nav-btn" data-icon="▥" data-nav-view="tracker">Tracker</button>
         <button id="adminMobileFiguresBtn" type="button" class="mobile-nav-btn" data-icon="▦" data-nav-view="figures">Cifras</button>
         <button id="adminMobileDraftBtn" type="button" class="mobile-nav-btn" data-icon="◈" data-nav-view="draft-order">Draft</button>
-        <button id="adminMobileTradeArchiveBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-archive">Traspasos</button>
+        <button id="adminMobileGmsBtn" type="button" class="mobile-nav-btn" data-icon="♟" data-nav-view="gms">GMs</button>
         <button id="adminMobileWaitingListBtn" type="button" class="mobile-nav-btn" data-icon="☷" data-nav-view="waiting-list">Lista de espera</button>
-        <button id="adminMobileLeaguePlayersBtn" type="button" class="mobile-nav-btn" data-icon="◎" data-nav-view="league-players">Jugadores</button>
+        <button id="adminMobileTradeArchiveBtn" type="button" class="mobile-nav-btn" data-icon="⇄" data-nav-view="trade-archive">Trades</button>
         <button id="adminMobileFreeAgentsBtn" type="button" class="mobile-nav-btn" data-icon="○" data-nav-view="free-agents">Agentes libres</button>
         <button id="adminMobileLogBtn" type="button" class="mobile-nav-btn" data-icon="≡" data-nav-view="admin-log">Admin Log</button>
         <button id="adminMobileUsersBtn" type="button" class="mobile-nav-btn" data-icon="☉" data-nav-view="admin-users">Users</button>
@@ -627,10 +632,19 @@
       <div id="draftPickLedgerBoard" class="draft-pick-ledger-board"></div>
     </section>
 
+    <section id="gmsSection" class="draft-order-section gms-section section-hidden">
+      <div class="section-head">
+        <div>
+          <h2>GMs</h2>
+          <div class="section-subtitle">Sección de GMs pendiente de configurar.</div>
+        </div>
+      </div>
+    </section>
+
     <section id="tradeArchiveSection" class="draft-order-section trade-archive-section section-hidden">
       <div class="section-head">
         <div>
-          <h2>Traspasos</h2>
+          <h2>Trades</h2>
           <div class="section-subtitle">Archivo histórico de traspasos de la liga, ordenado por fecha y separado por temporadas.</div>
         </div>
       </div>

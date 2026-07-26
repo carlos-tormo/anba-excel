@@ -7,6 +7,7 @@ from app.auth.policies import AuthorizationError, AUTH_POLICIES, authorization_a
 from app.routes import (
     DELETE_ROUTES,
     EARLY_POST_ROUTES,
+    GET_ROUTES,
     OWNER_OFFICE_MULTIPART_POST_ROUTES,
     PATCH_ROUTES,
     POST_ROUTES,
@@ -195,6 +196,23 @@ class RouteAuthorizationInventoryTests(unittest.TestCase):
                 )
                 self.assertTrue(matched)
                 self.assertEqual(allowed, draft.submit_pick.called)
+
+    def test_cartera_clients_direct_api_role_matrix(self) -> None:
+        cases = (
+            ("guest", None, False),
+            ("gm", session("gm", ["ATL"]), False),
+            ("agent", session("agent"), False),
+            ("coadmin", session("co_admin"), True),
+            ("admin", session("admin"), True),
+        )
+        for label, actor_session, allowed in cases:
+            with self.subTest(actor=label):
+                cartera = SimpleNamespace(list_clients=Mock(return_value={"clients": [{"id": 8}]}))
+                handler = AuthorizingRouteHandler(actor_session, SimpleNamespace(cartera=cartera))
+                matched = dispatch_routes(handler, urlparse("/api/cartera/clients"), GET_ROUTES)
+
+                self.assertTrue(matched)
+                self.assertEqual(allowed, cartera.list_clients.called)
 
 
 if __name__ == "__main__":
