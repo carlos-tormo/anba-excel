@@ -197,7 +197,16 @@ class FrontendSafetyTests(unittest.TestCase):
             self.assertIn("for (let year = 2019;", source)
             self.assertIn("/api/draft-history?year=", source)
             self.assertIn("function renderDraftHistoryTable", source)
+            self.assertIn("function draftHistoryOriginalPickHtml", source)
+            self.assertIn("selecting_team_code", source)
+            self.assertIn("via ${original}", source)
+            self.assertIn('<th aria-label="Pick original"></th>', source)
             self.assertIn("draft-history-table", source)
+
+        history_render_start = guest.index("function renderDraftHistoryTable")
+        history_render_end = guest.index("function draftLiveRemainingSeconds", history_render_start)
+        self.assertNotIn("<th>Pick original</th>", guest[history_render_start:history_render_end])
+        self.assertNotIn("row.canonical_id", guest[history_render_start:history_render_end])
 
         self.assertIn('id="openDraftHistoryImportBtn"', admin_html)
         self.assertIn('id="draftHistoryImportModal"', admin_html)

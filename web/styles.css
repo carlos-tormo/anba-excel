@@ -2535,6 +2535,9 @@ h1 {
   font-size: 0.78rem;
   font-weight: 950;
 }
+.draft-history-original-via .draft-order-via-code {
+  color: #334155;
+}
 .draft-order-empty {
   color: #64748b;
   font-weight: 800;
@@ -11355,6 +11358,11 @@ select[data-new-field="years_left"],
   .draft-order-via-label,
   .draft-order-via-logo {
     display: none;
+  }
+  .draft-history-original-via .draft-order-via-logo {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
   }
   .draft-order-via-code {
     font-size: 0.82rem;

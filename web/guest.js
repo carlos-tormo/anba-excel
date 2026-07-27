@@ -7064,6 +7064,20 @@ function draftOrderViaCellHtml(row) {
   return draftOrderViaHtml(row?.original_team_code, row?.original_team_name);
 }
 
+function draftHistoryOriginalPickHtml(row) {
+  const selecting = String(row?.selecting_team_code || '').trim().toUpperCase();
+  const original = String(row?.original_team_code || '').trim().toUpperCase();
+  if (!original || (selecting && selecting === original)) return '';
+  const team = teamByCode(original);
+  const label = String(row?.original_team_name || team?.name || original).trim();
+  return `
+    <span class="draft-order-via draft-history-original-via" title="${escapeHtml(label || original)}">
+      ${draftOrderLogoHtml(original, 'draft-order-via-logo')}
+      <strong class="draft-order-via-code">${escapeHtml(`via ${original}`)}</strong>
+    </span>
+  `;
+}
+
 function draftLedgerStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase();
   if (normalized === 'ok') return 'Localizada';
@@ -7222,7 +7236,7 @@ function renderDraftHistoryTable() {
               <th>Pick</th>
               <th>Jugador</th>
               <th>Equipo</th>
-              <th>Pick original</th>
+              <th aria-label="Pick original"></th>
             </tr>
           </thead>
           <tbody>
@@ -7231,10 +7245,7 @@ function renderDraftHistoryTable() {
                 <td class="draft-order-number">#${escapeHtml(row.pick_number || '')}</td>
                 <td><strong>${escapeHtml(row.player_name || '—')}</strong></td>
                 <td>${draftOrderTeamHtml(row.selecting_team_code, row.selecting_team_name)}</td>
-                <td>
-                  ${draftOrderTeamHtml(row.original_team_code, row.original_team_name)}
-                  ${row.canonical_id ? `<small>${escapeHtml(row.canonical_id)}</small>` : ''}
-                </td>
+                <td>${draftHistoryOriginalPickHtml(row)}</td>
               </tr>
             `).join('')}
           </tbody>
