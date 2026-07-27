@@ -112,6 +112,15 @@
 
   function assetMeta(value) {
     if (!value || typeof value !== 'object') return '';
+    const selection = value.draft_selection && typeof value.draft_selection === 'object' ? value.draft_selection : null;
+    if (selection) {
+      const bits = [];
+      if (selection.pick_number) bits.push(`Pick #${text(selection.pick_number)}`);
+      if (selection.player_name) bits.push(text(selection.player_name));
+      const selectingTeam = text(selection.selecting_team_code || selection.selecting_team_name || '').toUpperCase();
+      if (selectingTeam) bits.push(`Elegido por ${selectingTeam}`);
+      if (bits.length) return bits.join(' · ');
+    }
     const parts = [];
     if (value.canonical_id) parts.push(text(value.canonical_id));
     else if (value.draft_year && value.draft_round && value.original_team_code) {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from ...auth.policies import normalize_team_code
@@ -155,6 +155,125 @@ class TradeArchiveRepository(LeagueRepository):
             ]
         return resolved
 
+    def _draft_pick_refs_from_movements(self, team_movements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        refs: List[Dict[str, Any]] = []
+        for movement in team_movements:
+            for side in ("sent", "received"):
+                data = movement.get(side)
+                if not isinstance(data, dict):
+                    continue
+                for item in data.get("picks") or []:
+                    if isinstance(item, dict):
+                        refs.append(item)
+        return refs
+
+    def _selection_payload(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "draft_year": int(row["draft_year"]),
+            "pick_number": int(row["pick_number"]),
+            "draft_round": row["draft_round"],
+            "round_pick_number": int(row["round_pick_number"]),
+            "player_name": row["player_name"],
+            "selecting_team_code": row["selecting_team_code"],
+            "selecting_team_name": row["selecting_team_name"],
+            "original_team_code": row["original_team_code"],
+            "canonical_id": self._canonical_pick_id(
+                row["draft_year"],
+                row["draft_round"],
+                row["original_team_code"],
+            ),
+        }
+
+    def _enrich_draft_selection_refs(
+        self,
+        conn: sqlite3.Connection,
+        team_movements: List[Dict[str, Any]],
+    ) -> None:
+        refs = self._draft_pick_refs_from_movements(team_movements)
+        if not refs:
+            return
+        pick_ids = sorted(
+            {
+                int(value)
+                for value in (parse_int(ref.get("draft_pick_id")) for ref in refs)
+                if value is not None
+            }
+        )
+        keys: set[Tuple[int, str, str]] = set()
+        for ref in refs:
+            year = parse_int(ref.get("draft_year") if "draft_year" in ref else ref.get("year"))
+            round_value = self._normalize_pick_round(ref.get("draft_round") if "draft_round" in ref else ref.get("round"))
+            original_team = normalize_team_code(
+                ref.get("original_team_code")
+                or ref.get("original_team")
+                or ref.get("original_owner")
+            )
+            if year is not None and original_team:
+                keys.add((int(year), round_value, original_team))
+
+        by_id: Dict[int, Dict[str, Any]] = {}
+        by_key: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+        if pick_ids:
+            placeholders = ", ".join("?" for _ in pick_ids)
+            rows = conn.execute(
+                f"""
+                SELECT h.draft_pick_id, h.draft_year, h.pick_number, h.draft_round,
+                       h.round_pick_number, h.player_name, h.selecting_team_code,
+                       COALESCE(selecting.name, h.selecting_team_code) AS selecting_team_name,
+                       h.original_team_code
+                FROM draft_history_selections h
+                LEFT JOIN teams selecting ON selecting.code = h.selecting_team_code
+                WHERE h.draft_pick_id IN ({placeholders})
+                """,
+                pick_ids,
+            ).fetchall()
+            for row in rows:
+                payload = self._selection_payload(row)
+                by_id[int(row["draft_pick_id"])] = payload
+                by_key[(int(row["draft_year"]), row["draft_round"], row["original_team_code"])] = payload
+
+        if keys:
+            clauses = []
+            params: List[Any] = []
+            for year, round_value, original_team in sorted(keys):
+                clauses.append("(h.draft_year = ? AND h.draft_round = ? AND h.original_team_code = ?)")
+                params.extend([year, round_value, original_team])
+            rows = conn.execute(
+                f"""
+                SELECT h.draft_pick_id, h.draft_year, h.pick_number, h.draft_round,
+                       h.round_pick_number, h.player_name, h.selecting_team_code,
+                       COALESCE(selecting.name, h.selecting_team_code) AS selecting_team_name,
+                       h.original_team_code
+                FROM draft_history_selections h
+                LEFT JOIN teams selecting ON selecting.code = h.selecting_team_code
+                WHERE {' OR '.join(clauses)}
+                """,
+                params,
+            ).fetchall()
+            for row in rows:
+                payload = self._selection_payload(row)
+                if row["draft_pick_id"] is not None:
+                    by_id[int(row["draft_pick_id"])] = payload
+                by_key[(int(row["draft_year"]), row["draft_round"], row["original_team_code"])] = payload
+
+        for ref in refs:
+            selection = None
+            draft_pick_id = parse_int(ref.get("draft_pick_id"))
+            if draft_pick_id is not None:
+                selection = by_id.get(int(draft_pick_id))
+            if selection is None:
+                year = parse_int(ref.get("draft_year") if "draft_year" in ref else ref.get("year"))
+                round_value = self._normalize_pick_round(ref.get("draft_round") if "draft_round" in ref else ref.get("round"))
+                original_team = normalize_team_code(
+                    ref.get("original_team_code")
+                    or ref.get("original_team")
+                    or ref.get("original_owner")
+                )
+                if year is not None and original_team:
+                    selection = by_key.get((int(year), round_value, original_team))
+            if selection is not None:
+                ref["draft_selection"] = selection
+
     @staticmethod
     def _asset_count(movement: Dict[str, Any]) -> int:
         if not isinstance(movement, dict):
@@ -234,24 +353,26 @@ class TradeArchiveRepository(LeagueRepository):
                ORDER BY team_code""",
             (trade_id,),
         ).fetchall()
-        team_movements = [
-            {
-                "team_code": str(movement["team_code"] or ""),
-                "team_name": movement["team_name"],
-                "gm_name": movement["gm_name"],
-                "timeline_gm_name": (
-                    None
-                    if movement["gm_name"]
-                    else (
-                        self._gm_from_timeline(gm_timeline, movement["team_code"], row["trade_date"])
-                        or assigned_gms.get(normalize_team_code(movement["team_code"]) or "")
-                    )
-                ),
-                "sent": self._decode_json(movement["sent_json"], {}),
-                "received": self._decode_json(movement["received_json"], {}),
-            }
-            for movement in movement_rows
-        ]
+        team_movements = []
+        for movement in movement_rows:
+            team_movements.append(
+                {
+                    "team_code": str(movement["team_code"] or ""),
+                    "team_name": movement["team_name"],
+                    "gm_name": movement["gm_name"],
+                    "timeline_gm_name": (
+                        None
+                        if movement["gm_name"]
+                        else (
+                            self._gm_from_timeline(gm_timeline, movement["team_code"], row["trade_date"])
+                            or assigned_gms.get(normalize_team_code(movement["team_code"]) or "")
+                        )
+                    ),
+                    "sent": self._decode_json(movement["sent_json"], {}),
+                    "received": self._decode_json(movement["received_json"], {}),
+                }
+            )
+        self._enrich_draft_selection_refs(conn, team_movements)
         team_codes = [row["team_code"] for row in team_movements if row.get("team_code")]
         return {
             "id": trade_id,

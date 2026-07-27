@@ -172,6 +172,79 @@ class TradeArchiveTests(unittest.TestCase):
         self.assertEqual(atl_pick["draft_pick_id"], bos_pick["draft_pick_id"])
         self.assertEqual("2027 BOS 1st", atl_pick["label"])
 
+    def test_trade_archive_read_enriches_pick_refs_with_historical_selection(self) -> None:
+        timestamp = now_iso()
+        with connect_test_db(self.db_path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO draft_picks (
+                    draft_year, draft_round, original_team, created_at, updated_at
+                ) VALUES (2019, '2nd', 'BOS', ?, ?)
+                """,
+                (timestamp, timestamp),
+            )
+            draft_pick_id = int(cur.lastrowid)
+            conn.execute(
+                """
+                INSERT INTO draft_history_selections (
+                    draft_year, pick_number, draft_round, round_pick_number,
+                    player_name, selecting_team_code, original_team_code, draft_pick_id,
+                    notes, imported_at, created_at, updated_at
+                ) VALUES (2019, 59, '2nd', 29, 'Shamorie Ponds', 'ATL', 'BOS', ?, NULL, ?, ?, ?)
+                """,
+                (draft_pick_id, timestamp, timestamp, timestamp),
+            )
+            conn.commit()
+
+        result = TradeArchiveService(self.db._trade_archive_repository).import_trades(
+            [
+                {
+                    "trade_id": "history-pick-1",
+                    "date": "2018-11-07",
+                    "season": 2018,
+                    "teams": [
+                        {
+                            "code": "ATL",
+                            "sent": {},
+                            "received": {
+                                "picks": [
+                                    {
+                                        "label": "2ª ronda BOS 2019",
+                                        "draft_year": 2019,
+                                        "draft_round": "2nd",
+                                        "original_team_code": "BOS",
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "code": "BOS",
+                            "sent": {
+                                "picks": [
+                                    {
+                                        "label": "2ª ronda BOS 2019",
+                                        "draft_pick_id": draft_pick_id,
+                                    }
+                                ]
+                            },
+                            "received": {},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        self.assertTrue(result["ok"])
+        listed = self.db._trade_archive_repository.list(season_year=2018)["trades"][0]
+        movements = {row["team_code"]: row for row in listed["team_movements"]}
+        received_pick = movements["ATL"]["received"]["picks"][0]
+        sent_pick = movements["BOS"]["sent"]["picks"][0]
+        self.assertEqual("2019-2ND-BOS", received_pick["draft_selection"]["canonical_id"])
+        self.assertEqual(59, received_pick["draft_selection"]["pick_number"])
+        self.assertEqual("Shamorie Ponds", received_pick["draft_selection"]["player_name"])
+        self.assertEqual("ATL", received_pick["draft_selection"]["selecting_team_code"])
+        self.assertEqual(received_pick["draft_selection"], sent_pick["draft_selection"])
+
     def test_trade_archive_uses_timeline_gm_when_import_has_no_override(self) -> None:
         with connect_test_db(self.db_path) as conn:
             timestamp = now_iso()
