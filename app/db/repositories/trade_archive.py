@@ -36,6 +36,126 @@ class TradeArchiveRepository(LeagueRepository):
         return json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True)
 
     @staticmethod
+    def _normalize_pick_round(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"2", "2nd", "second", "segunda", "segunda ronda"}:
+            return "2nd"
+        return "1st"
+
+    @staticmethod
+    def _canonical_pick_id(draft_year: Any, draft_round: Any, original_team: Any) -> Optional[str]:
+        year = parse_int(draft_year)
+        team = normalize_team_code(original_team)
+        if year is None or not team:
+            return None
+        round_token = "2ND" if TradeArchiveRepository._normalize_pick_round(draft_round) == "2nd" else "1ST"
+        return f"{int(year)}-{round_token}-{team}"
+
+    def _resolve_draft_pick_reference(
+        self,
+        conn: sqlite3.Connection,
+        item: Any,
+        *,
+        timestamp: str,
+    ) -> Any:
+        if not isinstance(item, dict):
+            return item
+        has_pick_ref = any(
+            key in item
+            for key in (
+                "draft_pick_id",
+                "draft_year",
+                "year",
+                "draft_round",
+                "round",
+                "original_team_code",
+                "original_team",
+                "original_owner",
+            )
+        )
+        if not has_pick_ref:
+            return item
+
+        draft_pick_id = parse_int(item.get("draft_pick_id"))
+        if draft_pick_id is not None:
+            row = conn.execute(
+                "SELECT id, draft_year, draft_round, original_team FROM draft_picks WHERE id = ?",
+                (int(draft_pick_id),),
+            ).fetchone()
+            if not row:
+                raise ValueError("draft_pick_not_found")
+            resolved = dict(item)
+            resolved.update(
+                {
+                    "draft_pick_id": int(row["id"]),
+                    "draft_year": int(row["draft_year"]),
+                    "draft_round": row["draft_round"],
+                    "original_team_code": row["original_team"],
+                    "canonical_id": self._canonical_pick_id(row["draft_year"], row["draft_round"], row["original_team"]),
+                }
+            )
+            if not str(resolved.get("label") or "").strip():
+                resolved["label"] = resolved["canonical_id"]
+            return resolved
+
+        draft_year = parse_int(item.get("draft_year") if "draft_year" in item else item.get("year"))
+        draft_round = self._normalize_pick_round(item.get("draft_round") if "draft_round" in item else item.get("round"))
+        original_team = normalize_team_code(
+            item.get("original_team_code")
+            or item.get("original_team")
+            or item.get("original_owner")
+        )
+        if draft_year is None or not original_team:
+            raise ValueError("invalid_draft_pick_reference")
+        conn.execute(
+            """INSERT INTO draft_picks (
+                   draft_year, draft_round, original_team, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(draft_year, draft_round, original_team) DO UPDATE SET
+                   updated_at = excluded.updated_at""",
+            (int(draft_year), draft_round, original_team, timestamp, timestamp),
+        )
+        row = conn.execute(
+            """SELECT id FROM draft_picks
+               WHERE draft_year = ? AND draft_round = ? AND original_team = ?""",
+            (int(draft_year), draft_round, original_team),
+        ).fetchone()
+        if not row:
+            raise ValueError("draft_pick_not_found")
+        canonical_id = self._canonical_pick_id(draft_year, draft_round, original_team)
+        resolved = dict(item)
+        resolved.update(
+            {
+                "draft_pick_id": int(row["id"]),
+                "draft_year": int(draft_year),
+                "draft_round": draft_round,
+                "original_team_code": original_team,
+                "canonical_id": canonical_id,
+            }
+        )
+        if not str(resolved.get("label") or "").strip():
+            resolved["label"] = canonical_id
+        return resolved
+
+    def _resolve_movement_references(
+        self,
+        conn: sqlite3.Connection,
+        movement: Any,
+        *,
+        timestamp: str,
+    ) -> Dict[str, Any]:
+        if not isinstance(movement, dict):
+            return {}
+        resolved = dict(movement)
+        picks = movement.get("picks")
+        if isinstance(picks, list):
+            resolved["picks"] = [
+                self._resolve_draft_pick_reference(conn, item, timestamp=timestamp)
+                for item in picks
+            ]
+        return resolved
+
+    @staticmethod
     def _asset_count(movement: Dict[str, Any]) -> int:
         if not isinstance(movement, dict):
             return 0
@@ -306,8 +426,8 @@ class TradeArchiveRepository(LeagueRepository):
                     team_code,
                     str(movement.get("team_name") or "").strip() or None,
                     str(movement.get("gm_name") or movement.get("gm") or "").strip() or None,
-                    self._encode_json(movement.get("sent") if isinstance(movement.get("sent"), dict) else {}),
-                    self._encode_json(movement.get("received") if isinstance(movement.get("received"), dict) else {}),
+                    self._encode_json(self._resolve_movement_references(conn, movement.get("sent"), timestamp=ts)),
+                    self._encode_json(self._resolve_movement_references(conn, movement.get("received"), timestamp=ts)),
                     ts,
                     ts,
                 ),

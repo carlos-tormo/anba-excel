@@ -123,6 +123,55 @@ class TradeArchiveTests(unittest.TestCase):
         self.assertEqual("Imported ATL GM", result["created"][0]["team_movements"][0]["gm_name"])
         self.assertIsNone(result["created"][0]["team_movements"][1]["gm_name"])
 
+    def test_trade_archive_import_enriches_structured_draft_pick_references(self) -> None:
+        result = TradeArchiveService(self.db._trade_archive_repository).import_trades(
+            [
+                {
+                    "trade_id": "pick-ref-1",
+                    "date": "2024-08-10",
+                    "season": 2024,
+                    "teams": [
+                        {
+                            "code": "ATL",
+                            "sent": {"players": ["A"]},
+                            "received": {
+                                "picks": [
+                                    {
+                                        "label": "2027 BOS 1st",
+                                        "draft_year": 2027,
+                                        "draft_round": "1st",
+                                        "original_team_code": "BOS",
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "code": "BOS",
+                            "sent": {
+                                "picks": [
+                                    {
+                                        "draft_year": 2027,
+                                        "draft_round": "1st",
+                                        "original_team_code": "BOS",
+                                    }
+                                ]
+                            },
+                            "received": {"players": ["A"]},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        self.assertTrue(result["ok"])
+        movements = {row["team_code"]: row for row in result["created"][0]["team_movements"]}
+        atl_pick = movements["ATL"]["received"]["picks"][0]
+        bos_pick = movements["BOS"]["sent"]["picks"][0]
+        self.assertEqual("2027-1ST-BOS", atl_pick["canonical_id"])
+        self.assertEqual("2027-1ST-BOS", bos_pick["canonical_id"])
+        self.assertEqual(atl_pick["draft_pick_id"], bos_pick["draft_pick_id"])
+        self.assertEqual("2027 BOS 1st", atl_pick["label"])
+
     def test_trade_archive_uses_timeline_gm_when_import_has_no_override(self) -> None:
         with connect_test_db(self.db_path) as conn:
             timestamp = now_iso()

@@ -8187,7 +8187,10 @@ function renderDraftHistoryTable() {
                 <td class="draft-order-number">#${escapeHtml(row.pick_number || '')}</td>
                 <td><strong>${escapeHtml(row.player_name || '—')}</strong></td>
                 <td>${draftOrderTeamHtml(row.selecting_team_code, row.selecting_team_name)}</td>
-                <td>${draftOrderTeamHtml(row.original_team_code, row.original_team_name)}</td>
+                <td>
+                  ${draftOrderTeamHtml(row.original_team_code, row.original_team_name)}
+                  ${row.canonical_id ? `<small>${escapeHtml(row.canonical_id)}</small>` : ''}
+                </td>
               </tr>
             `).join('')}
           </tbody>

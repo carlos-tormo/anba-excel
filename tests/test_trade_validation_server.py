@@ -949,6 +949,7 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual(["BOS"], rows_by_team["DAL"]["second"]["holder_team_codes"])
         self.assertEqual([pick_id], rows_by_team["DAL"]["second"]["asset_ids"])
         self.assertEqual("2028-2ND-DAL", rows_by_team["DAL"]["second"]["canonical_id"])
+        self.assertIsInstance(rows_by_team["DAL"]["second"]["draft_pick_id"], int)
 
     def test_move_summaries_reset_by_season(self) -> None:
         with connect_test_db(self.db_path) as conn:

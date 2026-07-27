@@ -656,7 +656,7 @@
       <div id="tradeArchiveAdminControls" class="trade-archive-admin-controls">
         <details class="trade-archive-import-guide">
           <summary>Formato JSON soportado</summary>
-          <p>Puedes pegar un array de traspasos o un objeto con la propiedad <code>trades</code>. Cada traspaso necesita fecha, temporada y al menos dos equipos. <code>gm_name</code> es opcional.</p>
+          <p>Puedes pegar un array de traspasos o un objeto con la propiedad <code>trades</code>. Cada traspaso necesita fecha, temporada y al menos dos equipos. <code>gm_name</code> es opcional. Los picks pueden seguir siendo texto, o pueden incluir <code>draft_year</code>, <code>draft_round</code> y <code>original_team_code</code> para enlazarlos con su identidad canónica.</p>
           <pre><code>[
   {
     "trade_id": "2026-001",
@@ -667,12 +667,12 @@
         "team_code": "ATL",
         "gm_name": "GM Atlanta",
         "sent": { "players": ["Jugador A"] },
-        "received": { "picks": ["2027 BOS 1st"] }
+        "received": { "picks": [{ "label": "2027 BOS 1st", "draft_year": 2027, "draft_round": "1st", "original_team_code": "BOS" }] }
       },
       {
         "team_code": "BOS",
         "gm_name": "GM Boston",
-        "sent": { "picks": ["2027 BOS 1st"] },
+        "sent": { "picks": [{ "label": "2027 BOS 1st", "draft_year": 2027, "draft_round": "1st", "original_team_code": "BOS" }] },
         "received": { "players": ["Jugador A"] }
       }
     ]

@@ -211,6 +211,11 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('accept="application/json,.json"', source)
         self.assertIn('id="tradeArchiveImportErrors"', source)
         self.assertIn("Formato JSON soportado", source)
+        self.assertIn("draft_year", source)
+        self.assertIn("original_team_code", source)
+        archive_js = web_file("trades_archive.js")
+        self.assertIn("function assetMeta", archive_js)
+        self.assertIn("canonical_id", archive_js)
 
     def test_cartera_view_is_frontend_gated_to_admin_and_coadmin(self) -> None:
         source = web_file("guest.js")

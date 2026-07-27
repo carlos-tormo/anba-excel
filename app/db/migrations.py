@@ -1645,6 +1645,7 @@ class DatabaseMigrationsMixin:
                         player_name TEXT NOT NULL CHECK(length(trim(player_name)) > 0),
                         selecting_team_code TEXT NOT NULL REFERENCES teams(code) ON UPDATE CASCADE,
                         original_team_code TEXT NOT NULL REFERENCES teams(code) ON UPDATE CASCADE,
+                        draft_pick_id INTEGER REFERENCES draft_picks(id) ON DELETE SET NULL,
                         notes TEXT,
                         imported_at TEXT NOT NULL,
                         created_at TEXT NOT NULL,
@@ -1653,6 +1654,12 @@ class DatabaseMigrationsMixin:
                     )
                     """
                 )
+                draft_history_cols = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(draft_history_selections)").fetchall()
+                }
+                if "draft_pick_id" not in draft_history_cols:
+                    conn.execute("ALTER TABLE draft_history_selections ADD COLUMN draft_pick_id INTEGER")
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS draft_live_state (
@@ -1890,6 +1897,7 @@ class DatabaseMigrationsMixin:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_gm_history_entity ON team_gm_history(gm_entity_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_order_year_round ON draft_order(draft_year, draft_round, pick_number)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_history_year ON draft_history_selections(draft_year, pick_number)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_history_pick_identity ON draft_history_selections(draft_pick_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_draft_live_selections_selected_at ON draft_live_selections(selected_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_team_economy_season ON team_economy(season_year)")
                 conn.execute(
@@ -2431,6 +2439,7 @@ class DatabaseMigrationsMixin:
                 self._migrate_legacy_dead_cap_assets(conn)
                 self._backfill_dead_contract_profiles(conn)
                 self._backfill_draft_pick_identity(conn)
+                self._backfill_draft_history_pick_identity(conn)
                 self._backfill_player_transactions(conn)
                 self._backfill_player_salary_history_from_snapshots(conn)
                 current_year_row = conn.execute("SELECT value FROM app_settings WHERE key = 'current_year'").fetchone()
@@ -2491,6 +2500,46 @@ class DatabaseMigrationsMixin:
             now = now_iso()
             for row in rows:
                 self._migration_sync_draft_pick_asset_identity(conn, row["id"], now)
+
+    def _backfill_draft_history_pick_identity(self, conn: sqlite3.Connection) -> None:
+            if not self._migration_table_exists(conn, "draft_history_selections"):
+                return
+            if not self._migration_table_exists(conn, "draft_picks"):
+                return
+            history_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(draft_history_selections)").fetchall()
+            }
+            if "draft_pick_id" not in history_cols:
+                return
+            rows = conn.execute(
+                """
+                SELECT id, draft_year, draft_round, original_team_code, created_at, updated_at
+                FROM draft_history_selections
+                WHERE draft_pick_id IS NULL
+                ORDER BY draft_year, pick_number
+                """
+            ).fetchall()
+            now = now_iso()
+            for row in rows:
+                timestamp = row["created_at"] or row["updated_at"] or now
+                draft_pick_id = self._migration_upsert_draft_pick_identity(
+                    conn,
+                    row["draft_year"],
+                    row["draft_round"],
+                    row["original_team_code"],
+                    timestamp,
+                )
+                if draft_pick_id is None:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE draft_history_selections
+                    SET draft_pick_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (draft_pick_id, now, row["id"]),
+                )
 
     def _migrate_legacy_dead_cap_assets(self, conn: sqlite3.Connection) -> None:
             asset_cols = {row["name"] for row in conn.execute("PRAGMA table_info(assets)").fetchall()}

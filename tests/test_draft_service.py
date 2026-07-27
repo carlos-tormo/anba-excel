@@ -103,6 +103,19 @@ class DraftServiceTests(unittest.TestCase):
         self.assertEqual("2nd", history["selections"][30]["draft_round"])
         self.assertEqual(1, history["selections"][30]["round_pick_number"])
         self.assertEqual("Rookie 1", history["selections"][0]["player_name"])
+        self.assertIsInstance(history["selections"][0]["draft_pick_id"], int)
+        self.assertEqual("2019-1ST-BKN", history["selections"][0]["canonical_id"])
+        self.assertEqual("2019-2ND-BKN", history["selections"][30]["canonical_id"])
+        with connect_test_db(self.db_path) as conn:
+            linked = conn.execute(
+                """
+                SELECT p.draft_year, p.draft_round, p.original_team
+                FROM draft_history_selections h
+                JOIN draft_picks p ON p.id = h.draft_pick_id
+                WHERE h.draft_year = 2019 AND h.pick_number = 1
+                """
+            ).fetchone()
+        self.assertEqual((2019, "1st", "BKN"), tuple(linked))
 
     def test_historical_draft_import_requires_60_picks_from_2019_to_past_years(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid_draft_year"):

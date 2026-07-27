@@ -91,7 +91,7 @@ class DraftRepository(LeagueRepository):
                        COALESCE(selecting.name, h.selecting_team_code) AS selecting_team_name,
                        h.original_team_code,
                        COALESCE(original.name, h.original_team_code) AS original_team_name,
-                       h.notes, h.imported_at, h.created_at, h.updated_at
+                       h.draft_pick_id, h.notes, h.imported_at, h.created_at, h.updated_at
                 FROM draft_history_selections h
                 LEFT JOIN teams selecting ON selecting.code = h.selecting_team_code
                 LEFT JOIN teams original ON original.code = h.original_team_code
@@ -100,7 +100,15 @@ class DraftRepository(LeagueRepository):
                 """,
                 (int(year),),
             ).fetchall()
-        selections = [dict(row) for row in rows]
+        selections = []
+        for row in rows:
+            selection = dict(row)
+            selection["canonical_id"] = self._canonical_pick_id(
+                selection.get("draft_year"),
+                selection.get("draft_round"),
+                selection.get("original_team_code"),
+            )
+            selections.append(selection)
         return {
             "draft_year": int(year),
             "mode": "history",
@@ -108,6 +116,44 @@ class DraftRepository(LeagueRepository):
             "selection_count": len(selections),
             "selections": selections,
         }
+
+    @staticmethod
+    def _canonical_pick_id(draft_year: Any, draft_round: Any, original_team: Any) -> Optional[str]:
+        year = parse_int(draft_year)
+        team = str(original_team or "").strip().upper()
+        round_value = "2ND" if str(draft_round or "").strip().lower() in {"2", "2nd", "second"} else "1ST"
+        if year is None or not team:
+            return None
+        return f"{int(year)}-{round_value}-{team}"
+
+    def _upsert_draft_pick_identity(
+        self,
+        conn: Any,
+        draft_year: Any,
+        draft_round: Any,
+        original_team: Any,
+        timestamp: str,
+    ) -> Optional[int]:
+        operations = self._read_operations()
+        year = parse_int(draft_year)
+        round_value = operations.normalize_pick_round(draft_round)
+        team_code = operations.normalize_team_code(original_team)
+        if year is None or round_value not in {"1st", "2nd"} or not team_code:
+            return None
+        conn.execute(
+            """INSERT INTO draft_picks (
+                   draft_year, draft_round, original_team, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(draft_year, draft_round, original_team) DO UPDATE SET
+                   updated_at = excluded.updated_at""",
+            (int(year), round_value, team_code, timestamp, timestamp),
+        )
+        row = conn.execute(
+            """SELECT id FROM draft_picks
+               WHERE draft_year = ? AND draft_round = ? AND original_team = ?""",
+            (int(year), round_value, team_code),
+        ).fetchone()
+        return int(row["id"]) if row else None
 
     def _history_groups_from_payload(self, payload: Any) -> Dict[int, List[Dict[str, Any]]]:
         if not payload:
@@ -232,18 +278,26 @@ class DraftRepository(LeagueRepository):
             for draft_year, rows in normalized_by_year.items():
                 conn.execute("DELETE FROM draft_history_selections WHERE draft_year = ?", (int(draft_year),))
                 for row in rows:
+                    draft_pick_id = self._upsert_draft_pick_identity(
+                        conn,
+                        row["draft_year"],
+                        row["draft_round"],
+                        row["original_team_code"],
+                        timestamp,
+                    )
                     conn.execute(
                         """
                         INSERT INTO draft_history_selections (
                             draft_year, pick_number, draft_round, round_pick_number,
                             player_name, selecting_team_code, original_team_code, notes,
-                            imported_at, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            draft_pick_id, imported_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             row["draft_year"], row["pick_number"], row["draft_round"],
                             row["round_pick_number"], row["player_name"], row["selecting_team_code"],
-                            row["original_team_code"], row["notes"], timestamp, timestamp, timestamp,
+                            row["original_team_code"], row["notes"], draft_pick_id,
+                            timestamp, timestamp, timestamp,
                         ),
                     )
                     imported_count += 1
@@ -259,6 +313,9 @@ class DraftRepository(LeagueRepository):
     def list_pick_ledger(self, draft_year: Any = None) -> Dict[str, Any]:
         operations = self._read_operations()
         year = draft_year if draft_year is not None else self.current_year()
+        def canonical_key(owner_code: str, draft_round: str) -> str:
+            return f"{int(year)}-{'1ST' if draft_round == '1st' else '2ND'}-{owner_code}"
+
         with self.db.connect() as conn:
             teams = [dict(row) for row in conn.execute("SELECT id, code, name FROM teams ORDER BY code").fetchall()]
             team_names = {
@@ -290,9 +347,17 @@ class DraftRepository(LeagueRepository):
                     (int(year),),
                 ).fetchall()
             ]
-
-        def canonical_key(owner_code: str, draft_round: str) -> str:
-            return f"{int(year)}-{'1ST' if draft_round == '1st' else '2ND'}-{owner_code}"
+            identity_rows = conn.execute(
+                """SELECT id, draft_round, original_team
+                   FROM draft_picks
+                   WHERE draft_year = ?""",
+                (int(year),),
+            ).fetchall()
+            draft_pick_ids = {
+                canonical_key(str(row["original_team"] or "").strip().upper(), operations.normalize_pick_round(row["draft_round"])): int(row["id"])
+                for row in identity_rows
+                if row["original_team"]
+            }
 
         def original_owner_codes(asset: Dict[str, Any]) -> List[str]:
             pick_type = operations.normalize_pick_type(asset.get("draft_pick_type"))
@@ -369,6 +434,7 @@ class DraftRepository(LeagueRepository):
                         sold_to_codes.append(code)
             return {
                 "canonical_id": key,
+                "draft_pick_id": draft_pick_ids.get(key),
                 "round": draft_round,
                 "original_team_code": owner_code,
                 "original_team_name": team_names.get(owner_code, owner_code),

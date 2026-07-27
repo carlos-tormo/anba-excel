@@ -105,9 +105,21 @@
 
   function assetLabel(value) {
     if (value && typeof value === 'object') {
-      return text(value.name || value.label || value.title || value.detail || JSON.stringify(value));
+      return text(value.name || value.label || value.title || value.detail || value.canonical_id || JSON.stringify(value));
     }
     return text(value);
+  }
+
+  function assetMeta(value) {
+    if (!value || typeof value !== 'object') return '';
+    const parts = [];
+    if (value.canonical_id) parts.push(text(value.canonical_id));
+    else if (value.draft_year && value.draft_round && value.original_team_code) {
+      const round = text(value.draft_round) === '2nd' ? '2ND' : '1ST';
+      parts.push(`${text(value.draft_year)}-${round}-${text(value.original_team_code).toUpperCase()}`);
+    }
+    if (value.draft_pick_id) parts.push(`Pick ID ${text(value.draft_pick_id)}`);
+    return parts.join(' · ');
   }
 
   function assetImageUrl(value) {
@@ -129,7 +141,7 @@
       const values = Array.isArray(row[key]) ? row[key] : [];
       values.forEach((value) => {
         const name = assetLabel(value);
-        if (name) items.push({ label, kind, name, imageUrl: assetImageUrl(value) });
+        if (name) items.push({ label, kind, name, meta: assetMeta(value), imageUrl: assetImageUrl(value) });
       });
     });
     if (row.cash_amount) {
@@ -155,6 +167,7 @@
     const textWrap = el(row, 'div', { className: 'trade-archive-asset-text' });
     el(textWrap, 'strong', { text: item.name });
     el(textWrap, 'span', { text: item.label });
+    if (item.meta) el(textWrap, 'small', { text: item.meta });
   }
 
   function addAssetSection(parent, title, movement, variant) {
@@ -185,7 +198,9 @@
       const values = Array.isArray(row[key]) ? row[key] : [];
       values.forEach((value) => {
         added = true;
-        el(list, 'li', { text: `${label}: ${text(value)}` });
+        const itemText = assetLabel(value);
+        const meta = assetMeta(value);
+        el(list, 'li', { text: `${label}: ${itemText}${meta ? ` · ${meta}` : ''}` });
       });
     });
     if (row.cash_amount) {
