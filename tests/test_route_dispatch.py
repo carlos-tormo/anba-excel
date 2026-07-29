@@ -1258,6 +1258,38 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertEqual(result, response.payload)
 
+    def test_archive_draft_live_history_audits_and_returns_route_response(self):
+        result = {
+            "ok": True,
+            "archived": True,
+            "draft_year": 2026,
+            "archived_count": 60,
+            "expected_count": 60,
+            "command_id": "draft-history:2026:archive-live",
+            "validation_result": "valid",
+            "entity_versions": {"archived_count": 60, "draft_year": 2026},
+        }
+        draft = SimpleNamespace(archive_live_history=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(draft=draft),
+        )
+        payload = {"draft_year": 2026}
+
+        matched = dispatch_routes(handler, urlparse("/api/admin/draft-history/archive-live"), POST_ROUTES, payload)
+
+        self.assertTrue(matched)
+        draft.archive_live_history.assert_called_once_with(2026, require_complete=True)
+        handler._authorize.assert_called_once_with("admin.draft_history.write")
+        handler._require_csrf.assert_called_once()
+        handler._log_admin_action.assert_called_once()
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual(result, response.payload)
+
     def test_create_salary_history_audits_and_returns_route_response(self):
         row = {"id": 44, "team_code": "ATL", "season_year": 2026}
         players = SimpleNamespace(create_salary_history=Mock(return_value=row))

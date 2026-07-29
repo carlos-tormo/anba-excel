@@ -226,6 +226,7 @@ class DraftServiceTests(unittest.TestCase):
             "update_draft_live_settings", "control_draft_live", "submit_draft_live_pick",
             "create_gm_draft_pick_request", "get_gm_draft_pick_request",
             "mark_gm_draft_pick_request_decided", "process_draft_results", "import_draft_history",
+            "archive_draft_live_history",
         ):
             setattr(self.db, name, unexpected_delegate)
 

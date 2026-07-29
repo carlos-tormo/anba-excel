@@ -8382,6 +8382,7 @@ function renderDraftOrder() {
   document.getElementById('addDraftOrderFirstBtn')?.classList.toggle('section-hidden', historical);
   document.getElementById('addDraftOrderSecondBtn')?.classList.toggle('section-hidden', historical);
   document.getElementById('processDraftBtn')?.classList.toggle('section-hidden', historical);
+  document.getElementById('archiveDraftHistoryBtn')?.classList.toggle('section-hidden', historical);
   const historyBoard = document.getElementById('draftHistoryBoard');
   if (historical) {
     if (historyBoard) historyBoard.innerHTML = renderDraftHistoryTable();
@@ -13953,17 +13954,37 @@ async function init() {
       const rights = (result.created_player_rights || []).length;
       const errors = result.errors || [];
       const skipped = (result.skipped || []).length;
+      const archive = result.draft_history_archive || {};
+      const archiveLine = archive.archived
+        ? `\nHistorial archivado: ${archive.archived_count || 0} picks`
+        : `\nHistorial archivado: no (${archive.reason || 'draft_incomplete'})`;
       if (errors.length) {
         const errorLines = errors.map((err) => {
           const detail = err.setting_key ? ` (${err.setting_key})` : '';
           return `#${err.pick_number || '?'} ${err.team_code || ''}: ${err.error}${detail}`;
         });
-        alert(`Draft procesado con errores.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}\nErrores: ${errorLines.join('\n')}`);
+        alert(`Draft procesado con errores.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}${archiveLine}\nErrores: ${errorLines.join('\n')}`);
       } else {
-        alert(`Draft procesado.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}`);
+        alert(`Draft procesado.\n\nCap holds creados: ${holds}\nDerechos creados: ${rights}\nOmitidos: ${skipped}${archiveLine}`);
       }
     } catch (err) {
       alert(`Draft processing failed: ${err.message}`);
+    }
+  });
+  document.getElementById('archiveDraftHistoryBtn')?.addEventListener('click', async () => {
+    const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart() + 1);
+    if (!confirm(`¿Archivar el Draft ${draftYear} en el historial?\n\nRequiere que existan las 60 selecciones y reemplazará el historial ya guardado para ese año.`)) return;
+    try {
+      const result = await api('/api/admin/draft-history/archive-live', {
+        method: 'POST',
+        body: JSON.stringify({ draft_year: draftYear }),
+      });
+      const archived = result.archived_count || 0;
+      alert(`Draft ${draftYear} archivado.\n\nSelecciones guardadas: ${archived}`);
+      await refreshAdminLogsSafe();
+      await loadDraftOrder(draftYear);
+    } catch (err) {
+      alert(`No se pudo archivar el draft: ${err.message}`);
     }
   });
   document.getElementById('addFreeAgentBtn').addEventListener('click', () => {

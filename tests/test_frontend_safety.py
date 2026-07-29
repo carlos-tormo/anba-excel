@@ -209,8 +209,11 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertNotIn("row.canonical_id", guest[history_render_start:history_render_end])
 
         self.assertIn('id="openDraftHistoryImportBtn"', admin_html)
+        self.assertIn('id="archiveDraftHistoryBtn"', admin_html)
         self.assertIn('id="draftHistoryImportModal"', admin_html)
         self.assertIn("/api/admin/draft-history/import", admin)
+        self.assertIn("/api/admin/draft-history/archive-live", admin)
+        self.assertIn("draft_history_archive", admin)
         self.assertIn("setupDraftHistoryImportControls()", admin)
 
     def test_trade_archive_admin_importer_exposes_json_file_and_error_ui(self) -> None:

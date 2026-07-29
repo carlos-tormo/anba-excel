@@ -70,6 +70,38 @@ class DraftLiveTests(unittest.TestCase):
         except FileNotFoundError:
             pass
 
+    def create_full_draft_order_and_selections(self, draft_year: int = 2026) -> None:
+        for pick in range(4, 31):
+            self.db.create_draft_order_entry(
+                {
+                    "draft_year": draft_year,
+                    "draft_round": "1st",
+                    "pick_number": pick,
+                    "owner_team_code": "ATL" if pick % 2 else "BKN",
+                    "original_team_code": "ATL" if pick % 3 else "BKN",
+                }
+            )
+        for pick in range(31, 61):
+            self.db.create_draft_order_entry(
+                {
+                    "draft_year": draft_year,
+                    "draft_round": "2nd",
+                    "pick_number": pick,
+                    "owner_team_code": "ATL" if pick % 2 else "BKN",
+                    "original_team_code": "BKN" if pick % 3 else "ATL",
+                }
+            )
+        for pick in range(1, 31):
+            self.db.update_setting(f"rookie_scale_{draft_year}_{pick}", "1000000")
+        live_rows = self.db.list_draft_live(draft_year)["draft_order"]
+        for row in live_rows:
+            self.db.submit_draft_live_pick(
+                int(row["id"]),
+                {"option_value": f"Rookie {row['pick_number']}", "advance": False},
+                {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+                is_admin=True,
+            )
+
     def test_draft_live_settings_enable_current_pick_and_options(self) -> None:
         live = self.db.update_draft_live_settings(
             {
@@ -359,6 +391,76 @@ class DraftLiveTests(unittest.TestCase):
         self.assertEqual("Second Rounder", row["label"])
         self.assertEqual(2026, int(row["year"]))
         self.assertIn("Pick #31", row["detail"])
+
+    def test_archive_live_draft_history_requires_complete_sixty_pick_draft(self) -> None:
+        self.db.submit_draft_live_pick(
+            self.first_pick,
+            {"option_value": "Rookie One", "advance": False},
+            {"email": "admin@example.com", "name": "Admin", "role": "admin"},
+            is_admin=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "draft_history_archive_requires_60_picks"):
+            self.db.archive_draft_live_history(2026)
+
+    def test_archive_live_draft_history_copies_completed_live_draft(self) -> None:
+        self.create_full_draft_order_and_selections()
+
+        result = self.db.archive_draft_live_history(2026)
+        result_again = self.db.archive_draft_live_history(2026)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["archived"])
+        self.assertEqual(60, result["archived_count"])
+        self.assertEqual(60, result_again["archived_count"])
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            count = conn.execute(
+                "SELECT COUNT(*) FROM draft_history_selections WHERE draft_year = 2026"
+            ).fetchone()[0]
+            first = conn.execute(
+                """
+                SELECT h.pick_number, h.draft_round, h.round_pick_number, h.player_name,
+                       h.selecting_team_code, h.original_team_code, p.id AS draft_pick_id
+                FROM draft_history_selections h
+                JOIN draft_picks p ON p.id = h.draft_pick_id
+                WHERE h.draft_year = 2026 AND h.pick_number = 1
+                """
+            ).fetchone()
+            thirty_first = conn.execute(
+                """
+                SELECT pick_number, draft_round, round_pick_number, player_name
+                FROM draft_history_selections
+                WHERE draft_year = 2026 AND pick_number = 31
+                """
+            ).fetchone()
+
+        self.assertEqual(60, count)
+        self.assertEqual(1, first["pick_number"])
+        self.assertEqual("1st", first["draft_round"])
+        self.assertEqual(1, first["round_pick_number"])
+        self.assertEqual("Rookie 1", first["player_name"])
+        self.assertEqual("ATL", first["selecting_team_code"])
+        self.assertEqual("ATL", first["original_team_code"])
+        self.assertIsInstance(first["draft_pick_id"], int)
+        self.assertEqual(31, thirty_first["pick_number"])
+        self.assertEqual("2nd", thirty_first["draft_round"])
+        self.assertEqual(1, thirty_first["round_pick_number"])
+
+    def test_process_draft_results_archives_completed_live_draft_history(self) -> None:
+        self.create_full_draft_order_and_selections()
+
+        result = self.db.process_draft_results(2026)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(True, result["draft_history_archive"]["archived"])
+        self.assertEqual(60, result["draft_history_archive"]["archived_count"])
+        with connect_test_db(self.db_path) as conn:
+            history_count = conn.execute(
+                "SELECT COUNT(*) FROM draft_history_selections WHERE draft_year = 2026"
+            ).fetchone()[0]
+
+        self.assertEqual(60, history_count)
 
     def test_process_draft_reports_missing_rookie_scale_salary(self) -> None:
         self.db.submit_draft_live_pick(

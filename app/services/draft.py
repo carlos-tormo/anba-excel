@@ -42,6 +42,17 @@ class DraftService:
         }
         return result
 
+    def archive_live_history(self, draft_year: int, *, require_complete: bool = True) -> Dict[str, Any]:
+        result = self.repository.archive_live_history(draft_year, require_complete=require_complete)
+        year = result.get("draft_year") or draft_year
+        result["command_id"] = f"draft-history:{year}:archive-live"
+        result["validation_result"] = "valid" if result.get("ok") else str(result.get("reason") or "not_archived")
+        result["entity_versions"] = {
+            "archived_count": int(result.get("archived_count") or 0),
+            "draft_year": year,
+        }
+        return result
+
     def list_pick_ledger(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
         return self.repository.list_pick_ledger(draft_year)
 
@@ -76,6 +87,7 @@ class DraftService:
             "created_player_rights": len(result.get("created_player_rights") or []),
             "skipped": len(result.get("skipped") or []),
             "errors": len(result.get("errors") or []),
+            "draft_history_archived_count": int((result.get("draft_history_archive") or {}).get("archived_count") or 0),
         }
         return result
 

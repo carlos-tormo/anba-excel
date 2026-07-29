@@ -1464,6 +1464,9 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
     def process_draft_results(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
         return self._draft_repository.process_results(draft_year)
 
+    def archive_draft_live_history(self, draft_year: int, *, require_complete: bool = True) -> Dict[str, Any]:
+        return self._draft_repository.archive_live_history(draft_year, require_complete=require_complete)
+
     def _attach_option_decisions(self, conn: sqlite3.Connection, players: List[Dict[str, Any]], team_id: int) -> None:
         self._player_repository.attach_option_decisions(conn, players, team_id)
 

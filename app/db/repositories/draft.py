@@ -276,31 +276,7 @@ class DraftRepository(LeagueRepository):
                 normalized_by_year[int(year)] = sorted(normalized_rows, key=lambda item: item["pick_number"])
 
             for draft_year, rows in normalized_by_year.items():
-                conn.execute("DELETE FROM draft_history_selections WHERE draft_year = ?", (int(draft_year),))
-                for row in rows:
-                    draft_pick_id = self._upsert_draft_pick_identity(
-                        conn,
-                        row["draft_year"],
-                        row["draft_round"],
-                        row["original_team_code"],
-                        timestamp,
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO draft_history_selections (
-                            draft_year, pick_number, draft_round, round_pick_number,
-                            player_name, selecting_team_code, original_team_code, notes,
-                            draft_pick_id, imported_at, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            row["draft_year"], row["pick_number"], row["draft_round"],
-                            row["round_pick_number"], row["player_name"], row["selecting_team_code"],
-                            row["original_team_code"], row["notes"], draft_pick_id,
-                            timestamp, timestamp, timestamp,
-                        ),
-                    )
-                    imported_count += 1
+                imported_count += self._replace_history_rows_conn(conn, int(draft_year), rows, timestamp)
                 imported_years.append(int(draft_year))
             conn.commit()
         return {
@@ -309,6 +285,174 @@ class DraftRepository(LeagueRepository):
             "years": sorted(imported_years),
             "expected_per_year": 60,
         }
+
+    def _replace_history_rows_conn(
+        self,
+        conn: Any,
+        draft_year: int,
+        rows: List[Dict[str, Any]],
+        timestamp: str,
+    ) -> int:
+        conn.execute("DELETE FROM draft_history_selections WHERE draft_year = ?", (int(draft_year),))
+        inserted = 0
+        for row in rows:
+            draft_pick_id = self._upsert_draft_pick_identity(
+                conn,
+                row["draft_year"],
+                row["draft_round"],
+                row["original_team_code"],
+                timestamp,
+            )
+            conn.execute(
+                """
+                INSERT INTO draft_history_selections (
+                    draft_year, pick_number, draft_round, round_pick_number,
+                    player_name, selecting_team_code, original_team_code, notes,
+                    draft_pick_id, imported_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["draft_year"], row["pick_number"], row["draft_round"],
+                    row["round_pick_number"], row["player_name"], row["selecting_team_code"],
+                    row["original_team_code"], row.get("notes"), draft_pick_id,
+                    timestamp, timestamp, timestamp,
+                ),
+            )
+            inserted += 1
+        return inserted
+
+    def _archive_live_history_conn(
+        self,
+        conn: Any,
+        draft_year: int,
+        timestamp: str,
+        *,
+        require_complete: bool,
+    ) -> Dict[str, Any]:
+        year = parse_int(draft_year)
+        if year is None or year < 2019 or year > 2100:
+            raise ValueError("invalid_draft_year")
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT d.id AS draft_order_id, d.draft_year, d.draft_round, d.pick_number,
+                       d.owner_team_code, d.original_team_code,
+                       COALESCE(s.selection_text, '') AS selection_text,
+                       COALESCE(s.skipped, 0) AS skipped
+                FROM draft_order d
+                LEFT JOIN draft_live_selections s ON s.draft_order_id = d.id
+                WHERE d.draft_year = ?
+                ORDER BY CASE d.draft_round WHEN '1st' THEN 1 WHEN '2nd' THEN 2 ELSE 3 END,
+                         d.pick_number, d.id
+                """,
+                (int(year),),
+            ).fetchall()
+        ]
+        if len(rows) != 60:
+            result = {
+                "ok": False,
+                "archived": False,
+                "draft_year": int(year),
+                "reason": "draft_history_archive_requires_60_picks",
+                "draft_order_count": len(rows),
+                "expected_count": 60,
+            }
+            if require_complete:
+                raise ValueError("draft_history_archive_requires_60_picks")
+            return result
+
+        normalized_rows: List[Dict[str, Any]] = []
+        missing: List[int] = []
+        skipped: List[int] = []
+        pick_numbers: List[int] = []
+        for row in rows:
+            pick_number = parse_int(row.get("pick_number"))
+            draft_round = self._read_operations().normalize_pick_round(row.get("draft_round"))
+            expected_round = "1st" if pick_number is not None and int(pick_number) <= 30 else "2nd"
+            selection_text = str(row.get("selection_text") or "").strip()
+            if pick_number is None or pick_number < 1 or pick_number > 60 or draft_round != expected_round:
+                result = {
+                    "ok": False,
+                    "archived": False,
+                    "draft_year": int(year),
+                    "reason": "draft_history_archive_invalid_pick_order",
+                    "draft_order_id": row.get("draft_order_id"),
+                    "pick_number": pick_number,
+                    "draft_round": draft_round,
+                }
+                if require_complete:
+                    raise ValueError("draft_history_archive_invalid_pick_order")
+                return result
+            if parse_bool(row.get("skipped")):
+                skipped.append(int(pick_number))
+            if not selection_text:
+                missing.append(int(pick_number))
+            round_pick = int(pick_number) if expected_round == "1st" else int(pick_number) - 30
+            normalized_rows.append(
+                {
+                    "draft_year": int(year),
+                    "pick_number": int(pick_number),
+                    "draft_round": expected_round,
+                    "round_pick_number": round_pick,
+                    "player_name": selection_text,
+                    "selecting_team_code": row.get("owner_team_code"),
+                    "original_team_code": row.get("original_team_code"),
+                    "notes": None,
+                }
+            )
+            pick_numbers.append(int(pick_number))
+
+        if len(set(pick_numbers)) != 60 or set(pick_numbers) != set(range(1, 61)):
+            result = {
+                "ok": False,
+                "archived": False,
+                "draft_year": int(year),
+                "reason": "draft_history_archive_requires_picks_1_to_60",
+                "pick_numbers": sorted(pick_numbers),
+            }
+            if require_complete:
+                raise ValueError("draft_history_archive_requires_picks_1_to_60")
+            return result
+        if missing or skipped:
+            result = {
+                "ok": False,
+                "archived": False,
+                "draft_year": int(year),
+                "reason": "draft_history_archive_incomplete_selections",
+                "missing_pick_numbers": sorted(missing),
+                "skipped_pick_numbers": sorted(skipped),
+            }
+            if require_complete:
+                raise ValueError("draft_history_archive_incomplete_selections")
+            return result
+
+        inserted = self._replace_history_rows_conn(
+            conn,
+            int(year),
+            sorted(normalized_rows, key=lambda item: item["pick_number"]),
+            timestamp,
+        )
+        return {
+            "ok": True,
+            "archived": True,
+            "draft_year": int(year),
+            "archived_count": inserted,
+            "expected_count": 60,
+        }
+
+    def archive_live_history(self, draft_year: Any, *, require_complete: bool = True) -> Dict[str, Any]:
+        year = parse_int(draft_year)
+        if year is None:
+            raise ValueError("invalid_draft_year")
+        timestamp = self._read_operations().now()
+        with self.db.transaction("IMMEDIATE") as conn:
+            return self._archive_live_history_conn(
+                conn,
+                int(year),
+                timestamp,
+                require_complete=require_complete,
+            )
 
     def list_pick_ledger(self, draft_year: Any = None) -> Dict[str, Any]:
         operations = self._read_operations()
@@ -1325,7 +1469,14 @@ class DraftRepository(LeagueRepository):
                                            "selection": selection_text})
                     continue
                 skipped.append({**base_result, "reason": "unsupported_round"})
+            history_archive = self._archive_live_history_conn(
+                conn,
+                int(year),
+                timestamp,
+                require_complete=False,
+            )
             return {"ok": not errors, "draft_year": int(year),
                     "created_cap_holds": created_holds, "created_player_rights": created_rights,
                     "skipped": skipped, "errors": errors,
+                    "draft_history_archive": history_archive,
                     "draft_live": self._live_payload(conn, int(year))}

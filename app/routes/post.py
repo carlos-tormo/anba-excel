@@ -99,6 +99,32 @@ def process_draft_live(handler: Any, _parsed: ParseResult, payload: Optional[Dic
     return json_response(200, result)
 
 
+def archive_draft_live_history(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    if not handler._authorize("admin.draft_history.write") or not handler._require_csrf():
+        return
+    draft_year = parse_int(str(payload.get("draft_year") or "")) or None
+    try:
+        result = handler.app.draft.archive_live_history(draft_year, require_complete=True)
+    except ValueError as err:
+        return error_response(400, str(err) or "invalid_draft_history_archive")
+    handler._log_admin_action(
+        "archive",
+        "draft_history",
+        str(result.get("draft_year") or ""),
+        None,
+        {
+            "draft_year": result.get("draft_year"),
+            "archived_count": result.get("archived_count"),
+            "expected_count": result.get("expected_count"),
+        },
+        command_id=result.get("command_id"),
+        validation_result=result.get("validation_result"),
+        entity_versions=result.get("entity_versions"),
+    )
+    return json_response(200, result)
+
+
 def submit_draft_live_pick(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._require_csrf():
@@ -171,6 +197,13 @@ POST_ROUTES = (
         "/api/draft-live/process",
         process_draft_live,
         permission="admin.draft_live.write",
+        csrf=True,
+        mutates_league_state=True,
+    ),
+    exact_route(
+        "/api/admin/draft-history/archive-live",
+        archive_draft_live_history,
+        permission="admin.draft_history.write",
         csrf=True,
         mutates_league_state=True,
     ),
