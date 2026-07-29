@@ -8382,7 +8382,7 @@ function renderDraftOrder() {
   document.getElementById('addDraftOrderFirstBtn')?.classList.toggle('section-hidden', historical);
   document.getElementById('addDraftOrderSecondBtn')?.classList.toggle('section-hidden', historical);
   document.getElementById('processDraftBtn')?.classList.toggle('section-hidden', historical);
-  document.getElementById('archiveDraftHistoryBtn')?.classList.toggle('section-hidden', historical);
+  document.getElementById('archiveDraftHistoryBtn')?.classList.toggle('section-hidden', false);
   const historyBoard = document.getElementById('draftHistoryBoard');
   if (historical) {
     if (historyBoard) historyBoard.innerHTML = renderDraftHistoryTable();

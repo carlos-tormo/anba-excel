@@ -213,6 +213,7 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn('id="draftHistoryImportModal"', admin_html)
         self.assertIn("/api/admin/draft-history/import", admin)
         self.assertIn("/api/admin/draft-history/archive-live", admin)
+        self.assertIn("archiveDraftHistoryBtn')?.classList.toggle('section-hidden', false)", admin)
         self.assertIn("draft_history_archive", admin)
         self.assertIn("setupDraftHistoryImportControls()", admin)
 
