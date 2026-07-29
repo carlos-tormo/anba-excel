@@ -8139,6 +8139,14 @@ function draftYearOptions() {
   return Array.from(years).sort((a, b) => a - b);
 }
 
+function draftYearBounds() {
+  const options = draftYearOptions();
+  return {
+    min: options[0] || 2019,
+    max: options[options.length - 1] || currentSeasonStart() + 7,
+  };
+}
+
 function currentDraftYear() {
   return currentSeasonStart() + 1;
 }
@@ -8148,16 +8156,33 @@ function isHistoricalDraftYear(draftYear) {
 }
 
 function renderDraftYearSelect(draftYear) {
-  const select = document.getElementById('draftYearSelect');
-  if (!select) return;
+  const navigator = document.getElementById('draftYearNavigator');
+  if (!navigator) return;
   const selected = Number(draftYear || state.draftOrder?.draft_year || currentSeasonStart() + 1);
-  select.innerHTML = draftYearOptions()
-    .map((year) => `<option value="${escapeHtml(year)}"${year === selected ? ' selected' : ''}>${escapeHtml(year)}</option>`)
-    .join('');
-  select.value = String(selected);
-  select.onchange = () => {
-    loadDraftOrder(Number(select.value || 0)).catch((err) => alert(`No se pudo cargar el draft: ${err.message}`));
-  };
+  const bounds = draftYearBounds();
+  const clamp = (year) => Math.min(bounds.max, Math.max(bounds.min, Number(year || selected)));
+  const years = [];
+  for (let year = selected - 2; year <= selected + 2; year += 1) {
+    if (year >= bounds.min && year <= bounds.max) years.push(year);
+  }
+  navigator.innerHTML = `
+    <button type="button" class="draft-year-nav-arrow" data-draft-year-nav="${escapeHtml(clamp(selected - 5))}" aria-label="Ver cinco drafts anteriores">&lt;</button>
+    <div class="draft-year-nav-years">
+      ${years.map((year) => `
+        <button type="button" class="draft-year-nav-year${year === selected ? ' is-selected' : ''}" data-draft-year-nav="${escapeHtml(year)}"${year === selected ? ' aria-current="true"' : ''}>
+          ${escapeHtml(year)}
+        </button>
+      `).join('')}
+    </div>
+    <button type="button" class="draft-year-nav-arrow" data-draft-year-nav="${escapeHtml(clamp(selected + 5))}" aria-label="Ver cinco drafts posteriores">&gt;</button>
+  `;
+  navigator.querySelectorAll('[data-draft-year-nav]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const year = Number(button.getAttribute('data-draft-year-nav') || selected);
+      if (year === selected) return;
+      loadDraftOrder(year).catch((err) => alert(`No se pudo cargar el draft: ${err.message}`));
+    });
+  });
 }
 
 function setDraftLiveState(data) {
@@ -11851,7 +11876,7 @@ async function loadLeaguePlayers() {
 }
 
 async function loadDraftOrder(draftYearInput = null) {
-  const draftYear = Number(draftYearInput || document.getElementById('draftYearSelect')?.value || state.draftOrder?.draft_year || currentSeasonStart() + 1);
+  const draftYear = Number(draftYearInput || state.draftOrder?.draft_year || currentSeasonStart() + 1);
   if (isHistoricalDraftYear(draftYear)) {
     const history = await api(`/api/draft-history?year=${encodeURIComponent(draftYear)}`);
     state.draftHistory = history;

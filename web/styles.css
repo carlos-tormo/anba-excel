@@ -4990,6 +4990,49 @@ h1 {
   color: #102a43;
   font-weight: 800;
 }
+.draft-year-navigator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+}
+.draft-year-nav-years {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.draft-year-nav-arrow,
+.draft-year-nav-year {
+  min-width: 34px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #475569;
+  font-size: 0.86rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.draft-year-nav-arrow {
+  min-width: 30px;
+  color: #64748b;
+  font-weight: 900;
+}
+.draft-year-nav-year.is-selected {
+  background: rgba(var(--team-primary-rgb), 0.12);
+  color: #0f172a;
+  font-weight: 950;
+  box-shadow: inset 0 0 0 1px rgba(var(--team-primary-rgb), 0.22);
+}
+.draft-year-nav-arrow:hover,
+.draft-year-nav-year:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+}
 .section-subtitle {
   margin-top: 6px;
   font-size: 0.95rem;
