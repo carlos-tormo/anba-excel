@@ -8034,6 +8034,14 @@ function draftHistoryOriginalPickHtml(row) {
   `;
 }
 
+function draftHistorySelectingTeamHtml(row) {
+  const gmName = String(row?.selecting_gm_name || '').trim();
+  return `
+    ${draftOrderTeamHtml(row?.selecting_team_code, row?.selecting_team_name)}
+    ${gmName ? `<small class="draft-history-gm-line">GM: ${escapeHtml(gmName)}</small>` : ''}
+  `;
+}
+
 function draftLedgerStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase();
   if (normalized === 'ok') return 'Localizada';
@@ -8225,7 +8233,7 @@ function renderDraftHistoryTable() {
               <tr>
                 <td class="draft-order-number">#${escapeHtml(row.pick_number || '')}</td>
                 <td><strong>${escapeHtml(row.player_name || '—')}</strong></td>
-                <td>${draftOrderTeamHtml(row.selecting_team_code, row.selecting_team_name)}</td>
+                <td>${draftHistorySelectingTeamHtml(row)}</td>
                 <td>${draftHistoryOriginalPickHtml(row)}</td>
               </tr>
             `).join('')}
@@ -13656,6 +13664,7 @@ function setDraftHistoryImportStatus(message, tone = '') {
 function openDraftHistoryImportModal() {
   const modal = document.getElementById('draftHistoryImportModal');
   const input = document.getElementById('draftHistoryImportJsonInput');
+  const dateInput = document.getElementById('draftHistoryDateOnlyInput');
   if (input && !String(input.value || '').trim()) {
     const draftYear = Number(state.draftOrder?.draft_year || currentSeasonStart());
     input.value = JSON.stringify({
@@ -13664,6 +13673,10 @@ function openDraftHistoryImportModal() {
         { pick_number: 1, player_name: 'Jugador 1', team_code: 'ATL', original_team_code: 'ATL' },
       ],
     }, null, 2);
+  }
+  if (dateInput) {
+    const selectionDate = state.draftHistory?.selections?.find((row) => row?.selection_date)?.selection_date;
+    dateInput.value = selectionDate ? String(selectionDate).slice(0, 10) : '';
   }
   setDraftHistoryImportStatus('');
   modal?.classList.remove('section-hidden');
@@ -13723,6 +13736,40 @@ async function confirmDraftHistoryImport() {
   }
 }
 
+async function updateDraftHistoryDateOnly() {
+  const dateInput = document.getElementById('draftHistoryDateOnlyInput');
+  const draftDate = String(dateInput?.value || '').trim();
+  if (!draftDate) {
+    setDraftHistoryImportStatus('Selecciona una fecha del draft.', 'error');
+    return;
+  }
+  const draftYear = Number(state.draftOrder?.draft_year || currentDraftYear() - 1);
+  if (!isHistoricalDraftYear(draftYear)) {
+    setDraftHistoryImportStatus('Selecciona primero un año histórico.', 'error');
+    return;
+  }
+  const button = document.getElementById('draftHistoryDateOnlyBtn');
+  if (button) button.disabled = true;
+  setDraftHistoryImportStatus('Actualizando fecha y GM histórico...');
+  try {
+    const result = await api('/api/admin/draft-history/dates', {
+      method: 'POST',
+      body: JSON.stringify({ draft_year: draftYear, draft_date: draftDate }),
+    });
+    setDraftHistoryImportStatus(
+      `Actualizados ${result.updated_count || 0} picks; GM resuelto en ${result.gm_resolved_count || 0}.`,
+      'success',
+    );
+    await refreshAdminLogsSafe();
+    await loadDraftOrder(draftYear);
+  } catch (err) {
+    setDraftHistoryImportStatus('Error actualizando la fecha del draft.', 'error');
+    alert(`Draft history date update failed: ${err.message || err}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function setupDraftHistoryImportControls() {
   document.getElementById('openDraftHistoryImportBtn')?.addEventListener('click', openDraftHistoryImportModal);
   document.getElementById('draftHistoryImportCloseBtn')?.addEventListener('click', closeDraftHistoryImportModal);
@@ -13734,6 +13781,9 @@ function setupDraftHistoryImportControls() {
   });
   document.getElementById('draftHistoryImportConfirmBtn')?.addEventListener('click', () => {
     void confirmDraftHistoryImport();
+  });
+  document.getElementById('draftHistoryDateOnlyBtn')?.addEventListener('click', () => {
+    void updateDraftHistoryDateOnly();
   });
 }
 

@@ -104,6 +104,7 @@ class RouteAuthorizationInventoryTests(unittest.TestCase):
             ("PATCH", "/api/waiting-list/"): ("admin.waiting_list.write", True),
             ("DELETE", "/api/waiting-list/"): ("admin.waiting_list.write", True),
             ("POST", "/api/admin/draft-history/import"): ("admin.draft_history.write", True),
+            ("POST", "/api/admin/draft-history/dates"): ("admin.draft_history.write", True),
             ("POST", "/api/admin/draft-history/archive-live"): ("admin.draft_history.write", True),
             ("POST", "/api/gm-office/depth-chart"): ("gm_office.depth_chart.update", True),
             ("PATCH", "/api/admin/gm-free-agent-offer-requests/"): (

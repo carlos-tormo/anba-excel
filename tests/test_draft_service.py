@@ -24,6 +24,30 @@ def insert_team(conn: sqlite3.Connection, code: str, name: str) -> None:
     )
 
 
+def insert_gm_history(conn: sqlite3.Connection, team_code: str, gm_name: str, start_date: str) -> int:
+    timestamp = now_iso()
+    team = conn.execute("SELECT id FROM teams WHERE code = ?", (team_code,)).fetchone()
+    if not team:
+        raise AssertionError(f"missing team {team_code}")
+    gm = conn.execute(
+        """
+        INSERT INTO gm_identities (
+            entity_type, user_id, display_name, created_at, updated_at
+        ) VALUES ('offline', NULL, ?, ?, ?)
+        """,
+        (gm_name, timestamp, timestamp),
+    )
+    conn.execute(
+        """
+        INSERT INTO team_gm_history (
+            team_id, gm_entity_id, row_order, gm_name, start_date, color, created_at, updated_at
+        ) VALUES (?, ?, 0, ?, ?, NULL, ?, ?)
+        """,
+        (int(team["id"]), int(gm.lastrowid), gm_name, start_date, timestamp, timestamp),
+    )
+    return int(gm.lastrowid)
+
+
 class DraftServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         descriptor, self.db_path = tempfile.mkstemp(prefix="anba-draft-service-", suffix=".db")
@@ -116,6 +140,55 @@ class DraftServiceTests(unittest.TestCase):
                 """
             ).fetchone()
         self.assertEqual((2019, "1st", "BKN"), tuple(linked))
+
+    def test_import_historical_draft_with_date_resolves_selecting_gm_snapshot(self) -> None:
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            atl_gm_id = insert_gm_history(conn, "ATL", "ATL Timeline GM", "2018-07-01")
+            bkn_gm_id = insert_gm_history(conn, "BKN", "BKN Timeline GM", "2018-07-01")
+            conn.commit()
+
+        result = self.service.import_history({
+            "draft_year": 2019,
+            "draft_date": "2019-06-20",
+            "selections": self.historical_rows(2019),
+        })
+
+        self.assertEqual(60, result["imported_count"])
+        history = self.service.list_history(2019)
+        first = history["selections"][0]
+        second = history["selections"][1]
+        self.assertEqual("2019-06-20", first["selection_date"])
+        self.assertEqual(atl_gm_id, first["selecting_gm_entity_id"])
+        self.assertEqual("ATL Timeline GM", first["selecting_gm_name"])
+        self.assertEqual("timeline", first["selecting_gm_source"])
+        self.assertEqual(bkn_gm_id, second["selecting_gm_entity_id"])
+        self.assertEqual("BKN Timeline GM", second["selecting_gm_name"])
+
+    def test_update_historical_draft_date_recomputes_gms_without_reimporting_picks(self) -> None:
+        self.service.import_history({"draft_year": 2019, "selections": self.historical_rows(2019)})
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            insert_gm_history(conn, "ATL", "Old ATL GM", "2018-07-01")
+            atl_new_gm_id = insert_gm_history(conn, "ATL", "New ATL GM", "2019-05-01")
+            insert_gm_history(conn, "BKN", "BKN GM", "2018-07-01")
+            conn.commit()
+
+        result = self.service.update_history_dates({"draft_year": 2019, "draft_date": "2019-06-20"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(60, result["updated_count"])
+        self.assertEqual(60, result["gm_resolved_count"])
+        self.assertEqual("valid", result["validation_result"])
+        self.assertEqual(60, result["entity_versions"]["updated_count"])
+        history = self.service.list_history(2019)
+        self.assertEqual(60, history["selection_count"])
+        first = history["selections"][0]
+        self.assertEqual("Rookie 1", first["player_name"])
+        self.assertEqual("2019-06-20", first["selection_date"])
+        self.assertEqual(atl_new_gm_id, first["selecting_gm_entity_id"])
+        self.assertEqual("New ATL GM", first["selecting_gm_name"])
+        self.assertEqual("timeline", first["selecting_gm_source"])
 
     def test_historical_draft_import_requires_60_picks_from_2019_to_past_years(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid_draft_year"):

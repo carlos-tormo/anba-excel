@@ -7078,6 +7078,14 @@ function draftHistoryOriginalPickHtml(row) {
   `;
 }
 
+function draftHistorySelectingTeamHtml(row) {
+  const gmName = String(row?.selecting_gm_name || '').trim();
+  return `
+    ${draftOrderTeamHtml(row?.selecting_team_code, row?.selecting_team_name)}
+    ${gmName ? `<small class="draft-history-gm-line">GM: ${escapeHtml(gmName)}</small>` : ''}
+  `;
+}
+
 function draftLedgerStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase();
   if (normalized === 'ok') return 'Localizada';
@@ -7269,7 +7277,7 @@ function renderDraftHistoryTable() {
               <tr>
                 <td class="draft-order-number">#${escapeHtml(row.pick_number || '')}</td>
                 <td><strong>${escapeHtml(row.player_name || '—')}</strong></td>
-                <td>${draftOrderTeamHtml(row.selecting_team_code, row.selecting_team_name)}</td>
+                <td>${draftHistorySelectingTeamHtml(row)}</td>
                 <td>${draftHistoryOriginalPickHtml(row)}</td>
               </tr>
             `).join('')}

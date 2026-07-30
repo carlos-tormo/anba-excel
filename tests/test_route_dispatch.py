@@ -1258,6 +1258,42 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertEqual(result, response.payload)
 
+    def test_update_draft_history_dates_audits_and_returns_route_response(self):
+        result = {
+            "ok": True,
+            "years": [2019],
+            "updated_count": 60,
+            "gm_resolved_count": 42,
+            "gm_missing_count": 18,
+            "command_id": "draft-history:2019:date-update",
+            "validation_result": "valid",
+            "entity_versions": {
+                "updated_count": 60,
+                "gm_resolved_count": 42,
+                "gm_missing_count": 18,
+                "years": [2019],
+            },
+        }
+        draft = SimpleNamespace(update_history_dates=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(draft=draft),
+        )
+        payload = {"draft_year": 2019, "draft_date": "2019-06-20"}
+
+        matched = dispatch_routes(handler, urlparse("/api/admin/draft-history/dates"), POST_ROUTES, payload)
+
+        self.assertTrue(matched)
+        draft.update_history_dates.assert_called_once_with(payload)
+        handler._log_admin_action.assert_called_once()
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual(result, response.payload)
+
     def test_archive_draft_live_history_audits_and_returns_route_response(self):
         result = {
             "ok": True,

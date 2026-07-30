@@ -1589,6 +1589,13 @@ LAL,MIN,LAL,MIN,MIN,MIN,BOS,CHA</pre>
           <button id="draftHistoryImportLoadFileBtn" type="button">Cargar archivo</button>
           <button id="draftHistoryImportConfirmBtn" type="button">Importar JSON</button>
         </div>
+        <div class="settings-row economy-import-controls">
+          <label class="settings-inline-label" for="draftHistoryDateOnlyInput">
+            Fecha del draft
+            <input id="draftHistoryDateOnlyInput" type="date">
+          </label>
+          <button id="draftHistoryDateOnlyBtn" type="button" class="ghost">Guardar solo fecha</button>
+        </div>
         <label class="admin-tool-field" for="draftHistoryImportJsonInput">
           <span>JSON</span>
           <textarea id="draftHistoryImportJsonInput" rows="12" placeholder='{"draft_year":2019,"selections":[{"pick_number":1,"player_name":"Jugador","team_code":"NOP","original_team_code":"NOP"}]}'></textarea>

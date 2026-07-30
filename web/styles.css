@@ -2525,6 +2525,15 @@ h1 {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.draft-history-gm-line {
+  display: block;
+  margin-left: 43px;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
 .draft-order-via {
   color: #53657f;
   font-size: 0.84rem;

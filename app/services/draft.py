@@ -42,6 +42,19 @@ class DraftService:
         }
         return result
 
+    def update_history_dates(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        result = self.repository.update_history_dates(payload)
+        years = result.get("years") or []
+        result["command_id"] = f"draft-history:{','.join(str(year) for year in years)}:date-update"
+        result["validation_result"] = "valid"
+        result["entity_versions"] = {
+            "updated_count": int(result.get("updated_count") or 0),
+            "gm_resolved_count": int(result.get("gm_resolved_count") or 0),
+            "gm_missing_count": int(result.get("gm_missing_count") or 0),
+            "years": years,
+        }
+        return result
+
     def archive_live_history(self, draft_year: int, *, require_complete: bool = True) -> Dict[str, Any]:
         result = self.repository.archive_live_history(draft_year, require_complete=require_complete)
         year = result.get("draft_year") or draft_year

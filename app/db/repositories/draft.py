@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import sqlite3
 from typing import Any, Callable, Dict, List, Optional
 
@@ -91,7 +91,9 @@ class DraftRepository(LeagueRepository):
                        COALESCE(selecting.name, h.selecting_team_code) AS selecting_team_name,
                        h.original_team_code,
                        COALESCE(original.name, h.original_team_code) AS original_team_name,
-                       h.draft_pick_id, h.notes, h.imported_at, h.created_at, h.updated_at
+                       h.draft_pick_id, h.selection_date, h.selecting_gm_entity_id,
+                       h.selecting_gm_name, h.selecting_gm_source,
+                       h.notes, h.imported_at, h.created_at, h.updated_at
                 FROM draft_history_selections h
                 LEFT JOIN teams selecting ON selecting.code = h.selecting_team_code
                 LEFT JOIN teams original ON original.code = h.original_team_code
@@ -125,6 +127,104 @@ class DraftRepository(LeagueRepository):
         if year is None or not team:
             return None
         return f"{int(year)}-{round_value}-{team}"
+
+    @staticmethod
+    def _normalize_history_date(value: Any) -> Optional[str]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        text = text[:10]
+        try:
+            date.fromisoformat(text)
+        except ValueError as exc:
+            raise ValueError("invalid_draft_history_date") from exc
+        return text
+
+    @staticmethod
+    def _optional_text(value: Any, *, max_length: int = 160) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return text[:max_length]
+
+    @staticmethod
+    def _gm_timeline_cache(conn: Any) -> Dict[str, List[Dict[str, Any]]]:
+        rows = conn.execute(
+            """
+            SELECT t.code AS team_code, h.gm_entity_id, h.gm_name, h.start_date,
+                   h.row_order, h.id
+            FROM team_gm_history h
+            JOIN teams t ON t.id = h.team_id
+            WHERE h.start_date IS NOT NULL AND trim(h.start_date) <> ''
+            ORDER BY t.code, h.start_date, h.row_order, h.id
+            """
+        ).fetchall()
+        cache: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            team_code = str(row["team_code"] or "").strip().upper()
+            start_date = DraftRepository._normalize_history_date(row["start_date"])
+            if not team_code or not start_date:
+                continue
+            cache.setdefault(team_code, []).append(
+                {
+                    "gm_entity_id": parse_int(row["gm_entity_id"]),
+                    "gm_name": str(row["gm_name"] or "").strip() or None,
+                    "start_date": start_date,
+                }
+            )
+        return cache
+
+    @staticmethod
+    def _gm_snapshot_for_date(
+        gm_timeline_cache: Dict[str, List[Dict[str, Any]]],
+        team_code: Any,
+        selection_date: Optional[str],
+    ) -> Dict[str, Any]:
+        if not selection_date:
+            return {
+                "selecting_gm_entity_id": None,
+                "selecting_gm_name": None,
+                "selecting_gm_source": "none",
+            }
+        entries = gm_timeline_cache.get(str(team_code or "").strip().upper()) or []
+        match: Optional[Dict[str, Any]] = None
+        for entry in entries:
+            if str(entry.get("start_date") or "") <= selection_date:
+                match = entry
+            else:
+                break
+        if not match or not match.get("gm_name"):
+            return {
+                "selecting_gm_entity_id": None,
+                "selecting_gm_name": None,
+                "selecting_gm_source": "none",
+            }
+        return {
+            "selecting_gm_entity_id": match.get("gm_entity_id"),
+            "selecting_gm_name": match.get("gm_name"),
+            "selecting_gm_source": "timeline",
+        }
+
+    def _history_gm_snapshot(
+        self,
+        row: Dict[str, Any],
+        gm_timeline_cache: Dict[str, List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        override_entity_id = parse_int(row.get("selecting_gm_entity_id") or row.get("gm_entity_id"))
+        override_name = self._optional_text(row.get("selecting_gm_name") or row.get("gm_name"))
+        if override_entity_id is not None or override_name:
+            return {
+                "selecting_gm_entity_id": override_entity_id,
+                "selecting_gm_name": override_name,
+                "selecting_gm_source": "import_override",
+            }
+        return self._gm_snapshot_for_date(
+            gm_timeline_cache,
+            row.get("selecting_team_code"),
+            row.get("selection_date"),
+        )
 
     def _upsert_draft_pick_identity(
         self,
@@ -170,8 +270,22 @@ class DraftRepository(LeagueRepository):
                     selections = draft.get("selections") or draft.get("picks")
                     if not isinstance(selections, list):
                         raise ValueError("draft_history_selections_required")
+                    draft_date = draft.get("draft_date") or draft.get("selection_date") or draft.get("date")
                     groups.setdefault(int(year), []).extend(
-                        [dict(row, draft_year=int(year)) for row in selections if isinstance(row, dict)]
+                        [
+                            dict(
+                                row,
+                                draft_year=int(year),
+                                draft_date=(
+                                    row.get("draft_date")
+                                    or row.get("selection_date")
+                                    or row.get("date")
+                                    or draft_date
+                                ),
+                            )
+                            for row in selections
+                            if isinstance(row, dict)
+                        ]
                     )
                 return groups
             selections = payload.get("selections") or payload.get("picks")
@@ -179,7 +293,23 @@ class DraftRepository(LeagueRepository):
                 year = parse_int(payload.get("draft_year") or payload.get("year"))
                 if year is None:
                     raise ValueError("invalid_draft_year")
-                return {int(year): [dict(row, draft_year=int(year)) for row in selections if isinstance(row, dict)]}
+                draft_date = payload.get("draft_date") or payload.get("selection_date") or payload.get("date")
+                return {
+                    int(year): [
+                        dict(
+                            row,
+                            draft_year=int(year),
+                            draft_date=(
+                                row.get("draft_date")
+                                or row.get("selection_date")
+                                or row.get("date")
+                                or draft_date
+                            ),
+                        )
+                        for row in selections
+                        if isinstance(row, dict)
+                    ]
+                }
         if isinstance(payload, list):
             groups = {}
             for row in payload:
@@ -232,6 +362,11 @@ class DraftRepository(LeagueRepository):
             raise ValueError("team_not_found")
         notes = raw.get("notes")
         notes_text = str(notes).strip() if notes is not None else None
+        selection_date = self._normalize_history_date(
+            raw.get("selection_date") or raw.get("draft_date") or raw.get("date")
+        )
+        selecting_gm_entity_id = parse_int(raw.get("selecting_gm_entity_id") or raw.get("gm_entity_id"))
+        selecting_gm_name = self._optional_text(raw.get("selecting_gm_name") or raw.get("gm_name"))
         round_pick = int(pick_number) if expected_round == "1st" else int(pick_number) - 30
         return {
             "draft_year": int(draft_year),
@@ -242,6 +377,9 @@ class DraftRepository(LeagueRepository):
             "selecting_team_code": selecting_team,
             "original_team_code": original_team,
             "notes": notes_text or None,
+            "selection_date": selection_date,
+            "selecting_gm_entity_id": selecting_gm_entity_id,
+            "selecting_gm_name": selecting_gm_name,
         }
 
     def import_history(self, payload: Any) -> Dict[str, Any]:
@@ -293,6 +431,7 @@ class DraftRepository(LeagueRepository):
         rows: List[Dict[str, Any]],
         timestamp: str,
     ) -> int:
+        gm_timeline_cache = self._gm_timeline_cache(conn)
         conn.execute("DELETE FROM draft_history_selections WHERE draft_year = ?", (int(draft_year),))
         inserted = 0
         for row in rows:
@@ -303,23 +442,139 @@ class DraftRepository(LeagueRepository):
                 row["original_team_code"],
                 timestamp,
             )
+            gm_snapshot = self._history_gm_snapshot(row, gm_timeline_cache)
             conn.execute(
                 """
                 INSERT INTO draft_history_selections (
                     draft_year, pick_number, draft_round, round_pick_number,
                     player_name, selecting_team_code, original_team_code, notes,
-                    draft_pick_id, imported_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    draft_pick_id, selection_date, selecting_gm_entity_id,
+                    selecting_gm_name, selecting_gm_source,
+                    imported_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["draft_year"], row["pick_number"], row["draft_round"],
                     row["round_pick_number"], row["player_name"], row["selecting_team_code"],
                     row["original_team_code"], row.get("notes"), draft_pick_id,
+                    row.get("selection_date"), gm_snapshot.get("selecting_gm_entity_id"),
+                    gm_snapshot.get("selecting_gm_name"), gm_snapshot.get("selecting_gm_source"),
                     timestamp, timestamp, timestamp,
                 ),
             )
             inserted += 1
         return inserted
+
+    def _history_date_groups_from_payload(self, payload: Any) -> Dict[int, str]:
+        if not payload:
+            raise ValueError("draft_history_payload_required")
+        groups: Dict[int, str] = {}
+        if isinstance(payload, dict) and isinstance(payload.get("drafts"), list):
+            for draft in payload.get("drafts") or []:
+                if not isinstance(draft, dict):
+                    raise ValueError("invalid_draft_history_payload")
+                year = parse_int(draft.get("draft_year") or draft.get("year"))
+                if year is None:
+                    raise ValueError("invalid_draft_year")
+                draft_date = self._normalize_history_date(
+                    draft.get("draft_date") or draft.get("selection_date") or draft.get("date")
+                )
+                if not draft_date:
+                    raise ValueError("draft_history_date_required")
+                groups[int(year)] = draft_date
+            return groups
+        if isinstance(payload, dict):
+            year = parse_int(payload.get("draft_year") or payload.get("year"))
+            if year is None:
+                raise ValueError("invalid_draft_year")
+            draft_date = self._normalize_history_date(
+                payload.get("draft_date") or payload.get("selection_date") or payload.get("date")
+            )
+            if not draft_date:
+                raise ValueError("draft_history_date_required")
+            return {int(year): draft_date}
+        if isinstance(payload, list):
+            for row in payload:
+                if not isinstance(row, dict):
+                    raise ValueError("invalid_draft_history_payload")
+                year = parse_int(row.get("draft_year") or row.get("year"))
+                if year is None:
+                    raise ValueError("invalid_draft_year")
+                draft_date = self._normalize_history_date(
+                    row.get("draft_date") or row.get("selection_date") or row.get("date")
+                )
+                if not draft_date:
+                    raise ValueError("draft_history_date_required")
+                groups[int(year)] = draft_date
+            return groups
+        raise ValueError("invalid_draft_history_payload")
+
+    def update_history_dates(self, payload: Any) -> Dict[str, Any]:
+        groups = self._history_date_groups_from_payload(payload)
+        if not groups:
+            raise ValueError("draft_history_date_required")
+        current_draft_year = self.current_year()
+        for year in groups:
+            if year < 2019:
+                raise ValueError("invalid_draft_year")
+            if year >= current_draft_year:
+                raise ValueError("draft_history_year_must_be_past")
+
+        timestamp = self._read_operations().now()
+        updated_count = 0
+        gm_resolved_count = 0
+        gm_missing_count = 0
+        with self.db.transaction("IMMEDIATE") as conn:
+            gm_timeline_cache = self._gm_timeline_cache(conn)
+            for draft_year, draft_date in sorted(groups.items()):
+                rows = conn.execute(
+                    """
+                    SELECT id, selecting_team_code
+                    FROM draft_history_selections
+                    WHERE draft_year = ?
+                    ORDER BY pick_number
+                    """,
+                    (int(draft_year),),
+                ).fetchall()
+                if not rows:
+                    raise ValueError("draft_history_not_found")
+                for row in rows:
+                    gm_snapshot = self._gm_snapshot_for_date(
+                        gm_timeline_cache,
+                        row["selecting_team_code"],
+                        draft_date,
+                    )
+                    if gm_snapshot.get("selecting_gm_name"):
+                        gm_resolved_count += 1
+                    else:
+                        gm_missing_count += 1
+                    conn.execute(
+                        """
+                        UPDATE draft_history_selections
+                        SET selection_date = ?,
+                            selecting_gm_entity_id = ?,
+                            selecting_gm_name = ?,
+                            selecting_gm_source = ?,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            draft_date,
+                            gm_snapshot.get("selecting_gm_entity_id"),
+                            gm_snapshot.get("selecting_gm_name"),
+                            gm_snapshot.get("selecting_gm_source"),
+                            timestamp,
+                            int(row["id"]),
+                        ),
+                    )
+                    updated_count += 1
+        return {
+            "ok": True,
+            "updated_count": updated_count,
+            "years": sorted(groups.keys()),
+            "gm_resolved_count": gm_resolved_count,
+            "gm_missing_count": gm_missing_count,
+        }
 
     def _archive_live_history_conn(
         self,
@@ -339,6 +594,7 @@ class DraftRepository(LeagueRepository):
                 SELECT d.id AS draft_order_id, d.draft_year, d.draft_round, d.pick_number,
                        d.owner_team_code, d.original_team_code,
                        COALESCE(s.selection_text, '') AS selection_text,
+                       s.selected_at,
                        COALESCE(s.skipped, 0) AS skipped
                 FROM draft_order d
                 LEFT JOIN draft_live_selections s ON s.draft_order_id = d.id
@@ -399,6 +655,11 @@ class DraftRepository(LeagueRepository):
                     "selecting_team_code": row.get("owner_team_code"),
                     "original_team_code": row.get("original_team_code"),
                     "notes": None,
+                    "selection_date": (
+                        self._normalize_history_date(row.get("selected_at"))
+                        if row.get("selected_at")
+                        else None
+                    ),
                 }
             )
             pick_numbers.append(int(pick_number))
