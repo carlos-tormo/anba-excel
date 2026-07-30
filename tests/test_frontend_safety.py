@@ -306,6 +306,7 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("trades_by_season", gms_source)
         self.assertIn("gms-profile-trade-details-btn", gms_source)
         self.assertIn("AnbaTradesArchive?.openDetailsById", gms_source)
+        self.assertIn("Fecha fin no registrada", gms_source)
         for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
             with self.subTest(file=name):
                 source = web_file(name)

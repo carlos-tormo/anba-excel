@@ -422,9 +422,13 @@ class AuthSecurityTests(unittest.TestCase):
             db.ensure_auth_schema()
             identity = db._gm_identity_repository.create_offline("Profile GM")
             gm_id = int(identity["id"])
+            next_identity = db._gm_identity_repository.create_offline("Next ATL GM")
             db.replace_gm_history(
                 "ATL",
-                [{"gm_entity_id": gm_id, "start_date": "2018-07-01", "color": "#AA0000"}],
+                [
+                    {"gm_entity_id": gm_id, "start_date": "2018-07-01", "color": "#AA0000"},
+                    {"gm_entity_id": next_identity["id"], "start_date": "2020-07-01", "color": "#00AA00"},
+                ],
             )
             timestamp = now_iso()
             with connect_test_db(path) as conn:
@@ -476,6 +480,8 @@ class AuthSecurityTests(unittest.TestCase):
             self.assertEqual("GM inactivo", profile["current_role"])
             self.assertEqual("2018-07-01", profile["joined_league_date"])
             self.assertEqual(1, len(profile["history"]))
+            self.assertEqual("2020-07-01", profile["history"][0]["end_date"])
+            self.assertFalse(profile["history"][0]["is_current"])
             self.assertEqual(1, profile["draft_pick_count"])
             self.assertEqual("Rookie One", profile["draft_picks"][0]["player_name"])
             self.assertEqual(1, profile["trade_count"])

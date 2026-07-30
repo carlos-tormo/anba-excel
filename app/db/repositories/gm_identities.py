@@ -234,34 +234,6 @@ class GMIdentityRepository(LeagueRepository):
             if not identity:
                 return None
 
-            history_rows = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT h.gm_entity_id, h.gm_name, h.start_date, h.color,
-                           t.code AS team_code, t.name AS team_name
-                    FROM team_gm_history h
-                    JOIN teams t ON t.id = h.team_id
-                    WHERE h.gm_entity_id = ?
-                    ORDER BY h.start_date, h.row_order, h.id
-                    """,
-                    (normalized_gm_id,),
-                ).fetchall()
-            ]
-            history: List[Dict[str, Any]] = []
-            for index, row in enumerate(history_rows):
-                next_row = history_rows[index + 1] if index + 1 < len(history_rows) else None
-                history.append(
-                    {
-                        "team_code": row.get("team_code"),
-                        "team_name": row.get("team_name"),
-                        "gm_name": row.get("gm_name"),
-                        "start_date": row.get("start_date"),
-                        "end_date": next_row.get("start_date") if next_row else None,
-                        "color": row.get("color"),
-                    }
-                )
-
             active_rows = [
                 dict(row)
                 for row in conn.execute(
@@ -277,6 +249,58 @@ class GMIdentityRepository(LeagueRepository):
                     (normalized_gm_id,),
                 ).fetchall()
             ]
+            active_team_codes = {
+                str(row.get("team_code") or "").strip().upper()
+                for row in active_rows
+                if row.get("team_code")
+            }
+            history_rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT h.gm_entity_id, h.gm_name, h.start_date, h.color,
+                           t.code AS team_code, t.name AS team_name,
+                           (
+                               SELECT h2.start_date
+                               FROM team_gm_history h2
+                               WHERE h2.team_id = h.team_id
+                                 AND (
+                                     h2.start_date > h.start_date
+                                     OR (
+                                         h2.start_date = h.start_date
+                                         AND (
+                                             h2.row_order > h.row_order
+                                             OR (h2.row_order = h.row_order AND h2.id > h.id)
+                                         )
+                                     )
+                                 )
+                               ORDER BY h2.start_date, h2.row_order, h2.id
+                               LIMIT 1
+                           ) AS end_date
+                    FROM team_gm_history h
+                    JOIN teams t ON t.id = h.team_id
+                    WHERE h.gm_entity_id = ?
+                    ORDER BY h.start_date, h.row_order, h.id
+                    """,
+                    (normalized_gm_id,),
+                ).fetchall()
+            ]
+            history: List[Dict[str, Any]] = []
+            for row in history_rows:
+                team_code = str(row.get("team_code") or "").strip().upper()
+                end_date = row.get("end_date")
+                history.append(
+                    {
+                        "team_code": row.get("team_code"),
+                        "team_name": row.get("team_name"),
+                        "gm_name": row.get("gm_name"),
+                        "start_date": row.get("start_date"),
+                        "end_date": end_date,
+                        "is_current": bool(not end_date and team_code in active_team_codes),
+                        "color": row.get("color"),
+                    }
+                )
+
             joined_date = None
             if history:
                 joined_date = min(

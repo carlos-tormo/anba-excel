@@ -357,7 +357,7 @@
       const team = appendElement(item, 'span', { className: 'gms-profile-team-chip' });
       appendTeamLogo(team, row.team_code, row.team_name);
       appendElement(item, 'strong', { text: row.team_code || row.team_name || 'Equipo' });
-      const end = row.end_date ? formatDate(row.end_date) : 'Actualidad';
+      const end = row.end_date ? formatDate(row.end_date) : (row.is_current ? 'Actualidad' : 'Fecha fin no registrada');
       appendElement(item, 'span', { text: `${formatDate(row.start_date)} – ${end}`, className: 'gms-profile-date-range' });
     });
   }
