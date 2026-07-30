@@ -8937,6 +8937,17 @@ body.gms-view-active .page-shell {
 .gms-profile-trade-details-btn {
   justify-self: start;
   width: auto;
+  border: 1px solid #0f766e;
+  background: #0f766e;
+  color: #ffffff;
+  text-decoration: none;
+}
+.gms-profile-trade-details-btn:hover,
+.gms-profile-trade-details-btn:focus-visible {
+  border-color: #115e59;
+  background: #115e59;
+  color: #ffffff;
+  text-decoration: none;
 }
 .gms-profile-grid {
   display: grid;

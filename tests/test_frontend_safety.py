@@ -116,6 +116,7 @@ class FrontendSafetyTests(unittest.TestCase):
         styles = web_file("styles.css")
         self.assertIn(".trade-archive-team-entry", styles)
         self.assertIn(".gms-profile-link", styles)
+        self.assertIn(".gms-profile-trade-details-btn:hover", styles)
         self.assertIn(".trade-archive-details-grid", styles)
         self.assertIn(".trade-archive-asset-photo", styles)
 
