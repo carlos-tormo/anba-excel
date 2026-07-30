@@ -119,6 +119,42 @@ class DraftRepository(LeagueRepository):
             "selections": selections,
         }
 
+    def history_selection(self, selection_id: Any) -> Optional[Dict[str, Any]]:
+        parsed_id = parse_int(selection_id)
+        if parsed_id is None:
+            raise ValueError("invalid_draft_history_selection_id")
+        with self.db.connect() as conn:
+            row = self._history_selection_by_id_conn(conn, int(parsed_id))
+        return row
+
+    def _history_selection_by_id_conn(self, conn: Any, selection_id: int) -> Optional[Dict[str, Any]]:
+        row = conn.execute(
+            """
+            SELECT h.id, h.draft_year, h.pick_number, h.draft_round,
+                   h.round_pick_number, h.player_name, h.selecting_team_code,
+                   COALESCE(selecting.name, h.selecting_team_code) AS selecting_team_name,
+                   h.original_team_code,
+                   COALESCE(original.name, h.original_team_code) AS original_team_name,
+                   h.draft_pick_id, h.selection_date, h.selecting_gm_entity_id,
+                   h.selecting_gm_name, h.selecting_gm_source,
+                   h.notes, h.imported_at, h.created_at, h.updated_at
+            FROM draft_history_selections h
+            LEFT JOIN teams selecting ON selecting.code = h.selecting_team_code
+            LEFT JOIN teams original ON original.code = h.original_team_code
+            WHERE h.id = ?
+            """,
+            (int(selection_id),),
+        ).fetchone()
+        if not row:
+            return None
+        selection = dict(row)
+        selection["canonical_id"] = self._canonical_pick_id(
+            selection.get("draft_year"),
+            selection.get("draft_round"),
+            selection.get("original_team_code"),
+        )
+        return selection
+
     @staticmethod
     def _canonical_pick_id(draft_year: Any, draft_round: Any, original_team: Any) -> Optional[str]:
         year = parse_int(draft_year)
@@ -575,6 +611,129 @@ class DraftRepository(LeagueRepository):
             "gm_resolved_count": gm_resolved_count,
             "gm_missing_count": gm_missing_count,
         }
+
+    def update_history_selection(self, selection_id: Any, payload: Any) -> Optional[Dict[str, Any]]:
+        parsed_id = parse_int(selection_id)
+        if parsed_id is None:
+            raise ValueError("invalid_draft_history_selection_id")
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_draft_history_selection_payload")
+        operations = self._read_operations()
+        timestamp = operations.now()
+        with self.db.transaction("IMMEDIATE") as conn:
+            existing = self._history_selection_by_id_conn(conn, int(parsed_id))
+            if not existing:
+                return None
+            valid_team_codes = {
+                str(row["code"]).strip().upper()
+                for row in conn.execute("SELECT code FROM teams").fetchall()
+            }
+
+            player_name = str(payload.get("player_name", existing.get("player_name") or "")).strip()
+            if not player_name:
+                raise ValueError("player_name_required")
+            if len(player_name) > 160:
+                raise ValueError("player_name_too_long")
+
+            selecting_team = existing.get("selecting_team_code")
+            if "selecting_team_code" in payload or "team_code" in payload:
+                selecting_team = operations.normalize_team_code(
+                    payload.get("selecting_team_code") or payload.get("team_code")
+                )
+            original_team = existing.get("original_team_code")
+            if "original_team_code" in payload or "original_owner_code" in payload or "original_team" in payload:
+                original_team = operations.normalize_team_code(
+                    payload.get("original_team_code")
+                    or payload.get("original_owner_code")
+                    or payload.get("original_team")
+                )
+            if not selecting_team or not original_team:
+                raise ValueError("team_codes_required")
+            if selecting_team not in valid_team_codes or original_team not in valid_team_codes:
+                raise ValueError("team_not_found")
+
+            if "selection_date" in payload or "draft_date" in payload or "date" in payload:
+                selection_date = self._normalize_history_date(
+                    payload.get("selection_date") or payload.get("draft_date") or payload.get("date")
+                )
+            else:
+                selection_date = existing.get("selection_date")
+
+            notes = existing.get("notes")
+            if "notes" in payload:
+                raw_notes = payload.get("notes")
+                notes = str(raw_notes).strip() if raw_notes is not None else None
+                if notes and len(notes) > 2000:
+                    raise ValueError("draft_history_notes_too_long")
+                notes = notes or None
+
+            preserve_existing_gm_override = parse_bool(payload.get("preserve_selecting_gm_override"))
+            override_gm_id = None
+            if preserve_existing_gm_override:
+                gm_snapshot = {
+                    "selecting_gm_entity_id": existing.get("selecting_gm_entity_id"),
+                    "selecting_gm_name": existing.get("selecting_gm_name"),
+                    "selecting_gm_source": existing.get("selecting_gm_source") or "import_override",
+                }
+            else:
+                override_gm_id = parse_int(payload.get("selecting_gm_entity_id") or payload.get("gm_entity_id"))
+            if not preserve_existing_gm_override and override_gm_id is not None:
+                gm_row = conn.execute(
+                    "SELECT id, display_name FROM gm_identities WHERE id = ?",
+                    (int(override_gm_id),),
+                ).fetchone()
+                if not gm_row:
+                    raise ValueError("gm_identity_not_found")
+                gm_snapshot = {
+                    "selecting_gm_entity_id": int(gm_row["id"]),
+                    "selecting_gm_name": str(gm_row["display_name"] or "").strip() or None,
+                    "selecting_gm_source": "import_override",
+                }
+            elif not preserve_existing_gm_override:
+                gm_snapshot = self._gm_snapshot_for_date(
+                    self._gm_timeline_cache(conn),
+                    selecting_team,
+                    selection_date,
+                )
+
+            draft_pick_id = self._upsert_draft_pick_identity(
+                conn,
+                existing.get("draft_year"),
+                existing.get("draft_round"),
+                original_team,
+                timestamp,
+            )
+            conn.execute(
+                """
+                UPDATE draft_history_selections
+                SET player_name = ?,
+                    selecting_team_code = ?,
+                    original_team_code = ?,
+                    draft_pick_id = ?,
+                    selection_date = ?,
+                    selecting_gm_entity_id = ?,
+                    selecting_gm_name = ?,
+                    selecting_gm_source = ?,
+                    notes = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    player_name,
+                    selecting_team,
+                    original_team,
+                    draft_pick_id,
+                    selection_date,
+                    gm_snapshot.get("selecting_gm_entity_id"),
+                    gm_snapshot.get("selecting_gm_name"),
+                    gm_snapshot.get("selecting_gm_source"),
+                    notes,
+                    timestamp,
+                    int(parsed_id),
+                ),
+            )
+            updated = self._history_selection_by_id_conn(conn, int(parsed_id))
+        return updated
 
     def _archive_live_history_conn(
         self,

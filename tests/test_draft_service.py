@@ -190,6 +190,89 @@ class DraftServiceTests(unittest.TestCase):
         self.assertEqual("New ATL GM", first["selecting_gm_name"])
         self.assertEqual("timeline", first["selecting_gm_source"])
 
+    def test_update_historical_draft_selection_edits_one_pick_and_refreshes_identity(self) -> None:
+        self.service.import_history({"draft_year": 2019, "selections": self.historical_rows(2019)})
+        history = self.service.list_history(2019)
+        selection_id = int(history["selections"][0]["id"])
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            bkn_override_id = insert_gm_history(conn, "BKN", "BKN Override GM", "2018-07-01")
+            conn.commit()
+
+        result = self.service.update_history_selection(
+            selection_id,
+            {
+                "player_name": "Corrected Rookie",
+                "selecting_team_code": "BKN",
+                "original_team_code": "ATL",
+                "selection_date": "2019-06-20",
+                "selecting_gm_entity_id": bkn_override_id,
+                "notes": "Corrected after review",
+            },
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("Corrected Rookie", result["player_name"])
+        self.assertEqual("BKN", result["selecting_team_code"])
+        self.assertEqual("ATL", result["original_team_code"])
+        self.assertEqual("2019-1ST-ATL", result["canonical_id"])
+        self.assertIsInstance(result["draft_pick_id"], int)
+        self.assertEqual("2019-06-20", result["selection_date"])
+        self.assertEqual(bkn_override_id, result["selecting_gm_entity_id"])
+        self.assertEqual("BKN Override GM", result["selecting_gm_name"])
+        self.assertEqual("import_override", result["selecting_gm_source"])
+        self.assertEqual("valid", result["validation_result"])
+        self.assertEqual(selection_id, result["entity_versions"]["selection_id"])
+
+        updated_history = self.service.list_history(2019)
+        self.assertEqual(60, updated_history["selection_count"])
+        self.assertEqual("Corrected Rookie", updated_history["selections"][0]["player_name"])
+
+    def test_update_historical_draft_selection_can_recompute_gm_from_timeline(self) -> None:
+        self.service.import_history({"draft_year": 2019, "selections": self.historical_rows(2019)})
+        selection_id = int(self.service.list_history(2019)["selections"][0]["id"])
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            timeline_id = insert_gm_history(conn, "BKN", "Timeline BKN GM", "2019-01-01")
+            conn.commit()
+
+        result = self.service.update_history_selection(
+            selection_id,
+            {
+                "selecting_team_code": "BKN",
+                "selection_date": "2019-06-20",
+                "selecting_gm_entity_id": None,
+            },
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(timeline_id, result["selecting_gm_entity_id"])
+        self.assertEqual("Timeline BKN GM", result["selecting_gm_name"])
+        self.assertEqual("timeline", result["selecting_gm_source"])
+
+    def test_update_historical_draft_selection_can_preserve_manual_gm_snapshot(self) -> None:
+        rows = self.historical_rows(2019)
+        rows[0]["gm_name"] = "Imported Manual GM"
+        self.service.import_history({"draft_year": 2019, "selections": rows})
+        selection_id = int(self.service.list_history(2019)["selections"][0]["id"])
+
+        result = self.service.update_history_selection(
+            selection_id,
+            {
+                "player_name": "Corrected Rookie",
+                "preserve_selecting_gm_override": True,
+            },
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("Corrected Rookie", result["player_name"])
+        self.assertIsNone(result["selecting_gm_entity_id"])
+        self.assertEqual("Imported Manual GM", result["selecting_gm_name"])
+        self.assertEqual("import_override", result["selecting_gm_source"])
+
     def test_historical_draft_import_requires_60_picks_from_2019_to_past_years(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid_draft_year"):
             self.service.import_history({"draft_year": 2018, "selections": self.historical_rows(2018)})

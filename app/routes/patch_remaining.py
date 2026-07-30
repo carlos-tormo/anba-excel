@@ -114,6 +114,41 @@ def update_offer_promise(handler: Any, parsed: ParseResult, payload: Optional[Di
     )
     return json_response(200, {"ok": True, "promise": promise})
 
+def update_draft_history_selection(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    selection_id = parse_int(parsed.path.split("/")[-1])
+    if selection_id is None:
+        return error_response(400, "invalid_draft_history_selection_id")
+    if not handler._require_sensitive_rate_limit("admin_post"):
+        return
+    if not handler._authorize("admin.draft_history.write"):
+        return
+    try:
+        selection = handler.app.draft.update_history_selection(selection_id, payload)
+    except ValueError as err:
+        return error_response(400, str(err) or "invalid_draft_history_selection")
+    if not selection:
+        return error_response(404, "draft_history_selection_not_found")
+    handler._log_admin_action(
+        "update",
+        "draft_history_selection",
+        str(selection_id),
+        selection.get("selecting_team_code"),
+        {
+            "draft_year": selection.get("draft_year"),
+            "pick_number": selection.get("pick_number"),
+            "player_name": selection.get("player_name"),
+            "selecting_team_code": selection.get("selecting_team_code"),
+            "original_team_code": selection.get("original_team_code"),
+            "selecting_gm_source": selection.get("selecting_gm_source"),
+        },
+        after={"selection": selection},
+        command_id=selection.get("command_id"),
+        validation_result=selection.get("validation_result"),
+        entity_versions=selection.get("entity_versions"),
+    )
+    return json_response(200, {"ok": True, "selection": selection})
+
 def decide_draft_pick_request(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not handler._validate_specialized_payload_or_error(payload, validate_admin_decision_payload):
@@ -718,6 +753,7 @@ def _team_luxury_history_path(path: str) -> bool:
 
 PATCH_REMAINING_ROUTES = (
     prefix_route("/api/admin/free-agent-offer-promises/", update_offer_promise, permission="admin.promise.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/admin/draft-history/selections/", update_draft_history_selection, permission="admin.draft_history.write", csrf=True, mutates_league_state=True),
     prefix_route("/api/admin/gm-draft-pick-requests/", decide_draft_pick_request, permission="admin.gm_draft_pick_request.decide", csrf=True, mutates_league_state=True),
     prefix_route("/api/admin/gm-free-agent-offer-requests/", decide_free_agent_offer_request, permission="admin.gm_free_agent_offer_request.decide", csrf=True, mutates_league_state=True),
     prefix_route("/api/admin/gm-option-requests/", decide_option_request, permission="admin.gm_option_request.decide", csrf=True, mutates_league_state=True),

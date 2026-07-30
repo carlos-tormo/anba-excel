@@ -1310,6 +1310,41 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertEqual(result, response.payload)
 
+    def test_update_draft_history_selection_audits_and_returns_route_response(self):
+        selection = {
+            "id": 12,
+            "draft_year": 2019,
+            "pick_number": 12,
+            "player_name": "Corrected Rookie",
+            "selecting_team_code": "ATL",
+            "original_team_code": "BKN",
+            "selecting_gm_source": "timeline",
+            "command_id": "draft-history-selection:12:update",
+            "validation_result": "valid",
+            "entity_versions": {"selection_id": 12, "draft_year": 2019, "pick_number": 12},
+        }
+        draft = SimpleNamespace(update_history_selection=Mock(return_value=selection))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(draft=draft),
+        )
+        payload = {"player_name": "Corrected Rookie"}
+
+        matched = dispatch_routes(handler, urlparse("/api/admin/draft-history/selections/12"), PATCH_ROUTES, payload)
+
+        self.assertTrue(matched)
+        handler._require_sensitive_rate_limit.assert_called_once_with("admin_post")
+        handler._authorize.assert_called_once_with("admin.draft_history.write")
+        draft.update_history_selection.assert_called_once_with(12, payload)
+        handler._log_admin_action.assert_called_once()
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual({"ok": True, "selection": selection}, response.payload)
+
     def test_archive_draft_live_history_audits_and_returns_route_response(self):
         result = {
             "ok": True,

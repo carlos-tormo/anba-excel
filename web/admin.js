@@ -8046,6 +8046,163 @@ function draftHistorySelectingTeamHtml(row) {
   `;
 }
 
+function draftHistorySelectionById(selectionId) {
+  const parsedId = Number(selectionId);
+  if (!Number.isInteger(parsedId) || parsedId <= 0) return null;
+  const rows = Array.isArray(state.draftHistory?.selections) ? state.draftHistory.selections : [];
+  return rows.find((row) => Number(row?.id) === parsedId) || null;
+}
+
+function draftHistoryGmOverrideOptions(selectedId, row = null) {
+  const selected = Number(selectedId || 0);
+  const gmSource = String(row?.selecting_gm_source || '').trim();
+  const existingManualName = String(row?.selecting_gm_name || '').trim();
+  const hasLinkedGm = Number(row?.selecting_gm_entity_id || 0) > 0;
+  const preserveManual = gmSource === 'import_override' && existingManualName && !hasLinkedGm;
+  const options = [];
+  if (preserveManual) {
+    options.push(`<option value="__preserve__" selected>Mantener GM importado: ${escapeHtml(existingManualName)}</option>`);
+  }
+  options.push(`<option value=""${preserveManual ? '' : ' selected'}>Usar timeline por fecha/equipo</option>`);
+  (state.gmIdentities || []).forEach((identity) => {
+    const id = Number(identity.id);
+    if (!Number.isInteger(id) || id <= 0) return;
+    const type = identity.entity_type === 'user' ? 'site user' : 'offline GM';
+    const label = `${identity.display_name || 'GM'} · ${type}`;
+    options.push(
+      `<option value="${id}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`
+    );
+  });
+  return options.join('');
+}
+
+function setDraftHistorySelectionEditStatus(message, tone = '') {
+  const node = document.getElementById('draftHistorySelectionEditStatus');
+  if (!node) return;
+  node.textContent = message || '';
+  node.classList.toggle('economy-import-status--success', tone === 'success');
+  node.classList.toggle('economy-import-status--error', tone === 'error');
+}
+
+function closeDraftHistorySelectionEditModal() {
+  document.getElementById('draftHistorySelectionEditModal')?.remove();
+}
+
+async function openDraftHistorySelectionEditModal(row) {
+  if (!row) return;
+  if (!Array.isArray(state.gmIdentities) || !state.gmIdentities.length) {
+    await loadGmIdentities();
+  }
+  closeDraftHistorySelectionEditModal();
+  const selectedOverrideGmId = row.selecting_gm_source === 'import_override'
+    ? Number(row.selecting_gm_entity_id || 0)
+    : 0;
+  const modal = document.createElement('div');
+  modal.id = 'draftHistorySelectionEditModal';
+  modal.className = 'modal-backdrop';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'draftHistorySelectionEditModalTitle');
+  modal.innerHTML = `
+    <div class="modal-card economy-import-modal">
+      <div class="modal-card-header">
+        <div>
+          <h2 id="draftHistorySelectionEditModalTitle">Editar pick histórico</h2>
+          <p>Draft ${escapeHtml(row.draft_year || '')} · Pick #${escapeHtml(row.pick_number || '')}</p>
+        </div>
+        <button type="button" class="danger" data-draft-history-edit-close>Cerrar</button>
+      </div>
+      <form id="draftHistorySelectionEditForm" class="settings-grid" data-selection-id="${escapeHtml(row.id || '')}">
+        <label>
+          Jugador
+          <input name="player_name" type="text" maxlength="160" value="${escapeHtml(row.player_name || '')}" required>
+        </label>
+        <label>
+          Equipo que seleccionó
+          <select name="selecting_team_code" required>
+            ${teamOptionsHtml(row.selecting_team_code, { includeCurrent: true })}
+          </select>
+        </label>
+        <label>
+          Equipo original del pick
+          <select name="original_team_code" required>
+            ${teamOptionsHtml(row.original_team_code, { includeCurrent: true })}
+          </select>
+        </label>
+        <label>
+          Fecha de selección
+          <input name="selection_date" type="date" value="${escapeHtml(String(row.selection_date || '').slice(0, 10))}">
+        </label>
+        <label>
+          GM
+          <select name="selecting_gm_entity_id">
+            ${draftHistoryGmOverrideOptions(selectedOverrideGmId, row)}
+          </select>
+          <small>Déjalo en timeline para recalcularlo con la fecha y el equipo.</small>
+        </label>
+        <label class="settings-grid-full">
+          Notas
+          <textarea name="notes" rows="3" maxlength="2000">${escapeHtml(row.notes || '')}</textarea>
+        </label>
+        <div class="settings-grid-full modal-card-actions">
+          <button type="submit">Guardar cambios</button>
+          <button type="button" class="ghost" data-draft-history-edit-close>Cancelar</button>
+        </div>
+      </form>
+      <div id="draftHistorySelectionEditStatus" class="economy-import-status"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeDraftHistorySelectionEditModal();
+  });
+  modal.querySelectorAll('[data-draft-history-edit-close]').forEach((button) => {
+    button.addEventListener('click', closeDraftHistorySelectionEditModal);
+  });
+  modal.querySelector('#draftHistorySelectionEditForm')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void submitDraftHistorySelectionEdit(event.currentTarget);
+  });
+}
+
+async function submitDraftHistorySelectionEdit(form) {
+  const selectionId = Number(form?.getAttribute('data-selection-id') || 0);
+  if (!Number.isInteger(selectionId) || selectionId <= 0) return;
+  const formData = new FormData(form);
+  const gmValue = String(formData.get('selecting_gm_entity_id') || '').trim();
+  const payload = {
+    player_name: String(formData.get('player_name') || '').trim(),
+    selecting_team_code: String(formData.get('selecting_team_code') || '').trim().toUpperCase(),
+    original_team_code: String(formData.get('original_team_code') || '').trim().toUpperCase(),
+    selection_date: String(formData.get('selection_date') || '').trim() || null,
+    notes: String(formData.get('notes') || '').trim() || null,
+  };
+  if (gmValue === '__preserve__') {
+    payload.preserve_selecting_gm_override = true;
+  } else {
+    payload.selecting_gm_entity_id = gmValue ? Number(gmValue) : null;
+  }
+  const submitButton = form.querySelector('button[type="submit"]');
+  if (submitButton) submitButton.disabled = true;
+  setDraftHistorySelectionEditStatus('Guardando cambios...');
+  try {
+    const result = await api(`/api/admin/draft-history/selections/${encodeURIComponent(selectionId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+    const draftYear = Number(result?.selection?.draft_year || state.draftOrder?.draft_year || currentDraftYear() - 1);
+    setDraftHistorySelectionEditStatus('Pick histórico actualizado.', 'success');
+    await refreshAdminLogsSafe();
+    closeDraftHistorySelectionEditModal();
+    await loadDraftOrder(draftYear);
+  } catch (err) {
+    setDraftHistorySelectionEditStatus('Error guardando el pick histórico.', 'error');
+    alert(`No se pudo actualizar el pick histórico: ${err.message || err}`);
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
+}
+
 function draftLedgerStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase();
   if (normalized === 'ok') return 'Localizada';
@@ -8230,6 +8387,7 @@ function renderDraftHistoryTable() {
               <th>Jugador</th>
               <th>Equipo</th>
               <th aria-label="Pick original"></th>
+              <th>Acciones</th>
             </tr>
           </thead>
           <tbody>
@@ -8239,6 +8397,9 @@ function renderDraftHistoryTable() {
                 <td><strong>${escapeHtml(row.player_name || '—')}</strong></td>
                 <td>${draftHistorySelectingTeamHtml(row)}</td>
                 <td>${draftHistoryOriginalPickHtml(row)}</td>
+                <td>
+                  <button type="button" class="ghost tiny" data-draft-history-edit-id="${escapeHtml(row.id || '')}">Editar</button>
+                </td>
               </tr>
             `).join('')}
           </tbody>
@@ -13819,6 +13980,13 @@ function setupDraftHistoryImportControls() {
   });
   document.getElementById('draftHistoryDateOnlyBtn')?.addEventListener('click', () => {
     void updateDraftHistoryDateOnly();
+  });
+  document.getElementById('draftHistoryBoard')?.addEventListener('click', (event) => {
+    const button = event.target?.closest?.('[data-draft-history-edit-id]');
+    if (!button) return;
+    const selection = draftHistorySelectionById(button.getAttribute('data-draft-history-edit-id'));
+    if (!selection) return;
+    void openDraftHistorySelectionEditModal(selection);
   });
 }
 

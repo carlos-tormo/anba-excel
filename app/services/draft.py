@@ -31,6 +31,9 @@ class DraftService:
     def list_history(self, draft_year: Optional[int] = None) -> Dict[str, Any]:
         return self.repository.list_history(draft_year)
 
+    def history_selection(self, selection_id: int) -> Optional[Dict[str, Any]]:
+        return self.repository.history_selection(selection_id)
+
     def import_history(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         result = self.repository.import_history(payload)
         years = result.get("years") or []
@@ -54,6 +57,20 @@ class DraftService:
             "years": years,
         }
         return result
+
+    def update_history_selection(self, selection_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        selection = self.repository.update_history_selection(selection_id, payload)
+        if not selection:
+            return None
+        selection["command_id"] = f"draft-history-selection:{selection_id}:update"
+        selection["validation_result"] = "valid"
+        selection["entity_versions"] = {
+            "selection_id": int(selection_id),
+            "draft_year": selection.get("draft_year"),
+            "pick_number": selection.get("pick_number"),
+            "updated_at": selection.get("updated_at"),
+        }
+        return selection
 
     def archive_live_history(self, draft_year: int, *, require_complete: bool = True) -> Dict[str, Any]:
         result = self.repository.archive_live_history(draft_year, require_complete=require_complete)
