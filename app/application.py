@@ -39,6 +39,7 @@ try:
     from .services.owner_interviews import OwnerInterviewCompositionService
     from .services.owner_office import OwnerOfficeService
     from .services.player_admin import PlayerAdminService
+    from .services.player_happiness import PlayerHappinessService
     from .services.player_identity import PlayerIdentityService
     from .services.player_ratings_import import PlayerRatingImportService
     from .services.player_roster import PlayerRosterService
@@ -78,6 +79,7 @@ except ImportError:  # pragma: no cover - direct script support
     from services.owner_interviews import OwnerInterviewCompositionService
     from services.owner_office import OwnerOfficeService
     from services.player_admin import PlayerAdminService
+    from services.player_happiness import PlayerHappinessService
     from services.player_identity import PlayerIdentityService
     from services.player_ratings_import import PlayerRatingImportService
     from services.player_roster import PlayerRosterService
@@ -157,6 +159,7 @@ class ApplicationContainer:
         "_owner_admin_import_service_instance",
         "_owner_office_repository",
         "_player_catalog_service",
+        "_player_happiness_service",
         "_player_identity_repository",
         "_player_rating_import_service",
         "_player_repository",
@@ -280,6 +283,10 @@ class ApplicationContainer:
     @property
     def player_catalog(self) -> Any:
         return self._dependency("_player_catalog_service")
+
+    @property
+    def player_happiness(self) -> PlayerHappinessService:
+        return self._dependency("_player_happiness_service")
 
     @property
     def player_rating_import(self) -> PlayerRatingImportService:

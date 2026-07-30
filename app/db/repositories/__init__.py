@@ -15,6 +15,7 @@ from .outbox import OutboxRepository
 from .players import PlayerRepository
 from .player_catalog import PlayerCatalogRepository
 from .player_lifecycle import PlayerLifecycleRepository
+from .player_happiness import PlayerHappinessRepository
 from .player_identity import PlayerIdentityRepository
 from .player_ratings import PlayerRatingImportRepository
 from .press_articles import PressArticleRepository
@@ -45,6 +46,7 @@ __all__ = [
     "OutboxRepository",
     "PlayerRepository",
     "PlayerCatalogRepository",
+    "PlayerHappinessRepository",
     "PlayerIdentityRepository",
     "PlayerRatingImportRepository",
     "PressArticleRepository",

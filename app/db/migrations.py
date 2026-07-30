@@ -1815,6 +1815,28 @@ class DatabaseMigrationsMixin:
                 )
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS player_happiness_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        profile_id INTEGER NOT NULL REFERENCES player_profiles(id) ON DELETE CASCADE,
+                        event_type TEXT NOT NULL,
+                        event_date TEXT,
+                        season_year INTEGER,
+                        previous_value REAL NOT NULL,
+                        proposed_delta REAL NOT NULL DEFAULT 0,
+                        applied_delta REAL NOT NULL DEFAULT 0,
+                        new_value REAL NOT NULL,
+                        source_entity_type TEXT,
+                        source_entity_id TEXT,
+                        reason TEXT,
+                        metadata_json TEXT,
+                        command_id TEXT,
+                        actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS player_transactions (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         profile_id INTEGER NOT NULL REFERENCES player_profiles(id) ON DELETE CASCADE,
@@ -2327,6 +2349,8 @@ class DatabaseMigrationsMixin:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_player_profiles_name ON player_profiles(name)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_player_salary_history_profile_season ON player_salary_history(profile_id, season_year)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_player_salary_history_player_season ON player_salary_history(player_id, season_year)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_player_happiness_events_profile_created ON player_happiness_events(profile_id, created_at DESC, id DESC)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_player_happiness_events_command ON player_happiness_events(command_id)")
                 self._backfill_player_salary_numeric_values(conn)
                 asset_cols = {
                     row["name"]

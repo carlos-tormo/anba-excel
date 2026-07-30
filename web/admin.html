@@ -430,6 +430,15 @@
             <button id="openPlayerRatingImportBtn" type="button">Importar ratings JSON</button>
           </div>
         </article>
+        <article class="admin-tool-card admin-tool-card-wide">
+          <div>
+            <h3>Felicidad jugadores</h3>
+            <p>Importa una línea base de felicidad por jugador. Se actualiza el valor actual y se guarda un evento histórico de baseline.</p>
+          </div>
+          <div class="admin-tool-inline">
+            <button id="openPlayerHappinessImportBtn" type="button">Importar felicidad JSON</button>
+          </div>
+        </article>
       </div>
     </section>
 
@@ -1344,6 +1353,34 @@ Jrue Holiday,Agente Dos</pre>
         </div>
         <div id="playerRatingImportStatus" class="economy-import-status"></div>
         <div id="playerRatingImportPreview" class="economy-import-preview"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="playerHappinessImportModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="playerHappinessImportModalTitle">
+    <div class="modal-card economy-import-modal">
+      <div class="modal-header">
+        <h2 id="playerHappinessImportModalTitle">Importar felicidad</h2>
+        <button id="playerHappinessImportCloseBtn" type="button" class="danger">Cerrar</button>
+      </div>
+      <div class="economy-import-body">
+        <div class="economy-import-instructions">
+          <p>Formato recomendado con <code>profile_id</code>, aunque también acepta solo nombre cuando la coincidencia es única:</p>
+          <pre>{
+  "players": [
+    {"profile_id": 123, "player_name": "Nikola Jokic", "happiness": 7.5},
+    {"player_name": "Jugador sin ID", "happiness": -2}
+  ]
+}</pre>
+          <p>Rango válido: <code>-10</code> a <code>10</code>. La importación crea eventos <code>baseline_import</code> para conservar trazabilidad.</p>
+        </div>
+        <div class="settings-row economy-import-controls">
+          <input id="playerHappinessImportFileInput" type="file" accept="application/json,.json">
+          <button id="playerHappinessImportPreviewBtn" type="button">Previsualizar</button>
+          <button id="playerHappinessImportConfirmBtn" type="button" disabled>Confirmar importación</button>
+        </div>
+        <div id="playerHappinessImportStatus" class="economy-import-status"></div>
+        <div id="playerHappinessImportPreview" class="economy-import-preview"></div>
       </div>
     </div>
   </div>

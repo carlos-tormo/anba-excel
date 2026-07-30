@@ -251,6 +251,19 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("function renderPlayerRatingImportPreview", admin)
         self.assertIn("setupPlayerRatingImportControls()", admin)
 
+    def test_player_happiness_import_frontend_is_wired(self) -> None:
+        admin = web_file("admin.js")
+        admin_html = web_file("admin.html")
+
+        self.assertIn('id="openPlayerHappinessImportBtn"', admin_html)
+        self.assertIn('id="playerHappinessImportModal"', admin_html)
+        self.assertIn('id="playerHappinessImportFileInput"', admin_html)
+        self.assertIn("/api/admin/player-happiness-import/preview", admin)
+        self.assertIn("/api/admin/player-happiness-import/import", admin)
+        self.assertIn("function renderPlayerHappinessImportPreview", admin)
+        self.assertIn("setupPlayerHappinessImportControls()", admin)
+        self.assertIn("baseline_import", admin_html)
+
     def test_trade_archive_admin_importer_exposes_json_file_and_error_ui(self) -> None:
         source = web_file("admin.html")
 

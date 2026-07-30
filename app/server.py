@@ -65,6 +65,7 @@ try:
     from .db.repositories.owner_office import OwnerOfficeRepository
     from .db.repositories.player_identity import PlayerIdentityRepository
     from .db.repositories.player_lifecycle import PlayerLifecycleRepository
+    from .db.repositories.player_happiness import PlayerHappinessRepository
     from .db.repositories.player_ratings import PlayerRatingImportRepository
     from .db.repositories.players import PlayerRepository
     from .db.repositories.press_articles import PressArticleRepository
@@ -214,6 +215,7 @@ try:
     from .services.gm_office import GMOfficeService
     from .services.gm_requests import GMRequestService
     from .services.player_catalog import PlayerCatalogService
+    from .services.player_happiness import PlayerHappinessService
     from .services.player_identity import PlayerIdentityService
     from .services.player_ratings_import import PlayerRatingImportService
     from .services.owner_office import OwnerOfficeService
@@ -269,6 +271,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from db.repositories.owner_office import OwnerOfficeRepository
     from db.repositories.player_identity import PlayerIdentityRepository
     from db.repositories.player_lifecycle import PlayerLifecycleRepository
+    from db.repositories.player_happiness import PlayerHappinessRepository
     from db.repositories.player_ratings import PlayerRatingImportRepository
     from db.repositories.players import PlayerRepository
     from db.repositories.press_articles import PressArticleRepository
@@ -419,6 +422,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from services.gm_office import GMOfficeService
     from services.gm_requests import GMRequestService
     from services.player_catalog import PlayerCatalogService
+    from services.player_happiness import PlayerHappinessService
     from services.player_identity import PlayerIdentityService
     from services.player_ratings_import import PlayerRatingImportService
     from services.owner_office import OwnerOfficeService
@@ -662,6 +666,11 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             parse_salary_amount=parse_salary_amount,
             free_agent_type_unrestricted=FREE_AGENT_TYPE_UNRESTRICTED,
             free_agent_source_uncontracted=FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,
+        )
+        self._player_happiness_repository = PlayerHappinessRepository(self)
+        self._player_happiness_service = PlayerHappinessService(
+            self._player_happiness_repository,
+            now=now_iso,
         )
         self._player_rating_import_repository = PlayerRatingImportRepository(self)
         self._player_rating_import_service = PlayerRatingImportService(

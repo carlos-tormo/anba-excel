@@ -30,6 +30,7 @@ const state = {
   freeAgentAgentImportPreview: null,
   freeAgentAppealImportPreview: null,
   playerRatingImportPreview: null,
+  playerHappinessImportPreview: null,
   offseasonExceptionPreview: null,
   offseasonExceptionChoices: {},
   adminUsers: [],
@@ -13889,6 +13890,211 @@ function setupPlayerRatingImportControls() {
   });
 }
 
+function setPlayerHappinessImportStatus(message, tone = '') {
+  const status = document.getElementById('playerHappinessImportStatus');
+  if (!status) return;
+  status.className = `economy-import-status${tone ? ` economy-import-status--${tone}` : ''}`;
+  status.textContent = message || '';
+}
+
+function openPlayerHappinessImportModal() {
+  const modal = document.getElementById('playerHappinessImportModal');
+  state.playerHappinessImportPreview = null;
+  const input = document.getElementById('playerHappinessImportFileInput');
+  if (input) input.value = '';
+  const confirm = document.getElementById('playerHappinessImportConfirmBtn');
+  if (confirm) confirm.disabled = true;
+  const preview = document.getElementById('playerHappinessImportPreview');
+  if (preview) preview.innerHTML = '';
+  setPlayerHappinessImportStatus('');
+  modal?.classList.remove('section-hidden');
+}
+
+function closePlayerHappinessImportModal() {
+  document.getElementById('playerHappinessImportModal')?.classList.add('section-hidden');
+}
+
+function playerHappinessTargetLabel(row) {
+  const status = String(row?.status_label || row?.profile_status || '').trim();
+  if (row?.team_code) return String(row.team_code).toUpperCase();
+  if (status === 'free_agent') return 'FA';
+  return status || 'Perfil';
+}
+
+function renderPlayerHappinessImportPreview(preview) {
+  const container = document.getElementById('playerHappinessImportPreview');
+  const confirm = document.getElementById('playerHappinessImportConfirmBtn');
+  if (!container) return;
+  const errors = Array.isArray(preview?.errors) ? preview.errors : [];
+  const records = Array.isArray(preview?.records) ? preview.records : [];
+  const summary = preview?.summary || {};
+  const unmatched = Array.isArray(preview?.unmatched) ? preview.unmatched : [];
+  const ambiguous = Array.isArray(preview?.ambiguous) ? preview.ambiguous : [];
+  if (confirm) confirm.disabled = Boolean(errors.length || ambiguous.length) || !records.length;
+  const rowsHtml = records.length ? `
+    <div class="table-wrap app-table-wrap economy-import-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap economy-import-table">
+        <thead>
+          <tr>
+            <th>Jugador</th>
+            <th>Origen</th>
+            <th>Actual</th>
+            <th>Nueva</th>
+            <th>Δ</th>
+            <th>Match</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${records.slice(0, 250).map((row) => `
+            <tr>
+              <td><strong>${escapeHtml(row.player_name || '')}</strong><small>${escapeHtml(row.input_player_name || '')}</small></td>
+              <td>${escapeHtml(playerHappinessTargetLabel(row))}</td>
+              <td>${escapeHtml(row.current_happiness ?? '')}</td>
+              <td><strong>${escapeHtml(row.new_happiness ?? row.happiness ?? '')}</strong></td>
+              <td>${escapeHtml(Number(row.delta || 0).toFixed(2).replace(/\.00$/, ''))}</td>
+              <td>${escapeHtml(row.match_method || '')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${records.length > 250 ? `<p class="muted-text">Mostrando 250 de ${escapeHtml(records.length)} coincidencias.</p>` : ''}
+  ` : '<p class="economy-import-empty">No hay jugadores resueltos para importar.</p>';
+  const unmatchedHtml = unmatched.length ? `
+    <details class="economy-import-schema" open>
+      <summary>${escapeHtml(unmatched.length)} nombres sin coincidencia</summary>
+      <div class="economy-import-key-grid">
+        ${unmatched.slice(0, 200).map((row) => `
+          <code>${escapeHtml(row.happiness ?? '')}</code>
+          <span>Línea ${escapeHtml(row.line || '')}: ${escapeHtml(row.player_name || '')}</span>
+        `).join('')}
+      </div>
+    </details>
+  ` : '';
+  const ambiguousHtml = ambiguous.length ? `
+    <details class="economy-import-schema" open>
+      <summary>${escapeHtml(ambiguous.length)} nombres ambiguos</summary>
+      <div class="economy-import-key-grid">
+        ${ambiguous.slice(0, 100).map((row) => `
+          <code>Línea ${escapeHtml(row.line || '')}</code>
+          <span>
+            ${escapeHtml(row.player_name || '')} coincide con:
+            ${(row.matches || []).map((match) => `#${escapeHtml(match.profile_id)} ${escapeHtml(match.player_name || '')}${match.team_code ? ` (${escapeHtml(match.team_code)})` : ''}`).join(', ')}
+          </span>
+        `).join('')}
+      </div>
+    </details>
+  ` : '';
+  container.innerHTML = `
+    ${economyImportErrorsHtml(errors)}
+    <div class="economy-import-summary">
+      <h3>Previsualización</h3>
+      <p>
+        ${escapeHtml(summary.matched_count || records.length)} resueltos ·
+        ${escapeHtml(summary.changed_count || 0)} cambios ·
+        ${escapeHtml(summary.unmatched_count || unmatched.length)} sin match ·
+        ${escapeHtml(summary.ambiguous_count || ambiguous.length)} ambiguos
+      </p>
+      ${rowsHtml}
+      ${unmatchedHtml}
+      ${ambiguousHtml}
+    </div>
+  `;
+  if (errors.length || ambiguous.length) {
+    setPlayerHappinessImportStatus('Corrige errores o nombres ambiguos antes de confirmar.', 'error');
+  } else if (records.length) {
+    setPlayerHappinessImportStatus('Previsualización lista. Se crearán eventos baseline para todos los jugadores resueltos.', 'success');
+  } else {
+    setPlayerHappinessImportStatus('No hay filas resueltas para importar.', 'error');
+  }
+}
+
+async function previewPlayerHappinessImport() {
+  const input = document.getElementById('playerHappinessImportFileInput');
+  const file = input?.files?.[0];
+  if (!file) {
+    alert('Selecciona un archivo JSON.');
+    return;
+  }
+  const button = document.getElementById('playerHappinessImportPreviewBtn');
+  const confirm = document.getElementById('playerHappinessImportConfirmBtn');
+  if (button) button.disabled = true;
+  if (confirm) confirm.disabled = true;
+  setPlayerHappinessImportStatus('Leyendo y validando JSON...');
+  try {
+    const jsonText = await file.text();
+    const result = await api('/api/admin/player-happiness-import/preview', {
+      method: 'POST',
+      body: JSON.stringify({ json_text: jsonText }),
+    });
+    state.playerHappinessImportPreview = result;
+    renderPlayerHappinessImportPreview(result);
+  } catch (err) {
+    state.playerHappinessImportPreview = null;
+    setPlayerHappinessImportStatus('Error validando JSON.', 'error');
+    alert(`Player happiness import preview failed: ${err.message || err}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function refreshPlayerHappinessImportData() {
+  if (state.ui.viewMode === 'team' && state.teamCode) {
+    await loadTeam(state.teamCode);
+    return;
+  }
+  if (state.ui.viewMode === 'league-players') {
+    await loadLeaguePlayers();
+    return;
+  }
+  await refreshAdminLogsSafe();
+}
+
+async function confirmPlayerHappinessImport() {
+  const preview = state.playerHappinessImportPreview;
+  if (!preview || !Array.isArray(preview.records) || preview.errors?.length || preview.ambiguous?.length) return;
+  const records = preview.records;
+  if (!records.length) return;
+  const button = document.getElementById('playerHappinessImportConfirmBtn');
+  if (button) button.disabled = true;
+  setPlayerHappinessImportStatus('Importando felicidad...');
+  try {
+    const result = await api('/api/admin/player-happiness-import/import', {
+      method: 'POST',
+      body: JSON.stringify({ records }),
+    });
+    await refreshPlayerHappinessImportData();
+    setPlayerHappinessImportStatus(`Importados ${result.record_count || 0} valores de felicidad.`, 'success');
+    alert('Felicidad importada.');
+  } catch (err) {
+    setPlayerHappinessImportStatus('Error importando felicidad.', 'error');
+    alert(`Player happiness import failed: ${err.message || err}`);
+  } finally {
+    if (button && state.playerHappinessImportPreview && !state.playerHappinessImportPreview.errors?.length) button.disabled = false;
+  }
+}
+
+function setupPlayerHappinessImportControls() {
+  document.getElementById('openPlayerHappinessImportBtn')?.addEventListener('click', openPlayerHappinessImportModal);
+  document.getElementById('playerHappinessImportCloseBtn')?.addEventListener('click', closePlayerHappinessImportModal);
+  document.getElementById('playerHappinessImportModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closePlayerHappinessImportModal();
+  });
+  document.getElementById('playerHappinessImportPreviewBtn')?.addEventListener('click', () => {
+    void previewPlayerHappinessImport();
+  });
+  document.getElementById('playerHappinessImportConfirmBtn')?.addEventListener('click', () => {
+    void confirmPlayerHappinessImport();
+  });
+  document.getElementById('playerHappinessImportFileInput')?.addEventListener('change', () => {
+    state.playerHappinessImportPreview = null;
+    document.getElementById('playerHappinessImportConfirmBtn')?.setAttribute('disabled', 'disabled');
+    const preview = document.getElementById('playerHappinessImportPreview');
+    if (preview) preview.innerHTML = '';
+    setPlayerHappinessImportStatus('');
+  });
+}
+
 function setFreeAgentAppealImportStatus(message, kind = '') {
   const status = document.getElementById('freeAgentAppealImportStatus');
   if (!status) return;
@@ -14292,6 +14498,7 @@ async function init() {
   setupEconomySettingsControls();
   setupFreeAgentAgentImportControls();
   setupPlayerRatingImportControls();
+  setupPlayerHappinessImportControls();
   setupFreeAgentAppealImportControls();
   setupDraftHistoryImportControls();
   setupOffseasonExceptionControls();

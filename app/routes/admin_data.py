@@ -254,6 +254,84 @@ def apply_player_rating_import(handler: Any, _parsed: ParseResult, payload: Opti
     return json_response(200, result)
 
 
+def preview_player_happiness_import(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    if not _require_admin_post(handler) or not handler._authorize("admin.import.write"):
+        return
+    json_text = str(payload.get("json_text") or "")
+    if len(json_text.encode("utf-8")) > 5_000_000:
+        return error_response(413, "json_too_large")
+    try:
+        result = handler.app.player_happiness.preview(json_text or payload.get("data") or payload)
+    except ValueError as err:
+        return json_response(200, {
+            "ok": False,
+            "errors": [{"line": None, "message": str(err) or "invalid_happiness_import"}],
+            "records": [],
+            "summary": {
+                "input_count": 0,
+                "matched_count": 0,
+                "changed_count": 0,
+                "unchanged_count": 0,
+                "unmatched_count": 0,
+                "ambiguous_count": 0,
+                "error_count": 1,
+            },
+            "unmatched": [],
+            "ambiguous": [],
+        })
+    return json_response(200, result)
+
+
+def apply_player_happiness_import(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    if not _require_admin_post(handler) or not handler._authorize("admin.import.write"):
+        return
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        return error_response(400, "records_required")
+    try:
+        backup = handler.app.maintenance.create_verified_backup("pre_player_happiness_import")
+    except Exception as err:
+        return error_response(500, "pre_import_backup_failed", detail=str(err))
+    try:
+        result = handler.app.player_happiness.apply(records, handler._current_session() or {})
+    except ValueError as err:
+        if str(err) in {
+            "records_required",
+            "invalid_records",
+            "duplicate_happiness_import_target",
+            "happiness_import_target_changed",
+            "stale_entity_version",
+        }:
+            return error_response(400, str(err))
+        raise
+    details = {
+        "record_count": result.get("record_count"),
+        "changed_count": result.get("changed_count"),
+        "unchanged_count": result.get("unchanged_count"),
+        "backup_id": backup.get("id"),
+        "backup_sha256": backup.get("sha256"),
+    }
+    handler._log_admin_action(
+        "import",
+        "player_happiness",
+        "baseline",
+        None,
+        details,
+        command_id=result.get("command_id") or f"player-happiness:baseline-import:{backup.get('id')}",
+        validation_result=result.get("validation_result") or "valid",
+        entity_versions=_backup_entity_versions(
+            backup,
+            record_count=result.get("record_count"),
+            changed_count=result.get("changed_count"),
+            unchanged_count=result.get("unchanged_count"),
+        ),
+    )
+    result["backup"] = handler.app.maintenance.public_backup_metadata(backup)
+    return json_response(200, result)
+
+
 def download_backup(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     if not _require_admin_post(handler) or not handler._authorize("admin.backup.create"):
         return
@@ -296,5 +374,7 @@ ADMIN_DATA_POST_ROUTES = (
     exact_route("/api/admin/free-agent-appeal-import/import", apply_free_agent_import, permission="admin.import.write", csrf=True, mutates_league_state=True),
     exact_route("/api/admin/player-ratings-import/preview", preview_player_rating_import, permission="admin.import.write", csrf=True, mutates_league_state=False),
     exact_route("/api/admin/player-ratings-import/import", apply_player_rating_import, permission="admin.import.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/admin/player-happiness-import/preview", preview_player_happiness_import, permission="admin.import.write", csrf=True, mutates_league_state=False),
+    exact_route("/api/admin/player-happiness-import/import", apply_player_happiness_import, permission="admin.import.write", csrf=True, mutates_league_state=True),
     exact_route("/api/admin/backup", download_backup, permission="admin.backup.create", csrf=True, mutates_league_state=False),
 )

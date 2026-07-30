@@ -1702,6 +1702,74 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertEqual("ratings-backup-1", response.payload["backup"]["id"])
 
+    def test_player_happiness_import_preview_returns_route_response(self):
+        result = {
+            "ok": True,
+            "errors": [],
+            "records": [{"profile_id": 1, "player_name": "Nikola Jokic", "happiness": 7.5}],
+            "summary": {"matched_count": 1, "changed_count": 1},
+            "unmatched": [],
+            "ambiguous": [],
+        }
+        service = SimpleNamespace(preview=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(player_happiness=service),
+        )
+        payload = {"json_text": '{"players": []}'}
+
+        matched = dispatch_routes(handler, urlparse("/api/admin/player-happiness-import/preview"), POST_ROUTES, payload)
+
+        self.assertTrue(matched)
+        service.preview.assert_called_once_with(payload["json_text"])
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual(result, response.payload)
+
+    def test_player_happiness_import_apply_audits_and_returns_route_response(self):
+        backup = {"id": "happiness-backup-1", "path": "/tmp/league.db", "sha256": "happy999"}
+        result = {
+            "ok": True,
+            "record_count": 2,
+            "changed_count": 1,
+            "unchanged_count": 1,
+            "command_id": "player-happiness:baseline-import:now",
+            "validation_result": "valid",
+            "entity_versions": {"record_count": 2, "changed_count": 1, "unchanged_count": 1},
+        }
+        service = SimpleNamespace(apply=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _current_session=Mock(return_value={"user_id": 42, "role": "admin"}),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(
+                player_happiness=service,
+                maintenance=SimpleNamespace(
+                    create_verified_backup=Mock(return_value=backup),
+                    public_backup_metadata=Mock(return_value={"id": backup["id"]}),
+                ),
+            ),
+        )
+        records = [{"profile_id": 1, "player_name": "Nikola Jokic", "happiness": 7.5, "expected_version": 1}]
+
+        matched = dispatch_routes(handler, urlparse("/api/admin/player-happiness-import/import"), POST_ROUTES, {"records": records})
+
+        self.assertTrue(matched)
+        service.apply.assert_called_once_with(records, {"user_id": 42, "role": "admin"})
+        audit_kwargs = handler._log_admin_action.call_args.kwargs
+        self.assertEqual("player-happiness:baseline-import:now", audit_kwargs["command_id"])
+        self.assertEqual("valid", audit_kwargs["validation_result"])
+        self.assertEqual("happiness-backup-1", audit_kwargs["entity_versions"]["backup_id"])
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual("happiness-backup-1", response.payload["backup"]["id"])
+
     def test_press_publication_audit_includes_command_metadata(self):
         result = {
             "article_id": 12,
