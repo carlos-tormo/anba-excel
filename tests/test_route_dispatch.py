@@ -1635,6 +1635,73 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual("valid", audit_kwargs["validation_result"])
         self.assertEqual([2026], audit_kwargs["entity_versions"]["seasons"])
 
+    def test_player_rating_import_preview_returns_route_response(self):
+        result = {
+            "ok": True,
+            "errors": [],
+            "records": [{"target_type": "player", "target_id": 1, "player_name": "Nikola Jokic", "new_rating": 98}],
+            "summary": {"matched_count": 1, "changed_count": 1},
+            "unmatched_targets": [],
+            "unused_source_players": [],
+        }
+        service = SimpleNamespace(preview=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(player_rating_import=service),
+        )
+        payload = {"json_text": '{"players": []}'}
+
+        matched = dispatch_routes(handler, urlparse("/api/admin/player-ratings-import/preview"), POST_ROUTES, payload)
+
+        self.assertTrue(matched)
+        service.preview.assert_called_once_with(payload["json_text"])
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual(result, response.payload)
+
+    def test_player_rating_import_apply_audits_and_returns_route_response(self):
+        backup = {"id": "ratings-backup-1", "path": "/tmp/league.db", "sha256": "abc999"}
+        result = {
+            "ok": True,
+            "record_count": 2,
+            "changed_count": 2,
+            "unchanged_count": 0,
+            "command_id": "player-ratings:import:2",
+            "validation_result": "valid",
+            "entity_versions": {"record_count": 2, "changed_count": 2, "unchanged_count": 0},
+        }
+        service = SimpleNamespace(apply=Mock(return_value=result))
+        handler = SimpleNamespace(
+            _require_csrf=Mock(return_value=True),
+            _require_sensitive_rate_limit=Mock(return_value=True),
+            _authorize=Mock(return_value=True),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(
+                player_rating_import=service,
+                maintenance=SimpleNamespace(
+                    create_verified_backup=Mock(return_value=backup),
+                    public_backup_metadata=Mock(return_value={"id": backup["id"]}),
+                ),
+            ),
+        )
+        records = [{"target_type": "player", "target_id": 1, "player_name": "Nikola Jokic", "new_rating": 98}]
+
+        matched = dispatch_routes(handler, urlparse("/api/admin/player-ratings-import/import"), POST_ROUTES, {"records": records})
+
+        self.assertTrue(matched)
+        service.apply.assert_called_once_with(records)
+        audit_kwargs = handler._log_admin_action.call_args.kwargs
+        self.assertEqual("player-ratings:import:2", audit_kwargs["command_id"])
+        self.assertEqual("valid", audit_kwargs["validation_result"])
+        self.assertEqual("ratings-backup-1", audit_kwargs["entity_versions"]["backup_id"])
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual("ratings-backup-1", response.payload["backup"]["id"])
+
     def test_press_publication_audit_includes_command_metadata(self):
         result = {
             "article_id": 12,

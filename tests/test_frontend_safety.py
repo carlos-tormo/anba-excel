@@ -239,6 +239,18 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("draftYearBounds", admin)
         self.assertIn("setupDraftHistoryImportControls()", admin)
 
+    def test_player_rating_import_frontend_is_wired(self) -> None:
+        admin = web_file("admin.js")
+        admin_html = web_file("admin.html")
+
+        self.assertIn('id="openPlayerRatingImportBtn"', admin_html)
+        self.assertIn('id="playerRatingImportModal"', admin_html)
+        self.assertIn('id="playerRatingImportFileInput"', admin_html)
+        self.assertIn("/api/admin/player-ratings-import/preview", admin)
+        self.assertIn("/api/admin/player-ratings-import/import", admin)
+        self.assertIn("function renderPlayerRatingImportPreview", admin)
+        self.assertIn("setupPlayerRatingImportControls()", admin)
+
     def test_trade_archive_admin_importer_exposes_json_file_and_error_ui(self) -> None:
         source = web_file("admin.html")
 

@@ -421,6 +421,15 @@
             <span class="admin-tool-result muted-text">Disponible solo con Free Agency mode activo.</span>
           </div>
         </article>
+        <article class="admin-tool-card admin-tool-card-wide">
+          <div>
+            <h3>Ratings NBA2K</h3>
+            <p>Previsualiza y aplica ratings desde un JSON exportado de NBA2K. Solo se actualizan coincidencias exactas por nombre normalizado.</p>
+          </div>
+          <div class="admin-tool-inline">
+            <button id="openPlayerRatingImportBtn" type="button">Importar ratings JSON</button>
+          </div>
+        </article>
       </div>
     </section>
 
@@ -1308,6 +1317,33 @@ Jrue Holiday,Agente Dos</pre>
         </div>
         <div id="freeAgentAgentImportStatus" class="economy-import-status"></div>
         <div id="freeAgentAgentImportPreview" class="economy-import-preview"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="playerRatingImportModal" class="modal-backdrop section-hidden" role="dialog" aria-modal="true" aria-labelledby="playerRatingImportModalTitle">
+    <div class="modal-card economy-import-modal">
+      <div class="modal-header">
+        <h2 id="playerRatingImportModalTitle">Importar ratings NBA2K</h2>
+        <button id="playerRatingImportCloseBtn" type="button" class="danger">Cerrar</button>
+      </div>
+      <div class="economy-import-body">
+        <div class="economy-import-instructions">
+          <p>Sube un JSON con un objeto <code>players</code> y valores <code>name</code> + <code>overall</code>. La previsualización enseña cambios, coincidencias sin cambio y nombres sin resolver.</p>
+          <pre>{
+  "players": {
+    "nikola jokic": {"name": "Nikola Jokic", "overall": 98}
+  }
+}</pre>
+          <p>Por seguridad, la importación aplica solo coincidencias exactas por nombre normalizado. Los nombres no encontrados quedan para revisión manual.</p>
+        </div>
+        <div class="settings-row economy-import-controls">
+          <input id="playerRatingImportFileInput" type="file" accept="application/json,.json">
+          <button id="playerRatingImportPreviewBtn" type="button">Previsualizar</button>
+          <button id="playerRatingImportConfirmBtn" type="button" disabled>Confirmar importación</button>
+        </div>
+        <div id="playerRatingImportStatus" class="economy-import-status"></div>
+        <div id="playerRatingImportPreview" class="economy-import-preview"></div>
       </div>
     </div>
   </div>

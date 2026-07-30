@@ -29,6 +29,7 @@ const state = {
   ownerOfficeImportPreview: null,
   freeAgentAgentImportPreview: null,
   freeAgentAppealImportPreview: null,
+  playerRatingImportPreview: null,
   offseasonExceptionPreview: null,
   offseasonExceptionChoices: {},
   adminUsers: [],
@@ -13683,6 +13684,211 @@ function setupFreeAgentAgentImportControls() {
   });
 }
 
+function setPlayerRatingImportStatus(message, tone = '') {
+  const status = document.getElementById('playerRatingImportStatus');
+  if (!status) return;
+  status.className = `economy-import-status${tone ? ` economy-import-status--${tone}` : ''}`;
+  status.textContent = message || '';
+}
+
+function openPlayerRatingImportModal() {
+  const modal = document.getElementById('playerRatingImportModal');
+  state.playerRatingImportPreview = null;
+  const input = document.getElementById('playerRatingImportFileInput');
+  if (input) input.value = '';
+  const confirm = document.getElementById('playerRatingImportConfirmBtn');
+  if (confirm) confirm.disabled = true;
+  const preview = document.getElementById('playerRatingImportPreview');
+  if (preview) preview.innerHTML = '';
+  setPlayerRatingImportStatus('');
+  modal?.classList.remove('section-hidden');
+}
+
+function closePlayerRatingImportModal() {
+  document.getElementById('playerRatingImportModal')?.classList.add('section-hidden');
+}
+
+function playerRatingTargetLabel(row) {
+  if (row?.target_type === 'free_agent') return 'FA';
+  return row?.team_code ? String(row.team_code).toUpperCase() : 'Roster';
+}
+
+function renderPlayerRatingImportPreview(preview) {
+  const container = document.getElementById('playerRatingImportPreview');
+  const confirm = document.getElementById('playerRatingImportConfirmBtn');
+  if (!container) return;
+  const errors = Array.isArray(preview?.errors) ? preview.errors : [];
+  const records = Array.isArray(preview?.records) ? preview.records : [];
+  const summary = preview?.summary || {};
+  const unmatched = Array.isArray(preview?.unmatched_targets) ? preview.unmatched_targets : [];
+  const unusedSource = Array.isArray(preview?.unused_source_players) ? preview.unused_source_players : [];
+  const changedRecords = records.filter((record) => record.changed);
+  if (confirm) confirm.disabled = Boolean(errors.length) || !changedRecords.length;
+  const rowsHtml = records.length ? `
+    <div class="table-wrap app-table-wrap economy-import-table-wrap">
+      <table class="app-table app-table--interactive app-table--mobile-wrap economy-import-table">
+        <thead>
+          <tr>
+            <th>Jugador</th>
+            <th>Origen</th>
+            <th>Actual</th>
+            <th>NBA2K</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${records.slice(0, 250).map((row) => `
+            <tr>
+              <td><strong>${escapeHtml(row.player_name || '')}</strong><small>${escapeHtml(row.source_name || '')}</small></td>
+              <td>${escapeHtml(playerRatingTargetLabel(row))}</td>
+              <td>${escapeHtml(row.current_rating || '-')}</td>
+              <td><strong>${escapeHtml(row.new_rating || '')}</strong></td>
+              <td>${row.changed ? '<span class="status-pill status-success">Actualizar</span>' : '<span class="status-pill">Sin cambios</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${records.length > 250 ? `<p class="muted-text">Mostrando 250 de ${escapeHtml(records.length)} coincidencias.</p>` : ''}
+  ` : '<p class="economy-import-empty">No hay coincidencias exactas para aplicar.</p>';
+  const unmatchedHtml = unmatched.length ? `
+    <details class="economy-import-schema">
+      <summary>${escapeHtml(unmatched.length)} jugadores del sitio sin rating NBA2K exacto</summary>
+      <div class="economy-import-key-grid">
+        ${unmatched.slice(0, 200).map((row) => `
+          <code>${escapeHtml(playerRatingTargetLabel(row))}</code>
+          <span>${escapeHtml(row.player_name || '')}${row.current_rating ? ` · actual ${escapeHtml(row.current_rating)}` : ''}</span>
+        `).join('')}
+      </div>
+      ${unmatched.length > 200 ? `<p class="muted-text">Mostrando 200 de ${escapeHtml(unmatched.length)} sin resolver.</p>` : ''}
+    </details>
+  ` : '';
+  const unusedHtml = unusedSource.length ? `
+    <details class="economy-import-schema">
+      <summary>${escapeHtml(unusedSource.length)} jugadores del JSON sin coincidencia en el sitio</summary>
+      <div class="economy-import-key-grid">
+        ${unusedSource.slice(0, 200).map((row) => `
+          <code>${escapeHtml(row.overall || '')}</code>
+          <span>${escapeHtml(row.source_name || '')}${row.source_team ? ` · ${escapeHtml(row.source_team)}` : ''}</span>
+        `).join('')}
+      </div>
+      ${unusedSource.length > 200 ? `<p class="muted-text">Mostrando 200 de ${escapeHtml(unusedSource.length)} nombres del JSON sin usar.</p>` : ''}
+    </details>
+  ` : '';
+  container.innerHTML = `
+    ${economyImportErrorsHtml(errors)}
+    <div class="economy-import-summary">
+      <h3>Previsualización</h3>
+      <p>
+        ${escapeHtml(summary.matched_count || records.length)} coincidencias ·
+        ${escapeHtml(summary.changed_count || changedRecords.length)} cambios ·
+        ${escapeHtml(summary.unmatched_target_count || unmatched.length)} sin resolver ·
+        ${escapeHtml(summary.invalid_source_count || 0)} entradas inválidas ignoradas
+      </p>
+      ${rowsHtml}
+      ${unmatchedHtml}
+      ${unusedHtml}
+    </div>
+  `;
+  if (errors.length) {
+    setPlayerRatingImportStatus('Corrige los errores antes de confirmar.', 'error');
+  } else if (changedRecords.length) {
+    setPlayerRatingImportStatus('Previsualización lista. Solo se aplicarán las filas marcadas como actualizar.', 'success');
+  } else {
+    setPlayerRatingImportStatus('No hay cambios nuevos para aplicar.', 'error');
+  }
+}
+
+async function previewPlayerRatingImport() {
+  const input = document.getElementById('playerRatingImportFileInput');
+  const file = input?.files?.[0];
+  if (!file) {
+    alert('Selecciona un archivo JSON.');
+    return;
+  }
+  const button = document.getElementById('playerRatingImportPreviewBtn');
+  const confirm = document.getElementById('playerRatingImportConfirmBtn');
+  if (button) button.disabled = true;
+  if (confirm) confirm.disabled = true;
+  setPlayerRatingImportStatus('Leyendo y validando JSON...');
+  try {
+    const jsonText = await file.text();
+    const result = await api('/api/admin/player-ratings-import/preview', {
+      method: 'POST',
+      body: JSON.stringify({ json_text: jsonText }),
+    });
+    state.playerRatingImportPreview = result;
+    renderPlayerRatingImportPreview(result);
+  } catch (err) {
+    state.playerRatingImportPreview = null;
+    setPlayerRatingImportStatus('Error validando JSON.', 'error');
+    alert(`Player rating import preview failed: ${err.message || err}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function refreshPlayerRatingImportData() {
+  if (state.ui.viewMode === 'team' && state.teamCode) {
+    await loadTeam(state.teamCode);
+    return;
+  }
+  if (state.ui.viewMode === 'free-agents') {
+    await loadFreeAgents();
+    return;
+  }
+  if (state.ui.viewMode === 'league-players') {
+    await loadLeaguePlayers();
+    return;
+  }
+  await refreshAdminLogsSafe();
+}
+
+async function confirmPlayerRatingImport() {
+  const preview = state.playerRatingImportPreview;
+  if (!preview || !Array.isArray(preview.records) || preview.errors?.length) return;
+  const changedRecords = preview.records.filter((record) => record.changed);
+  if (!changedRecords.length) return;
+  const button = document.getElementById('playerRatingImportConfirmBtn');
+  if (button) button.disabled = true;
+  setPlayerRatingImportStatus('Importando ratings...');
+  try {
+    const result = await api('/api/admin/player-ratings-import/import', {
+      method: 'POST',
+      body: JSON.stringify({ records: changedRecords }),
+    });
+    await refreshPlayerRatingImportData();
+    setPlayerRatingImportStatus(`Actualizados ${result.changed_count || 0} ratings.`, 'success');
+    alert('Ratings NBA2K importados.');
+  } catch (err) {
+    setPlayerRatingImportStatus('Error importando ratings.', 'error');
+    alert(`Player rating import failed: ${err.message || err}`);
+  } finally {
+    if (button && state.playerRatingImportPreview && !state.playerRatingImportPreview.errors?.length) button.disabled = false;
+  }
+}
+
+function setupPlayerRatingImportControls() {
+  document.getElementById('openPlayerRatingImportBtn')?.addEventListener('click', openPlayerRatingImportModal);
+  document.getElementById('playerRatingImportCloseBtn')?.addEventListener('click', closePlayerRatingImportModal);
+  document.getElementById('playerRatingImportModal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closePlayerRatingImportModal();
+  });
+  document.getElementById('playerRatingImportPreviewBtn')?.addEventListener('click', () => {
+    void previewPlayerRatingImport();
+  });
+  document.getElementById('playerRatingImportConfirmBtn')?.addEventListener('click', () => {
+    void confirmPlayerRatingImport();
+  });
+  document.getElementById('playerRatingImportFileInput')?.addEventListener('change', () => {
+    state.playerRatingImportPreview = null;
+    document.getElementById('playerRatingImportConfirmBtn')?.setAttribute('disabled', 'disabled');
+    const preview = document.getElementById('playerRatingImportPreview');
+    if (preview) preview.innerHTML = '';
+    setPlayerRatingImportStatus('');
+  });
+}
+
 function setFreeAgentAppealImportStatus(message, kind = '') {
   const status = document.getElementById('freeAgentAppealImportStatus');
   if (!status) return;
@@ -14085,6 +14291,7 @@ async function init() {
   setupTeamTabs();
   setupEconomySettingsControls();
   setupFreeAgentAgentImportControls();
+  setupPlayerRatingImportControls();
   setupFreeAgentAppealImportControls();
   setupDraftHistoryImportControls();
   setupOffseasonExceptionControls();

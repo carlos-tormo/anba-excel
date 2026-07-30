@@ -16,6 +16,7 @@ from .players import PlayerRepository
 from .player_catalog import PlayerCatalogRepository
 from .player_lifecycle import PlayerLifecycleRepository
 from .player_identity import PlayerIdentityRepository
+from .player_ratings import PlayerRatingImportRepository
 from .press_articles import PressArticleRepository
 from .settings import SettingsRepository
 from .teams import TeamRepository
@@ -45,6 +46,7 @@ __all__ = [
     "PlayerRepository",
     "PlayerCatalogRepository",
     "PlayerIdentityRepository",
+    "PlayerRatingImportRepository",
     "PressArticleRepository",
     "SettingsRepository",
     "TeamRepository",

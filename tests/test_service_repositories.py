@@ -13,6 +13,7 @@ from app.db.repositories.owner_office import OwnerOfficeRepository
 from app.db.repositories.offer_promises import OfferPromiseRepository
 from app.db.repositories.player_identity import PlayerIdentityRepository
 from app.db.repositories.player_catalog import PlayerCatalogRepository
+from app.db.repositories.player_ratings import PlayerRatingImportRepository
 from app.db.repositories.season_rollover import SeasonRolloverRepository
 from app.db.repositories.trades import TradeRepository
 from app.db.repositories.tracker import TrackerRepository
@@ -31,6 +32,7 @@ from app.services.owner_office import OwnerOfficeService
 from app.services.offer_promises import OfferPromiseService
 from app.services.player_identity import PlayerIdentityService
 from app.services.player_catalog import PlayerCatalogService
+from app.services.player_ratings_import import PlayerRatingImportService
 from app.services.season_rollover import SeasonRolloverService
 from app.services.trades import TradeService
 from app.services.tracker import TrackerService
@@ -85,6 +87,13 @@ class ServiceRepositoryBoundaryTests(unittest.TestCase):
         service_source = inspect.getsource(FreeAgentAgentImportService)
         self.assertIn("UPDATE free_agents SET agent", repository_source)
         self.assertIn("free_agent_reps", repository_source)
+        self.assertNotIn(".execute(", service_source)
+
+    def test_player_rating_import_repository_owns_rating_sql(self) -> None:
+        repository_source = inspect.getsource(PlayerRatingImportRepository)
+        service_source = inspect.getsource(PlayerRatingImportService)
+        self.assertIn("UPDATE", repository_source)
+        self.assertIn("rating", repository_source)
         self.assertNotIn(".execute(", service_source)
 
     def test_free_agency_service_owns_cross_repository_orchestration(self) -> None:

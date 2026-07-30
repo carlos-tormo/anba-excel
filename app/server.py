@@ -65,6 +65,7 @@ try:
     from .db.repositories.owner_office import OwnerOfficeRepository
     from .db.repositories.player_identity import PlayerIdentityRepository
     from .db.repositories.player_lifecycle import PlayerLifecycleRepository
+    from .db.repositories.player_ratings import PlayerRatingImportRepository
     from .db.repositories.players import PlayerRepository
     from .db.repositories.press_articles import PressArticleRepository
     from .db.repositories.season_rollover import SeasonRolloverOperations, SeasonRolloverRepository
@@ -214,6 +215,7 @@ try:
     from .services.gm_requests import GMRequestService
     from .services.player_catalog import PlayerCatalogService
     from .services.player_identity import PlayerIdentityService
+    from .services.player_ratings_import import PlayerRatingImportService
     from .services.owner_office import OwnerOfficeService
     from .services.owner_interviews import OwnerInterviewCompositionService
     from .services.offseason_exceptions import OffseasonExceptionOperations, OffseasonExceptionService
@@ -267,6 +269,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from db.repositories.owner_office import OwnerOfficeRepository
     from db.repositories.player_identity import PlayerIdentityRepository
     from db.repositories.player_lifecycle import PlayerLifecycleRepository
+    from db.repositories.player_ratings import PlayerRatingImportRepository
     from db.repositories.players import PlayerRepository
     from db.repositories.press_articles import PressArticleRepository
     from db.repositories.season_rollover import SeasonRolloverOperations, SeasonRolloverRepository
@@ -417,6 +420,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from services.gm_requests import GMRequestService
     from services.player_catalog import PlayerCatalogService
     from services.player_identity import PlayerIdentityService
+    from services.player_ratings_import import PlayerRatingImportService
     from services.owner_office import OwnerOfficeService
     from services.owner_interviews import OwnerInterviewCompositionService
     from services.offseason_exceptions import OffseasonExceptionOperations, OffseasonExceptionService
@@ -658,6 +662,11 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             parse_salary_amount=parse_salary_amount,
             free_agent_type_unrestricted=FREE_AGENT_TYPE_UNRESTRICTED,
             free_agent_source_uncontracted=FREE_AGENT_SOURCE_UNCONTRACTED_PROFILE,
+        )
+        self._player_rating_import_repository = PlayerRatingImportRepository(self)
+        self._player_rating_import_service = PlayerRatingImportService(
+            self._player_rating_import_repository,
+            now=now_iso,
         )
         self._player_identity_repository = PlayerIdentityRepository(
             self,
