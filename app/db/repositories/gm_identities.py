@@ -157,6 +157,267 @@ class GMIdentityRepository(LeagueRepository):
         payload = self.directory()
         return payload["gms"]
 
+    @staticmethod
+    def _name_key(value: Any) -> str:
+        return clean_gm_name(value).casefold()
+
+    @staticmethod
+    def _season_label(season_year: Any) -> str:
+        try:
+            year = int(season_year)
+        except (TypeError, ValueError):
+            return str(season_year or "").strip() or "Sin temporada"
+        return f"{year}-{str(year + 1)[-2:]}"
+
+    @staticmethod
+    def _gm_timeline_cache(conn: Any) -> Dict[str, List[Dict[str, Any]]]:
+        rows = conn.execute(
+            """
+            SELECT t.code AS team_code, h.gm_entity_id, h.gm_name, h.start_date,
+                   h.row_order, h.id
+            FROM team_gm_history h
+            JOIN teams t ON t.id = h.team_id
+            WHERE h.start_date IS NOT NULL AND trim(h.start_date) <> ''
+            ORDER BY t.code, h.start_date, h.row_order, h.id
+            """
+        ).fetchall()
+        cache: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            team_code = str(row["team_code"] or "").strip().upper()
+            if not team_code:
+                continue
+            cache.setdefault(team_code, []).append(
+                {
+                    "gm_entity_id": int(row["gm_entity_id"]) if row["gm_entity_id"] is not None else None,
+                    "gm_name": row["gm_name"],
+                    "start_date": str(row["start_date"] or "").strip()[:10],
+                }
+            )
+        return cache
+
+    @staticmethod
+    def _timeline_match(
+        cache: Dict[str, List[Dict[str, Any]]],
+        team_code: Any,
+        target_date: Any,
+    ) -> Optional[Dict[str, Any]]:
+        code = str(team_code or "").strip().upper()
+        date_key = str(target_date or "").strip()[:10]
+        if not code or not date_key:
+            return None
+        match: Optional[Dict[str, Any]] = None
+        for row in cache.get(code) or []:
+            if str(row.get("start_date") or "") <= date_key:
+                match = row
+            else:
+                break
+        return match
+
+    def profile(self, gm_id: Any) -> Optional[Dict[str, Any]]:
+        try:
+            normalized_gm_id = int(gm_id)
+        except (TypeError, ValueError):
+            return None
+        with self.db.connect() as conn:
+            identity = conn.execute(
+                """
+                SELECT g.id, g.entity_type, g.user_id, g.display_name, g.profile_slug,
+                       g.notes, g.created_at, g.updated_at,
+                       u.email, u.username, u.display_name AS user_display_name,
+                       u.avatar_url, u.is_co_admin, u.created_at AS user_created_at
+                FROM gm_identities g
+                LEFT JOIN users u ON u.id = g.user_id
+                WHERE g.id = ?
+                """,
+                (normalized_gm_id,),
+            ).fetchone()
+            if not identity:
+                return None
+
+            history_rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT h.gm_entity_id, h.gm_name, h.start_date, h.color,
+                           t.code AS team_code, t.name AS team_name
+                    FROM team_gm_history h
+                    JOIN teams t ON t.id = h.team_id
+                    WHERE h.gm_entity_id = ?
+                    ORDER BY h.start_date, h.row_order, h.id
+                    """,
+                    (normalized_gm_id,),
+                ).fetchall()
+            ]
+            history: List[Dict[str, Any]] = []
+            for index, row in enumerate(history_rows):
+                next_row = history_rows[index + 1] if index + 1 < len(history_rows) else None
+                history.append(
+                    {
+                        "team_code": row.get("team_code"),
+                        "team_name": row.get("team_name"),
+                        "gm_name": row.get("gm_name"),
+                        "start_date": row.get("start_date"),
+                        "end_date": next_row.get("start_date") if next_row else None,
+                        "color": row.get("color"),
+                    }
+                )
+
+            active_rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT t.id AS team_id, t.code AS team_code, t.name AS team_name
+                    FROM user_team_assignments a
+                    JOIN users u ON u.id = a.user_id
+                    JOIN gm_identities g ON g.user_id = u.id
+                    JOIN teams t ON t.id = a.team_id
+                    WHERE g.id = ?
+                    ORDER BY t.code
+                    """,
+                    (normalized_gm_id,),
+                ).fetchall()
+            ]
+            joined_date = None
+            if history:
+                joined_date = min(
+                    (str(row.get("start_date") or "").strip()[:10] for row in history if row.get("start_date")),
+                    default=None,
+                )
+
+            display_name = str(identity["display_name"] or "").strip()
+            profile = {
+                "id": normalized_gm_id,
+                "gm_id": normalized_gm_id,
+                "nick": display_name,
+                "display_name": display_name,
+                "entity_type": identity["entity_type"],
+                "has_site_user": identity["user_id"] is not None,
+                "user_id": identity["user_id"],
+                "username": identity["username"],
+                "avatar_url": identity["avatar_url"],
+                "current_role": self._current_role(active_rows, bool(identity["is_co_admin"]), bool(history)),
+                "joined_league_date": joined_date,
+                "notes": identity["notes"],
+                "history": history,
+                "active_teams": active_rows,
+            }
+            profile["draft_picks"] = self._profile_draft_picks(conn, normalized_gm_id, display_name)
+            profile["draft_pick_count"] = len(profile["draft_picks"])
+            profile["trades"] = self._profile_trades(conn, normalized_gm_id, display_name)
+            profile["trade_count"] = len(profile["trades"])
+            profile["trades_by_season"] = self._group_trades_by_season(profile["trades"])
+            return profile
+
+    @staticmethod
+    def _current_role(active_rows: List[Dict[str, Any]], is_co_admin: bool, has_history: bool) -> str:
+        if active_rows:
+            teams = ", ".join(str(row.get("team_code") or "").strip().upper() for row in active_rows if row.get("team_code"))
+            return f"GM {teams}" if teams else "GM activo"
+        if is_co_admin:
+            return "Co-admin"
+        if has_history:
+            return "GM inactivo"
+        return "GM"
+
+    def _profile_draft_picks(self, conn: Any, gm_id: int, display_name: str) -> List[Dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT h.id, h.draft_year, h.pick_number, h.draft_round,
+                   h.round_pick_number, h.player_name, h.selecting_team_code,
+                   COALESCE(selecting.name, h.selecting_team_code) AS selecting_team_name,
+                   h.original_team_code,
+                   COALESCE(original.name, h.original_team_code) AS original_team_name,
+                   h.selection_date, h.selecting_gm_source
+            FROM draft_history_selections h
+            LEFT JOIN teams selecting ON selecting.code = h.selecting_team_code
+            LEFT JOIN teams original ON original.code = h.original_team_code
+            WHERE h.selecting_gm_entity_id = ?
+               OR lower(h.selecting_gm_name) = lower(?)
+            ORDER BY h.draft_year DESC, h.pick_number
+            """,
+            (int(gm_id), display_name),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _profile_trades(self, conn: Any, gm_id: int, display_name: str) -> List[Dict[str, Any]]:
+        timeline = self._gm_timeline_cache(conn)
+        name_key = self._name_key(display_name)
+        rows = conn.execute(
+            """
+            SELECT tr.id, tr.external_trade_id, tr.trade_date, tr.season_year,
+                   tr.total_assets_moved, m.team_code, m.gm_name
+            FROM trade_archive tr
+            JOIN trade_archive_team_movements m ON m.trade_id = tr.id
+            ORDER BY tr.trade_date DESC, tr.id DESC, m.team_code
+            """
+        ).fetchall()
+        matched: Dict[int, Dict[str, Any]] = {}
+        for row in rows:
+            explicit_name = clean_gm_name(row["gm_name"])
+            explicit_match = bool(explicit_name and self._name_key(explicit_name) == name_key)
+            timeline_match = self._timeline_match(timeline, row["team_code"], row["trade_date"])
+            timeline_gm_id = timeline_match.get("gm_entity_id") if timeline_match else None
+            if not explicit_match and timeline_gm_id != int(gm_id):
+                continue
+            trade_id = int(row["id"])
+            entry = matched.setdefault(
+                trade_id,
+                {
+                    "id": trade_id,
+                    "trade_id": row["external_trade_id"] or str(trade_id),
+                    "external_trade_id": row["external_trade_id"],
+                    "trade_date": row["trade_date"],
+                    "season_year": int(row["season_year"]),
+                    "season_label": self._season_label(row["season_year"]),
+                    "total_assets_moved": int(row["total_assets_moved"] or 0),
+                    "teams": [],
+                    "gm_team_codes": [],
+                },
+            )
+            code = str(row["team_code"] or "").strip().upper()
+            if code and code not in entry["gm_team_codes"]:
+                entry["gm_team_codes"].append(code)
+            if code and code not in entry["teams"]:
+                entry["teams"].append(code)
+        trades = list(matched.values())
+        all_team_rows = conn.execute(
+            """
+            SELECT trade_id, team_code
+            FROM trade_archive_team_movements
+            WHERE trade_id IN (
+                SELECT id FROM trade_archive
+            )
+            ORDER BY trade_id, team_code
+            """
+        ).fetchall()
+        by_trade_id: Dict[int, List[str]] = {}
+        for row in all_team_rows:
+            trade_id = int(row["trade_id"])
+            if trade_id not in matched:
+                continue
+            code = str(row["team_code"] or "").strip().upper()
+            if code:
+                by_trade_id.setdefault(trade_id, []).append(code)
+        for trade in trades:
+            trade["teams"] = by_trade_id.get(int(trade["id"]), trade["teams"])
+        return sorted(trades, key=lambda row: (str(row.get("trade_date") or ""), int(row.get("id") or 0)), reverse=True)
+
+    @staticmethod
+    def _group_trades_by_season(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        grouped: Dict[int, Dict[str, Any]] = {}
+        for trade in trades:
+            season_year = int(trade.get("season_year") or 0)
+            entry = grouped.setdefault(
+                season_year,
+                {
+                    "season_year": season_year,
+                    "season_label": GMIdentityRepository._season_label(season_year),
+                    "trades": [],
+                },
+            )
+            entry["trades"].append(trade)
+        return [grouped[key] for key in sorted(grouped.keys(), reverse=True)]
+
     def directory(self) -> Dict[str, Any]:
         with self.db.connect() as conn:
             timestamp = self._now()

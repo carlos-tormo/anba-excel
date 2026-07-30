@@ -492,6 +492,22 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertEqual(directory, response.payload)
 
+    def test_gm_profile_get_route_returns_public_profile(self):
+        profile = {"gm_id": 4, "nick": "Offline GM", "draft_pick_count": 1, "trade_count": 2}
+        gm_identities = SimpleNamespace(profile=Mock(return_value=profile))
+        handler = SimpleNamespace(
+            _send_route_response=Mock(),
+            app=SimpleNamespace(gm_identities=gm_identities),
+        )
+
+        matched = dispatch_routes(handler, urlparse("/api/gms/4"), GET_ROUTES)
+
+        self.assertTrue(matched)
+        gm_identities.profile.assert_called_once_with(4)
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual(profile, response.payload)
+
     def test_team_detail_get_route_returns_framework_neutral_response(self):
         team_detail = SimpleNamespace(get=Mock(return_value={"team_code": "ATL", "players": []}))
         handler = SimpleNamespace(

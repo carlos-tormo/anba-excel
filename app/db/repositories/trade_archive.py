@@ -298,7 +298,7 @@ class TradeArchiveRepository(LeagueRepository):
     def _gm_timeline_cache(conn: sqlite3.Connection) -> Dict[str, List[Dict[str, Any]]]:
         rows = conn.execute(
             """
-            SELECT t.code AS team_code, h.gm_name, h.start_date
+            SELECT t.code AS team_code, h.gm_entity_id, h.gm_name, h.start_date
             FROM team_gm_history h
             JOIN teams t ON t.id = h.team_id
             ORDER BY t.code, h.start_date, h.row_order, h.id
@@ -311,6 +311,7 @@ class TradeArchiveRepository(LeagueRepository):
                 continue
             cache.setdefault(code, []).append(
                 {
+                    "gm_entity_id": parse_int(row["gm_entity_id"]),
                     "gm_name": str(row["gm_name"] or "").strip(),
                     "start_date": str(row["start_date"] or "").strip(),
                 }
@@ -318,11 +319,11 @@ class TradeArchiveRepository(LeagueRepository):
         return cache
 
     @staticmethod
-    def _gm_from_timeline(
+    def _gm_timeline_entry(
         timeline_cache: Dict[str, List[Dict[str, Any]]],
         team_code: Any,
         trade_date: Any,
-    ) -> Optional[str]:
+    ) -> Optional[Dict[str, Any]]:
         code = normalize_team_code(team_code)
         date_key = str(trade_date or "").strip()[:10]
         if not code or len(date_key) != 10:
@@ -333,7 +334,26 @@ class TradeArchiveRepository(LeagueRepository):
                 match = row
             else:
                 break
+        return match
+
+    @classmethod
+    def _gm_from_timeline(
+        cls,
+        timeline_cache: Dict[str, List[Dict[str, Any]]],
+        team_code: Any,
+        trade_date: Any,
+    ) -> Optional[str]:
+        match = cls._gm_timeline_entry(timeline_cache, team_code, trade_date)
         return str((match or {}).get("gm_name") or "").strip() or None
+
+    @staticmethod
+    def _gm_name_identity_cache(conn: sqlite3.Connection) -> Dict[str, int]:
+        rows = conn.execute("SELECT id, display_name FROM gm_identities").fetchall()
+        return {
+            str(row["display_name"] or "").strip().casefold(): int(row["id"])
+            for row in rows
+            if str(row["display_name"] or "").strip()
+        }
 
     def _row_to_trade(
         self,
@@ -344,6 +364,7 @@ class TradeArchiveRepository(LeagueRepository):
         assigned_gm_cache: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         gm_timeline = timeline_cache if timeline_cache is not None else self._gm_timeline_cache(conn)
+        gm_name_identity = self._gm_name_identity_cache(conn)
         assigned_gms = assigned_gm_cache if assigned_gm_cache is not None else assigned_gm_names_by_team(conn)
         trade_id = int(row["id"])
         movement_rows = conn.execute(
@@ -355,19 +376,28 @@ class TradeArchiveRepository(LeagueRepository):
         ).fetchall()
         team_movements = []
         for movement in movement_rows:
+            timeline_entry = self._gm_timeline_entry(gm_timeline, movement["team_code"], row["trade_date"])
+            gm_name = str(movement["gm_name"] or "").strip()
+            timeline_gm_name = (
+                None
+                if gm_name
+                else (
+                    str((timeline_entry or {}).get("gm_name") or "").strip()
+                    or assigned_gms.get(normalize_team_code(movement["team_code"]) or "")
+                )
+            )
+            gm_entity_id = (
+                gm_name_identity.get(gm_name.casefold())
+                if gm_name
+                else parse_int((timeline_entry or {}).get("gm_entity_id"))
+            )
             team_movements.append(
                 {
                     "team_code": str(movement["team_code"] or ""),
                     "team_name": movement["team_name"],
                     "gm_name": movement["gm_name"],
-                    "timeline_gm_name": (
-                        None
-                        if movement["gm_name"]
-                        else (
-                            self._gm_from_timeline(gm_timeline, movement["team_code"], row["trade_date"])
-                            or assigned_gms.get(normalize_team_code(movement["team_code"]) or "")
-                        )
-                    ),
+                    "timeline_gm_name": timeline_gm_name,
+                    "gm_entity_id": gm_entity_id,
                     "sent": self._decode_json(movement["sent_json"], {}),
                     "received": self._decode_json(movement["received_json"], {}),
                 }

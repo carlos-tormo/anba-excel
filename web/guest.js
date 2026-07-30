@@ -7080,9 +7080,13 @@ function draftHistoryOriginalPickHtml(row) {
 
 function draftHistorySelectingTeamHtml(row) {
   const gmName = String(row?.selecting_gm_name || '').trim();
+  const gmId = Number(row?.selecting_gm_entity_id || 0);
+  const gmLabel = Number.isInteger(gmId) && gmId > 0
+    ? `<a class="gms-profile-link" href="?view=gms&amp;gm=${encodeURIComponent(gmId)}" data-gm-profile-id="${escapeHtml(gmId)}">${escapeHtml(gmName)}</a>`
+    : escapeHtml(gmName);
   return `
     ${draftOrderTeamHtml(row?.selecting_team_code, row?.selecting_team_name)}
-    ${gmName ? `<small class="draft-history-gm-line">GM: ${escapeHtml(gmName)}</small>` : ''}
+    ${gmName ? `<small class="draft-history-gm-line">GM: ${gmLabel}</small>` : ''}
   `;
 }
 
@@ -10326,6 +10330,24 @@ async function loadGms() {
   renderMobileTeamGrid();
   await window.AnbaGms.load({ api });
 }
+
+window.AnbaOpenGmProfile = async function openGmProfile(gmId) {
+  state.teamCode = null;
+  state.teamData = null;
+  setTeamInUrl(null);
+  try {
+    window.localStorage.removeItem(LAST_TEAM_STORAGE_KEY);
+  } catch {
+    // ignore localStorage errors
+  }
+  applyTeamTheme('');
+  setViewMode('gms');
+  setPageHeading('GMs', 'Perfiles históricos de GMs de la liga');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderMobileTeamGrid();
+  await window.AnbaGms.loadProfile(gmId, { api });
+};
 
 async function loadWaitingList() {
   state.teamCode = null;

@@ -345,6 +345,19 @@ def get_gms(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]
     payload = payload or {}
     return json_response(200, handler.app.gm_identities.directory())
 
+def get_gm_profile(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
+    payload = payload or {}
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) != 3:
+        return error_response(404, "not_found")
+    gm_id = parse_int(parts[-1])
+    if gm_id is None:
+        return error_response(404, "gm_not_found")
+    profile = handler.app.gm_identities.profile(gm_id)
+    if not profile:
+        return error_response(404, "gm_not_found")
+    return json_response(200, profile)
+
 def get_admin_users(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.users.view"):
@@ -422,6 +435,7 @@ GET_REMAINING_ROUTES = (
     exact_route("/api/offseason-exceptions/preview", get_offseason_exception_preview),
     exact_route("/api/gm-history", get_gm_history),
     exact_route("/api/gm-identities", get_gm_identities),
+    predicate_route("gm-profile", lambda path: path.startswith("/api/gms/"), get_gm_profile, auth_exempt_reason="public_read_model"),
     exact_route("/api/gms", get_gms, auth_exempt_reason="public_read_model"),
     exact_route("/api/admin/users", get_admin_users),
     exact_route("/api/admin/gm-option-requests", get_admin_option_requests),

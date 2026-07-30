@@ -47,3 +47,39 @@ def assigned_gm_names_by_team(
         if code and name and name not in names_by_team.setdefault(code, []):
             names_by_team[code].append(name)
     return {code: ", ".join(names) for code, names in names_by_team.items()}
+
+
+def assigned_gm_profiles_by_team(
+    conn: Any,
+    team_codes: Optional[Iterable[Any]] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    codes = normalize_team_codes(list(team_codes or []))
+    params: List[Any] = []
+    where = ""
+    if codes:
+        where = f"WHERE t.code IN ({','.join('?' for _ in codes)})"
+        params.extend(codes)
+    rows = conn.execute(
+        f"""
+        SELECT t.code AS team_code, g.id AS gm_id, u.username, u.display_name, u.email
+        FROM user_team_assignments a
+        JOIN users u ON u.id = a.user_id
+        JOIN gm_identities g ON g.user_id = u.id
+        JOIN teams t ON t.id = a.team_id
+        {where}
+        ORDER BY t.code,
+                 lower(COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.display_name), ''), u.email)),
+                 u.id
+        """,
+        params,
+    ).fetchall()
+    by_team: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        code = str(row["team_code"] or "").strip().upper()
+        name = user_display_name(row)
+        gm_id = row["gm_id"]
+        if code and name and gm_id is not None:
+            entry = {"gm_id": int(gm_id), "gm_name": name}
+            if entry not in by_team.setdefault(code, []):
+                by_team[code].append(entry)
+    return by_team

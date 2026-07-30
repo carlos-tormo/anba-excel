@@ -99,6 +99,9 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("function formatSeasonLabel", source)
         self.assertIn("`${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`", source)
         self.assertIn("movement?.timeline_gm_name", source)
+        self.assertIn("gm_entity_id", source)
+        self.assertIn("function appendGmProfileLine", source)
+        self.assertIn("data-gm-profile-id", source)
         self.assertIn("trade-archive-gm-line", source)
         self.assertIn("function showTradeDetailsModal", source)
         self.assertIn("function addAssetSection", source)
@@ -109,7 +112,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertNotIn("insertAdjacentHTML", source)
 
         styles = web_file("styles.css")
-        self.assertIn(".trade-archive-team-btn:hover .trade-archive-gm-line", styles)
+        self.assertIn(".trade-archive-team-entry", styles)
+        self.assertIn(".gms-profile-link", styles)
         self.assertIn(".trade-archive-details-grid", styles)
         self.assertIn(".trade-archive-asset-photo", styles)
 
@@ -290,6 +294,13 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("anba:gms:inactive-open", gms_source)
         self.assertIn("gms-filter-chips", gms_source)
         self.assertIn("gms-inactive-card", gms_source)
+        self.assertIn("function renderProfile", gms_source)
+        self.assertIn("function loadProfile", gms_source)
+        self.assertIn("/api/gms/${encodeURIComponent(gmId)}", gms_source)
+        self.assertIn("data-gm-profile-id", gms_source)
+        self.assertIn("gms-profile-hero", gms_source)
+        self.assertIn("rookies seleccionados", gms_source)
+        self.assertIn("trades_by_season", gms_source)
         for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
             with self.subTest(file=name):
                 source = web_file(name)
@@ -300,6 +311,7 @@ class FrontendSafetyTests(unittest.TestCase):
                 script_source = web_file(script)
                 self.assertIn("async function loadGms()", script_source)
                 self.assertIn("window.AnbaGms.load({ api })", script_source)
+                self.assertIn("window.AnbaOpenGmProfile", script_source)
                 self.assertIn("setViewMode('gms')", script_source)
 
     def test_admin_users_edit_username_and_team_gm_is_assignment_driven(self) -> None:

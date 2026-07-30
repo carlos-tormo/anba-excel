@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .base import LeagueRepository
-from .team_assignments import assigned_gm_names_by_team
+from .team_assignments import assigned_gm_names_by_team, assigned_gm_profiles_by_team
 
 
 class TeamDetailRepository(LeagueRepository):
@@ -22,8 +22,11 @@ class TeamDetailRepository(LeagueRepository):
             return None
         team = dict(row)
         assigned_gm = assigned_gm_names_by_team(conn, [team.get("code")]).get(str(team.get("code") or "").upper())
+        assigned_gm_profiles = assigned_gm_profiles_by_team(conn, [team.get("code")]).get(str(team.get("code") or "").upper(), [])
         team["legacy_gm"] = team.get("gm")
         team["assigned_gm"] = assigned_gm or None
+        team["assigned_gms"] = assigned_gm_profiles
+        team["assigned_gm_id"] = assigned_gm_profiles[0]["gm_id"] if len(assigned_gm_profiles) == 1 else None
         team["gm"] = assigned_gm or team.get("gm")
         return team
 

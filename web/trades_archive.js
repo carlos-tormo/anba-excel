@@ -51,9 +51,36 @@
     return text(movement?.gm_name || movement?.gm || movement?.timeline_gm_name || '');
   }
 
+  function gmProfileId(movement) {
+    const id = Number(movement?.gm_entity_id || movement?.timeline_gm_entity_id || 0);
+    return Number.isInteger(id) && id > 0 ? id : null;
+  }
+
+  function gmProfileUrl(gmId) {
+    return `?view=gms&gm=${encodeURIComponent(gmId)}`;
+  }
+
+  function appendGmProfileLine(parent, movement, className = 'trade-archive-gm-line') {
+    const gmName = gmDisplayName(movement);
+    if (!gmName) return null;
+    const line = el(parent, 'p', { className });
+    el(line, 'span', { text: 'GM: ' });
+    const gmId = gmProfileId(movement);
+    if (!gmId) {
+      el(line, 'span', { text: gmName });
+      return line;
+    }
+    el(line, 'a', {
+      text: gmName,
+      className: 'gms-profile-link',
+      attrs: { href: gmProfileUrl(gmId), 'data-gm-profile-id': String(gmId) },
+    });
+    return line;
+  }
+
   function editableTeamMovements(movements) {
     return (Array.isArray(movements) ? movements : []).map((movement) => {
-      const { timeline_gm_name: _timelineGmName, ...editable } = movement || {};
+      const { timeline_gm_name: _timelineGmName, gm_entity_id: _gmEntityId, ...editable } = movement || {};
       return editable;
     });
   }
@@ -257,7 +284,7 @@
     const gmName = gmDisplayName(movement);
     openModal(`Traspaso ${trade.trade_id || trade.id} · ${code}`, (body) => {
       el(body, 'p', { className: 'section-subtitle', text: `${formatDate(trade.trade_date)} · Temporada ${formatSeasonLabel(trade.season_year)}` });
-      if (gmName) el(body, 'p', { className: 'section-subtitle', text: `GM: ${gmName}` });
+      if (gmName) appendGmProfileLine(body, movement, 'section-subtitle trade-archive-gm-line');
       addMovementList(body, 'Envió', movement?.sent || {});
       addMovementList(body, 'Recibió', movement?.received || {});
     });
@@ -276,7 +303,7 @@
         if (movement.team_code && teamDisplayName(movement) !== text(movement.team_code)) {
           el(titleWrap, 'p', { className: 'trade-archive-team-code-line', text: movement.team_code });
         }
-        if (gmDisplayName(movement)) el(card, 'p', { className: 'trade-archive-gm-line', text: `GM: ${gmDisplayName(movement)}` });
+        appendGmProfileLine(card, movement);
         const movementGrid = el(card, 'div', { className: 'trade-archive-detail-movements' });
         addAssetSection(movementGrid, 'Recibe', movement.received || {}, 'received');
         addAssetSection(movementGrid, 'Envía', movement.sent || {}, 'sent');
@@ -312,7 +339,8 @@
       el(row, 'td', { text: formatDate(trade.trade_date) });
       const teamsCell = el(row, 'td', { className: 'trade-archive-teams-cell' });
       (trade.team_movements || []).forEach((movement) => {
-        const btn = el(teamsCell, 'button', {
+        const entry = el(teamsCell, 'span', { className: 'trade-archive-team-entry' });
+        const btn = el(entry, 'button', {
           className: 'tracker-team-btn trade-archive-team-btn',
           attrs: {
             type: 'button',
@@ -324,10 +352,8 @@
         const main = el(btn, 'span', { className: 'trade-archive-team-main' });
         appendTeamLogo(main, movement.team_code);
         el(main, 'span', { className: 'trade-archive-team-name', text: movement.team_code || '-' });
-        if (gmDisplayName(movement)) {
-          el(btn, 'span', { className: 'trade-archive-gm-line', text: `GM: ${gmDisplayName(movement)}` });
-        }
         btn.addEventListener('click', () => showTeamModal(trade, movement));
+        appendGmProfileLine(entry, movement);
       });
       el(row, 'td', { className: 'trade-archive-total-static', text: String(trade.total_assets_moved || 0) });
       if (state.admin) {

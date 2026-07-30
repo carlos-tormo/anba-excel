@@ -2659,9 +2659,7 @@ h1 {
 }
 
 .trade-archive-team-btn:hover .trade-archive-team-name,
-.trade-archive-team-btn:focus-visible .trade-archive-team-name,
-.trade-archive-team-btn:hover .trade-archive-gm-line,
-.trade-archive-team-btn:focus-visible .trade-archive-gm-line {
+.trade-archive-team-btn:focus-visible .trade-archive-team-name {
   color: #ffffff;
 }
 
@@ -2732,10 +2730,20 @@ h1 {
 }
 
 .trade-archive-gm-line {
+  margin: 0;
   color: #64748b;
   font-size: 0.76rem;
   font-weight: 800;
   line-height: 1.15;
+}
+
+.trade-archive-team-entry {
+  display: inline-grid;
+  gap: 0.2rem;
+}
+
+.trade-archive-team-entry .trade-archive-gm-line {
+  padding-left: 0.2rem;
 }
 
 .trade-archive-modal {
@@ -8810,6 +8818,157 @@ body.gms-view-active .page-shell {
 .gms-pager button {
   border-radius: 999px;
   padding: 0.45rem 0.8rem;
+}
+.gms-profile-link {
+  color: #0f766e;
+  font-weight: 900;
+  text-decoration: none;
+}
+.gms-profile-link:hover,
+.gms-profile-link:focus-visible {
+  color: #115e59;
+  text-decoration: underline;
+}
+.gms-profile-back {
+  align-self: flex-start;
+}
+.gms-profile-hero,
+.gms-profile-card {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+}
+.gms-profile-hero {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 28px;
+}
+.gms-profile-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 88px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid #dbe5f0;
+  border-radius: 24px;
+  background: linear-gradient(135deg, #e0f2fe, #ccfbf1);
+  color: #0f766e;
+  font-size: 1.45rem;
+  font-weight: 950;
+}
+.gms-profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.gms-profile-hero-body {
+  display: grid;
+  gap: 10px;
+}
+.gms-profile-kicker {
+  margin: 0;
+  color: #0f766e;
+  font-size: 0.78rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.gms-profile-hero h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  line-height: 1;
+}
+.gms-profile-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  margin: 0;
+}
+.gms-profile-meta dt {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.gms-profile-meta dd {
+  margin: 0;
+  color: #334155;
+  font-weight: 850;
+}
+.gms-profile-card {
+  padding: 24px;
+}
+.gms-profile-card h3 {
+  margin: 0 0 16px;
+  color: #0f172a;
+  font-size: 1.25rem;
+}
+.gms-profile-timeline {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gms-profile-timeline li,
+.gms-profile-pick-row,
+.gms-profile-trade-row {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border-radius: 16px;
+  background: #f8fafc;
+}
+.gms-profile-team-chip {
+  display: inline-flex;
+  width: fit-content;
+}
+.gms-profile-date-range,
+.gms-profile-pick-row span,
+.gms-profile-trade-row span {
+  color: #64748b;
+  font-weight: 800;
+}
+.gms-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.gms-profile-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  cursor: pointer;
+  color: #0f172a;
+  font-size: 1.05rem;
+  font-weight: 950;
+}
+.gms-profile-details summary strong {
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #0f766e;
+  padding: 6px 12px;
+  font-size: 0.82rem;
+}
+.gms-profile-pick-list,
+.gms-profile-trade-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+.gms-profile-trade-season {
+  margin-top: 18px;
+}
+.gms-profile-trade-season h4 {
+  margin: 0 0 10px;
+  color: #334155;
+  font-size: 1rem;
 }
 .team-apron-cap-toggle {
   display: inline-flex;

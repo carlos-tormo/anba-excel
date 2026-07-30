@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import tempfile
@@ -400,6 +401,86 @@ class AuthSecurityTests(unittest.TestCase):
             inactive_row = next(row for row in inactive if row["gm_name"] == "Inactive GM")
             self.assertEqual("2018", inactive_row["years_active"])
             self.assertEqual(["LAL"], inactive_row["teams"])
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+    def test_gm_profile_includes_history_draft_picks_and_trades(self) -> None:
+        fd, path = tempfile.mkstemp(prefix="anba-auth-gm-profile-", suffix=".db")
+        os.close(fd)
+        try:
+            with connect_test_db(path) as conn:
+                conn.row_factory = sqlite3.Row
+                create_schema(conn)
+                insert_team(conn, "ATL", "Atlanta Hawks")
+                insert_team(conn, "LAL", "Los Angeles Lakers")
+                conn.commit()
+
+            db = LeagueDB(path)
+            db.ensure_auth_schema()
+            identity = db._gm_identity_repository.create_offline("Profile GM")
+            gm_id = int(identity["id"])
+            db.replace_gm_history(
+                "ATL",
+                [{"gm_entity_id": gm_id, "start_date": "2018-07-01", "color": "#AA0000"}],
+            )
+            timestamp = now_iso()
+            with connect_test_db(path) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute(
+                    """
+                    INSERT INTO draft_history_selections (
+                        draft_year, pick_number, draft_round, round_pick_number,
+                        player_name, selecting_team_code, original_team_code,
+                        selection_date, selecting_gm_entity_id, selecting_gm_name,
+                        selecting_gm_source, imported_at, created_at, updated_at
+                    ) VALUES (2019, 1, '1st', 1, 'Rookie One', 'ATL', 'ATL',
+                              '2019-06-20', ?, 'Profile GM', 'timeline', ?, ?, ?)
+                    """,
+                    (gm_id, timestamp, timestamp, timestamp),
+                )
+                trade = conn.execute(
+                    """
+                    INSERT INTO trade_archive (
+                        external_trade_id, trade_date, season_year, total_assets_moved,
+                        source, source_ref, notes, created_at, updated_at
+                    ) VALUES ('T-1', '2019-07-05', 2019, 2, 'manual', 'test-trade-1', NULL, ?, ?)
+                    """,
+                    (timestamp, timestamp),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_archive_team_movements (
+                        trade_id, team_code, team_name, gm_name, sent_json, received_json,
+                        created_at, updated_at
+                    ) VALUES (?, 'ATL', 'Atlanta Hawks', NULL, ?, ?, ?, ?)
+                    """,
+                    (int(trade.lastrowid), json.dumps({}), json.dumps({}), timestamp, timestamp),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_archive_team_movements (
+                        trade_id, team_code, team_name, gm_name, sent_json, received_json,
+                        created_at, updated_at
+                    ) VALUES (?, 'LAL', 'Los Angeles Lakers', NULL, ?, ?, ?, ?)
+                    """,
+                    (int(trade.lastrowid), json.dumps({}), json.dumps({}), timestamp, timestamp),
+                )
+                conn.commit()
+
+            profile = db._gm_identity_repository.profile(gm_id)
+
+            self.assertEqual("Profile GM", profile["nick"])
+            self.assertEqual("GM inactivo", profile["current_role"])
+            self.assertEqual("2018-07-01", profile["joined_league_date"])
+            self.assertEqual(1, len(profile["history"]))
+            self.assertEqual(1, profile["draft_pick_count"])
+            self.assertEqual("Rookie One", profile["draft_picks"][0]["player_name"])
+            self.assertEqual(1, profile["trade_count"])
+            self.assertEqual("T-1", profile["trades"][0]["trade_id"])
+            self.assertEqual("2019-20", profile["trades_by_season"][0]["season_label"])
         finally:
             try:
                 os.unlink(path)

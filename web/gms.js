@@ -41,6 +41,25 @@
     return `${day}/${month}/${year}`;
   }
 
+  function gmProfileUrl(gmId) {
+    return `?view=gms&gm=${encodeURIComponent(gmId)}`;
+  }
+
+  function appendGmLink(parent, gmId, name, className = 'gms-profile-link') {
+    const label = text(name || '—');
+    if (!gmId) return appendElement(parent, 'span', { text: label });
+    const link = appendElement(parent, 'a', {
+      text: label,
+      className,
+      attrs: { href: gmProfileUrl(gmId), 'data-gm-profile-id': String(gmId) },
+    });
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      void navigateToProfile(gmId);
+    });
+    return link;
+  }
+
   function normalized(value) {
     return text(value).trim().toLowerCase();
   }
@@ -206,7 +225,8 @@
       const tr = appendElement(tbody, 'tr', { className: 'gms-data-row' });
       const teamCell = appendElement(tr, 'td', { className: 'gms-team-cell' });
       appendTeamLogo(teamCell, row.team_code, row.team_name);
-      appendElement(tr, 'td', { text: row.gm_name || '—' });
+      const gmCell = appendElement(tr, 'td');
+      appendGmLink(gmCell, row.gm_id, row.gm_name || '—');
       appendElement(tr, 'td', { text: row.since_year || '—' });
     });
   }
@@ -230,7 +250,8 @@
     } else {
       pageRows.forEach((row) => {
         const tr = appendElement(tbody, 'tr', { className: 'gms-data-row' });
-        appendElement(tr, 'td', { text: row.gm_name || '—' });
+        const gmCell = appendElement(tr, 'td');
+        appendGmLink(gmCell, row.gm_id, row.gm_name || '—');
         appendElement(tr, 'td', { text: row.years_active || '—' });
         appendElement(tr, 'td', { text: Array.isArray(row.teams) && row.teams.length ? row.teams.join(', ') : '—' });
       });
@@ -241,7 +262,8 @@
     } else {
       pageRows.forEach((row) => {
         const card = appendElement(cards, 'article', { className: 'gms-inactive-card' });
-        appendElement(card, 'h3', { text: row.gm_name || '—' });
+        const heading = appendElement(card, 'h3');
+        appendGmLink(heading, row.gm_id, row.gm_name || '—');
         const meta = appendElement(card, 'dl');
         appendElement(meta, 'dt', { text: 'Años' });
         appendElement(meta, 'dd', { text: row.years_active || '—' });
@@ -297,8 +319,144 @@
     }
   }
 
+  function renderProfileSummary(parent, profile) {
+    const hero = appendElement(parent, 'article', { className: 'gms-profile-hero' });
+    const avatar = appendElement(hero, 'div', { className: 'gms-profile-avatar' });
+    if (profile.avatar_url) {
+      const img = appendElement(avatar, 'img', { attrs: { alt: `${profile.nick || profile.display_name || 'GM'} avatar` } });
+      if (Dom.setSafeImageSource) Dom.setSafeImageSource(img, profile.avatar_url);
+      else img.src = profile.avatar_url;
+    } else {
+      appendElement(avatar, 'span', { text: text(profile.nick || profile.display_name || 'GM').slice(0, 2).toUpperCase() || 'GM' });
+    }
+    const body = appendElement(hero, 'div', { className: 'gms-profile-hero-body' });
+    appendElement(body, 'p', { text: 'Perfil de GM', className: 'gms-profile-kicker' });
+    appendElement(body, 'h2', { text: profile.nick || profile.display_name || 'GM' });
+    const meta = appendElement(body, 'dl', { className: 'gms-profile-meta' });
+    [
+      ['Rol actual', profile.current_role || '—'],
+      ['En la liga desde', formatDate(profile.joined_league_date)],
+      ['Tipo', profile.has_site_user ? 'Usuario del sitio' : 'GM offline'],
+    ].forEach(([label, value]) => {
+      appendElement(meta, 'dt', { text: label });
+      appendElement(meta, 'dd', { text: value });
+    });
+  }
+
+  function renderProfileHistory(parent, history) {
+    const section = appendElement(parent, 'section', { className: 'gms-profile-card' });
+    appendElement(section, 'h3', { text: 'Trayectoria' });
+    const rows = Array.isArray(history) ? history : [];
+    if (!rows.length) {
+      appendElement(section, 'p', { text: 'Sin trayectoria registrada todavía.', className: 'muted-text' });
+      return;
+    }
+    const list = appendElement(section, 'ol', { className: 'gms-profile-timeline' });
+    rows.forEach((row) => {
+      const item = appendElement(list, 'li');
+      const team = appendElement(item, 'span', { className: 'gms-profile-team-chip' });
+      appendTeamLogo(team, row.team_code, row.team_name);
+      appendElement(item, 'strong', { text: row.team_code || row.team_name || 'Equipo' });
+      const end = row.end_date ? formatDate(row.end_date) : 'Actualidad';
+      appendElement(item, 'span', { text: `${formatDate(row.start_date)} – ${end}`, className: 'gms-profile-date-range' });
+    });
+  }
+
+  function renderDraftPicks(parent, profile) {
+    const details = appendElement(parent, 'details', { className: 'gms-profile-card gms-profile-details' });
+    const summary = appendElement(details, 'summary');
+    appendElement(summary, 'span', { text: 'Draft picks' });
+    appendElement(summary, 'strong', { text: `${profile.draft_pick_count || 0} rookies seleccionados` });
+    const rows = Array.isArray(profile.draft_picks) ? profile.draft_picks : [];
+    if (!rows.length) {
+      appendElement(details, 'p', { text: 'Sin selecciones históricas asociadas.', className: 'muted-text' });
+      return;
+    }
+    const list = appendElement(details, 'div', { className: 'gms-profile-pick-list' });
+    rows.forEach((pick) => {
+      const row = appendElement(list, 'article', { className: 'gms-profile-pick-row' });
+      appendElement(row, 'strong', { text: `#${pick.pick_number || '—'} · ${pick.player_name || '—'}` });
+      appendElement(row, 'span', { text: `${pick.draft_year || '—'} · ${pick.selecting_team_code || '—'}${pick.original_team_code && pick.original_team_code !== pick.selecting_team_code ? ` vía ${pick.original_team_code}` : ''}` });
+    });
+  }
+
+  function renderTrades(parent, profile) {
+    const details = appendElement(parent, 'details', { className: 'gms-profile-card gms-profile-details' });
+    const summary = appendElement(details, 'summary');
+    appendElement(summary, 'span', { text: 'Trades' });
+    appendElement(summary, 'strong', { text: `${profile.trade_count || 0} trades` });
+    const seasons = Array.isArray(profile.trades_by_season) ? profile.trades_by_season : [];
+    if (!seasons.length) {
+      appendElement(details, 'p', { text: 'Sin trades asociados.', className: 'muted-text' });
+      return;
+    }
+    seasons.forEach((season) => {
+      const seasonBlock = appendElement(details, 'section', { className: 'gms-profile-trade-season' });
+      appendElement(seasonBlock, 'h4', { text: `Temporada ${season.season_label || season.season_year || '—'}` });
+      const list = appendElement(seasonBlock, 'div', { className: 'gms-profile-trade-list' });
+      (Array.isArray(season.trades) ? season.trades : []).forEach((trade) => {
+        const row = appendElement(list, 'article', { className: 'gms-profile-trade-row' });
+        appendElement(row, 'strong', { text: `Trade ${trade.trade_id || trade.id}` });
+        appendElement(row, 'span', { text: `${formatDate(trade.trade_date)} · ${(trade.teams || []).join(', ') || '—'} · ${trade.total_assets_moved || 0} activos` });
+      });
+    });
+  }
+
+  function renderProfile(profile) {
+    const board = boardNode();
+    if (!board) return;
+    clear(board);
+    const back = appendElement(board, 'button', { text: '← Volver a GMs', className: 'ghost gms-profile-back', attrs: { type: 'button' } });
+    back.addEventListener('click', () => {
+      try {
+        global.history.pushState({}, '', '?view=gms');
+      } catch {
+        // ignore history errors
+      }
+      if (state.payload) render(state.payload);
+      else void load();
+    });
+    renderProfileSummary(board, profile);
+    renderProfileHistory(board, profile.history);
+    const grid = appendElement(board, 'div', { className: 'gms-profile-grid' });
+    renderDraftPicks(grid, profile);
+    renderTrades(grid, profile);
+  }
+
+  async function loadProfile(gmId, options = {}) {
+    state.api = options.api || state.api;
+    setStatus('Cargando perfil de GM...');
+    try {
+      const profile = await request(`/api/gms/${encodeURIComponent(gmId)}`);
+      renderProfile(profile);
+      setStatus('');
+    } catch (err) {
+      const board = boardNode();
+      clear(board);
+      setStatus(`No se pudo cargar el perfil de GM: ${err.message || err}`, 'error');
+    }
+  }
+
+  async function navigateToProfile(gmId) {
+    try {
+      global.history.pushState({}, '', gmProfileUrl(gmId));
+    } catch {
+      // ignore history errors
+    }
+    if (typeof global.AnbaOpenGmProfile === 'function') {
+      await global.AnbaOpenGmProfile(gmId);
+      return;
+    }
+    await loadProfile(gmId);
+  }
+
   async function load(options = {}) {
     state.api = options.api || state.api;
+    const gmId = new URLSearchParams(global.location?.search || '').get('gm');
+    if (gmId) {
+      await loadProfile(gmId, options);
+      return;
+    }
     setStatus('Cargando GMs...');
     try {
       state.payload = await request('/api/gms');
@@ -312,5 +470,15 @@
     }
   }
 
-  global.AnbaGms = { load };
+  document.addEventListener('click', (event) => {
+    if (event.defaultPrevented) return;
+    const link = event.target?.closest?.('[data-gm-profile-id]');
+    if (!link) return;
+    const gmId = link.getAttribute('data-gm-profile-id');
+    if (!gmId) return;
+    event.preventDefault();
+    void navigateToProfile(gmId);
+  });
+
+  global.AnbaGms = { load, loadProfile, profileUrl: gmProfileUrl };
 })(window);

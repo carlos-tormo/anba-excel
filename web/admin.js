@@ -8036,9 +8036,13 @@ function draftHistoryOriginalPickHtml(row) {
 
 function draftHistorySelectingTeamHtml(row) {
   const gmName = String(row?.selecting_gm_name || '').trim();
+  const gmId = Number(row?.selecting_gm_entity_id || 0);
+  const gmLabel = Number.isInteger(gmId) && gmId > 0
+    ? `<a class="gms-profile-link" href="?view=gms&amp;gm=${encodeURIComponent(gmId)}" data-gm-profile-id="${escapeHtml(gmId)}">${escapeHtml(gmName)}</a>`
+    : escapeHtml(gmName);
   return `
     ${draftOrderTeamHtml(row?.selecting_team_code, row?.selecting_team_name)}
-    ${gmName ? `<small class="draft-history-gm-line">GM: ${escapeHtml(gmName)}</small>` : ''}
+    ${gmName ? `<small class="draft-history-gm-line">GM: ${gmLabel}</small>` : ''}
   `;
 }
 
@@ -11712,7 +11716,23 @@ async function loadTeam(code) {
   applyTeamTheme(code);
   setViewMode('team');
   const assignedGmInline = document.getElementById('teamAssignedGmInline');
-  if (assignedGmInline) assignedGmInline.textContent = data.team.assigned_gm || data.team.gm || 'Sin GM asignado';
+  if (assignedGmInline) {
+    assignedGmInline.replaceChildren();
+    const assignedGms = Array.isArray(data.team.assigned_gms) ? data.team.assigned_gms : [];
+    if (assignedGms.length) {
+      assignedGms.forEach((gm, index) => {
+        if (index) assignedGmInline.appendChild(document.createTextNode(', '));
+        const link = document.createElement('a');
+        link.className = 'gms-profile-link';
+        link.href = `?view=gms&gm=${encodeURIComponent(gm.gm_id)}`;
+        link.dataset.gmProfileId = String(gm.gm_id);
+        link.textContent = gm.gm_name || 'GM';
+        assignedGmInline.appendChild(link);
+      });
+    } else {
+      assignedGmInline.textContent = data.team.assigned_gm || data.team.gm || 'Sin GM asignado';
+    }
+  }
   syncTeamApronHardCapControls();
   syncTeamLuxuryRepeaterControl();
   renderSeasonViewControl();
@@ -11963,6 +11983,21 @@ async function loadGms() {
   await window.AnbaGms.load({ api });
   await refreshAdminLogsSafe();
 }
+
+window.AnbaOpenGmProfile = async function openGmProfile(gmId) {
+  state.teamCode = null;
+  state.teamData = null;
+  state.selectedPlayerIds.clear();
+  applyTeamTheme('');
+  setViewMode('gms');
+  setPageHeading('GMs', 'Perfiles históricos de GMs de la liga');
+  renderCapStatusPills({});
+  renderTeamStrip();
+  renderTeamPicker();
+  renderAdminMobileTeamGrid();
+  await window.AnbaGms.loadProfile(gmId, { api });
+  await refreshAdminLogsSafe();
+};
 
 async function loadWaitingList() {
   state.teamCode = null;
