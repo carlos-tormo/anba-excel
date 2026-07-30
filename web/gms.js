@@ -398,6 +398,18 @@
         const row = appendElement(list, 'article', { className: 'gms-profile-trade-row' });
         appendElement(row, 'strong', { text: `Trade ${trade.trade_id || trade.id}` });
         appendElement(row, 'span', { text: `${formatDate(trade.trade_date)} · ${(trade.teams || []).join(', ') || '—'} · ${trade.total_assets_moved || 0} activos` });
+        const detailsButton = appendElement(row, 'button', {
+          text: 'Ver detalles',
+          className: 'trade-archive-details-link gms-profile-trade-details-btn',
+          attrs: { type: 'button' },
+        });
+        detailsButton.addEventListener('click', async () => {
+          try {
+            await global.AnbaTradesArchive?.openDetailsById?.(trade.id, { api: state.api });
+          } catch (err) {
+            setStatus(`No se pudieron cargar los detalles del trade: ${err.message || err}`, 'error');
+          }
+        });
       });
     });
   }

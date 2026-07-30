@@ -8934,6 +8934,10 @@ body.gms-view-active .page-shell {
   color: #64748b;
   font-weight: 800;
 }
+.gms-profile-trade-details-btn {
+  justify-self: start;
+  width: auto;
+}
 .gms-profile-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

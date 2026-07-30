@@ -104,6 +104,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("data-gm-profile-id", source)
         self.assertIn("trade-archive-gm-line", source)
         self.assertIn("function showTradeDetailsModal", source)
+        self.assertIn("function openDetailsById", source)
+        self.assertIn("openDetailsById", source)
         self.assertIn("function addAssetSection", source)
         self.assertIn("function addAssetRow", source)
         self.assertIn("trade-archive-details-link", source)
@@ -301,6 +303,8 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("gms-profile-hero", gms_source)
         self.assertIn("rookies seleccionados", gms_source)
         self.assertIn("trades_by_season", gms_source)
+        self.assertIn("gms-profile-trade-details-btn", gms_source)
+        self.assertIn("AnbaTradesArchive?.openDetailsById", gms_source)
         for name, script in (("index.html", "guest.js"), ("admin.html", "admin.js")):
             with self.subTest(file=name):
                 source = web_file(name)

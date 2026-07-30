@@ -316,6 +316,22 @@
     return state.trades.find((trade) => Number(trade.id) === parsed) || null;
   }
 
+  async function ensureTradeArchiveLoaded(options = {}) {
+    state.api = options.api || state.api || global.AnbaApi?.request;
+    if (!state.api) throw new Error('api_unavailable');
+    if (state.trades.length) return;
+    const data = await state.api('/api/trades/archive');
+    state.trades = Array.isArray(data.trades) ? data.trades : [];
+  }
+
+  async function openDetailsById(tradeId, options = {}) {
+    await ensureTradeArchiveLoaded(options);
+    const trade = tradeById(tradeId);
+    if (!trade) throw new Error('trade_not_found');
+    showTradeDetailsModal(trade);
+    return trade;
+  }
+
   function renderRowsForSeason(container, season) {
     const article = el(container, 'article', { className: 'draft-order-round trade-archive-season' });
     el(article, 'h3', { text: `Temporada ${formatSeasonLabel(season.season_year)}` });
@@ -678,6 +694,7 @@
   global.AnbaTradesArchive = {
     bindAdminControls,
     load,
+    openDetailsById,
     render,
   };
 })(window);
