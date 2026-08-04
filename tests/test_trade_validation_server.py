@@ -99,6 +99,11 @@ class TradeValidationServerTests(unittest.TestCase):
             ).fetchone()
         return str(row[0]) if row else ""
 
+    def _profile_id(self, player_id: int) -> int:
+        with connect_test_db(self.db_path) as conn:
+            row = conn.execute("SELECT profile_id FROM players WHERE id = ?", (player_id,)).fetchone()
+        return int(row[0])
+
     def test_trade_validation_signature_ignores_browser_derived_fields(self) -> None:
         _atl_player_id, _bos_player_id, payload = self._two_team_player_trade()
         clean = self.db.validate_trade_machine(payload)
@@ -172,6 +177,163 @@ class TradeValidationServerTests(unittest.TestCase):
         self.assertEqual(["ATL", "BOS"], archived["teams"])
         self.assertEqual(["ATL Site GM", "BOS Site GM"], [row["gm_name"] for row in archived["team_movements"]])
         self.assertEqual(2, archived["total_assets_moved"])
+
+    def test_trade_command_records_player_movements_for_happiness_integration(self) -> None:
+        star_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Atlanta Star",
+                "bird_rights": "Reg",
+                "position": "SF",
+                "rating": "90",
+                "salary_2026_text": "10000000",
+            },
+        )
+        outgoing_role_player_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Boston Role Player",
+                "bird_rights": "Reg",
+                "position": "SG",
+                "rating": "80",
+                "salary_2026_text": "10000000",
+            },
+        )
+        atl_teammate_id = self.db.create_player(
+            "ATL",
+            {
+                "name": "Atlanta Teammate",
+                "bird_rights": "Reg",
+                "position": "PG",
+                "rating": "75",
+                "salary_2026_text": "10000000",
+            },
+        )
+        bos_teammate_id = self.db.create_player(
+            "BOS",
+            {
+                "name": "Boston Teammate",
+                "bird_rights": "Reg",
+                "position": "PG",
+                "rating": "75",
+                "salary_2026_text": "10000000",
+            },
+        )
+        atl_profile_id = self._profile_id(atl_teammate_id)
+        bos_profile_id = self._profile_id(bos_teammate_id)
+        star_profile_id = self._profile_id(star_id)
+        role_player_profile_id = self._profile_id(outgoing_role_player_id)
+        with connect_test_db(self.db_path) as conn:
+            conn.execute(
+                "UPDATE app_settings SET value = '2026' WHERE key = 'current_year'"
+            )
+            conn.execute(
+                "UPDATE player_profiles SET happiness = 5 WHERE id IN (?, ?)",
+                (atl_profile_id, bos_profile_id),
+            )
+            conn.execute(
+                "UPDATE player_transactions SET created_at = '2025-10-01T00:00:00' WHERE profile_id IN (?, ?)",
+                (atl_profile_id, bos_profile_id),
+            )
+            conn.commit()
+        payload = {
+            "teams": ["ATL", "BOS"],
+            "season": 2026,
+            "trade_bucket": "pre30",
+            "selections": [
+                {"type": "player", "id": star_id, "from_team": "ATL", "to_team": "BOS"},
+                {"type": "player", "id": outgoing_role_player_id, "from_team": "BOS", "to_team": "ATL"},
+            ],
+            "cash": [],
+        }
+        preview = self.db.validate_trade_machine(payload)
+
+        command = self.db.process_trade_command(
+            payload,
+            expected_validation_hash=preview["validation_hash"],
+            require_validation_hash=True,
+            notify_discord=False,
+            command_id="trade-happiness-test",
+        )
+
+        self.assertIsNotNone(command["result"])
+        self.assertEqual(
+            [
+                {
+                    "player_id": star_id,
+                    "profile_id": self._profile_id(star_id),
+                    "player_name": "Atlanta Star",
+                    "name": "Atlanta Star",
+                    "rating": "90",
+                    "from_team": "ATL",
+                    "to_team": "BOS",
+                },
+                {
+                    "player_id": outgoing_role_player_id,
+                    "profile_id": self._profile_id(outgoing_role_player_id),
+                    "player_name": "Boston Role Player",
+                    "name": "Boston Role Player",
+                    "rating": "80",
+                    "from_team": "BOS",
+                    "to_team": "ATL",
+                },
+            ],
+            command["result"]["player_movements"],
+        )
+        with connect_test_db(self.db_path) as conn:
+            happiness = {
+                int(row["id"]): float(row["happiness"])
+                for row in conn.execute(
+                    "SELECT id, happiness FROM player_profiles WHERE id IN (?, ?)",
+                    (atl_profile_id, bos_profile_id),
+                ).fetchall()
+            }
+            events = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT profile_id, event_type, applied_delta, source_entity_type, source_entity_id
+                    FROM player_happiness_events
+                    WHERE source_entity_id = 'trade-happiness-test'
+                    ORDER BY id
+                    """
+                ).fetchall()
+            ]
+        self.assertEqual(3.0, happiness[atl_profile_id])
+        self.assertEqual(7.0, happiness[bos_profile_id])
+        self.assertEqual(
+            [
+                {
+                    "profile_id": atl_profile_id,
+                    "event_type": "roster_impact",
+                    "applied_delta": -2.0,
+                    "source_entity_type": "trade",
+                    "source_entity_id": "trade-happiness-test",
+                },
+                {
+                    "profile_id": star_profile_id,
+                    "event_type": "team_join",
+                    "applied_delta": 7.0,
+                    "source_entity_type": "trade",
+                    "source_entity_id": "trade-happiness-test",
+                },
+                {
+                    "profile_id": bos_profile_id,
+                    "event_type": "roster_impact",
+                    "applied_delta": 2.0,
+                    "source_entity_type": "trade",
+                    "source_entity_id": "trade-happiness-test",
+                },
+                {
+                    "profile_id": role_player_profile_id,
+                    "event_type": "team_join",
+                    "applied_delta": 7.0,
+                    "source_entity_type": "trade",
+                    "source_entity_id": "trade-happiness-test",
+                },
+            ],
+            events,
+        )
 
     def test_discord_trade_summary_lists_pick_rounds(self) -> None:
         result = NotificationCompositionService.trade_asset_summary(

@@ -119,6 +119,30 @@ class UserRepository(LeagueRepository):
                 "username": str(user["username"] or "").strip(),
             }
 
+    def team_assignment_gm_snapshot(self, user_id: int) -> List[Dict[str, Any]]:
+        with self.db.connect() as conn:
+            ensure_user_gm_identity(conn, int(user_id), now=self._now())
+            rows = conn.execute(
+                """
+                SELECT
+                    a.team_id,
+                    t.code AS team_code,
+                    t.name AS team_name,
+                    g.id AS gm_entity_id,
+                    COALESCE(NULLIF(TRIM(g.display_name), ''), NULLIF(TRIM(u.username), ''),
+                             NULLIF(TRIM(u.display_name), ''), u.email) AS gm_name
+                FROM user_team_assignments a
+                JOIN teams t ON t.id = a.team_id
+                JOIN users u ON u.id = a.user_id
+                JOIN gm_identities g ON g.user_id = u.id
+                WHERE a.user_id = ?
+                ORDER BY t.code
+                """,
+                (int(user_id),),
+            ).fetchall()
+            conn.commit()
+        return [dict(row) for row in rows]
+
     def replace_team_assignments(
         self,
         user_id: int,

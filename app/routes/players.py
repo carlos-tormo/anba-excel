@@ -65,16 +65,17 @@ def create_player(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str
     if not handler._authorize("admin.player.write", {"team_code": team_code}):
         return
     try:
-        player_id = handler.app.players.create(team_code, payload)
+        result = handler.app.player_roster.create(team_code, payload)
     except ValueError as err:
         if str(err) == "profile_has_active_contract":
             return error_response(409, "profile_has_active_contract")
         raise
+    player_id = result.get("player_id")
     if not player_id:
         return error_response(404, "team_not_found")
-    player_after = handler.app.players.record(player_id)
+    player_after = result.get("player") or handler.app.players.record(player_id)
     handler._log_admin_action("create", "player", str(player_id), team_code, {"name": payload.get("name")}, after=player_after)
-    return json_response(201, {"player_id": player_id})
+    return json_response(201, {"player_id": player_id, "happiness_impact": result.get("happiness_impact")})
 
 
 def move_player(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:

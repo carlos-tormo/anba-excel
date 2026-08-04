@@ -413,6 +413,25 @@ class RouteRegistryTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertEqual({"salary_history": [{"season_year": 2026}]}, response.payload)
 
+    def test_profile_happiness_events_get_route_returns_framework_neutral_response(self):
+        player_happiness = SimpleNamespace(
+            events=Mock(return_value={"profile_id": 7, "events": [{"event_type": "manual_adjustment"}]})
+        )
+        handler = SimpleNamespace(
+            _authorize=Mock(return_value=True),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(player_happiness=player_happiness),
+        )
+
+        matched = dispatch_routes(handler, urlparse("/api/player-profiles/7/happiness-events?limit=25"), GET_ROUTES)
+
+        self.assertTrue(matched)
+        handler._authorize.assert_called_once_with("admin.player_profile.view")
+        player_happiness.events.assert_called_once_with(7, limit=25)
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual({"profile_id": 7, "events": [{"event_type": "manual_adjustment"}]}, response.payload)
+
     def test_admin_player_catalog_get_route_returns_framework_neutral_response_with_timing_header(self):
         player_catalog = SimpleNamespace(
             list_players=Mock(return_value=[{"id": 5, "name": "Player"}]),
@@ -1524,6 +1543,52 @@ class RouteRegistryTests(unittest.TestCase):
         response = handler._send_route_response.call_args.args[0]
         self.assertEqual(200, response.status)
         self.assertEqual({"ok": True, "updated": 2}, response.payload)
+
+    def test_patch_player_profile_happiness_uses_happiness_service_and_audits_metadata(self):
+        happiness_result = {
+            "ok": True,
+            "command_id": "player-happiness:7:manual:now",
+            "validation_result": "valid",
+            "entity_versions": {"profile_id": 7, "version": 3, "new_happiness": 4.5},
+            "new_happiness": 4.5,
+        }
+        player_identity = SimpleNamespace(update_profile=Mock())
+        player_happiness = SimpleNamespace(set_value=Mock(return_value=happiness_result))
+        session = {"user_id": 42, "role": "admin"}
+        handler = SimpleNamespace(
+            _authorize=Mock(return_value=True),
+            _current_session=Mock(return_value=session),
+            _log_admin_action=Mock(),
+            _send_route_response=Mock(),
+            app=SimpleNamespace(player_identity=player_identity, player_happiness=player_happiness),
+        )
+
+        matched = dispatch_routes(
+            handler,
+            urlparse("/api/player-profiles/7"),
+            PATCH_ROUTES,
+            {"happiness": 4.5, "expected_version": 2, "happiness_reason": "Admin correction"},
+        )
+
+        self.assertTrue(matched)
+        player_identity.update_profile.assert_not_called()
+        player_happiness.set_value.assert_called_once_with(
+            7,
+            {
+                "happiness": 4.5,
+                "expected_version": 2,
+                "reason": "Admin correction",
+                "source_entity_type": "admin_profile_edit",
+            },
+            session,
+        )
+        audit_kwargs = handler._log_admin_action.call_args.kwargs
+        self.assertEqual("player-happiness:7:manual:now", audit_kwargs["command_id"])
+        self.assertEqual("valid", audit_kwargs["validation_result"])
+        self.assertEqual({"profile_id": 7, "version": 3, "new_happiness": 4.5}, audit_kwargs["entity_versions"])
+        response = handler._send_route_response.call_args.args[0]
+        self.assertEqual(200, response.status)
+        self.assertEqual({"ok": True, "happiness_event": happiness_result}, response.payload)
 
     def test_coadmin_vote_create_audit_includes_command_metadata(self):
         vote = {"id": 8, "title": "Valor GM", "status": "open", "created_at": "2026-07-21T10:00:00Z"}

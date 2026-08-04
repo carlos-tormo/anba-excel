@@ -23,7 +23,16 @@ except ImportError:  # pragma: no cover
 
 
 class TradeService:
-    def __init__(self, db: Any, *, workflows: Any = None, outbox: Any = None, archive: Any = None):
+    def __init__(
+        self,
+        db: Any,
+        *,
+        workflows: Any = None,
+        outbox: Any = None,
+        archive: Any = None,
+        player_happiness: Any = None,
+        team_objectives: Any = None,
+    ):
         configured_repository = getattr(db, "_trade_repository", None)
         self.repository = db if isinstance(db, TradeRepository) else (
             configured_repository or TradeRepository(db)
@@ -32,6 +41,8 @@ class TradeService:
         self.workflows = workflows or getattr(backing_db, "_workflow_repository", None)
         self.outbox = outbox or getattr(backing_db, "_outbox_repository", None)
         self.archive = archive or getattr(backing_db, "_trade_archive_repository", None)
+        self.player_happiness = player_happiness or getattr(backing_db, "_player_happiness_service", None)
+        self.team_objectives = team_objectives or getattr(backing_db, "_team_objective_service", None)
 
     @staticmethod
     def _snapshot_hash(snapshot: Dict[str, Any]) -> str:
@@ -176,6 +187,7 @@ class TradeService:
                 "validation_issues": authoritative.get("issues") or [],
                 "forced_validation_issues": illegal if force_trade else [],
                 "applied_hard_caps": command.get("applied_hard_caps") or [],
+                "happiness_impacts": result.get("happiness_impacts") or [],
             }
             if modern:
                 details.update(
@@ -395,6 +407,16 @@ class TradeService:
                 )
                 result["season"] = int(season_year)
 
+                happiness_impacts = self._apply_trade_happiness_impacts_conn(
+                    conn,
+                    result,
+                    workflow_run_id=workflow_run_id,
+                    actor=actor,
+                    timestamp=timestamp,
+                )
+                if happiness_impacts:
+                    result["happiness_impacts"] = happiness_impacts
+
                 if self.archive:
                     archive_payload = TradeArchiveService.from_processed_trade_result(
                         result,
@@ -488,3 +510,131 @@ class TradeService:
             "outbox_event_ids": outbox_event_ids,
             "workflow_run_id": workflow_run_id,
         }
+
+    def _apply_trade_happiness_impacts_conn(
+        self,
+        conn: Any,
+        result: Dict[str, Any],
+        *,
+        workflow_run_id: str,
+        actor: Optional[Dict[str, Any]],
+        timestamp: str,
+    ) -> List[Dict[str, Any]]:
+        if self.player_happiness is None or not isinstance(result, dict):
+            return []
+        movements = result.get("player_movements") if isinstance(result.get("player_movements"), list) else []
+        moved_profile_ids = [
+            int(profile_id)
+            for profile_id in (parse_int(row.get("profile_id")) for row in movements if isinstance(row, dict))
+            if profile_id is not None
+        ]
+        impacts: List[Dict[str, Any]] = []
+        for movement in movements:
+            if not isinstance(movement, dict):
+                continue
+            player_id = parse_int(movement.get("player_id") or movement.get("id"))
+            subject_player = {
+                "id": player_id,
+                "profile_id": parse_int(movement.get("profile_id")),
+                "name": movement.get("player_name") or movement.get("name"),
+                "player_name": movement.get("player_name") or movement.get("name"),
+                "rating": movement.get("rating"),
+                "date_of_birth": movement.get("date_of_birth") or movement.get("profile_date_of_birth"),
+            }
+            if (
+                subject_player["profile_id"] is not None
+                and not subject_player.get("date_of_birth")
+                and hasattr(getattr(self.player_happiness, "repository", None), "profile_context_conn")
+            ):
+                context = self.player_happiness.repository.profile_context_conn(
+                    conn,
+                    int(subject_player["profile_id"]),
+                )
+                if context:
+                    subject_player["date_of_birth"] = context.get("date_of_birth")
+            from_team = normalize_team_code(movement.get("from_team") or movement.get("fromTeam"))
+            to_team = normalize_team_code(movement.get("to_team") or movement.get("toTeam"))
+            movement_impacts: Dict[str, Any] = {
+                "player_id": player_id,
+                "profile_id": subject_player["profile_id"],
+                "player_name": subject_player["player_name"],
+                "from_team": from_team,
+                "to_team": to_team,
+            }
+            if from_team:
+                movement_impacts["departure"] = self.player_happiness.apply_roster_impact_conn(
+                    conn,
+                    team_code=from_team,
+                    subject_player=subject_player,
+                    direction="remove",
+                    source_entity_type="trade",
+                    source_entity_id=workflow_run_id,
+                    actor=actor,
+                    timestamp=timestamp,
+                    command_id_prefix=f"player-happiness:trade:{workflow_run_id}:{player_id}:departure",
+                    excluded_profile_ids=moved_profile_ids,
+                )
+                if subject_player["profile_id"] is not None:
+                    movement_impacts["zero_threshold_relief"] = self.player_happiness.apply_zero_trade_relief_conn(
+                        conn,
+                        profile_id=subject_player["profile_id"],
+                        source_entity_id=workflow_run_id,
+                        actor=actor,
+                        timestamp=timestamp,
+                        command_id_prefix=(
+                            f"player-happiness:zero-threshold:trade:{workflow_run_id}:{player_id}"
+                        ),
+                    )
+            if to_team:
+                objective_modifier = (
+                    self.player_happiness.team_join_objective_modifier(
+                        self.team_objectives,
+                        to_team,
+                        subject_player,
+                        conn=conn,
+                        on_date=timestamp,
+                    )
+                    if self.team_objectives is not None
+                    and hasattr(self.player_happiness, "team_join_objective_modifier")
+                    else None
+                )
+                modifier_details = (
+                    [objective_modifier]
+                    if objective_modifier and objective_modifier.get("applied_delta")
+                    else None
+                )
+                modifiers = (
+                    [objective_modifier["applied_delta"]]
+                    if objective_modifier and objective_modifier.get("applied_delta")
+                    else None
+                )
+                if subject_player["profile_id"] is not None:
+                    movement_impacts["join"] = self.player_happiness.reset_for_team_join_conn(
+                        conn,
+                        int(subject_player["profile_id"]),
+                        to_team,
+                        player_id=player_id,
+                        modifiers=modifiers,
+                        modifier_details=modifier_details,
+                        actor=actor,
+                        timestamp=timestamp,
+                        command_id=(
+                            f"player-happiness:trade:{workflow_run_id}:{player_id}:team-join"
+                        ),
+                        source_entity_type="trade",
+                        source_entity_id=workflow_run_id,
+                    )
+                movement_impacts["arrival"] = self.player_happiness.apply_roster_impact_conn(
+                    conn,
+                    team_code=to_team,
+                    subject_player=subject_player,
+                    direction="add",
+                    source_entity_type="trade",
+                    source_entity_id=workflow_run_id,
+                    actor=actor,
+                    timestamp=timestamp,
+                    command_id_prefix=f"player-happiness:trade:{workflow_run_id}:{player_id}:arrival",
+                    excluded_profile_ids=moved_profile_ids,
+                )
+            impacts.append(movement_impacts)
+        return impacts

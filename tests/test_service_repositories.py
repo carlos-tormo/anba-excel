@@ -19,6 +19,7 @@ from app.db.repositories.season_rollover import SeasonRolloverRepository
 from app.db.repositories.trades import TradeRepository
 from app.db.repositories.tracker import TrackerRepository
 from app.db.repositories.team_detail import TeamDetailRepository
+from app.db.repositories.team_objectives import TeamObjectiveRepository
 from app.db.repositories.waivers import WaiverRepository
 from app.domain.cap import calculate_team_cap_summary
 from app.services.draft import DraftService
@@ -39,6 +40,7 @@ from app.services.season_rollover import SeasonRolloverService
 from app.services.trades import TradeService
 from app.services.tracker import TrackerService
 from app.services.team_detail import TeamDetailService
+from app.services.team_objectives import TeamObjectiveService
 from app.services.waivers import WaiverService
 
 
@@ -224,6 +226,14 @@ class ServiceRepositoryBoundaryTests(unittest.TestCase):
         self.assertIn("INSERT INTO gm_minimum_targets", repository_source)
         self.assertIn("SELECT * FROM free_agent_team_appeal", repository_source)
         self.assertNotIn("self.db.set_gm_minimum_targets(", repository_source)
+        self.assertNotIn(".execute(", service_source)
+
+    def test_team_objective_repository_owns_objective_sql_and_events(self) -> None:
+        repository_source = inspect.getsource(TeamObjectiveRepository)
+        service_source = inspect.getsource(TeamObjectiveService)
+        self.assertIn("team_season_objectives", repository_source)
+        self.assertIn("team_season_objective_events", repository_source)
+        self.assertIn("stale_entity_version", repository_source)
         self.assertNotIn(".execute(", service_source)
 
     def test_gm_office_repository_owns_aggregate_queries(self) -> None:

@@ -11,6 +11,9 @@ class PlayerRatingImportRepository(LeagueRepository):
     def connect(self) -> Any:
         return self.db.connect()
 
+    def transaction(self, mode: str = "IMMEDIATE") -> Any:
+        return self.db.transaction(mode)
+
     def rating_targets(self, conn: Any) -> List[Dict[str, Any]]:
         rows = conn.execute(
             """
@@ -48,53 +51,56 @@ class PlayerRatingImportRepository(LeagueRepository):
         raise ValueError("invalid_rating_import_target")
 
     def apply(self, records: Sequence[Dict[str, Any]], timestamp: str) -> Dict[str, Any]:
+        with self.transaction("IMMEDIATE") as conn:
+            return self.apply_conn(conn, records, timestamp)
+
+    def apply_conn(self, conn: Any, records: Sequence[Dict[str, Any]], timestamp: str) -> Dict[str, Any]:
         changed_count = 0
         unchanged_count = 0
         updated_targets: List[Dict[str, Any]] = []
-        with self.db.transaction("IMMEDIATE") as conn:
-            for record in records:
-                table = self._target_table(record.get("target_type"))
-                target_id = int(record["target_id"])
-                player_name = str(record.get("player_name") or "").strip()
-                rating = str(int(record["new_rating"]))
-                if table == "free_agents":
-                    row = conn.execute(
-                        """
-                        SELECT f.id, COALESCE(pp.name, f.name) AS name, f.rating
-                        FROM free_agents f
-                        LEFT JOIN player_profiles pp ON pp.id = f.profile_id
-                        WHERE f.id = ?
-                        """,
-                        (target_id,),
-                    ).fetchone()
-                else:
-                    row = conn.execute(
-                        "SELECT id, name, rating FROM players WHERE id = ?",
-                        (target_id,),
-                    ).fetchone()
-                if not row:
-                    raise ValueError("invalid_records")
-                current_name = str(row["name"] or "").strip()
-                if player_name and current_name != player_name:
-                    raise ValueError("rating_import_target_changed")
-                current_rating = str(row["rating"] or "").strip()
-                conn.execute(
-                    f"UPDATE {table} SET rating = ?, updated_at = ? WHERE id = ?",
-                    (rating, timestamp, target_id),
-                )
-                if current_rating == rating:
-                    unchanged_count += 1
-                else:
-                    changed_count += 1
-                updated_targets.append(
-                    {
-                        "target_type": record.get("target_type"),
-                        "target_id": target_id,
-                        "player_name": current_name,
-                        "previous_rating": current_rating,
-                        "new_rating": rating,
-                    }
-                )
+        for record in records:
+            table = self._target_table(record.get("target_type"))
+            target_id = int(record["target_id"])
+            player_name = str(record.get("player_name") or "").strip()
+            rating = str(int(record["new_rating"]))
+            if table == "free_agents":
+                row = conn.execute(
+                    """
+                    SELECT f.id, COALESCE(pp.name, f.name) AS name, f.rating
+                    FROM free_agents f
+                    LEFT JOIN player_profiles pp ON pp.id = f.profile_id
+                    WHERE f.id = ?
+                    """,
+                    (target_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id, name, rating FROM players WHERE id = ?",
+                    (target_id,),
+                ).fetchone()
+            if not row:
+                raise ValueError("invalid_records")
+            current_name = str(row["name"] or "").strip()
+            if player_name and current_name != player_name:
+                raise ValueError("rating_import_target_changed")
+            current_rating = str(row["rating"] or "").strip()
+            conn.execute(
+                f"UPDATE {table} SET rating = ?, updated_at = ? WHERE id = ?",
+                (rating, timestamp, target_id),
+            )
+            if current_rating == rating:
+                unchanged_count += 1
+            else:
+                changed_count += 1
+            updated_targets.append(
+                {
+                    "target_type": record.get("target_type"),
+                    "target_id": target_id,
+                    "player_name": current_name,
+                    "previous_rating": current_rating,
+                    "new_rating": rating,
+                }
+            )
         return {
             "ok": True,
             "record_count": changed_count + unchanged_count,

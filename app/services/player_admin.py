@@ -23,6 +23,7 @@ class PlayerAdminService:
         settings: Any,
         contract_seasons: Iterable[int],
         unrestricted_type: str,
+        player_happiness: Any = None,
     ) -> None:
         self.players = players
         self.requests = requests
@@ -30,6 +31,7 @@ class PlayerAdminService:
         self.settings = settings
         self.contract_seasons = tuple(int(year) for year in contract_seasons)
         self.unrestricted_type = unrestricted_type
+        self.player_happiness = player_happiness
 
     def player(self, player_id: int) -> Optional[Dict[str, Any]]:
         return self.players.record(int(player_id))
@@ -336,10 +338,23 @@ class PlayerAdminService:
                 option_action_season=season,
                 option_decision_request_id=(decision or {}).get("id"),
             )
+        happiness_impact = None
+        if self.player_happiness is not None and "rating" in applied and player_after:
+            happiness_impact = self.player_happiness.apply_drafted_rating_threshold(
+                player_id=player_id,
+                previous_rating=player_before.get("rating"),
+                new_rating=player_after.get("rating"),
+                source_entity_type="player_admin_update",
+                source_entity_id=f"player:{player_id}:rating",
+                actor=actor or {},
+            )
+            if happiness_impact and not happiness_impact.get("skipped"):
+                details["happiness_impact"] = happiness_impact
         return {
             "player": player_after,
             "player_before": player_before,
             "details": details,
+            "happiness_impact": happiness_impact,
             "notification": (
                 {
                     "kind": "contract_option",

@@ -21,9 +21,10 @@ def normalize_player_rating_name(value: Any) -> str:
 
 
 class PlayerRatingImportService:
-    def __init__(self, repository: Any, *, now: Callable[[], str]) -> None:
+    def __init__(self, repository: Any, *, now: Callable[[], str], player_happiness: Any = None) -> None:
         self.repository = repository
         self._now = now
+        self.player_happiness = player_happiness
 
     @staticmethod
     def _ratings_from_payload(payload: Any) -> Dict[str, Any]:
@@ -183,12 +184,37 @@ class PlayerRatingImportService:
                     "player_name": player_name,
                 }
             )
-        result = self.repository.apply(cleaned, self._now())
+        timestamp = self._now()
+        happiness_impacts: List[Dict[str, Any]] = []
+        with self.repository.transaction("IMMEDIATE") as conn:
+            result = self.repository.apply_conn(conn, cleaned, timestamp)
+            if self.player_happiness is not None:
+                source_entity_id = f"player-ratings:import:{timestamp}"
+                for target in result.get("updated_targets") or []:
+                    if str(target.get("target_type") or "").strip().lower() != "player":
+                        continue
+                    impact = self.player_happiness.apply_drafted_rating_threshold_conn(
+                        conn,
+                        player_id=target.get("target_id"),
+                        previous_rating=target.get("previous_rating"),
+                        new_rating=target.get("new_rating"),
+                        source_entity_type="player_rating_import",
+                        source_entity_id=source_entity_id,
+                        timestamp=timestamp,
+                        command_id_prefix=(
+                            f"player-happiness:drafted-rating-threshold:"
+                            f"{source_entity_id}:{target.get('target_id')}"
+                        ),
+                    )
+                    if impact and not impact.get("skipped"):
+                        happiness_impacts.append(impact)
         result["command_id"] = f"player-ratings:import:{result.get('record_count') or 0}"
+        result["happiness_impacts"] = happiness_impacts
         result["validation_result"] = "valid"
         result["entity_versions"] = {
             "record_count": int(result.get("record_count") or 0),
             "changed_count": int(result.get("changed_count") or 0),
             "unchanged_count": int(result.get("unchanged_count") or 0),
+            "happiness_impact_count": len(happiness_impacts),
         }
         return result

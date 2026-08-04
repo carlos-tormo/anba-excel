@@ -79,7 +79,7 @@ class RouteWorkflowServiceTests(unittest.TestCase):
             service.update_asset(3, {"asset_type": "dead_cap"}, before=before)
 
     def test_roster_mutation_and_move_return_audit_commands(self) -> None:
-        players, waivers = Mock(), Mock()
+        players, waivers, player_happiness = Mock(), Mock(), Mock()
         waivers.cut_player.return_value = {
             "profile_id": 4,
             "player_name": "Player",
@@ -88,9 +88,10 @@ class RouteWorkflowServiceTests(unittest.TestCase):
             "team_code": "ATL",
         }
         players.move.return_value = True
-        players.record.return_value = {"id": 5, "team_code": "BKN"}
-        service = PlayerRosterService(players, waivers)
-        before = {"id": 5, "team_code": "ATL"}
+        players.record.return_value = {"id": 5, "profile_id": 4, "team_code": "BKN", "rating": "88"}
+        player_happiness.apply_roster_impact.return_value = {"affected_count": 1}
+        service = PlayerRosterService(players, waivers, player_happiness)
+        before = {"id": 5, "profile_id": 4, "team_code": "ATL", "rating": "88"}
 
         cut = service.mutate(5, "cut", {}, before=before)
         moved = service.move(5, "BKN", before=before)
@@ -98,6 +99,10 @@ class RouteWorkflowServiceTests(unittest.TestCase):
         self.assertEqual(cut["audit"]["details"]["dead_contract_id"], 9)
         self.assertEqual(moved["audit"]["team_codes"], ["ATL", "BKN"])
         self.assertEqual(moved["audit"]["after"]["team_code"], "BKN")
+        self.assertEqual({"affected_count": 1}, cut["happiness_impact"])
+        self.assertEqual({"affected_count": 1}, moved["happiness_impact"]["departure"])
+        self.assertEqual({"affected_count": 1}, moved["happiness_impact"]["arrival"])
+        self.assertEqual(3, player_happiness.apply_roster_impact.call_count)
 
 
 if __name__ == "__main__":

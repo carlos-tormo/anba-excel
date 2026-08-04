@@ -41,6 +41,7 @@ const state = {
   gmMinimumTargetHandicaps: {},
   gmMinimumTargetOrderPlayerFilter: '',
   coadminVotes: [],
+  gmAttractivenessRanking: null,
   leaguePlayers: [],
   freeAgents: [],
   waivers: [],
@@ -4972,9 +4973,109 @@ function renderCoadminVoteVoters(vote) {
   `;
 }
 
+function gmAttractivenessBandLabel(band) {
+  const normalized = String(band || '').trim().toLowerCase();
+  if (normalized === 'top5') return 'Top 5';
+  if (normalized === 'bottom5') return 'Bottom 5';
+  return 'Neutral';
+}
+
+function gmAttractivenessNumber(value, digits = 3) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(digits) : '';
+}
+
+function renderGmAttractivenessRanking() {
+  const panel = document.getElementById('gmAttractivenessRankingPanel');
+  if (!panel) return;
+  const ranking = state.gmAttractivenessRanking || {};
+  const entries = Array.isArray(ranking.entries) ? ranking.entries : [];
+  if (!ranking.id || !entries.length) {
+    panel.innerHTML = `
+      <article class="coadmin-vote-card gm-attractiveness-ranking-card">
+        <div class="coadmin-vote-head">
+          <div>
+            <h3>Ranking activo de GMs</h3>
+            <p>Cuando cierres una votación, se publicará aquí el ranking estandarizado.</p>
+          </div>
+        </div>
+        <p class="muted">Todavía no hay ranking activo.</p>
+      </article>
+    `;
+    return;
+  }
+  panel.innerHTML = `
+    <article class="coadmin-vote-card gm-attractiveness-ranking-card">
+      <div class="coadmin-vote-head">
+        <div>
+          <h3>Ranking activo de GMs</h3>
+          <p>
+            ${ranking.title ? `${escapeHtml(ranking.title)} · ` : ''}
+            ${ranking.published_at ? `Publicado ${escapeHtml(formatDate(ranking.published_at))}` : 'Ranking publicado'}
+          </p>
+        </div>
+        <span class="coadmin-vote-status">Activo</span>
+      </div>
+      <div class="table-wrap app-table-wrap coadmin-vote-results-wrap">
+        <table class="app-table app-table--interactive app-table--mobile-wrap coadmin-vote-results-table gm-attractiveness-ranking-table">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>GM</th>
+              <th>Equipo</th>
+              <th>Banda</th>
+              <th>Score estandarizado</th>
+              <th>Promedio bruto</th>
+              <th>Votos</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${entries.map((entry) => {
+              const gmId = Number(entry.gm_entity_id || 0);
+              const band = String(entry.band || 'neutral').toLowerCase();
+              return `
+                <tr data-gm-attractiveness-row="${escapeHtml(gmId)}">
+                  <td class="coadmin-vote-average">#${escapeHtml(entry.rank_position || '')}</td>
+                  <td>
+                    <input type="text" value="${escapeHtml(entry.gm_name || '')}" data-gm-attractiveness-name="${escapeHtml(gmId)}">
+                  </td>
+                  <td>
+                    <span class="coadmin-vote-result-team">
+                      ${coadminVoteTeamLogoHtml(entry.team_code)}
+                      <strong>${escapeHtml(entry.team_code || '-')}</strong>
+                    </span>
+                  </td>
+                  <td>
+                    <span class="gm-attractiveness-band gm-attractiveness-band--${escapeHtml(band)}">
+                      ${escapeHtml(gmAttractivenessBandLabel(band))}
+                    </span>
+                  </td>
+                  <td>
+                    <input type="number" step="0.001" value="${escapeHtml(gmAttractivenessNumber(entry.standardized_score))}" data-gm-attractiveness-standardized="${escapeHtml(gmId)}">
+                  </td>
+                  <td>
+                    <input type="number" step="0.1" value="${escapeHtml(gmAttractivenessNumber(entry.raw_average, 1))}" data-gm-attractiveness-raw="${escapeHtml(gmId)}">
+                  </td>
+                  <td>${escapeHtml(entry.vote_count || 0)}</td>
+                  <td>
+                    <button type="button" data-gm-attractiveness-save="${escapeHtml(gmId)}">Guardar</button>
+                    <span class="coadmin-vote-message" data-gm-attractiveness-message="${escapeHtml(gmId)}"></span>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
 function renderCoadminVotesAdmin() {
   const board = document.getElementById('coadminVotesAdminBoard');
   if (!board) return;
+  renderGmAttractivenessRanking();
   const votes = Array.isArray(state.coadminVotes) ? state.coadminVotes : [];
   if (!votes.length) {
     board.innerHTML = '<article class="coadmin-vote-card"><p class="muted">No hay votaciones creadas todavía.</p></article>';
@@ -4992,6 +5093,7 @@ function renderCoadminVotesAdmin() {
           </div>
           <div class="coadmin-vote-admin-actions">
             <span class="coadmin-vote-status ${status === 'closed' ? 'is-closed' : ''}">${escapeHtml(coadminVoteStatusLabel(status))}</span>
+            ${vote.published_as_active_ranking ? '<span class="coadmin-vote-status">Ranking activo</span>' : ''}
             <button type="button" data-coadmin-vote-status="${escapeHtml(vote.id)}" data-status="${escapeHtml(nextStatus)}">
               ${status === 'closed' ? 'Reabrir' : 'Cerrar'}
             </button>
@@ -5006,8 +5108,12 @@ function renderCoadminVotesAdmin() {
 }
 
 async function loadCoadminVotesAdmin() {
-  const result = await api('/api/admin/coadmin-votes');
-  state.coadminVotes = Array.isArray(result.votes) ? result.votes : [];
+  const [votesResult, rankingResult] = await Promise.all([
+    api('/api/admin/coadmin-votes'),
+    api('/api/admin/gm-attractiveness-ranking'),
+  ]);
+  state.coadminVotes = Array.isArray(votesResult.votes) ? votesResult.votes : [];
+  state.gmAttractivenessRanking = rankingResult.ranking || null;
   renderCoadminVotesAdmin();
 }
 
@@ -5032,6 +5138,41 @@ async function setCoadminVoteStatus(voteId, status) {
     body: JSON.stringify({ status }),
   });
   await loadCoadminVotesAdmin();
+}
+
+async function saveGmAttractivenessRankingEntry(gmEntityId) {
+  const gmId = Number(gmEntityId || 0);
+  if (!gmId) return;
+  const message = document.querySelector(`[data-gm-attractiveness-message="${gmId}"]`);
+  const nameInput = document.querySelector(`[data-gm-attractiveness-name="${gmId}"]`);
+  const standardizedInput = document.querySelector(`[data-gm-attractiveness-standardized="${gmId}"]`);
+  const rawInput = document.querySelector(`[data-gm-attractiveness-raw="${gmId}"]`);
+  const standardized = Number(standardizedInput?.value || '');
+  const rawAverage = rawInput?.value === '' ? null : Number(rawInput?.value || '');
+  if (!Number.isFinite(standardized)) {
+    if (message) message.textContent = 'Score inválido.';
+    return;
+  }
+  if (rawAverage !== null && !Number.isFinite(rawAverage)) {
+    if (message) message.textContent = 'Promedio inválido.';
+    return;
+  }
+  if (message) message.textContent = 'Guardando...';
+  const payload = {
+    gm_name: String(nameInput?.value || '').trim(),
+    standardized_score: standardized,
+    raw_average: rawAverage,
+  };
+  try {
+    const result = await api(`/api/admin/gm-attractiveness-ranking/entries/${encodeURIComponent(String(gmId))}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+    state.gmAttractivenessRanking = result.ranking || state.gmAttractivenessRanking;
+    renderCoadminVotesAdmin();
+  } catch (error) {
+    if (message) message.textContent = error?.message || 'No se pudo guardar.';
+  }
 }
 
 function offseasonExceptionSeasonOptions() {
@@ -14520,6 +14661,11 @@ async function init() {
     const btn = event.target.closest('[data-coadmin-vote-status]');
     if (!btn) return;
     void setCoadminVoteStatus(btn.dataset.coadminVoteStatus, btn.dataset.status);
+  });
+  document.getElementById('gmAttractivenessRankingPanel')?.addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-gm-attractiveness-save]');
+    if (!btn) return;
+    void saveGmAttractivenessRankingEntry(btn.dataset.gmAttractivenessSave);
   });
   await loadGmOptionRequests();
 

@@ -417,12 +417,18 @@ def update_admin_user(handler: Any, parsed: ParseResult, payload: Optional[Dict[
     agent_name = payload.get("agent_name") if "agent_name" in payload else None
     username = payload.get("username") if "username" in payload else None
     try:
+        assignment_kwargs = {
+            "is_co_admin": is_co_admin,
+            "agent_name": agent_name,
+            "username": username,
+        }
+        current_session_factory = getattr(handler, "_current_session", None)
+        if callable(current_session_factory):
+            assignment_kwargs["actor"] = current_session_factory() or {}
         user = handler.app.users.replace_team_assignments(
             user_id,
             team_codes,
-            is_co_admin=is_co_admin,
-            agent_name=agent_name,
-            username=username,
+            **assignment_kwargs,
         )
     except ValueError as err:
         message = str(err)
@@ -544,20 +550,61 @@ def update_player_profile(handler: Any, parsed: ParseResult, payload: Optional[D
         profile_id = int(parsed.path.split("/")[-1])
     except ValueError:
         return error_response(400, "invalid_profile_id")
+    original_fields = sorted(payload.keys())
+    has_happiness_update = "happiness" in payload
+    profile_payload = dict(payload)
+    happiness_payload = None
+    if has_happiness_update:
+        happiness_payload = {
+            "happiness": profile_payload.pop("happiness"),
+            "expected_version": profile_payload.get("expected_version"),
+            "reason": profile_payload.get("happiness_reason") or "Manual happiness adjustment",
+            "source_entity_type": "admin_profile_edit",
+        }
+        profile_payload.pop("happiness_reason", None)
+        if set(profile_payload.keys()) <= {"expected_version"}:
+            profile_payload = {}
     try:
-        ok = handler.app.player_identity.update_profile(profile_id, payload)
+        ok = True
+        if profile_payload:
+            ok = handler.app.player_identity.update_profile(profile_id, profile_payload)
+            if not ok:
+                return json_response(404, {"ok": False})
+            if happiness_payload:
+                happiness_payload.pop("expected_version", None)
+        elif not has_happiness_update:
+            ok = handler.app.player_identity.update_profile(profile_id, payload)
+        happiness_result = None
+        if has_happiness_update and happiness_payload is not None:
+            happiness_result = handler.app.player_happiness.set_value(
+                profile_id,
+                happiness_payload,
+                handler._current_session() or {},
+            )
+            ok = True
     except ValueError as err:
         message = str(err) or "invalid_profile"
         return error_response(409 if message == "stale_entity_version" else 400, message)
     if ok:
+        audit_kwargs = {}
+        if happiness_result:
+            audit_kwargs = {
+                "command_id": happiness_result.get("command_id"),
+                "validation_result": happiness_result.get("validation_result"),
+                "entity_versions": happiness_result.get("entity_versions"),
+            }
         handler._log_admin_action(
             "update",
             "player_profile",
             str(profile_id),
             None,
-            {"fields": sorted(payload.keys())},
+            {"fields": original_fields},
+            **audit_kwargs,
         )
-    return json_response(200 if ok else 404, {"ok": ok})
+    response_payload = {"ok": ok}
+    if has_happiness_update and happiness_result:
+        response_payload["happiness_event"] = happiness_result
+    return json_response(200 if ok else 404, response_payload)
 
 def update_player(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
@@ -607,7 +654,11 @@ def update_player(handler: Any, parsed: ParseResult, payload: Optional[Dict[str,
             generate_image=discord_image_requested(payload),
             custom_image=payload.get("discord_custom_image"),
         )
-    return json_response(200, {"ok": True, "player": result.get("player")})
+    return json_response(200, {
+        "ok": True,
+        "player": result.get("player"),
+        "happiness_impact": result.get("happiness_impact"),
+    })
 
 def update_team_luxury_history(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}

@@ -9,6 +9,7 @@ from .free_agent_appeal import FreeAgentAppealRepository
 from .free_agent_agents import FreeAgentAgentRepository
 from .gm_minimum_targets import GMMinimumTargetRepository
 from .gm_identities import GMIdentityRepository
+from .gm_attractiveness import GMAttractivenessRepository
 from .gm_office import GMOfficeRepository
 from .notifications import NotificationRepository
 from .outbox import OutboxRepository
@@ -21,6 +22,7 @@ from .player_ratings import PlayerRatingImportRepository
 from .press_articles import PressArticleRepository
 from .settings import SettingsRepository
 from .teams import TeamRepository
+from .team_objectives import TeamObjectiveRepository
 from .team_detail import TeamDetailRepository
 from .season_rollover import SeasonRolloverRepository
 from .trades import TradeRepository
@@ -41,6 +43,7 @@ __all__ = [
     "FreeAgentAgentRepository",
     "GMMinimumTargetRepository",
     "GMIdentityRepository",
+    "GMAttractivenessRepository",
     "GMOfficeRepository",
     "NotificationRepository",
     "OutboxRepository",
@@ -52,6 +55,7 @@ __all__ = [
     "PressArticleRepository",
     "SettingsRepository",
     "TeamRepository",
+    "TeamObjectiveRepository",
     "TeamDetailRepository",
     "SeasonRolloverRepository",
     "TradeRepository",

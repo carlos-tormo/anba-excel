@@ -94,7 +94,7 @@ def update_owner_office(handler: Any, parsed: ParseResult, payload: Optional[Dic
     if not handler._authorize("admin.team.write", {"team_code": code}):
         return
     try:
-        owner_office = handler.app.owner_office.update(code, payload)
+        owner_office = handler.app.owner_office.update(code, payload, handler._current_session() or {})
     except ValueError as err:
         if str(err) == "invalid_season_year":
             return error_response(400, "invalid_season_year")

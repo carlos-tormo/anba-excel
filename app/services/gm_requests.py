@@ -27,6 +27,8 @@ class GMRequestService:
         players: Any,
         now: Callable[[], str],
         normalize_team_code: Callable[[Any], Optional[str]],
+        player_happiness: Any = None,
+        team_objectives: Any = None,
     ) -> None:
         self.requests = requests
         self.workflows = workflows
@@ -35,6 +37,8 @@ class GMRequestService:
         self.free_agency = free_agency
         self.outbox = outbox
         self.players = players
+        self.player_happiness = player_happiness
+        self.team_objectives = team_objectives
         self.now = now
         self.normalize_team_code = normalize_team_code
 
@@ -152,6 +156,46 @@ class GMRequestService:
                 player_id = self.free_agency._sign_free_agent_conn(conn, free_agent_id, team_code, sign_payload or {})
                 if not player_id:
                     raise ValueError("free_agent_or_team_not_found")
+                if self.player_happiness is not None and str(request.get("offer_type") or "").strip().lower() != "renewal":
+                    profile_id = self.free_agency._find_player_profile_id(conn, player_id)
+                    if profile_id is not None:
+                        objective_modifier = (
+                            self.player_happiness.team_join_objective_modifier(
+                                self.team_objectives,
+                                team_code,
+                                free_agent,
+                                conn=conn,
+                                on_date=timestamp,
+                            )
+                            if self.team_objectives is not None
+                            and hasattr(self.player_happiness, "team_join_objective_modifier")
+                            else None
+                        )
+                        modifier_details = (
+                            [objective_modifier]
+                            if objective_modifier and objective_modifier.get("applied_delta")
+                            else None
+                        )
+                        modifiers = (
+                            [objective_modifier["applied_delta"]]
+                            if objective_modifier and objective_modifier.get("applied_delta")
+                            else None
+                        )
+                        self.player_happiness.reset_for_team_join_conn(
+                            conn,
+                            int(profile_id),
+                            team_code,
+                            player_id=player_id,
+                            free_agent_id=free_agent_id,
+                            modifiers=modifiers,
+                            modifier_details=modifier_details,
+                            actor=admin,
+                            timestamp=timestamp,
+                            command_id=f"gm-free-agent-offer:{parsed_request_id}:team-join-happiness",
+                            source_entity_type="gm_free_agent_offer_request",
+                            source_entity_id=parsed_request_id,
+                            extra_metadata={"offer_request_id": parsed_request_id},
+                        )
                 self._transition_offer(conn, parsed_request_id, "approved", admin, note, timestamp, expected_version=expected_version)
                 self.offer_promises._upsert_free_agent_offer_promise_for_request_conn(
                     conn,

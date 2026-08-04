@@ -232,6 +232,7 @@ def apply_player_rating_import(handler: Any, _parsed: ParseResult, payload: Opti
         "record_count": result.get("record_count"),
         "changed_count": result.get("changed_count"),
         "unchanged_count": result.get("unchanged_count"),
+        "happiness_impact_count": len(result.get("happiness_impacts") or []),
         "backup_id": backup.get("id"),
         "backup_sha256": backup.get("sha256"),
     }
@@ -248,6 +249,7 @@ def apply_player_rating_import(handler: Any, _parsed: ParseResult, payload: Opti
             record_count=result.get("record_count"),
             changed_count=result.get("changed_count"),
             unchanged_count=result.get("unchanged_count"),
+            happiness_impact_count=len(result.get("happiness_impacts") or []),
         ),
     )
     result["backup"] = handler.app.maintenance.public_backup_metadata(backup)

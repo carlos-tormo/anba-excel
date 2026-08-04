@@ -599,6 +599,120 @@ class DatabaseMigrationsMixin:
             finally:
                 conn.execute("PRAGMA foreign_keys = ON")
 
+    def _ensure_team_objectives_support_champion_result(self, conn: sqlite3.Connection) -> None:
+            if not self._migration_table_exists(conn, "team_season_objectives"):
+                return
+            schema_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'team_season_objectives'",
+            ).fetchone()
+            schema_sql = str(schema_row["sql"] if schema_row else "")
+            if "'champion'" in schema_sql:
+                return
+
+            objective_backup = f"team_season_objectives_old_{secrets.token_hex(4)}"
+            events_backup = f"team_season_objective_events_old_{secrets.token_hex(4)}"
+            has_events = self._migration_table_exists(conn, "team_season_objective_events")
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys = OFF")
+            try:
+                if has_events:
+                    conn.execute(f"ALTER TABLE team_season_objective_events RENAME TO {events_backup}")
+                conn.execute(f"ALTER TABLE team_season_objectives RENAME TO {objective_backup}")
+                conn.execute(
+                    """
+                    CREATE TABLE team_season_objectives (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                        season_year INTEGER NOT NULL CHECK(season_year >= 2000 AND season_year <= 2100),
+                        objective_code TEXT NOT NULL CHECK(objective_code IN (
+                            'finals', 'conference_finals', 'second_round', 'first_round',
+                            'play_in', 'play_in_race', 'youth_development'
+                        )),
+                        objective_label_snapshot TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN (
+                            'proposed', 'agreed', 'locked', 'resolved'
+                        )),
+                        agreed_at TEXT,
+                        agreed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        owner_conversation_id TEXT,
+                        achieved_code TEXT CHECK(achieved_code IS NULL OR achieved_code IN (
+                            'champion', 'finals', 'conference_finals', 'second_round', 'first_round',
+                            'play_in', 'play_in_race', 'youth_development'
+                        )),
+                        achieved_label_snapshot TEXT,
+                        resolved_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(team_id, season_year)
+                    )
+                    """
+                )
+                conn.execute(
+                    f"""
+                    INSERT INTO team_season_objectives (
+                        id, team_id, season_year, objective_code, objective_label_snapshot,
+                        status, agreed_at, agreed_by_user_id, owner_conversation_id,
+                        achieved_code, achieved_label_snapshot, resolved_at, version,
+                        created_at, updated_at
+                    )
+                    SELECT
+                        id, team_id, season_year, objective_code, objective_label_snapshot,
+                        status, agreed_at, agreed_by_user_id, owner_conversation_id,
+                        achieved_code, achieved_label_snapshot, resolved_at, version,
+                        created_at, updated_at
+                    FROM {objective_backup}
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS team_season_objective_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        objective_id INTEGER NOT NULL REFERENCES team_season_objectives(id) ON DELETE CASCADE,
+                        event_type TEXT NOT NULL,
+                        previous_objective_code TEXT,
+                        new_objective_code TEXT,
+                        actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        command_id TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                if has_events:
+                    conn.execute(
+                        f"""
+                        INSERT INTO team_season_objective_events (
+                            id, objective_id, event_type, previous_objective_code,
+                            new_objective_code, actor_user_id, metadata_json,
+                            command_id, created_at
+                        )
+                        SELECT
+                            id, objective_id, event_type, previous_objective_code,
+                            new_objective_code, actor_user_id, metadata_json,
+                            command_id, created_at
+                        FROM {events_backup}
+                        """
+                    )
+                conn.execute(f"DROP TABLE {objective_backup}")
+                if has_events:
+                    conn.execute(f"DROP TABLE {events_backup}")
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_team_season_objectives_season
+                    ON team_season_objectives (season_year, team_id)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_team_season_objective_events_objective
+                    ON team_season_objective_events (objective_id, created_at)
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+
     def ensure_auth_schema(self) -> None:
             self._enable_wal_mode()
             with self.transaction("IMMEDIATE") as conn:
@@ -1023,6 +1137,44 @@ class DatabaseMigrationsMixin:
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         PRIMARY KEY (vote_id, voter_user_id, target_team_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS gm_attractiveness_rankings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_vote_id INTEGER REFERENCES coadmin_votes(id) ON DELETE SET NULL,
+                        status TEXT NOT NULL DEFAULT 'active'
+                            CHECK(status IN ('active', 'archived')),
+                        title TEXT,
+                        published_at TEXT NOT NULL,
+                        published_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS gm_attractiveness_ranking_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ranking_id INTEGER NOT NULL REFERENCES gm_attractiveness_rankings(id) ON DELETE CASCADE,
+                        gm_entity_id INTEGER REFERENCES gm_identities(id) ON DELETE SET NULL,
+                        gm_name TEXT NOT NULL,
+                        team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
+                        team_code TEXT,
+                        team_name TEXT,
+                        raw_average REAL,
+                        standardized_score REAL NOT NULL DEFAULT 0,
+                        vote_count INTEGER NOT NULL DEFAULT 0,
+                        rank_position INTEGER NOT NULL,
+                        band TEXT NOT NULL DEFAULT 'neutral'
+                            CHECK(band IN ('top5', 'bottom5', 'neutral')),
+                        manual_override INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(ranking_id, gm_entity_id)
                     )
                     """
                 )
@@ -1756,6 +1908,64 @@ class DatabaseMigrationsMixin:
                 )
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS team_season_objectives (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                        season_year INTEGER NOT NULL CHECK(season_year >= 2000 AND season_year <= 2100),
+                        objective_code TEXT NOT NULL CHECK(objective_code IN (
+                            'finals', 'conference_finals', 'second_round', 'first_round',
+                            'play_in', 'play_in_race', 'youth_development'
+                        )),
+                        objective_label_snapshot TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN (
+                            'proposed', 'agreed', 'locked', 'resolved'
+                        )),
+                        agreed_at TEXT,
+                        agreed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        owner_conversation_id TEXT,
+                        achieved_code TEXT CHECK(achieved_code IS NULL OR achieved_code IN (
+                            'champion', 'finals', 'conference_finals', 'second_round', 'first_round',
+                            'play_in', 'play_in_race', 'youth_development'
+                        )),
+                        achieved_label_snapshot TEXT,
+                        resolved_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(team_id, season_year)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS team_season_objective_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        objective_id INTEGER NOT NULL REFERENCES team_season_objectives(id) ON DELETE CASCADE,
+                        event_type TEXT NOT NULL,
+                        previous_objective_code TEXT,
+                        new_objective_code TEXT,
+                        actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        command_id TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_team_season_objectives_season
+                    ON team_season_objectives (season_year, team_id)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_team_season_objective_events_objective
+                    ON team_season_objective_events (objective_id, created_at)
+                    """
+                )
+                self._ensure_team_objectives_support_champion_result(conn)
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS team_owner_profiles (
                         team_id INTEGER PRIMARY KEY,
                         owner_name TEXT,
@@ -2351,6 +2561,10 @@ class DatabaseMigrationsMixin:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_player_salary_history_player_season ON player_salary_history(player_id, season_year)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_player_happiness_events_profile_created ON player_happiness_events(profile_id, created_at DESC, id DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_player_happiness_events_command ON player_happiness_events(command_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_gm_attractiveness_rankings_status ON gm_attractiveness_rankings(status, published_at DESC, id DESC)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_gm_attractiveness_rankings_vote ON gm_attractiveness_rankings(source_vote_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_gm_attractiveness_entries_ranking ON gm_attractiveness_ranking_entries(ranking_id, rank_position)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_gm_attractiveness_entries_gm ON gm_attractiveness_ranking_entries(gm_entity_id, ranking_id)")
                 self._backfill_player_salary_numeric_values(conn)
                 asset_cols = {
                     row["name"]

@@ -599,7 +599,10 @@ class OfferPromiseRepository(LeagueRepository):
                 (parsed_id,),
             )
             row = read_cur.fetchone()
-            return self._free_agent_offer_promise_from_row(read_cur, row) if row else None
+            promise = self._free_agent_offer_promise_from_row(read_cur, row) if row else None
+            if promise is not None:
+                promise["previous_status"] = str(existing["status"] or "pending").strip().lower()
+            return promise
 
     def update_free_agent_offer_promise_status(
         self,

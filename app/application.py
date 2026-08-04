@@ -28,6 +28,8 @@ try:
         FreeAgentOfferDiscordConfig,
         FreeAgentOfferNotificationService,
     )
+    from .services.coadmin_votes import CoadminVoteService
+    from .services.gm_attractiveness import GMAttractivenessService
     from .services.news_image_prompts import NewsImagePromptService
     from .services.gm_request_queries import GMRequestQueryService
     from .services.notification_delivery import (
@@ -46,8 +48,10 @@ try:
     from .services.season_rollover import SeasonRolloverService
     from .services.settings import SettingsService
     from .services.team_admin import TeamAdminService
+    from .services.team_objectives import TeamObjectiveService
     from .services.trades import TradeService
     from .services.trade_archive import TradeArchiveService
+    from .services.user_admin import UserAdminService
     from .services.waiting_list import WaitingListService
     from .services.waivers import WaiverService
 except ImportError:  # pragma: no cover - direct script support
@@ -68,6 +72,8 @@ except ImportError:  # pragma: no cover - direct script support
         FreeAgentOfferDiscordConfig,
         FreeAgentOfferNotificationService,
     )
+    from services.coadmin_votes import CoadminVoteService
+    from services.gm_attractiveness import GMAttractivenessService
     from services.news_image_prompts import NewsImagePromptService
     from services.gm_request_queries import GMRequestQueryService
     from services.notification_delivery import (
@@ -86,8 +92,10 @@ except ImportError:  # pragma: no cover - direct script support
     from services.season_rollover import SeasonRolloverService
     from services.settings import SettingsService
     from services.team_admin import TeamAdminService
+    from services.team_objectives import TeamObjectiveService
     from services.trades import TradeService
     from services.trade_archive import TradeArchiveService
+    from services.user_admin import UserAdminService
     from services.waiting_list import WaitingListService
     from services.waivers import WaiverService
 
@@ -142,6 +150,7 @@ class ApplicationContainer:
         "_asset_repository",
         "_cartera_service",
         "_coadmin_vote_repository",
+        "_coadmin_vote_service",
         "_depth_chart_repository",
         "_draft_repository",
         "_free_agency_repository",
@@ -149,6 +158,8 @@ class ApplicationContainer:
         "_free_agent_appeal_service",
         "_gm_minimum_target_service",
         "_gm_identity_repository",
+        "_gm_attractiveness_repository",
+        "_gm_attractiveness_service",
         "_gm_office_service",
         "_gm_request_repository",
         "_gm_request_service",
@@ -167,11 +178,14 @@ class ApplicationContainer:
         "_season_rollover_repository",
         "_settings_repository",
         "_team_detail_service",
+        "_team_objective_repository",
+        "_team_objective_service",
         "_team_repository",
         "_tracker_service",
         "_trade_repository",
         "_trade_archive_repository",
         "_user_repository",
+        "_user_admin_service",
         "_waiver_repository",
         "_waiting_list_repository",
         "_workflow_repository",
@@ -217,6 +231,10 @@ class ApplicationContainer:
         return self._dependency("_team_repository")
 
     @property
+    def team_objectives(self) -> TeamObjectiveService:
+        return self._dependency("_team_objective_service")
+
+    @property
     def players(self) -> Any:
         return self._dependency("_player_repository")
 
@@ -230,6 +248,10 @@ class ApplicationContainer:
 
     @property
     def users(self) -> Any:
+        return self._dependency("_user_admin_service")
+
+    @property
+    def user_repository(self) -> Any:
         return self._dependency("_user_repository")
 
     @property
@@ -246,7 +268,11 @@ class ApplicationContainer:
 
     @property
     def coadmin_votes(self) -> Any:
-        return self._dependency("_coadmin_vote_repository")
+        return self._dependency("_coadmin_vote_service")
+
+    @property
+    def gm_attractiveness(self) -> GMAttractivenessService:
+        return self._dependency("_gm_attractiveness_service")
 
     @property
     def gm_office(self) -> Any:
@@ -342,6 +368,8 @@ class ApplicationContainer:
             gm_requests=self._dependency("_gm_request_service"),
             offer_promises=self._dependency("_offer_promise_service"),
             players=self._dependency("_player_repository"),
+            player_happiness=self.player_happiness,
+            team_objectives=self.team_objectives,
         )
 
     @cached_property
@@ -351,6 +379,8 @@ class ApplicationContainer:
             workflows=self._dependency("_workflow_repository"),
             outbox=self._dependency("_outbox_repository"),
             archive=self._dependency("_trade_archive_repository"),
+            player_happiness=self.player_happiness,
+            team_objectives=self.team_objectives,
         )
 
     @cached_property
@@ -363,7 +393,12 @@ class ApplicationContainer:
 
     @cached_property
     def waivers(self) -> WaiverService:
-        return WaiverService(self._dependency("_waiver_repository"))
+        return WaiverService(
+            self._dependency("_waiver_repository"),
+            player_happiness=self.player_happiness,
+            players=self._dependency("_player_repository"),
+            team_objectives=self.team_objectives,
+        )
 
     @cached_property
     def draft(self) -> DraftService:
@@ -395,6 +430,7 @@ class ApplicationContainer:
             settings=self._dependency("_settings_repository"),
             contract_seasons=self.config.contract_seasons,
             unrestricted_type=self.config.unrestricted_free_agent_type,
+            player_happiness=self.player_happiness,
         )
 
     @cached_property
@@ -415,6 +451,8 @@ class ApplicationContainer:
         return PlayerRosterService(
             self._dependency("_player_repository"),
             self._dependency("_waiver_repository"),
+            self.player_happiness,
+            self.team_objectives,
         )
 
     @cached_property
@@ -560,6 +598,7 @@ class ApplicationContainer:
             forecast_window=self.config.owner_forecast_window,
             objective_options=list(self.config.owner_objective_options),
             interview_composer=self.owner_interviews,
+            team_objectives=self.team_objectives,
         )
 
     @cached_property

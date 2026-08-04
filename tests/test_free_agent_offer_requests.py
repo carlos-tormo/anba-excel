@@ -110,6 +110,22 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertIsNotNone(result["player_id"])
         self.assertEqual("10.000.000", result["player"]["salary_2025_text"])
         self.assertIsNone(self.db.get_free_agent(self.free_agent_id))
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            event = conn.execute(
+                """
+                SELECT event_type, previous_value, applied_delta, new_value,
+                       source_entity_type, source_entity_id
+                FROM player_happiness_events
+                WHERE profile_id = ?
+                """,
+                (result["player"]["profile_id"],),
+            ).fetchone()
+        self.assertIsNotNone(event)
+        self.assertEqual("team_join", event["event_type"])
+        self.assertEqual(7.0, event["new_value"])
+        self.assertEqual("gm_free_agent_offer_request", event["source_entity_type"])
+        self.assertEqual(str(submission["request"]["id"]), str(event["source_entity_id"]))
 
     def test_free_agency_service_rejects_offer_without_signing_player(self) -> None:
         service = FreeAgencyService(self.db, contract_seasons=range(2025, 2032))
@@ -726,6 +742,83 @@ class FreeAgentOfferRequestTests(unittest.TestCase):
         self.assertEqual("Agent Two", updated["agent_name"])
         self.assertEqual("Reg · 2 años", updated["contract_type"])
         self.assertEqual("fulfilled", updated["status"])
+
+    def test_promise_resolution_updates_player_happiness_once_per_status_transition(self) -> None:
+        admin = {"email": "admin@example.com", "name": "Admin", "role": "admin"}
+        timestamp = now_iso()
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            team_id = conn.execute("SELECT id FROM teams WHERE code = 'ATL'").fetchone()["id"]
+            profile_id = int(conn.execute(
+                """
+                INSERT INTO player_profiles (name, happiness, created_at, updated_at)
+                VALUES ('Promise Player', 5, ?, ?)
+                """,
+                (timestamp, timestamp),
+            ).lastrowid)
+            conn.execute(
+                """
+                INSERT INTO players (
+                    team_id, profile_id, row_order, name, rating,
+                    salary_2026_text, created_at, updated_at
+                ) VALUES (?, ?, 1, 'Promise Player', '75', '1.000.000', ?, ?)
+                """,
+                (team_id, profile_id, timestamp, timestamp),
+            )
+            conn.commit()
+
+        promise = self.db.create_free_agent_offer_promise(
+            {
+                "profile_id": profile_id,
+                "player_name": "Promise Player",
+                "team_code": "ATL",
+                "season_year": 2026,
+                "role": "Sexto hombre",
+                "status": "pending",
+            },
+            admin,
+        )
+        fulfilled = self.db.update_free_agent_offer_promise_status(
+            int(promise["id"]),
+            "fulfilled",
+            admin,
+        )
+        repeated = self.db.update_free_agent_offer_promise_status(
+            int(promise["id"]),
+            "fulfilled",
+            admin,
+        )
+        broken = self.db.update_free_agent_offer_promise_status(
+            int(promise["id"]),
+            "broken",
+            admin,
+        )
+
+        self.assertEqual(1, fulfilled["happiness_impact"]["applied_delta"])
+        self.assertTrue(repeated["happiness_impact"]["skipped"])
+        self.assertEqual(-2, broken["happiness_impact"]["applied_delta"])
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            profile = conn.execute(
+                "SELECT happiness FROM player_profiles WHERE id = ?",
+                (profile_id,),
+            ).fetchone()
+            events = conn.execute(
+                """
+                SELECT event_type, applied_delta, source_entity_type, source_entity_id, metadata_json
+                FROM player_happiness_events
+                WHERE profile_id = ?
+                ORDER BY id
+                """,
+                (profile_id,),
+            ).fetchall()
+        self.assertEqual(4, profile["happiness"])
+        self.assertEqual([1.0, -2.0], [row["applied_delta"] for row in events])
+        self.assertTrue(all(row["event_type"] == "promise_resolution" for row in events))
+        self.assertTrue(all(row["source_entity_type"] == "free_agent_offer_promise" for row in events))
+        self.assertEqual(str(promise["id"]), str(events[0]["source_entity_id"]))
+        self.assertEqual("fulfilled", json.loads(events[0]["metadata_json"])["status"])
+        self.assertEqual("broken", json.loads(events[1]["metadata_json"])["status"])
 
     def test_free_agent_offer_approval_checks_promise_role_capacity_before_signing(self) -> None:
         admin = {"email": "admin@example.com", "name": "Admin", "role": "admin"}

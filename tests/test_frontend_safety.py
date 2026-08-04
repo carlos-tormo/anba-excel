@@ -218,6 +218,21 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertNotIn("row.canonical_id", guest[history_render_start:history_render_end])
 
         self.assertIn('id="openDraftHistoryImportBtn"', admin_html)
+
+    def test_gm_attractiveness_admin_ranking_is_wired(self) -> None:
+        admin = web_file("admin.js")
+        admin_html = web_file("admin.html")
+        styles = web_file("styles.css")
+
+        self.assertIn('id="gmAttractivenessRankingPanel"', admin_html)
+        self.assertIn("gmAttractivenessRanking: null", admin)
+        self.assertIn("function renderGmAttractivenessRanking", admin)
+        self.assertIn("/api/admin/gm-attractiveness-ranking", admin)
+        self.assertIn("function saveGmAttractivenessRankingEntry", admin)
+        self.assertIn("/api/admin/gm-attractiveness-ranking/entries/", admin)
+        self.assertIn("data-gm-attractiveness-save", admin)
+        self.assertIn("gm-attractiveness-band--top5", styles)
+        self.assertIn("gm-attractiveness-band--bottom5", styles)
         self.assertIn('id="archiveDraftHistoryBtn"', admin_html)
         self.assertIn('id="draftYearNavigator"', admin_html)
         self.assertIn('id="draftYearNavigator"', web_file("index.html"))

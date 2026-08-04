@@ -13,9 +13,11 @@ from typing import Any, Callable, Dict, List, Optional
 try:
     from ..auth.policies import normalize_team_code
     from ..domain._values import parse_amount_like, parse_int
+    from ..domain.team_objectives import objective_label, require_objective_code, require_objective_result_code
 except ImportError:  # pragma: no cover
     from auth.policies import normalize_team_code
     from domain._values import parse_amount_like, parse_int
+    from domain.team_objectives import objective_label, require_objective_code, require_objective_result_code
 
 
 def normalize_import_text(value: Any) -> str:
@@ -167,10 +169,12 @@ class OwnerAdminImportService:
         *,
         now: Callable[[], str],
         objective_options: List[str],
+        team_objectives: Any = None,
     ) -> None:
         self._repository = repository
         self._now = now
         self._objective_options = list(objective_options)
+        self._team_objectives = team_objectives
 
     def _owner_office_rows_from_json(self, value: Any, section: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
@@ -777,9 +781,15 @@ class OwnerAdminImportService:
                 "summary": summary,
             }
 
-    def _normalize_objective(self, value: Any) -> str:
+    def _normalize_objective(self, value: Any, *, result: bool = False) -> str:
         text = str(value or "").strip()
-        return text if text in self._objective_options else ""
+        if text in self._objective_options:
+            return text
+        try:
+            code = require_objective_result_code(text) if result else require_objective_code(text)
+        except ValueError:
+            return ""
+        return objective_label(code)
 
     def _owner_office_import_header_value(self, row: Dict[str, Any], aliases: List[str]) -> str:
         return self._owner_import_header_value(row, aliases)
@@ -818,7 +828,7 @@ class OwnerAdminImportService:
                     errors.append({"line": line, "message": f"Objetivo fijado inválido: {season_goal_set_raw}."})
                     continue
             if season_goal_achieved_raw:
-                season_goal_achieved = self._normalize_objective(season_goal_achieved_raw)
+                season_goal_achieved = self._normalize_objective(season_goal_achieved_raw, result=True)
                 if not season_goal_achieved:
                     errors.append({"line": line, "message": f"Objetivo cumplido inválido: {season_goal_achieved_raw}."})
                     continue
@@ -1054,6 +1064,7 @@ class OwnerAdminImportService:
     def apply_owner_office_import(self, records_payload: Any) -> Dict[str, Any]:
             if not isinstance(records_payload, list):
                 raise ValueError("records_required")
+            objective_syncs: List[Dict[str, Any]] = []
             with self._repository.transaction() as conn:
                 teams_by_code = self._repository.teams_by_code(conn)
                 records, errors = self._owner_office_import_normalize_records(records_payload, teams_by_code)
@@ -1097,6 +1108,22 @@ class OwnerAdminImportService:
                         performance_json=json.dumps(normalized_performance_rows, ensure_ascii=True),
                         updated_at=timestamp,
                     )
+                    if season_goal_set or season_goal_achieved:
+                        objective_syncs.append(
+                            {
+                                "team_code": str(group["team_code"]),
+                                "season_year": season_year,
+                                "season_goal_set": season_goal_set,
+                                "season_goal_achieved": season_goal_achieved,
+                            }
+                        )
+            for sync in objective_syncs:
+                self._sync_team_objectives_from_owner_import(
+                    sync["team_code"],
+                    int(sync["season_year"]),
+                    season_goal_set=str(sync.get("season_goal_set") or ""),
+                    season_goal_achieved=str(sync.get("season_goal_achieved") or ""),
+                )
             return {
                 "ok": True,
                 "record_count": len(records),
@@ -1104,3 +1131,38 @@ class OwnerAdminImportService:
                 "seasons": sorted({int(row["season_year"]) for row in grouped}),
                 "summary": grouped,
             }
+
+    def _sync_team_objectives_from_owner_import(
+        self,
+        team_code: str,
+        season_year: int,
+        *,
+        season_goal_set: str,
+        season_goal_achieved: str,
+    ) -> None:
+        if self._team_objectives is None:
+            return
+        saved_objective = None
+        if season_goal_set:
+            saved_objective = self._team_objectives.set_agreed(
+                team_code,
+                season_year,
+                season_goal_set,
+                {"user_id": None, "role": "admin_import"},
+                status="agreed",
+                metadata={"source": "owner_office_import"},
+            )
+        if not season_goal_achieved:
+            return
+        try:
+            self._team_objectives.resolve(
+                team_code,
+                season_year,
+                season_goal_achieved,
+                {"user_id": None, "role": "admin_import"},
+                expected_version=parse_int((saved_objective or {}).get("version")),
+                metadata={"source": "owner_office_import"},
+            )
+        except ValueError as exc:
+            if str(exc) != "team_objective_not_found":
+                raise

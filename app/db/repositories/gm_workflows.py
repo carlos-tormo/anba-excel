@@ -25,6 +25,9 @@ class CoadminVoteRepository(LeagueRepository):
         self.normalize_team_code = normalize_team_code
         self.normalize_team_codes = normalize_team_codes
 
+    def transaction(self, mode: str = "IMMEDIATE") -> Any:
+        return self.db.transaction(mode)
+
     def _coadmin_vote_from_row(self, cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
         item = dict(row)
         item["id"] = parse_int(item.get("id"))
@@ -92,12 +95,19 @@ class CoadminVoteRepository(LeagueRepository):
         if parsed_id is None:
             return None
         with self.db.connect() as conn:
-            cur = conn.execute("SELECT * FROM coadmin_votes WHERE id = ?", (parsed_id,))
-            row = cur.fetchone()
-            return self._coadmin_vote_from_row(cur, row) if row else None
+            return self.get_coadmin_vote_conn(conn, parsed_id)
 
-    def set_coadmin_vote_status(
+    def get_coadmin_vote_conn(self, conn: sqlite3.Connection, vote_id: Any) -> Optional[Dict[str, Any]]:
+        parsed_id = parse_int(vote_id)
+        if parsed_id is None:
+            return None
+        cur = conn.execute("SELECT * FROM coadmin_votes WHERE id = ?", (parsed_id,))
+        row = cur.fetchone()
+        return self._coadmin_vote_from_row(cur, row) if row else None
+
+    def set_coadmin_vote_status_conn(
         self,
+        conn: sqlite3.Connection,
         vote_id: Any,
         status: Any,
         actor: Optional[Dict[str, Any]] = None,
@@ -109,22 +119,29 @@ class CoadminVoteRepository(LeagueRepository):
         if normalized_status not in {"open", "closed"}:
             raise ValueError("invalid_status")
         timestamp = self.now()
-        with self.db.connect() as conn:
-            existing = conn.execute("SELECT id FROM coadmin_votes WHERE id = ?", (parsed_id,)).fetchone()
-            if not existing:
-                return None
-            conn.execute(
-                """
-                UPDATE coadmin_votes
-                SET status = ?,
-                    updated_at = ?,
-                    closed_at = CASE WHEN ? = 'closed' THEN ? ELSE NULL END
-                WHERE id = ?
-                """,
-                (normalized_status, timestamp, normalized_status, timestamp, parsed_id),
-            )
-            conn.commit()
-        return self.get_coadmin_vote(parsed_id)
+        existing = conn.execute("SELECT id FROM coadmin_votes WHERE id = ?", (parsed_id,)).fetchone()
+        if not existing:
+            return None
+        conn.execute(
+            """
+            UPDATE coadmin_votes
+            SET status = ?,
+                updated_at = ?,
+                closed_at = CASE WHEN ? = 'closed' THEN ? ELSE NULL END
+            WHERE id = ?
+            """,
+            (normalized_status, timestamp, normalized_status, timestamp, parsed_id),
+        )
+        return self.get_coadmin_vote_conn(conn, parsed_id)
+
+    def set_coadmin_vote_status(
+        self,
+        vote_id: Any,
+        status: Any,
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self.db.transaction("IMMEDIATE") as conn:
+            return self.set_coadmin_vote_status_conn(conn, vote_id, status, actor)
 
     def list_admin_coadmin_votes(self) -> List[Dict[str, Any]]:
         with self.db.connect() as conn:

@@ -13660,6 +13660,43 @@ select[data-new-field="years_left"],
   font-weight: 1000;
 }
 
+.gm-attractiveness-ranking-card {
+  margin-bottom: 18px;
+}
+
+.gm-attractiveness-ranking-table input {
+  min-width: 110px;
+  width: 100%;
+}
+
+.gm-attractiveness-ranking-table input[type="number"] {
+  max-width: 150px;
+}
+
+.gm-attractiveness-band {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-weight: 950;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.gm-attractiveness-band--top5 {
+  background: #ecfdf5;
+  color: #166534;
+}
+
+.gm-attractiveness-band--bottom5 {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.gm-attractiveness-band--neutral {
+  background: #f1f5f9;
+  color: #475569;
+}
+
 .coadmin-vote-individuals {
   margin-top: 12px;
   border: 1px solid #dbe3ef;

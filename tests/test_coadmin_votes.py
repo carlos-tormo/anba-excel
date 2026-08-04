@@ -88,6 +88,25 @@ class CoadminVoteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vote_closed"):
             self.db.submit_coadmin_vote(vote["id"], {"BKN": 80, "BOS": 70}, self.session)
 
+    def test_closing_vote_publishes_standardized_gm_ranking(self) -> None:
+        bkn_user = self.db.upsert_google_user("bkn-gm-sub", "bkn@example.com", "BKN GM", None)
+        bos_user = self.db.upsert_google_user("bos-gm-sub", "bos@example.com", "BOS GM", None)
+        self.db.replace_user_team_assignments(bkn_user["id"], ["BKN"])
+        self.db.replace_user_team_assignments(bos_user["id"], ["BOS"])
+
+        vote = self.db.create_coadmin_vote("Valor GM", {"email": "admin@example.com", "name": "Admin"})
+        self.db.submit_coadmin_vote(vote["id"], {"BKN": 80, "BOS": 70}, self.session)
+        closed = self.db.set_coadmin_vote_status(vote["id"], "closed", {"email": "admin@example.com", "name": "Admin"})
+
+        self.assertIsNotNone(closed)
+        ranking = closed.get("published_ranking")
+        self.assertIsInstance(ranking, dict)
+        self.assertEqual(vote["id"], ranking["source_vote_id"])
+        entries = {entry["team_code"]: entry for entry in ranking["entries"]}
+        self.assertGreater(entries["BKN"]["standardized_score"], entries["BOS"]["standardized_score"])
+        self.assertEqual(80.0, entries["BKN"]["raw_average"])
+        self.assertEqual(70.0, entries["BOS"]["raw_average"])
+
 
 if __name__ == "__main__":
     unittest.main()

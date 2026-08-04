@@ -181,6 +181,21 @@ def get_profile_salary_history(handler: Any, parsed: ParseResult, payload: Optio
         return error_response(400, "invalid_profile_id")
     return json_response(200, {"salary_history": handler.app.players.list_salary_history(int(profile_id))})
 
+def get_profile_happiness_events(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
+    payload = payload or {}
+    if not handler._authorize("admin.player_profile.view"):
+        return None
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) != 4:
+        return error_response(404, "not_found")
+    profile_id = parse_int(parts[2])
+    if profile_id is None:
+        return error_response(400, "invalid_profile_id")
+    qs = parse_qs(parsed.query)
+    raw_limit = (qs.get("limit") or ["100"])[0]
+    limit = parse_int(raw_limit) or 100
+    return json_response(200, handler.app.player_happiness.events(int(profile_id), limit=limit))
+
 def get_admin_players(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("admin.player_catalog.view"):
@@ -391,6 +406,12 @@ def get_admin_coadmin_votes(handler: Any, parsed: ParseResult, payload: Optional
         return None
     return json_response(200, {"votes": handler.app.coadmin_votes.list_admin_coadmin_votes()})
 
+def get_admin_gm_attractiveness_ranking(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
+    payload = payload or {}
+    if not handler._authorize("admin.coadmin_vote.view"):
+        return None
+    return json_response(200, {"ranking": handler.app.gm_attractiveness.active_ranking()})
+
 def get_coadmin_votes(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]):
     payload = payload or {}
     if not handler._authorize("coadmin.vote.list"):
@@ -416,6 +437,10 @@ def _profile_salary_history_path(path: str) -> bool:
     return path.startswith("/api/player-profiles/") and path.endswith("/salary-history")
 
 
+def _profile_happiness_events_path(path: str) -> bool:
+    return path.startswith("/api/player-profiles/") and path.endswith("/happiness-events")
+
+
 GET_REMAINING_ROUTES = (
     exact_route("/", get_home_page),
     exact_route("/news", get_news_page),
@@ -424,7 +449,18 @@ GET_REMAINING_ROUTES = (
     exact_route("/api/auth/google/start", start_google_oauth),
     exact_route("/api/auth/google/callback", complete_google_oauth),
     exact_route("/api/auth/status", get_auth_status),
-    predicate_route("profile-salary-history", _profile_salary_history_path, get_profile_salary_history),
+    predicate_route(
+        "profile-happiness-events",
+        _profile_happiness_events_path,
+        get_profile_happiness_events,
+        permission="admin.player_profile.view",
+    ),
+    predicate_route(
+        "profile-salary-history",
+        _profile_salary_history_path,
+        get_profile_salary_history,
+        permission="admin.player_profile.view",
+    ),
     exact_route("/api/admin/players", get_admin_players),
     exact_route("/api/players", get_players),
     exact_route("/api/tracker", get_tracker),
@@ -440,6 +476,7 @@ GET_REMAINING_ROUTES = (
     exact_route("/api/admin/users", get_admin_users),
     exact_route("/api/admin/gm-option-requests", get_admin_option_requests),
     exact_route("/api/admin/coadmin-votes", get_admin_coadmin_votes),
+    exact_route("/api/admin/gm-attractiveness-ranking", get_admin_gm_attractiveness_ranking),
     exact_route("/api/coadmin-votes", get_coadmin_votes),
     prefix_route("/api/teams/", get_team),
 )

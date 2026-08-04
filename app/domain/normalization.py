@@ -3,23 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-import math
 import re
 from typing import Any, Dict, Optional
 
 from ._values import parse_amount_like, parse_bool, parse_float
+from .player_happiness import normalize_happiness
 
 FREE_AGENT_TYPE_UNRESTRICTED = "No restringido"
 FREE_AGENT_TYPE_RESTRICTED = "Restringido"
 
 def normalize_player_happiness(value: Any) -> Any:
-    raw = str(value or "").strip()
-    if not raw:
+    if str(value or "").strip() == "":
         return 0
-    parsed = parse_float(raw)
-    if parsed is None or not math.isfinite(parsed) or parsed < -10 or parsed > 10:
-        raise ValueError("invalid_happiness")
-    return int(parsed) if float(parsed).is_integer() else parsed
+    return normalize_happiness(value)
 def normalize_dead_type(value: Any) -> str:
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if raw in {"two_way", "tw"}:
@@ -167,4 +163,3 @@ def normalize_hex_color(value: Any) -> Optional[str]:
     if re.fullmatch(r"#[0-9a-fA-F]{6}", raw):
         return raw.upper()
     return None
-

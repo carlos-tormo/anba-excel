@@ -173,8 +173,12 @@ class PlayerIdentityMigrationTests(unittest.TestCase):
 
         self.assertNotIn("happiness", public_player)
         self.assertEqual(7.5, private_player["happiness"])
-        with self.assertRaises(ValueError):
-            self.db.update_player_profile(profile_id, {"happiness": 11})
+        self.assertTrue(self.db.update_player_profile(profile_id, {"happiness": 11}))
+        clamped_player = next(
+            player for player in self.db.list_players(include_private=True)
+            if int(player["profile_id"]) == profile_id
+        )
+        self.assertEqual(10, clamped_player["happiness"])
 
     def test_list_players_tolerates_missing_salary_history_table(self) -> None:
         with self.db.connect() as conn:

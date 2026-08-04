@@ -91,8 +91,59 @@ class OwnerAdminImportTests(unittest.TestCase):
                 """
             ).fetchone()
         self.assertEqual(row["confidence_current"], "Alta")
-        self.assertEqual(row["season_goal_set"], "Primera ronda")
+        self.assertEqual(row["season_goal_set"], "Alcanzar la primera ronda")
         self.assertEqual(row["revenue"], "125")
+        with self.db.connect() as conn:
+            objective = conn.execute(
+                """
+                SELECT objective_code, objective_label_snapshot, status
+                FROM team_season_objectives o
+                JOIN teams t ON t.id = o.team_id
+                WHERE t.code = 'ATL' AND o.season_year = 2025
+                """
+            ).fetchone()
+        self.assertIsNotNone(objective)
+        self.assertEqual("first_round", objective["objective_code"])
+        self.assertEqual("Alcanzar la primera ronda", objective["objective_label_snapshot"])
+        self.assertEqual("agreed", objective["status"])
+
+    def test_owner_office_import_resolves_canonical_objective_when_achieved_goal_is_present(self) -> None:
+        preview = self.db.preview_owner_office_csv(
+            "season,team,season_goal_set,season_goal_achieved\n"
+            "2025,ATL,Primera ronda,Campeón"
+        )
+        self.assertTrue(preview["ok"])
+
+        result = self.db.apply_owner_office_import(preview["records"])
+
+        self.assertTrue(result["ok"])
+        with self.db.connect() as conn:
+            objective = conn.execute(
+                """
+                SELECT objective_code, achieved_code, status
+                FROM team_season_objectives o
+                JOIN teams t ON t.id = o.team_id
+                WHERE t.code = 'ATL' AND o.season_year = 2025
+                """
+            ).fetchone()
+            event_types = [
+                row["event_type"]
+                for row in conn.execute(
+                    """
+                    SELECT event_type
+                    FROM team_season_objective_events e
+                    JOIN team_season_objectives o ON o.id = e.objective_id
+                    JOIN teams t ON t.id = o.team_id
+                    WHERE t.code = 'ATL' AND o.season_year = 2025
+                    ORDER BY e.id
+                    """
+                ).fetchall()
+            ]
+        self.assertIsNotNone(objective)
+        self.assertEqual("first_round", objective["objective_code"])
+        self.assertEqual("champion", objective["achieved_code"])
+        self.assertEqual("resolved", objective["status"])
+        self.assertEqual(["objective_created", "objective_resolved"], event_types)
 
     def test_owner_office_aggregate_update_and_read(self) -> None:
         updated = self.db.update_team_owner_office(
@@ -116,8 +167,22 @@ class OwnerAdminImportTests(unittest.TestCase):
         self.assertEqual(updated["owner_profile"]["attributes"]["paciencia"], 8)
         entry = updated["entries"]["2025"]
         self.assertEqual(entry["confidence_current"], "7")
-        self.assertEqual(entry["season_goal_set"], "Primera ronda")
+        self.assertEqual(entry["season_goal_set"], "Alcanzar la primera ronda")
         self.assertEqual(entry["balance"], "100")
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            objective = conn.execute(
+                """
+                SELECT objective_code, objective_label_snapshot, status
+                FROM team_season_objectives o
+                JOIN teams t ON t.id = o.team_id
+                WHERE t.code = 'ATL' AND o.season_year = 2025
+                """
+            ).fetchone()
+        self.assertIsNotNone(objective)
+        self.assertEqual("first_round", objective["objective_code"])
+        self.assertEqual("Alcanzar la primera ronda", objective["objective_label_snapshot"])
+        self.assertEqual("agreed", objective["status"])
 
     def test_exit_interview_completion_and_reset_adjust_confidence(self) -> None:
         self.db.update_team_owner_office(

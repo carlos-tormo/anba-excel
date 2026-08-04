@@ -1077,6 +1077,7 @@ class TradeRepository(LeagueRepository):
                 }
                 for code in teams
             }
+            player_movements: List[Dict[str, Any]] = []
 
             def add_move_count(code: str) -> None:
                 if code in summaries:
@@ -1251,7 +1252,7 @@ class TradeRepository(LeagueRepository):
                 if asset_type == "player":
                     row = conn.execute(
                         """
-                        SELECT p.id, p.profile_id, p.team_id, COALESCE(pp.name, p.name) AS name
+                        SELECT p.id, p.profile_id, p.team_id, p.rating, COALESCE(pp.name, p.name) AS name
                         FROM players p
                         LEFT JOIN player_profiles pp ON pp.id = p.profile_id
                         WHERE p.id = ?
@@ -1269,6 +1270,17 @@ class TradeRepository(LeagueRepository):
                         (target_team["id"], int(mx) + 1, timestamp, asset_id),
                     )
                     player_name = str(row["name"] or "Jugador")
+                    player_movements.append(
+                        {
+                            "player_id": int(row["id"]),
+                            "profile_id": parse_int(row["profile_id"]),
+                            "player_name": player_name,
+                            "name": player_name,
+                            "rating": row["rating"],
+                            "from_team": from_team,
+                            "to_team": to_team,
+                        }
+                    )
                     summaries[from_team]["sent"]["players"].append(player_name)
                     summaries[to_team]["received"]["players"].append(player_name)
                     add_selection_move_counts(
@@ -1428,6 +1440,7 @@ class TradeRepository(LeagueRepository):
             "season": season_year,
             "teams": team_results,
             "team_codes": teams,
+            "player_movements": player_movements,
         }
         if len(teams) >= 2:
             team_a = teams[0]
@@ -1534,7 +1547,7 @@ class TradeRepository(LeagueRepository):
             for player_id in ids_a:
                 row = conn.execute(
                     """
-                    SELECT p.id, p.profile_id, p.team_id, COALESCE(pp.name, p.name) AS name
+                    SELECT p.id, p.profile_id, p.team_id, p.rating, COALESCE(pp.name, p.name) AS name
                     FROM players p
                     LEFT JOIN player_profiles pp ON pp.id = p.profile_id
                     WHERE p.id = ?
@@ -1548,7 +1561,7 @@ class TradeRepository(LeagueRepository):
             for player_id in ids_b:
                 row = conn.execute(
                     """
-                    SELECT p.id, p.profile_id, p.team_id, COALESCE(pp.name, p.name) AS name
+                    SELECT p.id, p.profile_id, p.team_id, p.rating, COALESCE(pp.name, p.name) AS name
                     FROM players p
                     LEFT JOIN player_profiles pp ON pp.id = p.profile_id
                     WHERE p.id = ?
@@ -1634,6 +1647,7 @@ class TradeRepository(LeagueRepository):
                 rights_b_rows.append(dict(row))
 
             timestamp = self.operations.now()
+            player_movements: List[Dict[str, Any]] = []
             for player_id in ids_a:
                 mx = conn.execute(
                     "SELECT COALESCE(MAX(row_order), 3) AS mx FROM players WHERE team_id = ?",
@@ -1644,6 +1658,18 @@ class TradeRepository(LeagueRepository):
                     (team_b["id"], int(mx) + 1, timestamp, player_id),
                 )
             for row in players_a_rows:
+                player_name = str(row.get("name") or "Jugador")
+                player_movements.append(
+                    {
+                        "player_id": int(row["id"]),
+                        "profile_id": parse_int(row.get("profile_id")),
+                        "player_name": player_name,
+                        "name": player_name,
+                        "rating": row.get("rating"),
+                        "from_team": team_a["code"],
+                        "to_team": team_b["code"],
+                    }
+                )
                 self.operations.record_transaction(
                     conn,
                     row.get("profile_id"),
@@ -1653,7 +1679,7 @@ class TradeRepository(LeagueRepository):
                     team_code=team_b["code"],
                     from_team_code=team_a["code"],
                     to_team_code=team_b["code"],
-                    details={"player_name": row.get("name")},
+                    details={"player_name": player_name},
                     created_at=timestamp,
                 )
 
@@ -1667,6 +1693,18 @@ class TradeRepository(LeagueRepository):
                     (team_a["id"], int(mx) + 1, timestamp, player_id),
                 )
             for row in players_b_rows:
+                player_name = str(row.get("name") or "Jugador")
+                player_movements.append(
+                    {
+                        "player_id": int(row["id"]),
+                        "profile_id": parse_int(row.get("profile_id")),
+                        "player_name": player_name,
+                        "name": player_name,
+                        "rating": row.get("rating"),
+                        "from_team": team_b["code"],
+                        "to_team": team_a["code"],
+                    }
+                )
                 self.operations.record_transaction(
                     conn,
                     row.get("profile_id"),
@@ -1676,7 +1714,7 @@ class TradeRepository(LeagueRepository):
                     team_code=team_a["code"],
                     from_team_code=team_b["code"],
                     to_team_code=team_a["code"],
-                    details={"player_name": row.get("name")},
+                    details={"player_name": player_name},
                     created_at=timestamp,
                 )
 
@@ -1961,6 +1999,7 @@ class TradeRepository(LeagueRepository):
                 },
                 "players_a": [row["name"] for row in players_a_rows],
                 "players_b": [row["name"] for row in players_b_rows],
+                "player_movements": player_movements,
                 "pick_count_a": len(picks_a_rows),
                 "pick_count_b": len(picks_b_rows),
                 "pick_refs_a": pick_refs_a,

@@ -72,8 +72,41 @@ def update_coadmin_vote(handler: Any, parsed: ParseResult, payload: Optional[Dic
     )
     return json_response(200, {"ok": True, "vote": vote})
 
+def update_gm_attractiveness_ranking_entry(handler: Any, parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    if not handler._authorize("admin.coadmin_vote.write"):
+        return
+    gm_entity_id = parse_int(parsed.path.split("/")[-1])
+    if gm_entity_id is None:
+        return error_response(400, "invalid_gm_entity_id")
+    try:
+        ranking = handler.app.gm_attractiveness.update_active_entry(
+            gm_entity_id,
+            payload,
+            handler._current_session() or {},
+        )
+    except ValueError as err:
+        message = str(err) or "invalid_ranking_entry"
+        return error_response(404 if message == "ranking_entry_not_found" else 400, message)
+    handler._log_admin_action(
+        "update",
+        "gm_attractiveness_ranking_entry",
+        str(gm_entity_id),
+        None,
+        {"fields": sorted(payload.keys())},
+        command_id=f"gm-attractiveness-ranking:{gm_entity_id}:manual-update",
+        validation_result="valid",
+        entity_versions={
+            "gm_entity_id": gm_entity_id,
+            "ranking_id": ranking.get("id"),
+            "updated_at": ranking.get("updated_at"),
+        },
+    )
+    return json_response(200, {"ok": True, "ranking": ranking})
+
 
 PATCH_ROUTES = (
     exact_route("/api/tracker/economy", update_team_economy, permission="admin.tracker_economy.write", csrf=True, mutates_league_state=True),
     prefix_route("/api/admin/coadmin-votes/", update_coadmin_vote, permission="admin.coadmin_vote.write", csrf=True, mutates_league_state=True),
+    prefix_route("/api/admin/gm-attractiveness-ranking/entries/", update_gm_attractiveness_ranking_entry, permission="admin.coadmin_vote.write", csrf=True, mutates_league_state=True),
 )

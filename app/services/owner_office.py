@@ -8,8 +8,24 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 try:
+    from ..domain.team_objectives import (
+        COMPARISON_EXCEEDED,
+        COMPARISON_MET,
+        COMPARISON_MISSED,
+        compare_objectives,
+        normalize_objective_code,
+        objective_label,
+    )
     from ..domain_rules import parse_amount_like, parse_bool, parse_int
 except ImportError:  # pragma: no cover
+    from domain.team_objectives import (
+        COMPARISON_EXCEEDED,
+        COMPARISON_MET,
+        COMPARISON_MISSED,
+        compare_objectives,
+        normalize_objective_code,
+        objective_label,
+    )
     from domain_rules import parse_amount_like, parse_bool, parse_int
 
 
@@ -55,6 +71,7 @@ class OwnerOfficeService:
         forecast_window: int,
         objective_options: List[str],
         interview_composer: Optional[Any] = None,
+        team_objectives: Optional[Any] = None,
     ) -> None:
         self._repository = repository
         self._now = now
@@ -63,6 +80,7 @@ class OwnerOfficeService:
         self._forecast_window = forecast_window
         self._objective_options = list(objective_options)
         self._interview_composer = interview_composer
+        self._team_objectives = team_objectives
 
     def _owner_office_rows_from_json(self, value: Any, section: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
@@ -322,13 +340,28 @@ class OwnerOfficeService:
 
     def _normalize_owner_season_objective(self, value: Any) -> str:
         text = str(value or "").strip()
-        return text if text in self._objective_options else ""
+        if text in self._objective_options:
+            return text
+        code = normalize_objective_code(text)
+        if code:
+            return objective_label(code)
+        return ""
 
     def _owner_season_objective_evaluation(self, target: Any, achieved: Any) -> str:
         target_text = self._normalize_owner_season_objective(target)
         achieved_text = self._normalize_owner_season_objective(achieved)
         if not target_text or not achieved_text:
             return "No evaluable"
+        target_code = normalize_objective_code(target_text)
+        achieved_code = normalize_objective_code(achieved_text)
+        if target_code and achieved_code:
+            comparison = compare_objectives(target_code, achieved_code)
+            if comparison == COMPARISON_EXCEEDED:
+                return "Objetivo superado"
+            if comparison == COMPARISON_MET:
+                return "Objetivo cumplido"
+            if comparison == COMPARISON_MISSED:
+                return "Objetivo no cumplido"
         target_rank = self._objective_options.index(target_text)
         achieved_rank = self._objective_options.index(achieved_text)
         difference = achieved_rank - target_rank
@@ -512,10 +545,17 @@ class OwnerOfficeService:
                 "seasons": sorted(years), "entries": entries,
             }
 
-    def update(self, code: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def update(
+        self,
+        code: str,
+        payload: Dict[str, Any],
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         season_year = parse_int(payload.get("season_year"))
         if season_year is None or season_year < 2000 or season_year > 2100:
             raise ValueError("invalid_season_year")
+        normalized_goal_set = self._normalize_owner_season_objective(payload.get("season_goal_set"))
+        normalized_goal_achieved = self._normalize_owner_season_objective(payload.get("season_goal_achieved"))
         with self._repository.transaction() as conn:
             team = self._repository.team(conn, code)
             if not team:
@@ -542,8 +582,8 @@ class OwnerOfficeService:
                     "confidence_change": str(payload.get("confidence_change") or "").strip(),
                     "new_gm_after_dismissal": 1 if parse_bool(payload.get("new_gm_after_dismissal")) else 0,
                     "gm_midseason_arrival": 1 if parse_bool(payload.get("gm_midseason_arrival")) else 0,
-                    "season_goal_set": self._normalize_owner_season_objective(payload.get("season_goal_set")),
-                    "season_goal_achieved": self._normalize_owner_season_objective(payload.get("season_goal_achieved")),
+                    "season_goal_set": normalized_goal_set,
+                    "season_goal_achieved": normalized_goal_achieved,
                     "revenue": revenue,
                     "expenses": expenses,
                     "balance": balance,
@@ -556,7 +596,51 @@ class OwnerOfficeService:
                     "updated_at": timestamp,
                 },
             )
+        self._sync_team_objectives_from_owner_update(
+            code,
+            season_year,
+            season_goal_set=normalized_goal_set,
+            season_goal_achieved=normalized_goal_achieved,
+            actor=actor or {},
+        )
         return self.get(code, include_private=True)
+
+    def _sync_team_objectives_from_owner_update(
+        self,
+        code: str,
+        season_year: int,
+        *,
+        season_goal_set: str,
+        season_goal_achieved: str,
+        actor: Dict[str, Any],
+    ) -> None:
+        if self._team_objectives is None:
+            return
+        saved_objective = None
+        if season_goal_set:
+            saved_objective = self._team_objectives.set_agreed(
+                code,
+                season_year,
+                season_goal_set,
+                actor,
+                status="agreed",
+                metadata={"source": "owner_office"},
+            )
+        if not season_goal_achieved:
+            return
+        expected_version = parse_int((saved_objective or {}).get("version"))
+        try:
+            self._team_objectives.resolve(
+                code,
+                season_year,
+                season_goal_achieved,
+                actor,
+                expected_version=expected_version,
+                metadata={"source": "owner_office"},
+            )
+        except ValueError as exc:
+            if str(exc) != "team_objective_not_found":
+                raise
 
     def update_background_url(self, code: str, background_url: str) -> Optional[Dict[str, Any]]:
         if not self._repository.update_owner_background_url(code, background_url):

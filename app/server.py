@@ -55,6 +55,7 @@ try:
         GMRequestOperations,
         GMRequestRepository,
     )
+    from .db.repositories.gm_attractiveness import GMAttractivenessRepository
     from .db.repositories.gm_minimum_targets import GMMinimumTargetRepository
     from .db.repositories.gm_identities import GMIdentityRepository
     from .db.repositories.gm_office import GMOfficeRepository
@@ -73,6 +74,7 @@ try:
     from .db.repositories.settings import SettingsRepository
     from .db.repositories.users import UserRepository
     from .db.repositories.teams import TeamRepository
+    from .db.repositories.team_objectives import TeamObjectiveRepository
     from .db.repositories.team_detail import TeamDetailRepository
     from .db.repositories.workflows import WorkflowRepository
     from .db.repositories.trades import TradeOperations, TradeRepository
@@ -207,11 +209,13 @@ try:
     from .runtime import load_env_file, static_asset_version as runtime_static_asset_version
     from .security_headers import send_cache_header, send_security_headers
     from .services.cartera import CarteraOperations, CarteraService
+    from .services.coadmin_votes import CoadminVoteService
     from .services.admin_exports import LeagueWorkbookExportService
     from .services.admin_imports import OwnerAdminImportService
     from .services.free_agent_appeal import FreeAgentAppealService
     from .services.free_agent_agents import FreeAgentAgentImportService
     from .services.gm_minimum_targets import GMMinimumTargetService
+    from .services.gm_attractiveness import GMAttractivenessService
     from .services.gm_office import GMOfficeService
     from .services.gm_requests import GMRequestService
     from .services.player_catalog import PlayerCatalogService
@@ -224,8 +228,10 @@ try:
     from .services.offer_promises import OfferPromiseService
     from .services.season_rollover import SeasonRolloverService
     from .services.team_detail import TeamDetailOperations, TeamDetailService
+    from .services.team_objectives import TeamObjectiveService
     from .services.tracker import TrackerOperations, TrackerService
     from .services.trades import TradeService
+    from .services.user_admin import UserAdminService
 except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from application import ApplicationConfig, ApplicationContainer
     from auth.csrf import csrf_token_ok, same_origin_request_ok
@@ -261,6 +267,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
         GMRequestOperations,
         GMRequestRepository,
     )
+    from db.repositories.gm_attractiveness import GMAttractivenessRepository
     from db.repositories.gm_minimum_targets import GMMinimumTargetRepository
     from db.repositories.gm_identities import GMIdentityRepository
     from db.repositories.gm_office import GMOfficeRepository
@@ -280,6 +287,7 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from db.repositories.admin_imports import OwnerAdminImportRepository
     from db.repositories.users import UserRepository
     from db.repositories.teams import TeamRepository
+    from db.repositories.team_objectives import TeamObjectiveRepository
     from db.repositories.team_detail import TeamDetailRepository
     from db.repositories.workflows import WorkflowRepository
     from db.repositories.trades import TradeOperations, TradeRepository
@@ -414,11 +422,13 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from runtime import load_env_file, static_asset_version as runtime_static_asset_version
     from security_headers import send_cache_header, send_security_headers
     from services.cartera import CarteraOperations, CarteraService
+    from services.coadmin_votes import CoadminVoteService
     from services.admin_exports import LeagueWorkbookExportService
     from services.admin_imports import OwnerAdminImportService
     from services.free_agent_appeal import FreeAgentAppealService
     from services.free_agent_agents import FreeAgentAgentImportService
     from services.gm_minimum_targets import GMMinimumTargetService
+    from services.gm_attractiveness import GMAttractivenessService
     from services.gm_office import GMOfficeService
     from services.gm_requests import GMRequestService
     from services.player_catalog import PlayerCatalogService
@@ -431,8 +441,10 @@ except ImportError:  # pragma: no cover - supports `python3 app/server.py`.
     from services.offer_promises import OfferPromiseService
     from services.season_rollover import SeasonRolloverService
     from services.team_detail import TeamDetailOperations, TeamDetailService
+    from services.team_objectives import TeamObjectiveService
     from services.tracker import TrackerOperations, TrackerService
     from services.trades import TradeService
+    from services.user_admin import UserAdminService
 
 logger = get_logger("server")
 
@@ -581,6 +593,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             normalize_team_code=normalize_team_code,
             normalize_team_codes=normalize_team_codes,
         )
+        self._gm_attractiveness_repository = GMAttractivenessRepository(self, now=now_iso)
         self._gm_minimum_target_repository = GMMinimumTargetRepository(self)
         self._gm_minimum_target_service = GMMinimumTargetService(
             self._gm_minimum_target_repository,
@@ -639,6 +652,8 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             normalize_gm_start_date=normalize_gm_start_date,
             normalize_hex_color=normalize_hex_color,
         )
+        self._team_objective_repository = TeamObjectiveRepository(self, now=now_iso)
+        self._team_objective_service = TeamObjectiveService(self._team_objective_repository)
         self._gm_identity_repository = GMIdentityRepository(self, now=now_iso)
         self._team_detail_repository = TeamDetailRepository(self)
         self._owner_admin_import_repository = OwnerAdminImportRepository(self)
@@ -672,10 +687,23 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             self._player_happiness_repository,
             now=now_iso,
         )
+        self._gm_attractiveness_service = GMAttractivenessService(self._gm_attractiveness_repository)
+        self._coadmin_vote_service = CoadminVoteService(
+            self._coadmin_vote_repository,
+            gm_attractiveness=self._gm_attractiveness_service,
+        )
+        self._user_admin_service = UserAdminService(
+            self._user_repository,
+            gm_attractiveness=self._gm_attractiveness_service,
+            player_happiness=self._player_happiness_service,
+        )
+        self._team_objective_service.player_happiness = self._player_happiness_service
+        self._offer_promise_service.player_happiness = self._player_happiness_service
         self._player_rating_import_repository = PlayerRatingImportRepository(self)
         self._player_rating_import_service = PlayerRatingImportService(
             self._player_rating_import_repository,
             now=now_iso,
+            player_happiness=self._player_happiness_service,
         )
         self._player_identity_repository = PlayerIdentityRepository(
             self,
@@ -740,6 +768,8 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             players=self._player_repository,
             now=now_iso,
             normalize_team_code=normalize_team_code,
+            player_happiness=self._player_happiness_service,
+            team_objectives=self._team_objective_service,
         )
         self._free_agent_appeal_repository = FreeAgentAppealRepository(self)
         self._free_agent_appeal_service = FreeAgentAppealService(
@@ -944,6 +974,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             self._owner_admin_import_repository,
             now=now_iso,
             objective_options=OWNER_SEASON_OBJECTIVES,
+            team_objectives=self._team_objective_service,
         )
         self._admin_export_service = LeagueWorkbookExportService(
             self,
@@ -1253,7 +1284,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
         agent_name: Optional[Any] = None,
         username: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
-        return self._user_repository.replace_team_assignments(
+        return self._user_admin_service.replace_team_assignments(
             user_id,
             team_codes,
             is_co_admin=is_co_admin,
@@ -1263,27 +1294,27 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
 
 
     def create_coadmin_vote(self, title: Any, actor: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return self._coadmin_vote_repository.create_coadmin_vote(title, actor)
+        return self._coadmin_vote_service.create_coadmin_vote(title, actor)
 
 
     def get_coadmin_vote(self, vote_id: Any) -> Optional[Dict[str, Any]]:
-        return self._coadmin_vote_repository.get_coadmin_vote(vote_id)
+        return self._coadmin_vote_service.get_coadmin_vote(vote_id)
 
 
     def set_coadmin_vote_status(self, vote_id: Any, status: Any, actor: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        return self._coadmin_vote_repository.set_coadmin_vote_status(vote_id, status, actor)
+        return self._coadmin_vote_service.set_coadmin_vote_status(vote_id, status, actor)
 
 
     def list_admin_coadmin_votes(self) -> List[Dict[str, Any]]:
-        return self._coadmin_vote_repository.list_admin_coadmin_votes()
+        return self._coadmin_vote_service.list_admin_coadmin_votes()
 
 
     def list_coadmin_votes_for_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
-        return self._coadmin_vote_repository.list_coadmin_votes_for_session(session)
+        return self._coadmin_vote_service.list_coadmin_votes_for_session(session)
 
 
     def submit_coadmin_vote(self, vote_id: Any, scores: Any, session: Dict[str, Any]) -> Dict[str, Any]:
-        return self._coadmin_vote_repository.submit_coadmin_vote(vote_id, scores, session)
+        return self._coadmin_vote_service.submit_coadmin_vote(vote_id, scores, session)
 
 
     def get_gm_option_request(self, request_id: int) -> Optional[Dict[str, Any]]:
@@ -1610,13 +1641,19 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             forecast_window=CAP_FORECAST_WINDOW,
             objective_options=OWNER_SEASON_OBJECTIVES,
             interview_composer=interview_composer,
+            team_objectives=self._team_objective_service,
         )
 
     def get_team_owner_office(self, code: str, include_private: bool = False) -> Optional[Dict[str, Any]]:
         return self._owner_office_service().get(code, include_private)
 
-    def update_team_owner_office(self, code: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        return self._owner_office_service().update(code, payload)
+    def update_team_owner_office(
+        self,
+        code: str,
+        payload: Dict[str, Any],
+        actor: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        return self._owner_office_service().update(code, payload, actor)
 
     def update_owner_background_url(self, code: str, background_url: str) -> Optional[Dict[str, Any]]:
         return self._owner_office_service().update_background_url(code, background_url)
@@ -2491,7 +2528,11 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
 
 
     def _trade_service(self) -> TradeService:
-        return TradeService(self._trade_repository)
+        return TradeService(
+            self._trade_repository,
+            player_happiness=self._player_happiness_service,
+            team_objectives=self._team_objective_service,
+        )
 
     def validate_trade_machine(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._trade_service().validate(payload)

@@ -69,6 +69,8 @@ class FreeAgencyService:
         gm_requests: Any = None,
         offer_promises: Any = None,
         players: Any = None,
+        player_happiness: Any = None,
+        team_objectives: Any = None,
     ) -> None:
         if isinstance(db, FreeAgencyRepository):
             self.repository = db
@@ -78,6 +80,8 @@ class FreeAgencyService:
         self.gm_requests = gm_requests or getattr(backing_db, "_gm_request_service", None) or getattr(backing_db, "_gm_request_repository", None)
         self.offer_promises = offer_promises or getattr(backing_db, "_offer_promise_service", None) or getattr(backing_db, "_offer_promise_repository", None)
         self.players = players or getattr(backing_db, "_player_repository", None)
+        self.player_happiness = player_happiness or getattr(backing_db, "_player_happiness_service", None)
+        self.team_objectives = team_objectives or getattr(backing_db, "_team_objective_service", None)
         self.contract_seasons = tuple(sorted({int(season) for season in contract_seasons}))
         if not self.contract_seasons:
             raise ValueError("contract_seasons_required")
@@ -257,11 +261,35 @@ class FreeAgencyService:
         player_id = self.repository.sign(int(free_agent_id), normalized_team, payload)
         if not player_id:
             raise ValueError("free_agent_or_team_not_found")
+        player = self.players.record(player_id)
+        happiness_event = None
+        profile_id = parse_int((player or {}).get("profile_id"))
+        if profile_id is not None and self.player_happiness is not None:
+            modifier_details = self._team_join_objective_modifiers(normalized_team, player or {})
+            happiness_event = self.player_happiness.reset_for_team_join(
+                int(profile_id),
+                normalized_team,
+                player_id=player_id,
+                free_agent_id=int(free_agent_id),
+                modifiers=[modifier_details["applied_delta"]] if modifier_details and modifier_details.get("applied_delta") else None,
+                modifier_details=[modifier_details] if modifier_details and modifier_details.get("applied_delta") else None,
+            )
+        roster_happiness_impact = None
+        if self.player_happiness is not None and player:
+            roster_happiness_impact = self.player_happiness.apply_roster_impact(
+                team_code=normalized_team,
+                subject_player=player,
+                direction="add",
+                source_entity_type="free_agent_sign",
+                source_entity_id=int(free_agent_id),
+            )
         return {
             "free_agent_id": int(free_agent_id),
             "team_code": normalized_team,
             "player_id": player_id,
-            "player": self.players.record(player_id),
+            "player": player,
+            "happiness_event": happiness_event,
+            "roster_happiness_impact": roster_happiness_impact,
         }
 
     def create_promise(self, payload: Dict[str, Any], actor: Dict[str, Any]) -> Dict[str, Any]:
@@ -398,6 +426,20 @@ class FreeAgencyService:
             and str(updated.get("player_name") or "Agente libre") == "Agente libre"
         ):
             updated["player_name"] = request_before.get("player_name")
+        roster_happiness_impact = None
+        if (
+            self.player_happiness is not None
+            and result.get("player")
+            and str(request_before.get("offer_type") or "").strip().lower() != "renewal"
+        ):
+            roster_happiness_impact = self.player_happiness.apply_roster_impact(
+                team_code=team_code,
+                subject_player=result["player"],
+                direction="add",
+                source_entity_type="gm_free_agent_offer_request",
+                source_entity_id=int(request_id),
+                actor=actor or {},
+            )
         return {
             **result,
             "decision": "approved",
@@ -406,6 +448,7 @@ class FreeAgencyService:
             "team_code": team_code,
             "offer_type": request_before.get("offer_type"),
             "offer_payload": offer_payload,
+            "roster_happiness_impact": roster_happiness_impact,
             "entity_versions": {
                 "request_before_status": request_before.get("status"),
                 "request_after_status": (result.get("request") or {}).get("status"),
@@ -414,6 +457,22 @@ class FreeAgencyService:
                 "signed_player_id": result.get("player_id"),
             },
         }
+
+    def _team_join_objective_modifiers(
+        self,
+        team_code: str,
+        player: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if self.player_happiness is None or self.team_objectives is None:
+            return None
+        modifier = self.player_happiness.team_join_objective_modifier(
+            self.team_objectives,
+            team_code,
+            player or {},
+        )
+        if not modifier or not modifier.get("applied_delta"):
+            return None
+        return modifier
 
     @staticmethod
     def admin_decision_output(
