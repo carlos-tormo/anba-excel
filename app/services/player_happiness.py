@@ -12,6 +12,7 @@ try:
     from ..domain.player_happiness import (
         DRAFTED_RATING_THRESHOLD,
         DRAFTED_RATING_THRESHOLD_DELTA,
+        EVENT_BASELINE_IMPORT,
         EVENT_DRAFTED_RATING_THRESHOLD,
         EVENT_MANUAL_ADJUSTMENT,
         EVENT_MODIFIER,
@@ -33,6 +34,7 @@ try:
         is_rookie_scale_contract_type,
         normalize_event_type,
         normalize_happiness,
+        recency_recalculated_happiness,
         roster_impact_player_delta,
         roster_rating_impact_delta,
         team_join_happiness,
@@ -56,6 +58,7 @@ except ImportError:  # pragma: no cover
     from domain.player_happiness import (
         DRAFTED_RATING_THRESHOLD,
         DRAFTED_RATING_THRESHOLD_DELTA,
+        EVENT_BASELINE_IMPORT,
         EVENT_DRAFTED_RATING_THRESHOLD,
         EVENT_MANUAL_ADJUSTMENT,
         EVENT_MODIFIER,
@@ -77,6 +80,7 @@ except ImportError:  # pragma: no cover
         is_rookie_scale_contract_type,
         normalize_event_type,
         normalize_happiness,
+        recency_recalculated_happiness,
         roster_impact_player_delta,
         roster_rating_impact_delta,
         team_join_happiness,
@@ -168,6 +172,48 @@ class PlayerHappinessService:
             "contract_context": "last_year" if context.get("last_contract_year") else "multiyear",
             "happiness_milestone": self._milestone_payload(current_happiness, context),
         }
+
+    def recalculate_recency(
+        self,
+        *,
+        current_year: Any = None,
+        profile_ids: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        timestamp = self._now()
+        result = self.repository.recalculate_recency(
+            current_year=parse_int(current_year),
+            profile_ids=profile_ids,
+            timestamp=timestamp,
+        )
+        result["command_id"] = f"player-happiness:recency-recalculation:{result.get('current_year')}"
+        result["validation_result"] = "valid"
+        result["entity_versions"] = {
+            "current_year": result.get("current_year"),
+            "updated_count": result.get("updated_count"),
+        }
+        return result
+
+    def recalculate_recency_conn(
+        self,
+        conn: Any,
+        *,
+        current_year: Any = None,
+        profile_ids: Optional[List[int]] = None,
+        timestamp: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        result = self.repository.recalculate_recency_conn(
+            conn,
+            current_year=parse_int(current_year),
+            profile_ids=profile_ids,
+            timestamp=timestamp or self._now(),
+        )
+        result["command_id"] = f"player-happiness:recency-recalculation:{result.get('current_year')}"
+        result["validation_result"] = "valid"
+        result["entity_versions"] = {
+            "current_year": result.get("current_year"),
+            "updated_count": result.get("updated_count"),
+        }
+        return result
 
     def set_value(
         self,
@@ -1706,5 +1752,259 @@ class PlayerHappinessService:
             "record_count": int(result.get("record_count") or 0),
             "changed_count": int(result.get("changed_count") or 0),
             "unchanged_count": int(result.get("unchanged_count") or 0),
+        }
+        return result
+
+    def preview_historical_ledger(self, payload: Any) -> Dict[str, Any]:
+        rows = self._rows_from_payload(payload)
+        with self.repository.connect() as conn:
+            profiles = self.repository.profiles(conn)
+            current_year = self.repository.current_year_conn(conn)
+
+        by_profile_id = {int(profile["profile_id"]): profile for profile in profiles}
+        by_name: Dict[str, List[Dict[str, Any]]] = {}
+        for profile in profiles:
+            key = normalize_happiness_import_name(profile.get("name"))
+            if key:
+                by_name.setdefault(key, []).append(profile)
+
+        records: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        unmatched: List[Dict[str, Any]] = []
+        ambiguous: List[Dict[str, Any]] = []
+        seen_profiles: Dict[int, int] = {}
+        for index, row in enumerate(rows):
+            line = index + 1
+            raw_name = str(row.get("player_name") or row.get("name") or row.get("player") or "").strip()
+            raw_profile_id = parse_int(row.get("profile_id") or row.get("id"))
+            profile: Optional[Dict[str, Any]] = None
+            match_method = "name"
+            if raw_profile_id is not None:
+                profile = by_profile_id.get(int(raw_profile_id))
+                match_method = "profile_id"
+                if not profile:
+                    errors.append({"line": line, "message": f"No existe profile_id {raw_profile_id}."})
+                    continue
+            else:
+                key = normalize_happiness_import_name(raw_name)
+                matches = by_name.get(key, []) if key else []
+                if not matches:
+                    unmatched.append({"line": line, "player_name": raw_name})
+                    continue
+                if len(matches) > 1:
+                    ambiguous.append(
+                        {
+                            "line": line,
+                            "player_name": raw_name,
+                            "matches": [
+                                {
+                                    "profile_id": match.get("profile_id"),
+                                    "player_name": match.get("name"),
+                                    "current_happiness": match.get("happiness"),
+                                    "status_label": match.get("status_label"),
+                                    "team_code": match.get("team_code"),
+                                }
+                                for match in matches
+                            ],
+                        }
+                    )
+                    continue
+                profile = matches[0]
+
+            profile_id = int(profile["profile_id"])
+            if profile_id in seen_profiles:
+                errors.append({"line": line, "message": f"Jugador duplicado: {profile.get('name')} ya apareció en la línea {seen_profiles[profile_id]}."})
+                continue
+            seen_profiles[profile_id] = line
+            try:
+                base_happiness = normalize_happiness_value(row.get("base_happiness", row.get("baseline_happiness", row.get("starting_happiness"))))
+            except ValueError:
+                errors.append({"line": line, "message": f"Base de felicidad inválida para {raw_name or raw_profile_id or 'fila'}."})
+                continue
+            raw_events = row.get("events") or row.get("modifiers") or []
+            if not isinstance(raw_events, list):
+                errors.append({"line": line, "message": "events debe ser una lista."})
+                continue
+            cleaned_events: List[Dict[str, Any]] = []
+            raw_total = 0.0
+            simulated_events: List[Dict[str, Any]] = [
+                {
+                    "id": 1,
+                    "event_type": EVENT_BASELINE_IMPORT,
+                    "season_year": parse_int(row.get("base_season_year")),
+                    "event_date": str(row.get("base_event_date") or row.get("base_date") or "")[:10] or None,
+                    "previous_value": 0,
+                    "applied_delta": float(base_happiness),
+                    "new_value": float(base_happiness),
+                }
+            ]
+            running_value = float(base_happiness)
+            for event_index, raw_event in enumerate(raw_events, start=1):
+                if not isinstance(raw_event, dict):
+                    errors.append({"line": line, "event": event_index, "message": "Evento inválido."})
+                    continue
+                delta = parse_float(str(raw_event.get("delta", raw_event.get("applied_delta", raw_event.get("modifier", "")))))
+                if delta is None:
+                    errors.append({"line": line, "event": event_index, "message": "Delta inválido."})
+                    continue
+                event_date = str(raw_event.get("event_date") or raw_event.get("date") or "")[:10] or None
+                season_year = parse_int(raw_event.get("season_year") or raw_event.get("season"))
+                if season_year is None and event_date:
+                    season_year = self.repository._season_year_for_date(event_date)
+                if season_year is None:
+                    errors.append({"line": line, "event": event_index, "message": "Cada evento histórico necesita season_year o event_date."})
+                    continue
+                try:
+                    event_type = normalize_event_type(raw_event.get("event_type") or raw_event.get("type") or EVENT_MODIFIER)
+                except ValueError:
+                    errors.append({"line": line, "event": event_index, "message": f"Tipo de evento inválido: {raw_event.get('event_type') or raw_event.get('type')}"})
+                    continue
+                previous_value = running_value
+                running_value = max(-10.0, min(10.0, running_value + float(delta)))
+                cleaned_event = {
+                    "line": event_index,
+                    "event_type": event_type,
+                    "season_year": int(season_year),
+                    "event_date": event_date,
+                    "applied_delta": float(delta),
+                    "reason": str(raw_event.get("reason") or raw_event.get("description") or "Historical happiness modifier").strip(),
+                    "metadata": raw_event.get("metadata") if isinstance(raw_event.get("metadata"), dict) else {},
+                    "previous_value": previous_value,
+                    "new_value": running_value,
+                }
+                cleaned_events.append(cleaned_event)
+                simulated_events.append(
+                    {
+                        "id": event_index + 1,
+                        "event_type": event_type,
+                        "season_year": int(season_year),
+                        "event_date": event_date,
+                        "previous_value": previous_value,
+                        "applied_delta": float(delta),
+                        "new_value": running_value,
+                    }
+                )
+                raw_total += float(delta)
+
+            if any(error.get("line") == line for error in errors):
+                continue
+            recalculated = recency_recalculated_happiness(simulated_events, current_year)
+            current = float(profile.get("happiness") or 0)
+            records.append(
+                {
+                    "line": line,
+                    "profile_id": profile_id,
+                    "player_name": str(profile.get("name") or raw_name).strip(),
+                    "input_player_name": raw_name,
+                    "match_method": match_method,
+                    "expected_version": int(profile.get("version") or 1),
+                    "current_happiness": current,
+                    "base_happiness": base_happiness,
+                    "base_season_year": parse_int(row.get("base_season_year")),
+                    "base_event_date": str(row.get("base_event_date") or row.get("base_date") or "")[:10] or None,
+                    "base_reason": str(row.get("base_reason") or "Historical happiness ledger baseline").strip(),
+                    "events": cleaned_events,
+                    "event_count": len(cleaned_events),
+                    "raw_modifier_total": raw_total,
+                    "decayed_modifier_total": recalculated.get("modifier_total"),
+                    "recalculated_happiness": recalculated.get("new_value"),
+                    "changed": round(current, 4) != round(float(recalculated.get("new_value") or 0), 4),
+                    "weighted_events": recalculated.get("weighted_events"),
+                    "status_label": profile.get("status_label"),
+                    "team_code": profile.get("team_code"),
+                }
+            )
+        changed_count = sum(1 for record in records if record["changed"])
+        return {
+            "ok": not errors and not ambiguous,
+            "current_year": current_year,
+            "errors": errors,
+            "records": records,
+            "summary": {
+                "input_count": len(rows),
+                "matched_count": len(records),
+                "event_count": sum(int(record.get("event_count") or 0) for record in records),
+                "changed_count": changed_count,
+                "unchanged_count": len(records) - changed_count,
+                "unmatched_count": len(unmatched),
+                "ambiguous_count": len(ambiguous),
+                "error_count": len(errors),
+            },
+            "unmatched": unmatched,
+            "ambiguous": ambiguous,
+        }
+
+    def apply_historical_ledger(self, records_payload: Any, actor: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if not isinstance(records_payload, list) or not records_payload:
+            raise ValueError("records_required")
+        cleaned: List[Dict[str, Any]] = []
+        seen: set[int] = set()
+        for raw in records_payload:
+            if not isinstance(raw, dict):
+                raise ValueError("invalid_records")
+            profile_id = parse_int(raw.get("profile_id"))
+            expected_version = parse_int(raw.get("expected_version"))
+            player_name = str(raw.get("player_name") or "").strip()
+            if profile_id is None or expected_version is None or not player_name:
+                raise ValueError("invalid_records")
+            if int(profile_id) in seen:
+                raise ValueError("duplicate_happiness_import_target")
+            seen.add(int(profile_id))
+            try:
+                base_happiness = normalize_happiness_value(raw.get("base_happiness"))
+            except ValueError as exc:
+                raise ValueError("invalid_records") from exc
+            events = raw.get("events")
+            if not isinstance(events, list):
+                raise ValueError("invalid_records")
+            cleaned_events = []
+            for event in events:
+                if not isinstance(event, dict):
+                    raise ValueError("invalid_records")
+                event_type = normalize_event_type(event.get("event_type") or EVENT_MODIFIER)
+                delta = parse_float(str(event.get("applied_delta", event.get("delta", ""))))
+                season_year = parse_int(event.get("season_year"))
+                if delta is None or season_year is None:
+                    raise ValueError("invalid_records")
+                metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+                cleaned_events.append(
+                    {
+                        "line": parse_int(event.get("line")),
+                        "event_type": event_type,
+                        "season_year": int(season_year),
+                        "event_date": str(event.get("event_date") or "")[:10] or None,
+                        "applied_delta": float(delta),
+                        "reason": str(event.get("reason") or "Historical happiness modifier").strip(),
+                        "metadata": metadata,
+                    }
+                )
+            cleaned.append(
+                {
+                    "profile_id": int(profile_id),
+                    "player_name": player_name,
+                    "input_player_name": raw.get("input_player_name"),
+                    "match_method": raw.get("match_method") or "unknown",
+                    "expected_version": int(expected_version),
+                    "base_happiness": base_happiness,
+                    "base_season_year": parse_int(raw.get("base_season_year")),
+                    "base_event_date": str(raw.get("base_event_date") or "")[:10] or None,
+                    "base_reason": raw.get("base_reason") or "Historical happiness ledger baseline",
+                    "events": cleaned_events,
+                }
+            )
+        timestamp = self._now()
+        command_id = f"player-happiness:historical-ledger-import:{timestamp}"
+        result = self.repository.apply_historical_ledger_import(
+            cleaned,
+            timestamp=timestamp,
+            command_id=command_id,
+            actor_user_id=parse_int((actor or {}).get("user_id")),
+        )
+        result["command_id"] = command_id
+        result["validation_result"] = "valid"
+        result["entity_versions"] = {
+            "record_count": int(result.get("record_count") or 0),
+            "inserted_event_count": int(result.get("inserted_event_count") or 0),
+            "updated_count": int((result.get("recalculation") or {}).get("updated_count") or 0),
         }
         return result

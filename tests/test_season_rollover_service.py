@@ -97,6 +97,27 @@ class SeasonRolloverServiceTests(unittest.TestCase):
         self.assertEqual("2025", self.db.get_settings()["current_year"])
         self.assertEqual(0, self.snapshot_count())
 
+    def test_progress_recalculates_player_happiness_recency_after_year_change(self) -> None:
+        player_happiness = mock.Mock()
+        player_happiness.recalculate_recency_conn.return_value = {
+            "ok": True,
+            "current_year": 2026,
+            "updated_count": 0,
+        }
+        service = SeasonRolloverService(
+            self.db,
+            contract_min_year=2025,
+            contract_max_start_year=2026,
+            player_happiness=player_happiness,
+        )
+
+        result = service.progress_to_next_year()
+
+        self.assertEqual(2026, result["current_year"])
+        self.assertEqual({"ok": True, "current_year": 2026, "updated_count": 0}, result["happiness_recency"])
+        player_happiness.recalculate_recency_conn.assert_called_once()
+        self.assertEqual(2026, player_happiness.recalculate_recency_conn.call_args.kwargs["current_year"])
+
 
 if __name__ == "__main__":
     unittest.main()

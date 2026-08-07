@@ -6,22 +6,24 @@ import json
 from typing import Any, Dict, List, Sequence
 
 try:
-    from ...domain._values import parse_int
+    from ...domain._values import parse_float, parse_int
     from ...domain.player_happiness import (
         EVENT_TRADE_REQUEST_FOLLOWUP,
         MILESTONE_PRIVATE_TRADE_REQUEST,
         MILESTONE_PUBLIC_TRADE_REQUEST,
         calculate_change,
+        recency_recalculated_happiness,
         normalize_event_type,
         trade_request_recovery_threshold,
     )
 except ImportError:  # pragma: no cover - direct script import compatibility
-    from domain._values import parse_int
+    from domain._values import parse_float, parse_int
     from domain.player_happiness import (
         EVENT_TRADE_REQUEST_FOLLOWUP,
         MILESTONE_PRIVATE_TRADE_REQUEST,
         MILESTONE_PUBLIC_TRADE_REQUEST,
         calculate_change,
+        recency_recalculated_happiness,
         normalize_event_type,
         trade_request_recovery_threshold,
     )
@@ -37,6 +39,14 @@ class PlayerHappinessRepository(LeagueRepository):
 
     def transaction(self, mode: str = "IMMEDIATE") -> Any:
         return self.db.transaction(mode)
+
+    @staticmethod
+    def current_year_conn(conn: Any) -> int:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = 'current_year'").fetchone()
+        current_year = parse_int(row["value"] if row else None) or HAPPINESS_CONTRACT_SEASONS[0]
+        if current_year not in HAPPINESS_CONTRACT_SEASONS:
+            current_year = HAPPINESS_CONTRACT_SEASONS[0]
+        return int(current_year)
 
     def profiles(self, conn: Any) -> List[Dict[str, Any]]:
         rows = conn.execute(
@@ -145,10 +155,7 @@ class PlayerHappinessRepository(LeagueRepository):
         if not row:
             return None
         context = dict(row)
-        current_year_row = conn.execute("SELECT value FROM app_settings WHERE key = 'current_year'").fetchone()
-        current_year = int(current_year_row["value"]) if current_year_row and str(current_year_row["value"] or "").isdigit() else HAPPINESS_CONTRACT_SEASONS[0]
-        if current_year not in HAPPINESS_CONTRACT_SEASONS:
-            current_year = HAPPINESS_CONTRACT_SEASONS[0]
+        current_year = self.current_year_conn(conn)
         context["current_year"] = current_year
         context["last_contract_year"] = False
         player_id = context.get("active_player_id")
@@ -500,6 +507,10 @@ class PlayerHappinessRepository(LeagueRepository):
         if cur.rowcount != 1:
             raise ValueError("stale_entity_version")
         event_type = normalize_event_type(event.get("event_type") or "manual_adjustment")
+        event_date = str(event.get("event_date") or "")[:10] or None
+        season_year = parse_int(event.get("season_year"))
+        if season_year is None:
+            season_year = self._season_year_for_date(event_date) or self.current_year_conn(conn)
         conn.execute(
             """
             INSERT INTO player_happiness_events (
@@ -512,8 +523,8 @@ class PlayerHappinessRepository(LeagueRepository):
             (
                 int(profile_id),
                 event_type,
-                event.get("event_date"),
-                event.get("season_year"),
+                event_date,
+                season_year,
                 change.previous_value,
                 change.proposed_delta,
                 change.applied_delta,
@@ -540,6 +551,107 @@ class PlayerHappinessRepository(LeagueRepository):
             "command_id": command_id,
         }
 
+    def recalculate_recency(
+        self,
+        *,
+        current_year: int | None = None,
+        profile_ids: Sequence[int] | None = None,
+        timestamp: str,
+    ) -> Dict[str, Any]:
+        with self.db.transaction("IMMEDIATE") as conn:
+            return self.recalculate_recency_conn(
+                conn,
+                current_year=current_year,
+                profile_ids=profile_ids,
+                timestamp=timestamp,
+            )
+
+    def recalculate_recency_conn(
+        self,
+        conn: Any,
+        *,
+        current_year: int | None = None,
+        profile_ids: Sequence[int] | None = None,
+        timestamp: str,
+    ) -> Dict[str, Any]:
+        resolved_year = int(current_year or self.current_year_conn(conn))
+        target_ids = [int(value) for value in (profile_ids or []) if parse_int(value) is not None]
+        params: List[Any] = []
+        where = ""
+        if target_ids:
+            placeholders = ",".join("?" for _ in target_ids)
+            where = f"WHERE id IN ({placeholders})"
+            params.extend(target_ids)
+        rows = conn.execute(
+            f"SELECT id, name, happiness, version FROM player_profiles {where} ORDER BY id",
+            params,
+        ).fetchall()
+        updated: List[Dict[str, Any]] = []
+        unchanged = 0
+        for row in rows:
+            profile_id = int(row["id"])
+            event_rows = conn.execute(
+                """
+                SELECT id, event_type, event_date, season_year, previous_value,
+                       proposed_delta, applied_delta, new_value, created_at
+                FROM player_happiness_events
+                WHERE profile_id = ?
+                ORDER BY id
+                """,
+                (profile_id,),
+            ).fetchall()
+            events: List[Dict[str, Any]] = []
+            for event_row in event_rows:
+                event = dict(event_row)
+                if parse_int(event.get("season_year")) is None:
+                    event["event_year"] = (
+                        self._season_year_for_date(event.get("event_date"))
+                        or self._season_year_for_date(event.get("created_at"))
+                        or resolved_year
+                    )
+                events.append(event)
+            recalculated = recency_recalculated_happiness(events, resolved_year)
+            previous_value = float(row["happiness"] or 0.0)
+            new_value = float(recalculated["new_value"])
+            if round(previous_value, 4) == round(new_value, 4):
+                unchanged += 1
+                continue
+            current_version = int(row["version"] or 1)
+            cur = conn.execute(
+                """
+                UPDATE player_profiles
+                SET happiness = ?,
+                    version = version + 1,
+                    updated_at = ?
+                WHERE id = ?
+                  AND version = ?
+                """,
+                (new_value, timestamp, profile_id, current_version),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("stale_entity_version")
+            updated.append(
+                {
+                    "profile_id": profile_id,
+                    "player_name": str(row["name"] or "").strip(),
+                    "previous_happiness": previous_value,
+                    "new_happiness": new_value,
+                    "version": current_version + 1,
+                    "base_value": parse_float(str(recalculated.get("base_value") or "0")) or 0.0,
+                    "modifier_total": parse_float(str(recalculated.get("modifier_total") or "0")) or 0.0,
+                    "anchor_event_id": recalculated.get("anchor_event_id"),
+                    "weighted_event_count": len(recalculated.get("weighted_events") or []),
+                }
+            )
+        return {
+            "ok": True,
+            "current_year": resolved_year,
+            "checked_count": len(rows),
+            "updated_count": len(updated),
+            "unchanged_count": unchanged,
+            "updated_profiles": updated,
+        }
+
     @staticmethod
     def has_event_command_id_conn(conn: Any, command_id: Any) -> bool:
         normalized = str(command_id or "").strip()
@@ -550,6 +662,146 @@ class PlayerHappinessRepository(LeagueRepository):
             (normalized,),
         ).fetchone()
         return row is not None
+
+    def apply_historical_ledger_import(
+        self,
+        records: Sequence[Dict[str, Any]],
+        *,
+        timestamp: str,
+        command_id: str,
+        actor_user_id: int | None,
+    ) -> Dict[str, Any]:
+        with self.db.transaction("IMMEDIATE") as conn:
+            return self.apply_historical_ledger_import_conn(
+                conn,
+                records,
+                timestamp=timestamp,
+                command_id=command_id,
+                actor_user_id=actor_user_id,
+            )
+
+    def apply_historical_ledger_import_conn(
+        self,
+        conn: Any,
+        records: Sequence[Dict[str, Any]],
+        *,
+        timestamp: str,
+        command_id: str,
+        actor_user_id: int | None,
+    ) -> Dict[str, Any]:
+        profile_ids: List[int] = []
+        inserted_event_count = 0
+        for record in records:
+            profile_id = int(record["profile_id"])
+            expected_version = int(record["expected_version"])
+            player_name = str(record.get("player_name") or "").strip()
+            row = conn.execute(
+                "SELECT id, name, version FROM player_profiles WHERE id = ?",
+                (profile_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("invalid_records")
+            if str(row["name"] or "").strip() != player_name:
+                raise ValueError("happiness_import_target_changed")
+            if int(row["version"] or 1) != expected_version:
+                raise ValueError("stale_entity_version")
+            profile_ids.append(profile_id)
+            conn.execute(
+                """
+                DELETE FROM player_happiness_events
+                WHERE profile_id = ? AND source_entity_type = 'historical_happiness_import'
+                """,
+                (profile_id,),
+            )
+            base_value = float(record["base_happiness"])
+            running_value = base_value
+            conn.execute(
+                """
+                INSERT INTO player_happiness_events (
+                    profile_id, event_type, event_date, season_year,
+                    previous_value, proposed_delta, applied_delta, new_value,
+                    source_entity_type, source_entity_id, reason, metadata_json,
+                    command_id, actor_user_id, created_at
+                ) VALUES (?, 'baseline_import', ?, ?, ?, ?, ?, ?, 'historical_happiness_import',
+                          ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    record.get("base_event_date"),
+                    parse_int(record.get("base_season_year")),
+                    0.0,
+                    base_value,
+                    base_value,
+                    base_value,
+                    command_id,
+                    str(record.get("base_reason") or "Historical happiness ledger baseline").strip(),
+                    json.dumps(
+                        {
+                            "input_player_name": record.get("input_player_name"),
+                            "match_method": record.get("match_method"),
+                            "import_kind": "historical_ledger",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    f"{command_id}:profile:{profile_id}:baseline",
+                    actor_user_id,
+                    timestamp,
+                ),
+            )
+            inserted_event_count += 1
+            for index, event in enumerate(record.get("events") or [], start=1):
+                event_type = normalize_event_type(event.get("event_type") or "modifier")
+                delta = float(event["applied_delta"])
+                previous_value = running_value
+                running_value = max(-10.0, min(10.0, running_value + delta))
+                conn.execute(
+                    """
+                    INSERT INTO player_happiness_events (
+                        profile_id, event_type, event_date, season_year,
+                        previous_value, proposed_delta, applied_delta, new_value,
+                        source_entity_type, source_entity_id, reason, metadata_json,
+                        command_id, actor_user_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'historical_happiness_import',
+                              ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        profile_id,
+                        event_type,
+                        event.get("event_date"),
+                        parse_int(event.get("season_year")),
+                        previous_value,
+                        delta,
+                        delta,
+                        running_value,
+                        command_id,
+                        str(event.get("reason") or "Historical happiness modifier").strip(),
+                        json.dumps(
+                            {
+                                **(event.get("metadata") or {}),
+                                "input_player_name": record.get("input_player_name"),
+                                "match_method": record.get("match_method"),
+                                "import_kind": "historical_ledger",
+                                "import_row": event.get("line"),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        f"{command_id}:profile:{profile_id}:event:{index}",
+                        actor_user_id,
+                        timestamp,
+                    ),
+                )
+                inserted_event_count += 1
+        recalculation = self.recalculate_recency_conn(
+            conn,
+            profile_ids=profile_ids,
+            timestamp=timestamp,
+        )
+        return {
+            "ok": True,
+            "record_count": len(records),
+            "inserted_event_count": inserted_event_count,
+            "recalculation": recalculation,
+        }
 
     def apply_baseline_import(
         self,

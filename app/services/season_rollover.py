@@ -26,6 +26,7 @@ class SeasonRolloverService:
         *,
         contract_min_year: int,
         contract_max_start_year: int,
+        player_happiness: Any = None,
     ) -> None:
         configured_repository = getattr(db, "_season_rollover_repository", None)
         self.repository = db if isinstance(db, SeasonRolloverRepository) else (
@@ -33,6 +34,7 @@ class SeasonRolloverService:
         )
         self.contract_min_year = int(contract_min_year)
         self.contract_max_start_year = int(contract_max_start_year)
+        self.player_happiness = player_happiness
         if self.contract_max_start_year < self.contract_min_year:
             raise ValueError("invalid_contract_window")
 
@@ -140,6 +142,15 @@ class SeasonRolloverService:
         dead_contract_cleanup = self.repository.cleanup_inactive_dead_contracts(
             conn, int(next_year)
         )
+        happiness_recency = (
+            self.player_happiness.recalculate_recency_conn(
+                conn,
+                current_year=int(next_year),
+                timestamp=timestamp,
+            )
+            if self.player_happiness is not None and delta > 0
+            else None
+        )
         return {
             "previous_year": int(previous_year),
             "current_year": int(next_year),
@@ -158,6 +169,7 @@ class SeasonRolloverService:
             "players_moved_to_free_agents": moved_free_agents,
             "dead_contracts_removed": int(dead_contract_cleanup["count"]),
             "removed_dead_contracts": dead_contract_cleanup["dead_contracts"],
+            "happiness_recency": happiness_recency,
             "deleted_draft_assets": int(draft_rollover["deleted_draft_assets"]),
             "deleted_draft_asset_years": draft_rollover["deleted_draft_asset_years"],
             "future_draft_asset_years": draft_rollover["future_draft_asset_years"],

@@ -21,6 +21,8 @@ from app.domain.player_happiness import (
     is_rookie_scale_contract_type,
     normalize_event_type,
     normalize_happiness,
+    recency_decay_weight,
+    recency_recalculated_happiness,
     roster_impact_player_delta,
     roster_rating_impact_delta,
     team_join_happiness,
@@ -205,6 +207,60 @@ class PlayerHappinessRulesTests(unittest.TestCase):
         self.assertEqual(-2, promise_resolution_delta("fulfilled", "broken"))
         self.assertEqual(2, promise_resolution_delta("broken", "fulfilled"))
         self.assertEqual(0, promise_resolution_delta("fulfilled", "fulfilled"))
+
+    def test_recency_decay_weights_match_documented_table(self) -> None:
+        expected = {
+            0: 1.0,
+            1: 0.95,
+            2: 0.85,
+            3: 0.70,
+            4: 0.60,
+            5: 0.50,
+            6: 0.40,
+            7: 0.30,
+            8: 0.25,
+            9: 0.20,
+            10: 0.0,
+        }
+        for age, weight in expected.items():
+            with self.subTest(age=age):
+                self.assertEqual(weight, recency_decay_weight(2026, 2026 - age))
+
+    def test_recency_recalculation_keeps_anchor_and_decays_modifiers(self) -> None:
+        result = recency_recalculated_happiness(
+            [
+                {
+                    "id": 1,
+                    "event_type": "baseline_import",
+                    "season_year": 2024,
+                    "previous_value": 0,
+                    "applied_delta": 7,
+                    "new_value": 7,
+                },
+                {
+                    "id": 2,
+                    "event_type": "modifier",
+                    "season_year": 2026,
+                    "previous_value": 7,
+                    "applied_delta": 2,
+                    "new_value": 9,
+                },
+                {
+                    "id": 3,
+                    "event_type": "gm_change",
+                    "season_year": 2025,
+                    "previous_value": 9,
+                    "applied_delta": -1,
+                    "new_value": 8,
+                },
+            ],
+            2026,
+        )
+
+        self.assertEqual(7, result["base_value"])
+        self.assertAlmostEqual(1.05, result["modifier_total"])
+        self.assertAlmostEqual(8.05, result["new_value"])
+        self.assertEqual(2, len(result["weighted_events"]))
 
     def test_multiyear_contract_milestones_match_league_rules(self) -> None:
         cases = [

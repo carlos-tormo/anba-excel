@@ -129,6 +129,143 @@ class PlayerHappinessImportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "stale_entity_version"):
             self.service.apply(preview["records"], {"user_id": 42})
 
+    def test_historical_ledger_preview_matches_name_and_calculates_decayed_value(self) -> None:
+        timestamp = now_iso()
+        with connect_test_db(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('current_year', '2026', ?)",
+                (timestamp,),
+            )
+            conn.commit()
+
+        preview = self.service.preview_historical_ledger({
+            "players": [
+                {
+                    "player_name": "Nikola Jokić",
+                    "base_happiness": 7,
+                    "base_season_year": 2024,
+                    "events": [
+                        {"season_year": 2026, "event_type": "modifier", "delta": 2, "reason": "Current season boost"},
+                        {"season_year": 2025, "event_type": "gm_change", "delta": -1, "reason": "Previous season hit"},
+                    ],
+                }
+            ]
+        })
+
+        self.assertTrue(preview["ok"])
+        self.assertEqual(1, preview["summary"]["matched_count"])
+        self.assertEqual(2, preview["summary"]["event_count"])
+        record = preview["records"][0]
+        self.assertEqual(self.jokic_id, record["profile_id"])
+        self.assertEqual("name", record["match_method"])
+        self.assertEqual(2, record["event_count"])
+        self.assertAlmostEqual(1.0, record["raw_modifier_total"])
+        self.assertAlmostEqual(1.05, record["decayed_modifier_total"])
+        self.assertAlmostEqual(8.05, record["recalculated_happiness"])
+        self.assertEqual([1.0, 0.95], [event["recency_weight"] for event in record["weighted_events"]])
+
+    def test_historical_ledger_apply_replaces_prior_import_events_and_recalculates(self) -> None:
+        timestamp = now_iso()
+        with connect_test_db(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('current_year', '2026', ?)",
+                (timestamp,),
+            )
+            conn.commit()
+        first_preview = self.service.preview_historical_ledger({
+            "players": [
+                {
+                    "player_name": "Nikola Jokic",
+                    "base_happiness": 7,
+                    "base_season_year": 2024,
+                    "events": [
+                        {"season_year": 2026, "event_type": "modifier", "delta": 2},
+                        {"season_year": 2025, "event_type": "gm_change", "delta": -1},
+                    ],
+                }
+            ]
+        })
+
+        first_result = self.service.apply_historical_ledger(first_preview["records"], {"user_id": 42})
+
+        self.assertTrue(first_result["ok"])
+        self.assertEqual(1, first_result["record_count"])
+        self.assertEqual(3, first_result["inserted_event_count"])
+        self.assertEqual("valid", first_result["validation_result"])
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            profile = conn.execute(
+                "SELECT happiness, version FROM player_profiles WHERE id = ?",
+                (self.jokic_id,),
+            ).fetchone()
+            imported_count = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM player_happiness_events
+                WHERE profile_id = ? AND source_entity_type = 'historical_happiness_import'
+                """,
+                (self.jokic_id,),
+            ).fetchone()["total"]
+            actor_ids = [
+                row["actor_user_id"]
+                for row in conn.execute(
+                    "SELECT actor_user_id FROM player_happiness_events WHERE profile_id = ? ORDER BY id",
+                    (self.jokic_id,),
+                ).fetchall()
+            ]
+        self.assertAlmostEqual(8.05, float(profile["happiness"]))
+        self.assertEqual(2, profile["version"])
+        self.assertEqual(3, imported_count)
+        self.assertEqual([42, 42, 42], actor_ids)
+
+        second_preview = self.service.preview_historical_ledger({
+            "players": [
+                {
+                    "player_name": "Nikola Jokic",
+                    "base_happiness": 7,
+                    "base_season_year": 2024,
+                    "events": [
+                        {"season_year": 2026, "event_type": "modifier", "delta": 1},
+                    ],
+                }
+            ]
+        })
+        second_result = self.service.apply_historical_ledger(second_preview["records"], {"user_id": 42})
+
+        self.assertEqual(2, second_result["inserted_event_count"])
+        with connect_test_db(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            profile = conn.execute(
+                "SELECT happiness, version FROM player_profiles WHERE id = ?",
+                (self.jokic_id,),
+            ).fetchone()
+            imported_count = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM player_happiness_events
+                WHERE profile_id = ? AND source_entity_type = 'historical_happiness_import'
+                """,
+                (self.jokic_id,),
+            ).fetchone()["total"]
+        self.assertAlmostEqual(8.0, float(profile["happiness"]))
+        self.assertEqual(3, profile["version"])
+        self.assertEqual(2, imported_count)
+
+    def test_historical_ledger_preview_rejects_events_without_season_or_date(self) -> None:
+        preview = self.service.preview_historical_ledger({
+            "players": [
+                {
+                    "player_name": "Nikola Jokic",
+                    "base_happiness": 7,
+                    "events": [{"event_type": "modifier", "delta": 1}],
+                }
+            ]
+        })
+
+        self.assertFalse(preview["ok"])
+        self.assertEqual(1, preview["summary"]["error_count"])
+        self.assertIn("season_year", preview["errors"][0]["message"])
+
     def test_free_agent_join_applies_team_objective_initial_impression_modifier(self) -> None:
         timestamp = now_iso()
         with connect_test_db(self.db_path) as conn:

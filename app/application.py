@@ -410,6 +410,7 @@ class ApplicationContainer:
             self._dependency("_season_rollover_repository"),
             contract_min_year=self.config.contract_min_year,
             contract_max_start_year=self.config.contract_max_start_year,
+            player_happiness=self.player_happiness,
         )
 
     @cached_property

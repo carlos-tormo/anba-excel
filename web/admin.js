@@ -14055,6 +14055,11 @@ function closePlayerHappinessImportModal() {
   document.getElementById('playerHappinessImportModal')?.classList.add('section-hidden');
 }
 
+function playerHappinessImportMode() {
+  const mode = document.getElementById('playerHappinessImportMode')?.value;
+  return mode === 'historical_ledger' ? 'historical_ledger' : 'baseline';
+}
+
 function playerHappinessTargetLabel(row) {
   const status = String(row?.status_label || row?.profile_status || '').trim();
   if (row?.team_code) return String(row.team_code).toUpperCase();
@@ -14071,31 +14076,61 @@ function renderPlayerHappinessImportPreview(preview) {
   const summary = preview?.summary || {};
   const unmatched = Array.isArray(preview?.unmatched) ? preview.unmatched : [];
   const ambiguous = Array.isArray(preview?.ambiguous) ? preview.ambiguous : [];
+  const ledgerMode = records.some((row) => Object.prototype.hasOwnProperty.call(row, 'recalculated_happiness'));
   if (confirm) confirm.disabled = Boolean(errors.length || ambiguous.length) || !records.length;
   const rowsHtml = records.length ? `
     <div class="table-wrap app-table-wrap economy-import-table-wrap">
       <table class="app-table app-table--interactive app-table--mobile-wrap economy-import-table">
         <thead>
-          <tr>
-            <th>Jugador</th>
-            <th>Origen</th>
-            <th>Actual</th>
-            <th>Nueva</th>
-            <th>Δ</th>
-            <th>Match</th>
-          </tr>
+          ${ledgerMode ? `
+            <tr>
+              <th>Jugador</th>
+              <th>Origen</th>
+              <th>Actual</th>
+              <th>Base</th>
+              <th>Eventos</th>
+              <th>Δ recencia</th>
+              <th>Recalculada</th>
+              <th>Match</th>
+            </tr>
+          ` : `
+            <tr>
+              <th>Jugador</th>
+              <th>Origen</th>
+              <th>Actual</th>
+              <th>Nueva</th>
+              <th>Δ</th>
+              <th>Match</th>
+            </tr>
+          `}
         </thead>
         <tbody>
-          ${records.slice(0, 250).map((row) => `
-            <tr>
-              <td><strong>${escapeHtml(row.player_name || '')}</strong><small>${escapeHtml(row.input_player_name || '')}</small></td>
-              <td>${escapeHtml(playerHappinessTargetLabel(row))}</td>
-              <td>${escapeHtml(row.current_happiness ?? '')}</td>
-              <td><strong>${escapeHtml(row.new_happiness ?? row.happiness ?? '')}</strong></td>
-              <td>${escapeHtml(Number(row.delta || 0).toFixed(2).replace(/\.00$/, ''))}</td>
-              <td>${escapeHtml(row.match_method || '')}</td>
-            </tr>
-          `).join('')}
+          ${records.slice(0, 250).map((row) => {
+            const currentValue = Number(row.current_happiness ?? 0);
+            const targetValue = ledgerMode ? Number(row.recalculated_happiness ?? 0) : Number(row.new_happiness ?? row.happiness ?? 0);
+            const delta = targetValue - currentValue;
+            return ledgerMode ? `
+              <tr>
+                <td><strong>${escapeHtml(row.player_name || '')}</strong><small>${escapeHtml(row.input_player_name || '')}</small></td>
+                <td>${escapeHtml(playerHappinessTargetLabel(row))}</td>
+                <td>${escapeHtml(row.current_happiness ?? '')}</td>
+                <td>${escapeHtml(row.base_happiness ?? '')}</td>
+                <td>${escapeHtml(row.event_count ?? 0)}</td>
+                <td>${escapeHtml(Number(row.decayed_modifier_total || 0).toFixed(2).replace(/\.00$/, ''))}</td>
+                <td><strong>${escapeHtml(row.recalculated_happiness ?? '')}</strong><small>Δ ${escapeHtml(delta.toFixed(2).replace(/\.00$/, ''))}</small></td>
+                <td>${escapeHtml(row.match_method || '')}</td>
+              </tr>
+            ` : `
+              <tr>
+                <td><strong>${escapeHtml(row.player_name || '')}</strong><small>${escapeHtml(row.input_player_name || '')}</small></td>
+                <td>${escapeHtml(playerHappinessTargetLabel(row))}</td>
+                <td>${escapeHtml(row.current_happiness ?? '')}</td>
+                <td><strong>${escapeHtml(row.new_happiness ?? row.happiness ?? '')}</strong></td>
+                <td>${escapeHtml(Number(row.delta || 0).toFixed(2).replace(/\.00$/, ''))}</td>
+                <td>${escapeHtml(row.match_method || '')}</td>
+              </tr>
+            `;
+          }).join('')}
         </tbody>
       </table>
     </div>
@@ -14132,6 +14167,7 @@ function renderPlayerHappinessImportPreview(preview) {
       <h3>Previsualización</h3>
       <p>
         ${escapeHtml(summary.matched_count || records.length)} resueltos ·
+        ${ledgerMode ? `${escapeHtml(summary.event_count || 0)} eventos ·` : ''}
         ${escapeHtml(summary.changed_count || 0)} cambios ·
         ${escapeHtml(summary.unmatched_count || unmatched.length)} sin match ·
         ${escapeHtml(summary.ambiguous_count || ambiguous.length)} ambiguos
@@ -14144,7 +14180,9 @@ function renderPlayerHappinessImportPreview(preview) {
   if (errors.length || ambiguous.length) {
     setPlayerHappinessImportStatus('Corrige errores o nombres ambiguos antes de confirmar.', 'error');
   } else if (records.length) {
-    setPlayerHappinessImportStatus('Previsualización lista. Se crearán eventos baseline para todos los jugadores resueltos.', 'success');
+    setPlayerHappinessImportStatus(ledgerMode
+      ? 'Previsualización lista. Se reemplazará el ledger histórico importado y se recalculará la felicidad con recencia.'
+      : 'Previsualización lista. Se crearán eventos baseline para todos los jugadores resueltos.', 'success');
   } else {
     setPlayerHappinessImportStatus('No hay filas resueltas para importar.', 'error');
   }
@@ -14164,7 +14202,11 @@ async function previewPlayerHappinessImport() {
   setPlayerHappinessImportStatus('Leyendo y validando JSON...');
   try {
     const jsonText = await file.text();
-    const result = await api('/api/admin/player-happiness-import/preview', {
+    const mode = playerHappinessImportMode();
+    const endpoint = mode === 'historical_ledger'
+      ? '/api/admin/player-happiness-ledger-import/preview'
+      : '/api/admin/player-happiness-import/preview';
+    const result = await api(endpoint, {
       method: 'POST',
       body: JSON.stringify({ json_text: jsonText }),
     });
@@ -14198,15 +14240,21 @@ async function confirmPlayerHappinessImport() {
   if (!records.length) return;
   const button = document.getElementById('playerHappinessImportConfirmBtn');
   if (button) button.disabled = true;
-  setPlayerHappinessImportStatus('Importando felicidad...');
+  const mode = playerHappinessImportMode();
+  setPlayerHappinessImportStatus(mode === 'historical_ledger' ? 'Importando ledger histórico...' : 'Importando felicidad...');
   try {
-    const result = await api('/api/admin/player-happiness-import/import', {
+    const endpoint = mode === 'historical_ledger'
+      ? '/api/admin/player-happiness-ledger-import/import'
+      : '/api/admin/player-happiness-import/import';
+    const result = await api(endpoint, {
       method: 'POST',
       body: JSON.stringify({ records }),
     });
     await refreshPlayerHappinessImportData();
-    setPlayerHappinessImportStatus(`Importados ${result.record_count || 0} valores de felicidad.`, 'success');
-    alert('Felicidad importada.');
+    setPlayerHappinessImportStatus(mode === 'historical_ledger'
+      ? `Importados ${result.inserted_event_count || 0} eventos históricos para ${result.record_count || 0} jugadores.`
+      : `Importados ${result.record_count || 0} valores de felicidad.`, 'success');
+    alert(mode === 'historical_ledger' ? 'Ledger histórico de felicidad importado.' : 'Felicidad importada.');
   } catch (err) {
     setPlayerHappinessImportStatus('Error importando felicidad.', 'error');
     alert(`Player happiness import failed: ${err.message || err}`);
@@ -14228,6 +14276,13 @@ function setupPlayerHappinessImportControls() {
     void confirmPlayerHappinessImport();
   });
   document.getElementById('playerHappinessImportFileInput')?.addEventListener('change', () => {
+    state.playerHappinessImportPreview = null;
+    document.getElementById('playerHappinessImportConfirmBtn')?.setAttribute('disabled', 'disabled');
+    const preview = document.getElementById('playerHappinessImportPreview');
+    if (preview) preview.innerHTML = '';
+    setPlayerHappinessImportStatus('');
+  });
+  document.getElementById('playerHappinessImportMode')?.addEventListener('change', () => {
     state.playerHappinessImportPreview = null;
     document.getElementById('playerHappinessImportConfirmBtn')?.setAttribute('disabled', 'disabled');
     const preview = document.getElementById('playerHappinessImportPreview');

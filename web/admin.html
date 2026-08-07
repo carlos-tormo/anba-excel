@@ -1366,14 +1366,35 @@ Jrue Holiday,Agente Dos</pre>
       </div>
       <div class="economy-import-body">
         <div class="economy-import-instructions">
-          <p>Formato recomendado con <code>profile_id</code>, aunque también acepta solo nombre cuando la coincidencia es única:</p>
+          <p>Elige entre importar una línea base actual o reconstruir el ledger histórico con eventos por temporada. En ambos casos <code>profile_id</code> es preferente, aunque también acepta nombre cuando la coincidencia es única.</p>
+          <div class="settings-row">
+            <label for="playerHappinessImportMode">Tipo de importación</label>
+            <select id="playerHappinessImportMode">
+              <option value="baseline">Valor actual / baseline</option>
+              <option value="historical_ledger">Ledger histórico con recencia</option>
+            </select>
+          </div>
+          <p>Baseline actual:</p>
           <pre>{
   "players": [
     {"profile_id": 123, "player_name": "Nikola Jokic", "happiness": 7.5},
     {"player_name": "Jugador sin ID", "happiness": -2}
   ]
 }</pre>
-          <p>Rango válido: <code>-10</code> a <code>10</code>. La importación crea eventos <code>baseline_import</code> para conservar trazabilidad.</p>
+          <p>Ledger histórico:</p>
+          <pre>{
+  "players": [
+    {
+      "player_name": "Nikola Jokic",
+      "base_happiness": 7,
+      "base_season_year": 2021,
+      "events": [
+        {"season_year": 2024, "event_type": "modifier", "delta": -1, "reason": "Promesa incumplida"}
+      ]
+    }
+  ]
+}</pre>
+          <p>Rango válido: <code>-10</code> a <code>10</code>. La línea base usa eventos <code>baseline_import</code>. El ledger histórico reemplaza importaciones históricas previas de ese jugador, recalcula el valor actual con recencia y conserva eventos generados por el sitio.</p>
         </div>
         <div class="settings-row economy-import-controls">
           <input id="playerHappinessImportFileInput" type="file" accept="application/json,.json">

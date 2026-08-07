@@ -8,9 +8,11 @@ from typing import Any, Dict, Optional
 from urllib.parse import ParseResult
 
 try:
+    from ..domain._values import parse_int
     from ..import_export.spreadsheets import spreadsheet_rows_from_payload
     from ..routing import RouteResponse, bytes_response, error_response, exact_route, json_response
 except ImportError:  # pragma: no cover
+    from domain._values import parse_int
     from import_export.spreadsheets import spreadsheet_rows_from_payload
     from routing import RouteResponse, bytes_response, error_response, exact_route, json_response
 
@@ -285,6 +287,36 @@ def preview_player_happiness_import(handler: Any, _parsed: ParseResult, payload:
     return json_response(200, result)
 
 
+def preview_player_happiness_ledger_import(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    if not _require_admin_post(handler) or not handler._authorize("admin.import.write"):
+        return
+    json_text = str(payload.get("json_text") or "")
+    if len(json_text.encode("utf-8")) > 5_000_000:
+        return error_response(413, "json_too_large")
+    try:
+        result = handler.app.player_happiness.preview_historical_ledger(json_text or payload.get("data") or payload)
+    except ValueError as err:
+        return json_response(200, {
+            "ok": False,
+            "errors": [{"line": None, "message": str(err) or "invalid_happiness_ledger_import"}],
+            "records": [],
+            "summary": {
+                "input_count": 0,
+                "matched_count": 0,
+                "event_count": 0,
+                "changed_count": 0,
+                "unchanged_count": 0,
+                "unmatched_count": 0,
+                "ambiguous_count": 0,
+                "error_count": 1,
+            },
+            "unmatched": [],
+            "ambiguous": [],
+        })
+    return json_response(200, result)
+
+
 def apply_player_happiness_import(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     payload = payload or {}
     if not _require_admin_post(handler) or not handler._authorize("admin.import.write"):
@@ -334,6 +366,55 @@ def apply_player_happiness_import(handler: Any, _parsed: ParseResult, payload: O
     return json_response(200, result)
 
 
+def apply_player_happiness_ledger_import(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    if not _require_admin_post(handler) or not handler._authorize("admin.import.write"):
+        return
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        return error_response(400, "records_required")
+    try:
+        backup = handler.app.maintenance.create_verified_backup("pre_player_happiness_ledger_import")
+    except Exception as err:
+        return error_response(500, "pre_import_backup_failed", detail=str(err))
+    try:
+        result = handler.app.player_happiness.apply_historical_ledger(records, handler._current_session() or {})
+    except ValueError as err:
+        if str(err) in {
+            "records_required",
+            "invalid_records",
+            "duplicate_happiness_import_target",
+            "happiness_import_target_changed",
+            "stale_entity_version",
+        }:
+            return error_response(400, str(err))
+        raise
+    details = {
+        "record_count": result.get("record_count"),
+        "inserted_event_count": result.get("inserted_event_count"),
+        "updated_count": (result.get("recalculation") or {}).get("updated_count"),
+        "backup_id": backup.get("id"),
+        "backup_sha256": backup.get("sha256"),
+    }
+    handler._log_admin_action(
+        "import",
+        "player_happiness_ledger",
+        "historical",
+        None,
+        details,
+        command_id=result.get("command_id") or f"player-happiness:historical-ledger-import:{backup.get('id')}",
+        validation_result=result.get("validation_result") or "valid",
+        entity_versions=_backup_entity_versions(
+            backup,
+            record_count=result.get("record_count"),
+            inserted_event_count=result.get("inserted_event_count"),
+            updated_count=(result.get("recalculation") or {}).get("updated_count"),
+        ),
+    )
+    result["backup"] = handler.app.maintenance.public_backup_metadata(backup)
+    return json_response(200, result)
+
+
 def download_backup(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
     if not _require_admin_post(handler) or not handler._authorize("admin.backup.create"):
         return
@@ -363,6 +444,40 @@ def download_backup(handler: Any, _parsed: ParseResult, _payload: Optional[Dict[
         "X-Content-Type-Options": "nosniff",
     })
 
+def recalculate_player_happiness_recency(handler: Any, _parsed: ParseResult, payload: Optional[Dict[str, Any]]) -> Optional[RouteResponse]:
+    payload = payload or {}
+    if not _require_admin_post(handler) or not handler._authorize("admin.player_profile.write"):
+        return
+    current_year = parse_int(payload.get("current_year"))
+    raw_profile_ids = payload.get("profile_ids")
+    profile_ids = None
+    if isinstance(raw_profile_ids, list):
+        profile_ids = []
+        for value in raw_profile_ids:
+            parsed = parse_int(value)
+            if parsed is None:
+                return error_response(400, "invalid_profile_id")
+            profile_ids.append(int(parsed))
+    result = handler.app.player_happiness.recalculate_recency(
+        current_year=current_year,
+        profile_ids=profile_ids,
+    )
+    handler._log_admin_action(
+        "recalculate",
+        "player_happiness_recency",
+        str(result.get("current_year")),
+        None,
+        {
+            "checked_count": result.get("checked_count"),
+            "updated_count": result.get("updated_count"),
+            "profile_scope": len(profile_ids) if profile_ids is not None else "all",
+        },
+        command_id=result.get("command_id"),
+        validation_result=result.get("validation_result"),
+        entity_versions=result.get("entity_versions"),
+    )
+    return json_response(200, result)
+
 
 ADMIN_DATA_GET_ROUTES = (exact_route("/api/export/league.xlsx", export_league),)
 ADMIN_DATA_POST_ROUTES = (
@@ -378,5 +493,8 @@ ADMIN_DATA_POST_ROUTES = (
     exact_route("/api/admin/player-ratings-import/import", apply_player_rating_import, permission="admin.import.write", csrf=True, mutates_league_state=True),
     exact_route("/api/admin/player-happiness-import/preview", preview_player_happiness_import, permission="admin.import.write", csrf=True, mutates_league_state=False),
     exact_route("/api/admin/player-happiness-import/import", apply_player_happiness_import, permission="admin.import.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/admin/player-happiness-ledger-import/preview", preview_player_happiness_ledger_import, permission="admin.import.write", csrf=True, mutates_league_state=False),
+    exact_route("/api/admin/player-happiness-ledger-import/import", apply_player_happiness_ledger_import, permission="admin.import.write", csrf=True, mutates_league_state=True),
+    exact_route("/api/admin/player-happiness/recalculate-recency", recalculate_player_happiness_recency, permission="admin.player_profile.write", csrf=True, mutates_league_state=True),
     exact_route("/api/admin/backup", download_backup, permission="admin.backup.create", csrf=True, mutates_league_state=False),
 )

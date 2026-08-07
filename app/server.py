@@ -1268,6 +1268,7 @@ class LeagueDB(DatabaseMigrationsMixin, DatabaseMaintenanceMixin):
             self._season_rollover_repository,
             contract_min_year=PLAYER_CONTRACT_MIN_YEAR,
             contract_max_start_year=PLAYER_CONTRACT_MAX_START_YEAR,
+            player_happiness=self._player_happiness_service,
         )
 
     def upsert_google_user(self, google_sub: str, email: str, display_name: Optional[str], avatar_url: Optional[str]) -> Dict[str, Any]:

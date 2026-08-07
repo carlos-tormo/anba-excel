@@ -104,6 +104,26 @@ TRADE_REQUEST_FOLLOWUP_PENALTIES = (
     (TRADE_REQUEST_FOLLOWUP_NINE_MONTHS, 9, -1.0),
 )
 
+RECENCY_DECAY_WEIGHTS = {
+    0: 1.0,
+    1: 0.95,
+    2: 0.85,
+    3: 0.70,
+    4: 0.60,
+    5: 0.50,
+    6: 0.40,
+    7: 0.30,
+    8: 0.25,
+    9: 0.20,
+}
+HAPPINESS_ANCHOR_EVENT_TYPES = frozenset(
+    {
+        EVENT_BASELINE_IMPORT,
+        EVENT_MANUAL_ADJUSTMENT,
+        EVENT_TEAM_JOIN,
+    }
+)
+
 RATING_BAND_60_74 = "60_74"
 RATING_BAND_75_79 = "75_79"
 RATING_BAND_80_84 = "80_84"
@@ -217,6 +237,82 @@ def normalize_event_type(value: Any) -> str:
     if normalized not in EVENT_TYPES:
         raise ValueError("invalid_happiness_event_type")
     return normalized
+
+
+def recency_decay_weight(current_year: Any, event_year: Any) -> float:
+    current = parse_int(current_year)
+    event = parse_int(event_year)
+    if current is None or event is None:
+        return 1.0
+    age = max(0, int(current) - int(event))
+    if age >= 10:
+        return 0.0
+    return float(RECENCY_DECAY_WEIGHTS.get(age, 0.0))
+
+
+def recency_recalculated_happiness(events: Iterable[Dict[str, Any]], current_year: Any) -> Dict[str, Any]:
+    ordered = sorted(
+        [event for event in events if isinstance(event, dict)],
+        key=lambda item: (
+            parse_int(item.get("id")) or 0,
+            str(item.get("created_at") or ""),
+        ),
+    )
+    if not ordered:
+        return {
+            "base_value": 0.0,
+            "modifier_total": 0.0,
+            "new_value": 0.0,
+            "anchor_event_id": None,
+            "weighted_events": [],
+        }
+
+    anchor_index = -1
+    for index, event in enumerate(ordered):
+        if str(event.get("event_type") or "").strip().lower() in HAPPINESS_ANCHOR_EVENT_TYPES:
+            anchor_index = index
+
+    if anchor_index >= 0:
+        anchor = ordered[anchor_index]
+        base_value = parse_float(str(anchor.get("new_value") or "0")) or 0.0
+        relevant = ordered[anchor_index + 1 :]
+        anchor_event_id = parse_int(anchor.get("id"))
+    else:
+        first = ordered[0]
+        base_value = parse_float(str(first.get("previous_value") or "0")) or 0.0
+        relevant = ordered
+        anchor_event_id = None
+
+    weighted_events: list[Dict[str, Any]] = []
+    modifier_total = 0.0
+    for event in relevant:
+        event_type = str(event.get("event_type") or "").strip().lower()
+        if event_type in HAPPINESS_ANCHOR_EVENT_TYPES:
+            continue
+        event_year = parse_int(event.get("season_year")) or parse_int(event.get("event_year"))
+        weight = recency_decay_weight(current_year, event_year)
+        applied_delta = parse_float(str(event.get("applied_delta") or "0")) or 0.0
+        weighted_delta = applied_delta * weight
+        modifier_total += weighted_delta
+        weighted_events.append(
+            {
+                "event_id": parse_int(event.get("id")),
+                "event_type": event_type,
+                "season_year": event_year,
+                "applied_delta": applied_delta,
+                "recency_weight": weight,
+                "weighted_delta": weighted_delta,
+            }
+        )
+
+    new_value = clamp_happiness(base_value + modifier_total)
+    return {
+        "base_value": base_value,
+        "modifier_total": modifier_total,
+        "new_value": new_value,
+        "anchor_event_id": anchor_event_id,
+        "weighted_events": weighted_events,
+    }
 
 
 def trade_request_eligible(value: Any) -> bool:
